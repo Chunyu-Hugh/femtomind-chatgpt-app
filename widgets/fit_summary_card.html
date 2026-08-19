@@ -1,0 +1,83 @@
+<!doctype html>
+<meta charset="utf-8" />
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; font: 13px/1.45 -apple-system, "Segoe UI", Roboto, sans-serif;
+         color: #1a1a1a; background: transparent; }
+  @media (prefers-color-scheme: dark) { body { color: #ececec; } }
+  .wrap { padding: 14px 16px; }
+  .title { font-size: 14px; font-weight: 650; margin-bottom: 2px; }
+  .sub { font-size: 12px; opacity: .6; margin-bottom: 12px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+           gap: 8px; margin-bottom: 12px; }
+  .tile { border: 1px solid rgba(128,128,128,.22); border-radius: 10px; padding: 8px 10px; }
+  .tile .v { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .tile .k { font-size: 11px; opacity: .6; margin-top: 1px; }
+  .good .v { color: #0c7a40; } .warn .v { color: #a06600; }
+  @media (prefers-color-scheme: dark) { .good .v { color: #4ade80; } .warn .v { color: #fbbf24; } }
+  .sec { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; opacity: .55; margin: 10px 0 4px; }
+  table { width: 100%; border-collapse: collapse; }
+  td { padding: 4px 8px 4px 0; border-bottom: 1px solid rgba(128,128,128,.12);
+       font-variant-numeric: tabular-nums; }
+  .empty { opacity: .6; padding: 10px 0; }
+</style>
+<div class="wrap">
+  <div class="title">Fit quality summary</div>
+  <div class="sub" id="sub"></div>
+  <div id="body"><div class="empty">Waiting for summary…</div></div>
+</div>
+<script>
+  const fmt = (x, d) => (x === null || x === undefined || isNaN(+x)) ? '—' : (+x).toFixed(d);
+  function pick(o, keys) { for (const k of keys) if (o && o[k] !== undefined && o[k] !== null) return o[k]; }
+
+  function render(out) {
+    if (!out) return;
+    // Be liberal in what we accept: summary payload shapes vary slightly.
+    const s = out.summary || out.result || out;
+    const chi2   = pick(s, ['chi2_per_point', 'chi2ppt', 'chi2', 'central_chi2_per_point']);
+    const nrep   = pick(s, ['completed_replicas', 'n_replicas', 'replicas', 'good_replicas']);
+    const good   = pick(s, ['good_replicas', 'n_good']);
+    const zscore = pick(s, ['mean_global_z', 'mean_z_score', 'zscore', 'mean_global_zscore']);
+    const npts   = pick(s, ['n_points', 'total_points', 'total_data_points']);
+    const batch  = pick(out, ['batch_id']) || pick(s, ['batch_id']) || '';
+    document.getElementById('sub').textContent = batch ? ('batch ' + batch) : '';
+
+    const body = document.getElementById('body');
+    if (chi2 === undefined && nrep === undefined && !s.tension && !s.top_tension_datasets) {
+      body.innerHTML = '<div class="empty">' +
+        (out.error ? String(out.error).slice(0, 200)
+                   : 'Summary not ready yet — the batch may still be running.') + '</div>';
+      return;
+    }
+    const chi2cls = chi2 !== undefined ? (+chi2 < 1.3 ? 'good' : 'warn') : '';
+    let html = '<div class="tiles">' +
+      '<div class="tile ' + chi2cls + '"><div class="v">' + fmt(chi2, 3) + '</div><div class="k">χ² / point</div></div>' +
+      '<div class="tile"><div class="v">' + (nrep ?? '—') + (good && good !== nrep ? ' <span style="font-size:12px;opacity:.6">(' + good + ' good)</span>' : '') + '</div><div class="k">replicas</div></div>' +
+      '<div class="tile"><div class="v">' + fmt(zscore, 3) + '</div><div class="k">mean Z-score</div></div>' +
+      '<div class="tile"><div class="v">' + (npts ?? '—') + '</div><div class="k">data points</div></div>' +
+      '</div>';
+    const tension = s.top_tension_datasets || s.tension || [];
+    if (Array.isArray(tension) && tension.length) {
+      html += '<div class="sec">Top-tension datasets</div><table>' +
+        tension.slice(0, 5).map(t => {
+          const id = t.dataset || t.id || t.name || JSON.stringify(t).slice(0, 30);
+          const z = pick(t, ['z_score', 'zscore', 'z']);
+          const c = pick(t, ['chi2_per_point', 'chi2']);
+          return '<tr><td>' + id + '</td><td>Z ' + fmt(z, 2) + '</td><td>χ²/pt ' + fmt(c, 3) + '</td></tr>';
+        }).join('') + '</table>';
+    }
+    body.innerHTML = html;
+  }
+
+  if (window.openai && window.openai.toolOutput) render(window.openai.toolOutput);
+  window.addEventListener('message', (ev) => {
+    const m = ev.data;
+    if (!m || typeof m !== 'object') return;
+    if (m.method === 'ui/notifications/tool-result') {
+      render(m.params && (m.params.structuredContent || m.params));
+    }
+    if (m.type === 'openai:set_globals' && window.openai && window.openai.toolOutput) {
+      render(window.openai.toolOutput);
+    }
+  });
+</script>

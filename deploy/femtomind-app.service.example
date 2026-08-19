@@ -1,0 +1,21 @@
+# systemd unit for the MCP server.
+#
+# KillMode=process is load-bearing: the SSH ControlMasters that hold each
+# collaborator's cluster session are children of this process, and the default
+# control-group mode would kill them on every restart, forcing everyone to
+# re-enter a one-time code.
+
+[Unit]
+Description=FemtoMind ChatGPT MCP app
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/femtomind
+EnvironmentFile=/opt/femtomind/env.conf
+ExecStart=/opt/femtomind/.venv/bin/python /opt/femtomind/femtomind-chatgpt-app/femtomind_app.py
+Restart=on-failure
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target

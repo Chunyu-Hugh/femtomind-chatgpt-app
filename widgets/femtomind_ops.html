@@ -1,0 +1,871 @@
+<style>
+  :root {
+    --bg:#f5f7fb; --surface:#ffffff; --surface-2:#eef2f8; --fg:#121722; --muted:#5a6474;
+    --line:#d6dce7; --accent:#2560c9; --accent-wash:#e7f0fd; --rep:rgba(37,96,201,.26);
+    --mean:#0b3aa3; --green:#1c7a52; --green-wash:#e3f4ec; --warn:#b0560a; --warn-wash:#fbeee1;
+    --chip:#eef2f8; --chip-on:#d8efde;
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme:dark){ :root:not([data-theme="light"]){
+    --bg:#0c0f15; --surface:#141b25; --surface-2:#1a2230; --fg:#e7ebf3; --muted:#93a0b4;
+    --line:#26303f; --accent:#74a0ff; --accent-wash:#15233c; --rep:rgba(116,160,255,.30);
+    --mean:#a9c4ff; --green:#4dc08c; --green-wash:#12251c; --warn:#dca24a; --warn-wash:#2b2413;
+    --chip:#1f2836; --chip-on:#16351f;
+  }}
+  :root[data-theme="dark"]{
+    --bg:#0c0f15; --surface:#141b25; --surface-2:#1a2230; --fg:#e7ebf3; --muted:#93a0b4;
+    --line:#26303f; --accent:#74a0ff; --accent-wash:#15233c; --rep:rgba(116,160,255,.30);
+    --mean:#a9c4ff; --green:#4dc08c; --green-wash:#12251c; --warn:#dca24a; --warn-wash:#2b2413;
+    --chip:#1f2836; --chip-on:#16351f;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font);font-size:14px;line-height:1.5;}
+  .app{max-width:900px;margin:0 auto;padding:14px 16px 20px;}
+  header{display:flex;align-items:center;gap:12px;margin-bottom:12px;}
+  .brand{font-weight:680;font-size:16px;letter-spacing:-.01em;}
+  .brand .sub{font-family:var(--mono);font-size:10.5px;color:var(--muted);font-weight:400;margin-left:8px;letter-spacing:.04em;}
+  .pill{margin-left:auto;display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:11.5px;
+        padding:5px 11px;border-radius:999px;border:1px solid var(--line);background:var(--surface);white-space:nowrap;}
+  .pill .dot{width:8px;height:8px;border-radius:50%;background:var(--muted);}
+  .pill.ok .dot{background:var(--green);} .pill.ok{color:var(--green);border-color:color-mix(in srgb,var(--green) 40%,var(--line));}
+  .pill.no .dot{background:var(--warn);} .pill.no{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 40%,var(--line));}
+
+  nav.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:16px;overflow-x:auto;}
+  nav.tabs button{font:inherit;border:none;background:none;color:var(--muted);cursor:pointer;padding:9px 13px;
+        border-bottom:2px solid transparent;white-space:nowrap;display:flex;align-items:center;gap:7px;}
+  nav.tabs button .n{font-family:var(--mono);font-size:10.5px;opacity:.7;}
+  nav.tabs button:hover{color:var(--fg);}
+  nav.tabs button.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:600;}
+
+  .tab{display:none;} .tab.active{display:block;}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:14px;}
+  h3{margin:0 0 4px;font-size:15px;font-weight:640;}
+  .muted{color:var(--muted);} .mono{font-family:var(--mono);}
+  .sub{color:var(--muted);font-size:12.5px;margin:0 0 14px;}
+  .row{display:flex;justify-content:space-between;gap:14px;padding:8px 0;border-top:1px solid var(--line);font-size:13.5px;}
+  .row:first-child{border-top:none;} .row .k{color:var(--muted);} .row .v{text-align:right;font-family:var(--mono);font-size:12.5px;}
+  .status-head{display:flex;align-items:center;gap:12px;margin-bottom:12px;}
+  .status-ic{width:40px;height:40px;border-radius:10px;display:grid;place-items:center;font-size:20px;flex:none;}
+  .st-ok{background:var(--green-wash);} .st-no{background:var(--warn-wash);}
+  .note{font-size:12.5px;color:var(--muted);background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:12px;}
+  .note.warn{color:var(--warn);background:var(--warn-wash);border-color:color-mix(in srgb,var(--warn) 35%,var(--line));}
+  code{font-family:var(--mono);font-size:.86em;background:var(--surface-2);border:1px solid var(--line);border-radius:5px;padding:.05em .34em;}
+
+  button.btn{font:inherit;border:1px solid var(--line);background:var(--surface);color:var(--fg);border-radius:8px;padding:8px 15px;cursor:pointer;}
+  button.btn:hover{border-color:var(--accent);}
+  button.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600;}
+  button.btn.primary:hover{opacity:.92;}
+  button.btn:disabled{opacity:.5;cursor:not-allowed;}
+  .actions{display:flex;gap:10px;margin-top:12px;flex-wrap:wrap;}
+
+  /* checklist (project) */
+  .chk{display:flex;align-items:flex-start;gap:11px;padding:10px 0;border-top:1px solid var(--line);}
+  .chk:first-child{border-top:none;}
+  .chk .mk{width:20px;height:20px;border-radius:6px;display:grid;place-items:center;font-size:12px;flex:none;margin-top:1px;}
+  .mk.ok{background:var(--green-wash);color:var(--green);} .mk.no{background:var(--warn-wash);color:var(--warn);} .mk.un{background:var(--surface-2);color:var(--muted);}
+  .chk .lb{font-weight:560;} .chk .dt{color:var(--muted);font-size:12.5px;font-family:var(--mono);}
+
+  /* composer */
+  .steps{display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap;}
+  .step{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted);cursor:pointer;padding:5px 10px;border-radius:7px;}
+  .step.active{color:var(--accent);background:var(--accent-wash);font-weight:600;}
+  .step .num{width:19px;height:19px;border-radius:50%;background:var(--surface-2);display:grid;place-items:center;font-size:11px;font-family:var(--mono);}
+  .step.active .num{background:var(--accent);color:#fff;}
+  .panel{display:none;} .panel.active{display:block;}
+  .field{margin-bottom:14px;} .label{font-weight:600;font-size:13px;margin-bottom:6px;}
+  .opt{display:flex;align-items:center;gap:9px;padding:9px 11px;border:1px solid var(--line);border-radius:8px;margin-bottom:7px;cursor:pointer;}
+  .opt.disabled{opacity:.5;cursor:not-allowed;}
+  .ds{display:flex;align-items:center;gap:9px;padding:7px 10px;border:1px solid var(--line);border-radius:7px;margin-bottom:6px;font-size:13px;}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  @media (max-width:560px){.grid2{grid-template-columns:1fr;}}
+  select,input[type=text],input[type=number],input[type=password]{font:inherit;width:100%;padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:var(--surface);color:var(--fg);}
+  .inline{display:flex;align-items:center;gap:8px;font-size:13px;}
+  .rev .row .v{font-family:var(--mono);}
+  .err{color:var(--warn);font-size:12.5px;margin-top:8px;}
+
+  /* collections table */
+  .tbl{width:100%;border-collapse:collapse;font-size:13px;}
+  .tbl th{text-align:left;font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);padding:8px 10px;border-bottom:1px solid var(--line);}
+  .tbl td{padding:9px 10px;border-bottom:1px solid var(--line);}
+  .tag{font-family:var(--mono);font-size:10.5px;padding:2px 8px;border-radius:999px;}
+  .tag.active{background:var(--accent-wash);color:var(--accent);} .tag.done{background:var(--green-wash);color:var(--green);} .tag.other{background:var(--surface-2);color:var(--muted);}
+  .tag.bad{background:var(--warn-wash);color:var(--warn);}
+
+  /* analysis plot */
+  .plot-controls{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px;}
+  .pc{display:flex;flex-direction:column;gap:5px;} .pc .label{margin:0;font-size:11.5px;}
+  .flavs{display:flex;gap:6px;flex-wrap:wrap;}
+  .fl{font-family:var(--mono);font-size:12px;padding:5px 10px;border:1px solid var(--line);border-radius:7px;cursor:pointer;background:var(--chip);}
+  .fl.on{background:var(--chip-on);border-color:var(--green);color:var(--green);}
+  .pgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:14px;}
+  .pcard{background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:8px;}
+  .pcard .t{font-size:12px;font-weight:600;margin:2px 4px 4px;}
+  svg.plot{width:100%;height:auto;display:block;}
+  .empty{color:var(--muted);font-size:13px;text-align:center;padding:28px 12px;}
+  .spin{color:var(--muted);font-size:13px;padding:14px 0;}
+</style>
+
+<div class="app">
+  <header>
+    <div class="brand">FemtoMind<span class="sub">JAM · QCD global analysis</span></div>
+    <div class="pill" id="connPill"><span class="dot"></span><span id="connPillTxt">checking…</span></div>
+  </header>
+  <nav class="tabs" id="tabs"></nav>
+
+  <!-- CONNECT -->
+  <section class="tab" data-tab="connect">
+    <div class="card">
+      <div class="status-head">
+        <div class="status-ic st-no" id="connIc">○</div>
+        <div><h3 id="connTitle">HPC connection</h3><div class="sub" id="connLine" style="margin:0">…</div></div>
+        <button class="btn" id="recheckBtn" style="margin-left:auto">Re-check</button>
+      </div>
+      <div id="connRows"></div>
+      <div class="note" id="connNote"></div>
+      <div id="connectForm" style="display:none;margin-top:14px;border-top:1px solid var(--line);padding-top:14px">
+        <div class="label" style="margin-bottom:8px">Sign in</div>
+        <div class="field" style="margin-bottom:12px">
+          <div class="label" style="font-weight:500;font-size:11.5px">Cluster username</div>
+          <input type="text" id="connUser" value="chunyu" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="grid2">
+          <div class="field" style="margin:0" id="gwField">
+            <div class="label" style="font-weight:500;font-size:11.5px">1 · scilogin — PIN + one-time code</div>
+            <input type="password" id="connGw" autocomplete="off" placeholder="PIN followed by the code">
+          </div>
+          <div class="field" style="margin:0">
+            <div class="label" style="font-weight:500;font-size:11.5px">2 · ifarm — account password</div>
+            <input type="password" id="connPw" autocomplete="off">
+          </div>
+        </div>
+        <div class="actions"><button class="btn primary" id="connectBtn">Connect</button></div>
+        <div class="note" id="gwReusedNote" style="display:none;margin-top:10px;font-size:11.5px">Gateway session is still open — only the ifarm password is needed.</div>
+        <div class="note" style="margin-top:10px;font-size:11.5px">Both hops open on the FemtoMind host and stay open 8h, so the one-time code is needed once per session. Neither value is stored or logged.</div>
+        <div class="err" id="connectErr"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- PROJECT -->
+  <section class="tab" data-tab="project">
+    <div class="card">
+      <h3>Project &amp; environment</h3>
+      <p class="sub">Verify the JAM code and grids are in place in your HPC workspace before running a fit.</p>
+      <div id="projBody"><div class="spin">Open this tab to check…</div></div>
+      <div class="actions"><button class="btn" id="projBtn">Re-check</button>
+        <button class="btn" id="setupToggle">Set up a new workspace…</button></div>
+
+      <div id="setupBox" style="display:none;margin-top:14px;border-top:1px solid var(--line);padding-top:14px">
+        <div class="label" style="margin-bottom:6px">Create a workspace</div>
+        <p class="sub" style="margin-bottom:10px">A folder is created in <span class="mono" id="setupParent">your own JAM area</span>
+          and fitpack_legacy is cloned into it. Nothing outside that folder is touched.</p>
+        <div class="field" style="margin:0 0 12px">
+          <div class="label" style="font-weight:500;font-size:11.5px">JAM code</div>
+          <div class="mono" style="font-size:12px;padding:9px 11px;border:1px solid var(--line);
+               border-radius:7px;background:var(--surface-2);color:var(--muted)">
+            github.com/QCDHUB/fitpack_legacy.git
+          </div>
+          <div class="dt" style="margin-top:5px">Fixed, so everyone runs the same validated code.</div>
+        </div>
+        <div class="grid2">
+          <div class="field" style="margin:0">
+            <div class="label" style="font-weight:500;font-size:11.5px">Folder name</div>
+            <input type="text" id="setupName" value="fitpack_legacy" spellcheck="false">
+          </div>
+          <div class="field" style="margin:0">
+            <div class="label" style="font-weight:500;font-size:11.5px">Branch <span class="muted">(optional)</span></div>
+            <input type="text" id="setupBranch" placeholder="default branch" spellcheck="false">
+          </div>
+        </div>
+        <div class="field" style="margin:12px 0 0" id="tokenField">
+          <div class="label" style="font-weight:500;font-size:11.5px">GitHub token <span class="muted">(only if the repository is private)</span></div>
+          <input type="password" id="setupToken" autocomplete="off" placeholder="leave empty first — you'll be told if it's needed">
+        </div>
+        <div class="actions"><button class="btn primary" id="setupBtn">Create and clone</button></div>
+        <div id="setupResult"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CAMPAIGN (composer) -->
+  <section class="tab" data-tab="campaign">
+    <div class="card">
+      <h3>Fitting campaign</h3>
+      <p class="sub">You hand-pick every value. Nothing is auto-filled.</p>
+      <div class="steps" id="cSteps"></div>
+
+      <div class="panel" data-step="object">
+        <div class="field"><div class="label">Non-perturbative object</div><div id="objectList"></div></div>
+      </div>
+      <div class="panel" data-step="reactions">
+        <div class="field"><div class="label">Reactions, datasets &amp; cuts</div>
+          <p class="sub" style="margin-bottom:8px">Select the experimental datasets to include.</p>
+          <div id="dsList"></div></div>
+      </div>
+      <div class="panel" data-step="qcd">
+        <div class="grid2">
+          <div class="field"><div class="label">Perturbative order</div><select id="qcdOrder"><option>NLO</option><option>NNLO</option></select></div>
+          <div class="field"><div class="label">Q₀² (GeV²)</div><input type="text" id="qcdQ20" value="1.6129"></div>
+          <div class="field"><div class="label">Target-mass corrections</div><select id="qcdTmc"><option value="AOT">AOT</option><option value="off">off</option></select></div>
+          <div class="field"><div class="label">DGLAP solution</div><select id="qcdDglap"><option value="truncated">truncated</option><option value="iterated">iterated</option></select></div>
+          <div class="field"><div class="label">αS running</div><select id="qcdAs"><option value="backward">backward</option><option value="forward">forward</option></select></div>
+          <div class="field"><label class="inline" style="margin-top:26px"><input type="checkbox" id="qcdHT"> Higher-twist corrections</label></div>
+        </div>
+      </div>
+      <div class="panel" data-step="job">
+        <div class="grid2">
+          <div class="field"><div class="label">Campaign name</div><input type="text" id="jobName" value="chatgpt-fit"></div>
+          <div class="field"><div class="label">Replicas</div><input type="number" id="jobReplicas" value="10" min="1" max="200"></div>
+          <div class="field"><div class="label">Max iterations</div><input type="number" id="jobMaxIter" value="500"></div>
+          <div class="field"><div class="label">Tolerance</div><input type="text" id="jobTol" value="1e-6"></div>
+          <div class="field"><div class="label">Optimizer</div><select id="jobOpt"><option value="trf">trf</option></select></div>
+        </div>
+        <div class="field"><div class="label">Parameter initialization</div>
+          <label class="inline"><input type="radio" name="pinit" value="default" checked> Default JAM starting values</label>
+          <label class="inline" style="margin-top:6px"><input type="radio" name="pinit" value="random_within_bounds"> Randomize within bounds</label>
+        </div>
+        <div class="field"><label class="inline"><input type="checkbox" id="jobBootstrap" checked> Bootstrap pseudo-data replicas</label></div>
+      </div>
+      <div class="panel" data-step="review">
+        <div class="rev" id="reviewBox"></div>
+        <div class="err" id="reviewErr"></div>
+        <div class="note" id="cSubmittedNote" style="display:none">This card was submitted — this composer is closed. Ask to start another fit for a fresh one.</div>
+      </div>
+
+      <div class="actions">
+        <button class="btn" id="cBack" style="visibility:hidden">Back</button>
+        <button class="btn primary" id="cNext">Next</button>
+      </div>
+      <div class="err" id="cErr"></div>
+    </div>
+  </section>
+
+  <!-- COLLECTIONS -->
+  <section class="tab" data-tab="collections">
+    <div class="card">
+      <h3>Campaigns</h3>
+      <p class="sub">Fitting campaigns submitted in this workspace.</p>
+      <div id="collBody"><div class="spin">Open this tab to load…</div></div>
+      <div class="actions"><button class="btn" id="collBtn">Refresh</button></div>
+    </div>
+  </section>
+
+  <!-- ANALYSIS -->
+  <section class="tab" data-tab="analysis">
+    <div class="card">
+      <h3>PDF replica plots</h3>
+      <p class="sub">Fitted x·f(x) vs x at a chosen Q². Renders from raw replica curves.</p>
+      <div class="plot-controls">
+        <div class="pc"><span class="label">Flavors</span><div class="flavs" id="flavs"></div></div>
+        <div class="pc"><span class="label">Q² (GeV²)</span><input type="number" id="plotQ2" value="10" style="width:90px"></div>
+        <button class="btn primary" id="plotBtn">Render plots</button>
+      </div>
+      <div id="plotHead" class="sub"></div>
+      <div class="pgrid" id="pgrid"></div>
+      <div class="empty" id="plotEmpty">Pick flavors and press “Render plots”.</div>
+    </div>
+  </section>
+</div>
+
+<script>
+(function(){
+  const oai = window.openai;
+  const boot = (oai && oai.toolOutput) || {};
+  const ws = () => (oai && oai.widgetState) || {};
+  const $ = (id)=>document.getElementById(id);
+  const NS = "http://www.w3.org/2000/svg";
+  // Hosts differ in what callTool resolves to: the bare structured result, or
+  // an MCP CallToolResult wrapper ({structuredContent}, {content:[{text}]},
+  // sometimes nested under .result). Unwrap all of them so a tab never renders
+  // empty just because the payload arrived one level deeper than expected.
+  function unwrap(res){
+    let v = res;
+    for (let i = 0; i < 4 && v && typeof v === "object"; i++){
+      if (v.curves_inline || v.campaigns || v.connected !== undefined ||
+          v.ready !== undefined || v.checks || v.jobs) return v;
+      if (v.structuredContent) { v = v.structuredContent; continue; }
+      if (v.result) { v = v.result; continue; }
+      if (Array.isArray(v.content)){
+        const t = v.content.find(c => c && (c.type === "text" || typeof c.text === "string"));
+        if (t && t.text){ try { v = JSON.parse(t.text); continue; } catch(e){} }
+      }
+      break;
+    }
+    return v || {};
+  }
+  async function call(name, args){
+    if(!oai || !oai.callTool) throw new Error("host bridge unavailable");
+    return unwrap(await oai.callTool(name, args||{}));
+  }
+  function persist(extra){
+    if(oai && oai.setWidgetState){ try{ oai.setWidgetState(Object.assign({}, ws(), {tab:active, campaign:campaignState()}, extra||{})); }catch(e){} }
+  }
+
+  /* ---------- tab shell ---------- */
+  const TABS=[["connect","Connect"],["project","Project"],["campaign","Campaign"],["collections","Collections"],["analysis","Analysis"]];
+  // boot is the raw toolOutput, which the host may deliver wrapped; applyBoot
+  // already unwraps for the catalogue and connection, and the requested tab
+  // needs the same treatment or a panel asked for tab='analysis' opens on
+  // Connect. unwrap is a hoisted function declaration, so calling it here is
+  // safe even though boot is bound above its definition.
+  let active = (unwrap(boot) || {}).tab || boot.tab || ws().tab || "connect";
+  function renderTabs(){
+    const n=$("tabs"); n.innerHTML="";
+    TABS.forEach(([id,label],i)=>{
+      const b=document.createElement("button");
+      b.className="tab-btn"+(id===active?" active":"");
+      b.innerHTML='<span class="n">'+(i+1)+'</span>'+label;
+      b.onclick=()=>{ active=id; syncTabs(); persist(); onEnter(id); };
+      n.appendChild(b);
+    });
+  }
+  function syncTabs(){
+    document.querySelectorAll("nav.tabs button").forEach((b,i)=>b.classList.toggle("active",TABS[i][0]===active));
+    document.querySelectorAll("section.tab").forEach(s=>s.classList.toggle("active",s.dataset.tab===active));
+  }
+  const entered={};
+  function onEnter(id){
+    if(id==="project" && !entered.project){ entered.project=true; loadProject(); }
+    if(id==="collections" && !entered.collections){ entered.collections=true; loadCollections(); }
+  }
+
+  /* ---------- connection ---------- */
+  function paintConnection(c){
+    c = c || {};
+    const ok = !!c.connected;
+    const pill=$("connPill"), ptxt=$("connPillTxt");
+    pill.className="pill "+(ok?"ok":"no");
+    ptxt.textContent = ok ? "HPC connected" : "HPC not connected";
+    $("connIc").className="status-ic "+(ok?"st-ok":"st-no"); $("connIc").textContent = ok?"✓":"○";
+    $("connTitle").textContent = ok ? "Connected to JLab HPC" : "Not connected";
+    const acct=c.account||{}; const user=acct.username||acct.hpc_username||acct.user||"—";
+    $("connLine").textContent = ok ? ("as "+user+" · cluster reachable") : "SSH ControlMaster is not open";
+    const rows=[
+      ["Cluster reachable", c.cluster_reachable?"yes":"no"],
+      ["Account", user],
+      // acct.remote_base is DEFAULT_REMOTE_BASE_TEMPLATE with the username
+      // substituted -- a guess, not something the user picked and not checked
+      // to exist. Only a path the Project tab has verified is shown as theirs.
+      ["Workspace", acct.workspace ? acct.workspace
+                    : (ok && acct.remote_base ? acct.remote_base + "  (default, not yet checked)"
+                                              : "set up in the Project tab")],
+    ];
+    $("connRows").innerHTML = rows.map(r=>'<div class="row"><span class="k">'+r[0]+'</span><span class="v">'+r[1]+'</span></div>').join("");
+    const note=$("connNote");
+    if(ok){ note.className="note"; note.textContent = c.note||"Ready to run fits."; }
+    else { note.className="note warn"; note.textContent = c.note||"The SSH ControlMaster is not open."; }
+    // The sign-in form only makes sense while disconnected.
+    $("connectForm").style.display = ok ? "none" : "block";
+    if(!ok) setGatewayOpen(!!c.gateway_open);
+  }
+  async function recheck(){
+    $("recheckBtn").disabled=true; $("connPillTxt").textContent="checking…";
+    try{
+      const c = await call("check_hpc_connection",{});
+      paintConnection(c);
+      // Connecting is the moment to find out whether the workspace is usable,
+      // so pull the report now instead of waiting for the user to go looking.
+      if (c && c.connected){ entered.project = true; loadProject(); }
+    }
+    catch(e){ paintConnection({connected:false,note:"Re-check failed: "+(e&&e.message||e)}); }
+    $("recheckBtn").disabled=false;
+  }
+  $("recheckBtn").onclick=recheck;
+
+  // When the gateway master is still alive the one-time code is not needed again.
+  function setGatewayOpen(open){
+    $("gwField").style.display = open ? "none" : "block";
+    $("gwReusedNote").style.display = open ? "block" : "none";
+  }
+  async function doConnect(){
+    const u=$("connUser").value.trim(), gw=$("connGw").value, pw=$("connPw").value;
+    const gwNeeded = $("gwField").style.display !== "none";
+    if(!u){ $("connectErr").textContent="Enter your cluster username."; return; }
+    if(gwNeeded && !gw){ $("connectErr").textContent="Enter your PIN + one-time code for scilogin."; return; }
+    if(!pw){ $("connectErr").textContent="Enter your ifarm account password."; return; }
+    $("connectErr").textContent=""; $("connectBtn").disabled=true; $("connectBtn").textContent="Connecting…";
+    $("connPillTxt").textContent="connecting…";
+    const clear=()=>{ $("connGw").value=""; $("connPw").value=""; };   // never leave secrets in the DOM
+    try{
+      const r=await call("connect_hpc",{username:u,gateway_code:gw,ifarm_password:pw});
+      clear();
+      if(r && r.connected){
+        paintConnection(r);
+        // connect_hpc already inspected the workspace — show it straight away
+        // and land the user on it, so a missing piece is seen now, not later.
+        if (r.workspace){ paintProject(r.workspace); entered.project = true; }
+        else { entered.project = true; loadProject(); }
+        active = "project"; syncTabs();
+      }
+      else {
+        paintConnection({connected:false,cluster_reachable:false,note:"The SSH ControlMaster is not open."});
+        // A live gateway survives an ifarm-stage failure — don't ask for a new code.
+        setGatewayOpen(!!(r && r.gateway_open));
+        $("connectErr").textContent=(r&&r.error)||"Connection failed.";
+      }
+    }catch(e){
+      clear();
+      $("connectErr").textContent="Connect failed: "+(e&&e.message||e);
+      $("connPillTxt").textContent="HPC not connected";
+    }
+    $("connectBtn").disabled=false; $("connectBtn").textContent="Connect";
+  }
+  $("connectBtn").onclick=doConnect;
+  $("connPw").addEventListener("keydown",(e)=>{ if(e.key==="Enter") doConnect(); });
+  $("connGw").addEventListener("keydown",(e)=>{ if(e.key==="Enter") $("connPw").focus(); });
+
+  /* ---------- project ---------- */
+  function readiness(p){
+    // defensive: accept several shapes
+    p = p||{};
+    const items=[];
+    const push=(label,val,detail)=>{ items.push({label, ok: val===true?true:(val===false?false:null), detail:detail||""}); };
+    if(Array.isArray(p.checks)) p.checks.forEach(c=>push(c.name||c.label||"check", c.ok!==undefined?c.ok:c.passed, c.detail||c.message||""));
+    if(!items.length){
+      push("fitpack_legacy present", p.fitpack_legacy!==undefined?p.fitpack_legacy:(p.fitpack!==undefined?p.fitpack:null), p.fitpack_path||"");
+      push("Python env (jam)", p.env!==undefined?p.env:(p.env_ready!==undefined?p.env_ready:null), p.env_path||"");
+      push("fitpack grids", p.grids!==undefined?p.grids:null, p.grids_path||"/work/JAM/share/fitpack_grids");
+    }
+    const ready = p.ready!==undefined?p.ready:(p.ok!==undefined?p.ok:items.every(i=>i.ok===true));
+    return {ready, items, note:p.note||p.message||p.error||""};
+  }
+  function paintProject(p){
+    // Preferred shape: the per-item report with real paths and, where something
+    // is missing, what the user has to do about it.
+    if (p && Array.isArray(p.items) && p.items.length){
+      const rows = p.items.map(it => {
+        const mk = it.ok ? '<span class="mk ok">✓</span>'
+                         : (it.fixable ? '<span class="mk un">•</span>' : '<span class="mk no">✕</span>');
+        const act = it.action ? '<div class="dt" style="color:var(--warn)">'+it.action+'</div>' : "";
+        return '<div class="chk">'+mk+'<div><div class="lb">'+it.name+'</div>'
+             + '<div class="dt">'+(it.detail||"")+'</div>'+act+'</div></div>';
+      }).join("");
+      const pm = p.parameters && p.parameters.message
+        ? '<div class="chk"><span class="mk '+(p.parameters.ready?'ok':'un')+'">'
+          +(p.parameters.ready?'✓':'•')+'</span><div><div class="lb">Fit parameters</div>'
+          +'<div class="dt">'+p.parameters.message+'</div></div></div>'
+        : "";
+      const note = p.note ? '<div class="note'+(p.ok?'':' warn')+'">'+p.note+'</div>' : "";
+      // Offer the repair only when there is something to repair.
+      const needsRepair = p.items.some(i => !i.ok && /grid/i.test(i.name||"") && i.fixable);
+      const repairBtn = needsRepair
+        ? '<div class="actions"><button class="btn" id="repairBtn">Repair grid links</button></div>' : "";
+      // More than one checkout means the choice is the user's to make, not ours.
+      let pick = "";
+      if (Array.isArray(p.candidates) && p.candidates.length > 1){
+        pick = '<div class="label" style="margin:16px 0 6px">Which workspace to use</div>'
+             + p.candidates.map(c =>
+                 '<label class="ds" style="cursor:pointer">'
+                 + '<input type="radio" name="wsPick" value="'+c.path+'"'+(c.active?" checked":"")+'>'
+                 + '<span class="mono" style="font-size:12px">'+c.path+'</span>'
+                 + (c.active?' <span class="muted">· in use</span>':'')
+                 + '</label>').join("")
+             + '<div class="actions"><button class="btn" id="useWsBtn">Use selected</button></div>';
+      }
+      $("projBody").innerHTML = rows + pm + note + repairBtn + pick;
+      const rb = $("repairBtn");
+      if (rb) rb.onclick = async () => {
+        rb.disabled = true; rb.textContent = "Repairing…";
+        try{
+          const r = await call("repair_grids", {});
+          if (r && r.ok && r.report){ paintProject(r.report);
+            $("projBody").insertAdjacentHTML("beforeend", '<div class="note">'+r.message+'</div>'); }
+          else { rb.disabled=false; rb.textContent="Repair grid links";
+            $("projBody").insertAdjacentHTML("beforeend",
+              '<div class="note warn">'+((r&&r.message)||"Repair failed.")+'</div>'); }
+        }catch(e){
+          rb.disabled=false; rb.textContent="Repair grid links";
+          $("projBody").insertAdjacentHTML("beforeend",
+            '<div class="note warn">Repair failed: '+(e&&e.message||e)+'</div>');
+        }
+      };
+      const useBtn = $("useWsBtn");
+      if (useBtn) useBtn.onclick = async () => {
+        const sel = document.querySelector('input[name=wsPick]:checked');
+        if (!sel) return;
+        useBtn.disabled = true; useBtn.textContent = "Switching…";
+        try{
+          const r = await call("use_workspace", {path: sel.value});
+          if (r && r.ok && r.report) paintProject(r.report);
+          else { useBtn.disabled=false; useBtn.textContent="Use selected";
+                 $("projBody").insertAdjacentHTML("beforeend",
+                   '<div class="note warn">'+((r&&r.message)||"Could not switch.")+'</div>'); }
+        }catch(e){
+          useBtn.disabled=false; useBtn.textContent="Use selected";
+          $("projBody").insertAdjacentHTML("beforeend",
+            '<div class="note warn">Switch failed: '+(e&&e.message||e)+'</div>');
+        }
+      };
+      return;
+    }
+    const r=readiness(p);
+    const mk=(s)=> s.ok===true?'<span class="mk ok">✓</span>':(s.ok===false?'<span class="mk no">✕</span>':'<span class="mk un">?</span>');
+    let html='';
+    r.items.forEach(s=>{ html+='<div class="chk">'+mk(s)+'<div><div class="lb">'+s.label+'</div>'+(s.detail?'<div class="dt">'+s.detail+'</div>':'')+'</div></div>'; });
+    if(r.note) html+='<div class="note'+(r.ready?'':' warn')+'">'+r.note+'</div>';
+    $("projBody").innerHTML = html || '<div class="empty">No readiness info returned.</div>';
+  }
+  async function loadProject(){
+    $("projBody").innerHTML='<div class="spin">Checking workspace…</div>'; $("projBtn").disabled=true;
+    try{ paintProject(await call("check_project",{})); }
+    catch(e){ $("projBody").innerHTML='<div class="note warn">Check failed: '+(e&&e.message||e)+'</div>'; }
+    $("projBtn").disabled=false;
+  }
+  $("projBtn").onclick=()=>{ entered.project=true; loadProject(); };
+
+  // ── workspace setup: pick a name, clone, and on failure say what to fix ──
+  $("setupToggle").onclick=()=>{
+    const b=$("setupBox");
+    b.style.display = b.style.display==="none" ? "block" : "none";
+  };
+  async function doSetup(){
+    const name=$("setupName").value.trim();
+    const branch=$("setupBranch").value.trim();
+    const token=$("setupToken").value;
+    const out=$("setupResult");
+    $("setupBtn").disabled=true; $("setupBtn").textContent="Cloning… (can take a few minutes)";
+    out.innerHTML='<div class="spin">Creating '+name+' and cloning fitpack_legacy'+(branch?" @ "+branch:"")+'…</div>';
+    try{
+      const r=await call("setup_workspace",{folder_name:name, branch:branch, github_token:token});
+      $("setupToken").value="";                       // never leave a token in the DOM
+      if(r && r.ok){
+        out.innerHTML='<div class="note">✓ '+(r.message||"Workspace created.")+'</div>';
+        if(r.report) paintProject(r.report);
+        $("setupBox").style.display="none";
+      } else {
+        const act = r && r.action ? '<div class="dt" style="color:var(--warn);margin-top:6px">'+r.action+'</div>' : "";
+        const det = r && r.detail ? '<pre class="mono" style="font-size:11px;white-space:pre-wrap;'
+                    +'background:var(--surface-2);border:1px solid var(--line);border-radius:8px;'
+                    +'padding:8px;margin-top:8px;max-height:140px;overflow:auto">'+r.detail+'</pre>' : "";
+        out.innerHTML='<div class="note warn">'+((r&&r.message)||"Setup failed.")+act+det+'</div>';
+        // An auth failure is the one the user can fix right here — point at it.
+        if(r && r.reason==="auth"){ $("setupToken").focus(); $("setupToken").placeholder="paste a GitHub token"; }
+      }
+    }catch(e){
+      out.innerHTML='<div class="note warn">Setup failed: '+(e&&e.message||e)+'</div>';
+    }
+    $("setupBtn").disabled=false; $("setupBtn").textContent="Create and clone";
+  }
+  $("setupBtn").onclick=doSetup;
+
+  /* ---------- campaign (composer) ---------- */
+  const STEPS=[["object","Object"],["reactions","Reactions"],["qcd","QCD"],["job","Job"],["review","Review"]];
+  const OBJECTS=[["pdf","Unpolarized PDF",true],["polarized_pdf","Polarized PDF",false],["pion_ff","Pion FF",false],["kaon_ff","Kaon FF",false],["hadron_ff","Hadron FF",false]];
+  let cStep=0, objectType="pdf", submitted=false;
+  const selected=new Set();
+  let catalog = normalizeCatalog(boot.catalog||{});
+  function normalizeCatalog(cat){
+    const out={}; Object.keys(cat||{}).forEach(rk=>{ const v=cat[rk]; out[rk]=Array.isArray(v)?v:Object.keys(v||{}).map(id=>Object.assign({id},v[id])); }); return out;
+  }
+  function campaignState(){ return {selected_ids:Array.from(selected), submitted, objectType}; }
+
+  function renderCSteps(){
+    const c=$("cSteps"); c.innerHTML="";
+    STEPS.forEach(([id,label],i)=>{ const el=document.createElement("div"); el.className="step"+(i===cStep?" active":"");
+      el.innerHTML='<span class="num">'+(i+1)+'</span>'+label; if(!submitted) el.onclick=()=>{cStep=i;cSync();}; c.appendChild(el); });
+  }
+  function renderObjects(){
+    const c=$("objectList"); c.innerHTML="";
+    OBJECTS.forEach(([val,label,en])=>{ const enabled=en&&!submitted; const el=document.createElement("div");
+      el.className="opt"+(enabled?"":" disabled");
+      el.innerHTML='<input type="radio" name="obj" '+(val===objectType?"checked ":"")+(enabled?"":"disabled ")+'> '+label+(en?"":' <span class="muted mono" style="font-size:11px">· soon</span>');
+      if(enabled) el.onclick=()=>{objectType=val;renderObjects();persistC();}; c.appendChild(el); });
+  }
+  function renderDatasets(){
+    const c=$("dsList"); c.innerHTML="";
+    const rows=[]; Object.keys(catalog).forEach(rk=>{ (catalog[rk]||[]).forEach(d=>rows.push(Object.assign({reaction:rk},d))); });
+    if(!rows.length){ c.innerHTML='<div class="empty">No datasets in catalog.</div>'; return; }
+    rows.forEach(d=>{ const id=d.id; const en=d.enabled!==false&&!submitted; const el=document.createElement("label");
+      el.className="ds"; if(d.enabled===false) el.style.opacity=".55";
+      const why = d.disabled_reason
+        ? ' <span style="color:var(--warn);font-size:11px">· '+d.disabled_reason+'</span>' : "";
+      el.innerHTML='<input type="checkbox" data-id="'+id+'" '+(selected.has(id)?"checked ":"")+(en?"":"disabled ")+'>'
+        +'<span class="mono" style="font-size:12px">'+id+'</span> <span class="muted">'+((d.experiment||d.reaction||"")+(d.label?" · "+d.label:""))+'</span>'+why;
+      const cb=el.querySelector("input");
+      if(en) cb.onchange=()=>{ cb.checked?selected.add(id):selected.delete(id); persistC(); };
+      c.appendChild(el); });
+  }
+  function buildCard(){
+    const pinit=(document.querySelector('input[name=pinit]:checked')||{}).value||"default";
+    return { object:{type:objectType,label:(OBJECTS.find(o=>o[0]===objectType)||[])[1]||objectType},
+      observable:"idis", selected_ids:Array.from(selected),
+      qcd:{order:$("qcdOrder").value,Q20:parseFloat($("qcdQ20").value),tmc:$("qcdTmc").value,higherTwist:$("qcdHT").checked,dglapMode:$("qcdDglap").value,asMode:$("qcdAs").value},
+      parameters:{initialization:pinit},
+      job:{campaignName:$("jobName").value.trim()||"chatgpt-fit",replicas:parseInt($("jobReplicas").value,10)||10,maxIterations:parseInt($("jobMaxIter").value,10)||500,tolerance:$("jobTol").value.trim()||"1e-6",optimizer:$("jobOpt").value,bootstrap:$("jobBootstrap").checked} };
+  }
+  function renderReview(){
+    const c=buildCard();
+    const rows=[["Object",c.object.label],["Datasets",c.selected_ids.length?c.selected_ids.join(", "):"(none)"],
+      ["Order / Q₀²",c.qcd.order+" / "+c.qcd.Q20],["TMC / DGLAP / αS",c.qcd.tmc+" / "+c.qcd.dglapMode+" / "+c.qcd.asMode+(c.qcd.higherTwist?" +HT":"")],
+      ["Replicas",c.job.replicas],["Max iter / tol",c.job.maxIterations+" / "+c.job.tolerance],
+      ["Param init",c.parameters.initialization==="default"?"default JAM":"random"],["Campaign",c.job.campaignName]];
+    $("reviewBox").innerHTML=rows.map(r=>'<div class="row"><span class="k">'+r[0]+'</span><span class="v">'+r[1]+'</span></div>').join("");
+    $("reviewErr").textContent=c.selected_ids.length?"":"Select at least one dataset.";
+  }
+  function cSync(){
+    if(submitted) cStep=STEPS.length-1;
+    renderCSteps();
+    document.querySelectorAll('.tab[data-tab=campaign] .panel').forEach(p=>p.classList.toggle("active",p.dataset.step===STEPS[cStep][0]));
+    const onReview=STEPS[cStep][0]==="review";
+    if(onReview) renderReview();
+    $("cBack").style.visibility=(cStep===0||submitted)?"hidden":"visible"; $("cBack").disabled=submitted;
+    $("cNext").disabled=submitted;
+    $("cNext").textContent=submitted?"Submitted ✓":(onReview?"Submit fitting job":"Next");
+    $("cSubmittedNote").style.display=submitted?"block":"none";
+  }
+  function persistC(){ persist(); }
+  async function submitCampaign(){
+    const card=buildCard();
+    if(!card.selected_ids.length){ $("cErr").textContent="Pick at least one dataset."; return; }
+    $("cNext").disabled=true; $("cNext").textContent="Submitting…"; $("cErr").textContent="";
+    try{
+      await call("submit_fitting_job",{observable:card.observable,selected_ids:card.selected_ids,count:card.job.replicas,job_number:"001",batch_label:card.job.campaignName,advanced:{qcd:card.qcd,parameters:card.parameters,job:card.job,object:card.object}});
+      submitted=true; persist(); cSync();
+      if(oai&&oai.sendFollowUpMessage){ oai.sendFollowUpMessage({prompt:"The fitting job was submitted from the FemtoMind composer. Briefly confirm and offer to check its status in Collections."}); }
+    }catch(e){ $("cErr").textContent="Submit failed: "+(e&&e.message||e); $("cNext").disabled=false; $("cNext").textContent="Submit fitting job"; }
+  }
+  $("cBack").onclick=()=>{ if(!submitted&&cStep>0){cStep--;cSync();} };
+  $("cNext").onclick=()=>{ if(submitted) return; if(STEPS[cStep][0]==="review"){submitCampaign();return;} cStep++; cSync(); };
+  ["qcdOrder","qcdQ20","qcdTmc","qcdDglap","qcdAs","qcdHT","jobName","jobReplicas","jobMaxIter","jobTol","jobOpt","jobBootstrap"].forEach(id=>{const el=$(id);if(el)el.addEventListener("change",persistC);});
+
+  /* ---------- collections ---------- */
+  function paintCollections(d){
+    const list = (d&&(d.campaigns||d.tasks||d.collections))||[];
+    if(!Array.isArray(list)||!list.length){ $("collBody").innerHTML='<div class="empty">'+((d&&d.error)?('Error: '+d.error):'No campaigns yet. Submit one from the Campaign tab.')+'</div>'; return; }
+    const tagCls=(s)=>{ s=(s||"").toLowerCase();
+      if(s.includes("fail")||s.includes("error")||s.includes("cancel")) return "bad";
+      if(s.includes("complete")||s.includes("done")||s.includes("finish")) return "done";
+      return (s.includes("run")||s.includes("active")||s.includes("pend"))?"active":"other"; };
+    // The backend returns one row per replica. Ten replicas of one campaign as
+    // ten identical-looking lines is not a record anyone can read, so fold them
+    // into one row per batch and show progress and times instead.
+    const when=(v)=>{ if(!v) return null; const t=String(v).replace(" ","T");
+      const d2=new Date(t.endsWith("Z")?t:t+"Z"); return isNaN(d2)?null:d2; };
+    const fmt=(d2)=>d2? (String(d2.getMonth()+1).padStart(2,"0")+"-"+String(d2.getDate()).padStart(2,"0")
+                        +" "+String(d2.getHours()).padStart(2,"0")+":"+String(d2.getMinutes()).padStart(2,"0")) : "—";
+    const groups=new Map();
+    list.forEach((c,i)=>{
+      const id=c.batch_id||c.collection_id||c.id||c.task_id||"—";
+      let g=groups.get(id);
+      if(!g){ g={id, name:c.batch_label||c.campaign_name||c.name||c.label||"", n:0, done:0, bad:0,
+                 first:null, last:null, failedIdx:null, order:i}; groups.set(id,g); }
+      if(!g.name) g.name = c.batch_label||c.campaign_name||c.name||c.label||"";
+      g.n++;
+      const cls=tagCls(c.status||c.state);
+      if(cls==="done") g.done++;
+      if(cls==="bad"){ g.bad++; if(g.failedIdx===null && c.path) g.failedIdx=i; }
+      const st=when(c.submitted_at||c.created_at); if(st && (!g.first || st<g.first)) g.first=st;
+      // updated_at is written in local time while the other columns are UTC,
+      // so mixing them made "last activity" land before "submitted". Use only
+      // the UTC columns.
+      const fi=when(c.completed_at||c.started_at); if(fi && (!g.last || fi>g.last)) g.last=fi;
+    });
+    const rows=Array.from(groups.values()).sort((x,y)=>(y.first?+y.first:0)-(x.first?+x.first:0)||x.order-y.order);
+    let h='<table class="tbl"><thead><tr><th>Campaign</th><th>Status</th><th>Replicas</th>'
+        +'<th>Submitted</th><th>Finished</th><th>ID</th><th></th></tr></thead><tbody>';
+    rows.forEach((g)=>{
+      const st = g.bad? (g.bad+" failed") : (g.done>=g.n? "completed" : (g.done? "running":"running"));
+      h+='<tr><td>'+(g.name||'<span style="color:var(--muted)">unnamed</span>')+'</td>'
+        +'<td><span class="tag '+tagCls(st)+'">'+st+'</span></td>'
+        +'<td class="mono">'+g.done+'/'+g.n+'</td>'
+        +'<td class="mono" style="font-size:11px">'+fmt(g.first)+'</td>'
+        +'<td class="mono" style="font-size:11px">'+(g.done>=g.n?fmt(g.last):(g.done?'in progress':'—'))+'</td>'
+        +'<td class="mono" style="font-size:11px">'+g.id+'</td>'
+        +'<td>'+(g.failedIdx!==null?'<button class="btn" style="padding:3px 9px;font-size:12px" data-why="'+g.failedIdx+'">Why?</button>':'')+'</td></tr>';
+    });
+    h+='</tbody></table><div id="whyBox"></div>'; $("collBody").innerHTML=h;
+    // Explain a failure in place — "failed" with no reason is what sends people
+    // digging through SLURM logs by hand.
+    $("collBody").querySelectorAll("button[data-why]").forEach(b=>{
+      b.onclick=async()=>{
+        const c=list[parseInt(b.dataset.why,10)];
+        b.disabled=true; b.textContent="…";
+        try{
+          const r=await call("explain_failure",{task_path:c.path});
+          $("whyBox").innerHTML='<div class="note warn" style="margin-top:12px">'
+            +'<div style="font-weight:600;margin-bottom:6px">'+(r.reason||"unknown cause")+'</div>'
+            +(r.hint?'<div style="margin-bottom:8px">'+r.hint+'</div>':'')
+            +'<pre class="mono" style="font-size:11px;overflow-x:auto;margin:0;white-space:pre-wrap">'+(r.error_tail||"")+'</pre></div>';
+        }catch(e){ $("whyBox").innerHTML='<div class="note warn" style="margin-top:12px">Could not read the log: '+(e&&e.message||e)+'</div>'; }
+        b.disabled=false; b.textContent="Why?";
+      };
+    });
+  }
+  async function loadCollections(){
+    $("collBody").innerHTML='<div class="spin">Loading campaigns…</div>'; $("collBtn").disabled=true;
+    try{ paintCollections(await call("list_campaigns",{})); }
+    catch(e){ $("collBody").innerHTML='<div class="note warn">Failed: '+(e&&e.message||e)+'</div>'; }
+    $("collBtn").disabled=false;
+  }
+  $("collBtn").onclick=()=>{ entered.collections=true; loadCollections(); };
+
+  /* ---------- analysis (plot) ---------- */
+  // uv/dv/sea are the combinations JAM figures usually show (valence = q − q̄);
+  // the backend computes them, so expose them alongside the bare flavors.
+  const ALL_FLAV=["uv","dv","g","sea","u","d","s","ub","db"];
+  const FLABEL={uv:"u valence x·uᵥ",dv:"d valence x·dᵥ",g:"gluon x·g",sea:"sea x·S",
+                u:"up x·u",d:"down x·d",s:"strange x·s",ub:"x·ū",db:"x·d̄"};
+  const flavSel=new Set(["g","u","d","s"]);
+  function renderFlavs(){ const c=$("flavs"); c.innerHTML="";
+    ALL_FLAV.forEach(f=>{ const el=document.createElement("div"); el.className="fl"+(flavSel.has(f)?" on":""); el.textContent=f;
+      el.onclick=()=>{ flavSel.has(f)?flavSel.delete(f):flavSel.add(f); renderFlavs(); }; c.appendChild(el); }); }
+  const log10=Math.log10;
+  function decades(lo,hi){const t=[];for(let e=Math.floor(log10(lo));e<=Math.ceil(log10(hi));e++)t.push(Math.pow(10,e));return t.filter(v=>v>=lo*0.999&&v<=hi*1.001);}
+  // Replica palette — JAM plots give every replica its own colour so individual
+  // outliers stay traceable through the band. Cycled by index.
+  const REP_COLORS=["#4C78A8","#F58518","#54A24B","#E45756","#72B7B2","#EECA3B",
+                    "#B279A2","#FF9DA6","#9D755D","#7F7F7F","#17BECF","#BCBD22"];
+  const FLAVOR_MATH={g:"xg",u:"xu",d:"xd",s:"xs",ub:"xū",db:"xd̄",uv:"xuᵥ",dv:"xdᵥ",sea:"xS"};
+
+  function drawPanel(x,curves,flavor,q2){
+    const W=420,H=310,m={l:58,r:14,t:14,b:46},pw=W-m.l-m.r,ph=H-m.t-m.b;
+    const svg=document.createElementNS(NS,"svg"); svg.setAttribute("viewBox","0 0 "+W+" "+H); svg.setAttribute("class","plot");
+    const el=(t,a)=>{const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);svg.appendChild(e);return e;};
+    if(!curves.length) return svg;
+    // Cap drawn replicas for performance, keeping an even sample of the ensemble
+    const drawn=curves.length>120?curves.filter((_,i)=>i%Math.ceil(curves.length/120)===0):curves;
+
+    // x window: start at 1e-3 like the published JAM figures — below that the
+    // DIS data stops constraining the PDFs and the extrapolation dominates.
+    const xlo=Math.max(1e-3, x[0]>0?x[0]:1e-3), xhi=x[x.length-1];
+    const inWin=i=>x[i]>=xlo&&x[i]<=xhi;
+
+    // Linear y, ranged over the visible window only, always including 0.
+    let minV=Infinity,maxV=-Infinity;
+    drawn.forEach(c=>c.forEach((v,i)=>{ if(!isFinite(v)||!inWin(i))return; if(v<minV)minV=v; if(v>maxV)maxV=v; }));
+    if(!isFinite(maxV)) return svg;
+    let ylo=Math.min(0,minV), yhi=maxV;
+    const pad=(yhi-ylo)*0.08||0.1; ylo-=pad*0.4; yhi+=pad;
+
+    const cc=getComputedStyle(document.body);
+    const line=cc.getPropertyValue("--line"),muted=cc.getPropertyValue("--muted"),fg=cc.getPropertyValue("--fg");
+    const sx=v=>m.l+(log10(Math.min(Math.max(v,xlo),xhi))-log10(xlo))/(log10(xhi)-log10(xlo))*pw;
+    const sy=v=>m.t+(1-(Math.min(Math.max(v,ylo),yhi)-ylo)/(yhi-ylo))*ph;
+
+    // grid
+    decades(xlo,xhi).forEach(tx=>{const X=sx(tx);
+      el("line",{x1:X,y1:m.t,x2:X,y2:m.t+ph,stroke:line,"stroke-width":1});
+      const e=Math.round(log10(tx));
+      const t=el("text",{x:X,y:m.t+ph+16,fill:muted,"font-size":11,"text-anchor":"middle","font-family":"Georgia,serif"});
+      t.textContent="10"; const sup=document.createElementNS(NS,"tspan");
+      sup.setAttribute("dy","-4"); sup.setAttribute("font-size","8"); sup.textContent=String(e); t.appendChild(sup);
+    });
+    const nY=5;
+    for(let i=0;i<=nY;i++){ const ty=ylo+(yhi-ylo)*i/nY, Y=sy(ty);
+      el("line",{x1:m.l,y1:Y,x2:m.l+pw,y2:Y,stroke:line,"stroke-width":1});
+      el("text",{x:m.l-6,y:Y+3.5,fill:muted,"font-size":10,"text-anchor":"end"}).textContent=ty.toFixed(1);
+    }
+    // zero reference
+    if(ylo<0&&yhi>0) el("line",{x1:m.l,y1:sy(0),x2:m.l+pw,y2:sy(0),stroke:muted,"stroke-width":1,"stroke-dasharray":"4 3"});
+
+    const pts=cv=>{let s="";for(let i=0;i<cv.length;i++){ if(!inWin(i))continue; const v=cv[i]; if(!isFinite(v))continue;
+      s+=(s?" ":"")+sx(x[i]).toFixed(1)+","+sy(v).toFixed(1);} return s;};
+
+    // replicas, each its own colour
+    drawn.forEach((c,i)=>el("polyline",{points:pts(c),fill:"none",
+      stroke:REP_COLORS[i%REP_COLORS.length],"stroke-width":0.9,"stroke-opacity":0.75}));
+    // ensemble mean — black dashed, like the JAM reference
+    const mn=x.map((_,i)=>{let s=0,n=0;drawn.forEach(c=>{if(isFinite(c[i])){s+=c[i];n++;}});return n?s/n:NaN;});
+    el("polyline",{points:pts(mn),fill:"none",stroke:fg,"stroke-width":2.4,"stroke-dasharray":"7 4"});
+
+    el("rect",{x:m.l,y:m.t,width:pw,height:ph,fill:"none",stroke:muted,"stroke-width":1});
+
+    // legend + in-plot Q² annotation (matches the published figure layout)
+    el("line",{x1:m.l+pw-58,y1:m.t+13,x2:m.l+pw-34,y2:m.t+13,stroke:fg,"stroke-width":2.4,"stroke-dasharray":"7 4"});
+    el("text",{x:m.l+pw-29,y:m.t+17,fill:fg,"font-size":11,"font-family":"Georgia,serif"}).textContent="mean";
+    if(q2){ const t=el("text",{x:m.l+10,y:m.t+ph-10,fill:fg,"font-size":13,"font-family":"Georgia,serif","font-style":"italic"});
+      t.textContent="Q"; const s1=document.createElementNS(NS,"tspan"); s1.setAttribute("dy","-5"); s1.setAttribute("font-size","9"); s1.textContent="2"; t.appendChild(s1);
+      const s2=document.createElementNS(NS,"tspan"); s2.setAttribute("dy","5"); s2.setAttribute("font-style","normal"); s2.textContent=" = "+q2+" GeV"; t.appendChild(s2);
+      const s3=document.createElementNS(NS,"tspan"); s3.setAttribute("dy","-5"); s3.setAttribute("font-size","9"); s3.textContent="2"; t.appendChild(s3);
+    }
+    // axis labels, serif italic like the reference
+    el("text",{x:m.l+pw/2,y:H-8,fill:fg,"font-size":15,"text-anchor":"middle","font-family":"Georgia,serif","font-style":"italic"}).textContent="x";
+    el("text",{x:16,y:m.t+ph/2,fill:fg,"font-size":15,"text-anchor":"middle","font-family":"Georgia,serif","font-style":"italic",
+      transform:"rotate(-90 16 "+(m.t+ph/2)+")"}).textContent=FLAVOR_MATH[flavor]||flavor;
+    return svg;
+  }
+  function paintPlots(out){
+    const ci=(out&&out.curves_inline)||{}; const params=(out&&out.spec&&out.spec.params)||{}; const ps=(out&&out.spec&&out.spec.panel_state)||{};
+    const x=ci.x_grid||[]; const cbf=ci.curves_by_flavor||{}; const flavors=ci.flavors||Object.keys(cbf);
+    const nrep=(ci.replica_ids&&ci.replica_ids.length)||(flavors[0]&&cbf[flavors[0]]?cbf[flavors[0]].length:0);
+    $("plotEmpty").style.display="none";
+    // Say WHY these are placeholders — "not connected" was wrong and confusing
+    // whenever the real cause was simply that no fit has finished yet.
+    const why = out && out.mock
+      ? ' · <span style="color:var(--warn)">example curves — '
+        + String(out.backend_note || "no completed fit yet; submit one from the Campaign tab").slice(0,110)
+        + '</span>'
+      : "";
+    $("plotHead").innerHTML=(params.q2?("Q² = "+params.q2+" GeV² · "):"")+flavors.length+" flavor(s) · "+nrep+" replicas"+why;
+    const g=$("pgrid"); g.innerHTML="";
+    if(!x.length||!flavors.length){
+      // Surface whatever the backend actually said — a bare "no curves" message
+      // hides whether this was "no completed fit yet" or a real failure.
+      const why = (out && (out.error || out.backend_note || out.message)) ||
+                  (out && out.kind ? "unexpected payload: "+out.kind : "") ||
+                  "empty response from the server";
+      g.innerHTML='<div class="empty">No curves returned — '+String(why).slice(0,240)+'</div>';
+      return;
+    }
+    flavors.forEach(f=>{ const card=document.createElement("div"); card.className="pcard";
+      const t=document.createElement("div"); t.className="t"; t.textContent=FLABEL[f]||f; card.appendChild(t);
+      card.appendChild(drawPanel(x, cbf[f]||[], f, params.q2)); g.appendChild(card); });
+  }
+  async function renderPlots(){
+    if(!flavSel.size){ return; }
+    $("plotEmpty").style.display="none"; $("pgrid").innerHTML='<div class="spin">Rendering…</div>'; $("plotBtn").disabled=true;
+    try{ paintPlots(await call("get_pdf_plots",{flavors:Array.from(flavSel),q2:parseFloat($("plotQ2").value)||10})); }
+    catch(e){ $("pgrid").innerHTML='<div class="note warn">Failed: '+(e&&e.message||e)+'</div>'; }
+    $("plotBtn").disabled=false;
+  }
+  $("plotBtn").onclick=renderPlots;
+
+  /* ---------- init ---------- */
+  function restore(){
+    const st=ws().campaign||{};
+    if(Array.isArray(st.selected_ids)) st.selected_ids.forEach(id=>selected.add(id));
+    if(st.objectType) objectType=st.objectType;
+    if(st.submitted) submitted=true;
+  }
+  restore();
+  renderTabs(); syncTabs();
+  renderObjects(); renderDatasets(); cSync();
+  renderFlavs();
+  function applyBoot(raw){
+    // toolOutput needs the same unwrapping as callTool results — the boot
+    // payload can arrive wrapped, which previously left the Campaign tab
+    // showing "No datasets in catalog" while the data sat one level down.
+    const out = unwrap(raw);
+    if(!out) return;
+    if(out.catalog && Object.keys(out.catalog).length){ catalog = normalizeCatalog(out.catalog); renderDatasets(); }
+    if(out.connection) paintConnection(out.connection);
+    if(out.tab && out.tab !== active){ active = out.tab; syncTabs(); onEnter(active); }
+  }
+  async function ensureCatalog(){
+    if(Object.keys(catalog).length) return;
+    try{ const d = await call("get_dataset_catalog",{});
+      if(d && d.catalog){ catalog = normalizeCatalog(d.catalog); renderDatasets(); }
+    }catch(e){}
+  }
+  paintConnection(boot.connection||{connected:false,note:"Press Re-check to query the cluster."});
+  onEnter(active);
+  // The host may populate window.openai.toolOutput AFTER this script runs, so
+  // the first paint can land on empty data — repaint whenever globals arrive,
+  // otherwise a live connection renders as "not connected".
+  window.addEventListener("message",(m)=>{
+    if(m && m.data && m.data.type==="openai:set_globals" && oai && oai.toolOutput){
+      applyBoot(oai.toolOutput);
+    }
+  });
+  // Belt and braces: never leave a "not connected" card standing on missing or
+  // stale boot data — ask the server itself. Cheap, and it makes the card
+  // truthful regardless of whether/when the host delivers toolOutput.
+  setTimeout(() => {
+    if (oai && oai.toolOutput) applyBoot(oai.toolOutput);
+    const pill = $("connPill");
+    if (!pill.classList.contains("ok")) recheck();
+    ensureCatalog();   // never leave the Campaign tab with an empty dataset list
+  }, 500);
+})();
+</script>
