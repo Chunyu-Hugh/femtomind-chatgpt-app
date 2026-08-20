@@ -24,6 +24,7 @@ import math
 import os
 import random
 import re
+import secrets
 import subprocess
 import tempfile
 from pathlib import Path
@@ -1056,6 +1057,50 @@ def _classify_clone_failure(err: str) -> dict[str, str]:
             "action": "See the details below; fix what it reports and try again."}
 
 
+# Files the fitting workflow needs that the fitpack repository does not carry:
+# the FemtoMind fit driver, the config loader's YAML branch, the path bootstrap
+# it imports, the chi-square worker, and a starting input card. They live here
+# so a new workspace is complete the moment it is cloned, instead of depending
+# on someone's existing checkout. Remove entries as they land upstream.
+OVERLAY_DIR = Path(__file__).parent / "fitpack_overlay"
+
+
+def _push_overlay(username: str, target: str) -> dict[str, Any]:
+    """Copy the overlay into a freshly cloned workspace.
+
+    Written through one ssh session with a here-doc per file: scp would need a
+    second connection, and the ControlMaster this session already holds is the
+    only authenticated path to the cluster.
+    """
+    if not OVERLAY_DIR.is_dir():
+        return {"pushed": [], "note": "no overlay bundled with this server"}
+    parts, pushed = [f'set -e\ncd "{target}"\n'], []
+    for f in sorted(OVERLAY_DIR.rglob("*")):
+        if not f.is_file():
+            continue
+        rel = f.relative_to(OVERLAY_DIR).as_posix()
+        if not re.fullmatch(r"[A-Za-z0-9._/-]{1,128}", rel):
+            continue
+        body = f.read_text()
+        # A random marker: any EOF-like line inside these files would otherwise
+        # end the here-doc early and silently truncate what lands on the cluster.
+        eof = "FEMTO_EOF_" + secrets.token_hex(6).upper()
+        parts.append(f'mkdir -p "$(dirname "{rel}")"\n')
+        parts.append(f"cat > '{rel}' <<'{eof}'\n{body}\n{eof}\n")
+        pushed.append(rel)
+    parts.append('echo FEMTO_OVERLAY_OK\n')
+    try:
+        r = subprocess.run(
+            ["ssh", "-S", _ifarm_socket(username), f"{username}@{IFARM_HOST}", "bash", "-s"],
+            input="".join(parts), capture_output=True, text=True, timeout=180,
+        )
+    except Exception as e:
+        return {"pushed": [], "error": f"{type(e).__name__}: {e}"}
+    if "FEMTO_OVERLAY_OK" not in (r.stdout or ""):
+        return {"pushed": [], "error": ((r.stderr or r.stdout or "")[-300:])}
+    return {"pushed": pushed}
+
+
 @mcp.tool(annotations=WRITE_SAFE, meta=CALLABLE_META, structured_output=True)
 def setup_workspace(
     folder_name: str = "fitpack_legacy",
@@ -1136,6 +1181,7 @@ def setup_workspace(
         out, r = "timed out", None
 
     if r is not None and "FEMTO_OK:" in out:
+        overlay = _push_overlay(username, target)
         # Point this user's account at the folder they just created, otherwise
         # submissions and plots keep looking at the conventional path.
         _call_mcpo("/fitpack/setup_hpc_account",
@@ -1159,6 +1205,7 @@ def setup_workspace(
             "cluster_account": username,
             "message": f"Cloned {repo}{' @ ' + ref if ref else ''} into {target} "
                        f"under your own account ({username}).",
+            "overlay": overlay,
             "report": _workspace_report(username, target),
         }
 
