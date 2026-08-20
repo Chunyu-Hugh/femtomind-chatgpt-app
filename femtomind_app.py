@@ -1698,7 +1698,9 @@ def get_fit_progress(batch_id: str = "", chat_id: str = "chatgpt-composer") -> d
         known = sorted({str(r.get("batch_id")) for r in rows})
         return {"error": f"No campaign {target!r}. Known: {', '.join(known[-5:])}"}
 
-    label = mine[0].get("batch_label") or ""
+    # Not every row carries the label, so take the first one that does
+    # rather than whichever row happened to sort first.
+    label = next((str(r.get("batch_label")) for r in mine if r.get("batch_label")), "")
     names, base = [], ""
     for r in mine:
         path = str(r.get("path") or "")
