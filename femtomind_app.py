@@ -51,7 +51,7 @@ REPLICA_PLOT_URI = "ui://femtomind/replica-plot/v2.html"
 # hundred kB; 150 replicas of one flavour is ~260 kB before rounding.
 PLOT_REPLICA_LIMIT = int(os.environ.get("FEMTOMIND_PLOT_REPLICA_LIMIT", "150"))
 
-OPERATIONS_URI = "ui://femtomind/operations/v19.html"
+OPERATIONS_URI = "ui://femtomind/operations/v20.html"
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=False, destructiveHint=False)
 WRITE_SAFE = ToolAnnotations(readOnlyHint=False, openWorldHint=False, destructiveHint=False, idempotentHint=False)

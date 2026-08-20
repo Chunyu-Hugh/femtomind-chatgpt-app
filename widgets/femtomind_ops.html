@@ -644,6 +644,26 @@
       const d2=new Date(t.endsWith("Z")?t:t+"Z"); return isNaN(d2)?null:d2; };
     const fmt=(d2)=>d2? (String(d2.getMonth()+1).padStart(2,"0")+"-"+String(d2.getDate()).padStart(2,"0")
                         +" "+String(d2.getHours()).padStart(2,"0")+":"+String(d2.getMinutes()).padStart(2,"0")) : "—";
+    // list_campaigns now returns one entry per campaign, already folded.
+    // Re-grouping grouped data counted each campaign as a single replica and
+    // dropped its name, so detect the shape instead of assuming raw rows.
+    if (list.length && list[0] && list[0].progress !== undefined){
+      let hg='<table class="tbl"><thead><tr><th>Campaign</th><th>Status</th><th>Replicas</th>'
+            +'<th>Submitted</th><th>Finished</th><th>ID</th></tr></thead><tbody>';
+      list.forEach(g=>{
+        const st = g.status || "—";
+        hg+='<tr><td>'+(g.campaign||'<span style="color:var(--muted)">unnamed</span>')+'</td>'
+          +'<td><span class="tag '+tagCls(st)+'">'+st+'</span></td>'
+          +'<td class="mono">'+(g.progress||"")+'</td>'
+          +'<td class="mono" style="font-size:11px">'+fmt(when(g.submitted_at))+'</td>'
+          +'<td class="mono" style="font-size:11px">'
+          +(g.finished_at?fmt(when(g.finished_at)):(g.completed?"in progress":"—"))+'</td>'
+          +'<td class="mono" style="font-size:11px">'+(g.batch_id||"")+'</td></tr>';
+      });
+      $("collBody").innerHTML = hg+'</tbody></table><div id="whyBox"></div>';
+      return;
+    }
+
     const groups=new Map();
     list.forEach((c,i)=>{
       const id=c.batch_id||c.collection_id||c.id||c.task_id||"—";
