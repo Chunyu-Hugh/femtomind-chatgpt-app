@@ -47,6 +47,10 @@ REPLICA_PLOT_URI = "ui://femtomind/replica-plot/v2.html"
 # v2: the host can populate window.openai.toolOutput after the widget script
 # runs; v1 painted once and stuck on "not connected". Bumping the version is
 # what forces ChatGPT to drop its cached copy of the HTML.
+# Curves shipped to the widget per plot. The host drops payloads past a few
+# hundred kB; 150 replicas of one flavour is ~260 kB before rounding.
+PLOT_REPLICA_LIMIT = int(os.environ.get("FEMTOMIND_PLOT_REPLICA_LIMIT", "150"))
+
 OPERATIONS_URI = "ui://femtomind/operations/v18.html"
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=False, destructiveHint=False)
@@ -262,7 +266,11 @@ mcp = FastMCP(
         "to resolve the id, then `get_fit_summary` — report chi-square per point, "
         "replica counts and the datasets in tension, with the actual numbers.\n"
         "  • \"plot the uv PDF / show me the gluon\" → `get_pdf_plots` with the "
-        "requested flavors (uv, dv, g, sea, u, d, s, ub, db are all valid). If "
+        "requested flavors. Primary: g, u, ub, d, db, s, sb, c, cb, b, bb. "
+        "Derived: uv, dv, sv, sea. Heavy flavours depend on what that fit "
+        "configured, and a flavour the fit cannot evaluate comes back reported "
+        "in the trace rather than failing the plot, so it is fine to ask. Q2 is "
+        "free — pass whatever the user names. If "
         "the user names a campaign, or says an earlier / previous / last one, "
         "call `list_campaigns` first to resolve its id and pass it as "
         "`batch_ids` — otherwise the plot shows the most recent fit, which may "
@@ -1136,7 +1144,7 @@ def setup_workspace(
             import sqlite3
             with sqlite3.connect(os.environ.get(
                     "FITPACK_DB_PATH",
-                    "/home/ec2-user/femtomind/fitpack-workflow/hpc_tasks.db"), timeout=5) as _c:
+                    str(Path.home() / "femtomind" / "fitpack-workflow" / "hpc_tasks.db")), timeout=5) as _c:
                 _c.execute("UPDATE user_hpc_config SET remote_base=? WHERE hpc_username=?",
                            (target, username))
         except Exception:
@@ -1235,7 +1243,7 @@ def use_workspace(path: str, chat_id: str = "chatgpt-composer") -> dict[str, Any
         import sqlite3
         with sqlite3.connect(os.environ.get(
                 "FITPACK_DB_PATH",
-                "/home/ec2-user/femtomind/fitpack-workflow/hpc_tasks.db"), timeout=5) as c:
+                str(Path.home() / "femtomind" / "fitpack-workflow" / "hpc_tasks.db")), timeout=5) as c:
             c.execute("UPDATE user_hpc_config SET remote_base=? WHERE hpc_username=?", (p, username))
     except Exception as e:
         return {"ok": False, "message": f"Could not record the choice ({type(e).__name__})."}
@@ -1265,6 +1273,56 @@ def check_project(chat_id: str = "chatgpt-composer") -> dict[str, Any]:
     return report
 
 
+def _group_campaigns(rows: list[Any]) -> list[dict[str, Any]]:
+    """Fold per-replica rows into one entry per campaign.
+
+    The backend returns a row per replica, so a thousand-replica campaign came
+    back as a thousand "campaigns" — the caller cannot pick a batch_id out of
+    that, and four attempts at it cost more context than the whole conversation.
+    One row per batch, carrying what a decision actually needs: name, progress,
+    and when it ran.
+    """
+    groups: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        bid = str(r.get("batch_id") or "")
+        if not bid:
+            continue
+        g = groups.setdefault(bid, {
+            "batch_id": bid,
+            "campaign": r.get("batch_label") or "",
+            "replicas": 0, "completed": 0, "running": 0, "failed": 0,
+            "submitted_at": None, "finished_at": None,
+        })
+        if not g["campaign"]:
+            g["campaign"] = r.get("batch_label") or ""
+        g["replicas"] += 1
+        st = str(r.get("status") or "").lower()
+        if "complet" in st or "done" in st:
+            g["completed"] += 1
+        elif "fail" in st or "cancel" in st or "error" in st:
+            g["failed"] += 1
+        else:
+            g["running"] += 1
+        # created_at/submitted_at/completed_at are UTC; updated_at is not, so it
+        # is left out of the comparison rather than mixing clocks.
+        first = r.get("submitted_at") or r.get("created_at")
+        if first and (g["submitted_at"] is None or str(first) < str(g["submitted_at"])):
+            g["submitted_at"] = first
+        last = r.get("completed_at")
+        if last and (g["finished_at"] is None or str(last) > str(g["finished_at"])):
+            g["finished_at"] = last
+    out = list(groups.values())
+    for g in out:
+        g["status"] = ("failed" if g["failed"] and not g["completed"]
+                       else "completed" if g["completed"] >= g["replicas"]
+                       else "running")
+        g["progress"] = f"{g['completed']}/{g['replicas']}"
+    out.sort(key=lambda g: str(g.get("submitted_at") or ""), reverse=True)
+    return out
+
+
 @mcp.tool(annotations=READ_ONLY, meta=CALLABLE_META, structured_output=True)
 def list_campaigns(chat_id: str = "chatgpt-composer") -> dict[str, Any]:
     """List the fitting campaigns (collections) in this workspace with their
@@ -1273,10 +1331,11 @@ def list_campaigns(chat_id: str = "chatgpt-composer") -> dict[str, Any]:
     get_fit_summary or get_pdf_plots."""
     raw = _call_mcpo("/fitpack/list_chat_tasks", {"chat_id": _scope(chat_id), "sync": True})
     if isinstance(raw, list):
-        return {"campaigns": raw, "count": len(raw)}
+        grouped = _group_campaigns(raw)
+        return {"campaigns": grouped, "count": len(grouped), "replicas_total": len(raw)}
     if isinstance(raw, dict) and raw.get("error"):
         return {"campaigns": [], "count": 0, "error": raw["error"]}
-    return {"campaigns": raw if isinstance(raw, list) else [], "count": 0, "raw": raw}
+    return {"campaigns": [], "count": 0, "raw": raw}
 
 
 def _compact_plot(raw: dict[str, Any]) -> dict[str, Any]:
@@ -1318,6 +1377,7 @@ def get_pdf_plots(
     q2: float = 10.0,
     batch_ids: Optional[list[str]] = None,
     dist: str = "pdf",
+    max_replicas: int = 0,
 ) -> dict[str, Any]:
     """Render the fitted PDF replica curves — x·f(x) vs x at a given Q² — for a
     completed campaign. THIS is the JAM analysis plot (gluon/up/down/strange
@@ -1328,8 +1388,13 @@ def get_pdf_plots(
     flavs = flavors or ["g", "u", "d", "s"]
     # 80 points is visually identical to the backend's 120 in an SVG this size
     # and keeps the payload well inside what the widget bridge will carry.
+    # A campaign of a thousand replicas returns ~1.6 MB of curves for a single
+    # flavour, and the host drops anything past a few hundred kB, so the widget
+    # renders nothing. Cap by default: a couple of hundred replicas is already
+    # far more than a band needs, and the backend picks the best by chi-square.
+    limit = max_replicas if max_replicas > 0 else PLOT_REPLICA_LIMIT
     payload: dict = {"chat_id": _scope(chat_id), "dist": dist, "flavors": flavs, "q2": q2,
-                     "x_grid_n": 80}
+                     "x_grid_n": 80, "limit": limit, "order_by": "chi2_asc"}
     if batch_ids:
         payload["batch_ids"] = batch_ids
     raw = _call_mcpo("/fitpack/plot_replica_observable", payload)
