@@ -1145,8 +1145,12 @@ def setup_workspace(
             with sqlite3.connect(os.environ.get(
                     "FITPACK_DB_PATH",
                     str(Path.home() / "femtomind" / "fitpack-workflow" / "hpc_tasks.db")), timeout=5) as _c:
-                _c.execute("UPDATE user_hpc_config SET remote_base=? WHERE hpc_username=?",
-                           (target, username))
+                # Key on the identity, not the cluster account. Two people can
+                # share one cluster login, and keying on the username made one
+                # person's choice of folder silently repoint everyone else's.
+                _c.execute("UPDATE user_hpc_config SET remote_base=?,"
+                           " configured_at=CURRENT_TIMESTAMP WHERE user_id=?",
+                           (target, _scope(chat_id)))
         except Exception:
             pass
         return {
@@ -1244,7 +1248,10 @@ def use_workspace(path: str, chat_id: str = "chatgpt-composer") -> dict[str, Any
         with sqlite3.connect(os.environ.get(
                 "FITPACK_DB_PATH",
                 str(Path.home() / "femtomind" / "fitpack-workflow" / "hpc_tasks.db")), timeout=5) as c:
-            c.execute("UPDATE user_hpc_config SET remote_base=? WHERE hpc_username=?", (p, username))
+            # Scoped to this identity — see the note in setup_workspace.
+            c.execute("UPDATE user_hpc_config SET remote_base=?,"
+                      " configured_at=CURRENT_TIMESTAMP WHERE user_id=?",
+                      (p, _scope(chat_id)))
     except Exception as e:
         return {"ok": False, "message": f"Could not record the choice ({type(e).__name__})."}
 
