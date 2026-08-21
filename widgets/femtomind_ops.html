@@ -258,6 +258,8 @@
       <p class="sub">Fitted x·f(x) vs x at a chosen Q². Renders from raw replica curves.</p>
       <div class="plot-controls">
         <div class="pc"><span class="label">Flavors</span><div class="flavs" id="flavs"></div></div>
+        <div class="pc"><span class="label">Campaign</span>
+          <select id="plotBatch" style="min-width:230px"><option value="">Latest campaign</option></select></div>
         <div class="pc"><span class="label">Q² (GeV²)</span><input type="number" id="plotQ2" value="10" style="width:90px"></div>
         <button class="btn primary" id="plotBtn">Render plots</button>
       </div>
@@ -328,6 +330,9 @@
   function onEnter(id){
     if(id==="project" && !entered.project){ entered.project=true; loadProject(); }
     if(id==="collections" && !entered.collections){ entered.collections=true; loadCollections(); }
+    // Reload every time rather than once: a campaign submitted since the panel
+    // opened has to be reachable without a refresh, and the call is cheap.
+    if(id==="analysis"){ loadPlotBatches(); }
   }
 
   /* ---------- connection ---------- */
@@ -823,7 +828,12 @@
     // result — label it, or it reads as final.
     const nrun = out && out.n_running;
     const live = nrun ? ' · <span style="color:var(--warn)">'+nrun+' still fitting</span>' : "";
-    $("plotHead").innerHTML=(params.q2?("Q² = "+params.q2+" GeV² · "):"")+flavors.length+" flavor(s) · "+nrep+" replicas"+live+why;
+    // Say which campaign these curves came from. Without it a plot of an older
+    // batch is indistinguishable from a plot of the newest one.
+    const bsel=$("plotBatch");
+    const bname=(bsel && bsel.value && bsel.selectedIndex>0)
+      ? String(bsel.options[bsel.selectedIndex].text).split(" — ")[0]+" · " : "";
+    $("plotHead").innerHTML=bname+(params.q2?("Q² = "+params.q2+" GeV² · "):"")+flavors.length+" flavor(s) · "+nrep+" replicas"+live+why;
     const g=$("pgrid"); g.innerHTML="";
     if(!x.length||!flavors.length){
       // Surface whatever the backend actually said — a bare "no curves" message
@@ -838,10 +848,39 @@
       const t=document.createElement("div"); t.className="t"; t.textContent=FLABEL[f]||f; card.appendChild(t);
       card.appendChild(drawPanel(x, cbf[f]||[], f, params.q2)); g.appendChild(card); });
   }
+  // The Analysis tab used to plot whatever campaign ran last, with no way to
+  // reach an earlier one — the comparison a fit is actually for. Offer the same
+  // list Collections shows and pass the chosen batch straight through; the tool
+  // has always accepted batch_ids, nothing was exposing it.
+  let batchesLoading=false;
+  async function loadPlotBatches(){
+    if(batchesLoading) return; batchesLoading=true;
+    const sel=$("plotBatch"), keep=sel.value;
+    try{
+      const d=await call("list_campaigns",{});
+      const list=(d&&(d.campaigns||d.tasks))||[];
+      let html='<option value="">Latest campaign</option>';
+      list.forEach(g=>{
+        if(!g||!g.batch_id) return;
+        const nm=g.campaign||"unnamed";
+        const st=g.status?(" · "+g.status):"";
+        html+='<option value="'+g.batch_id+'">'+nm+' — '+(g.progress||"")+st+'</option>';
+      });
+      sel.innerHTML=html;
+      // Survive a refresh: a batch the user picked should stay picked unless
+      // it has genuinely gone away.
+      if(keep && Array.from(sel.options).some(o=>o.value===keep)) sel.value=keep;
+    }catch(e){ /* leave the Latest-only list in place */ }
+    batchesLoading=false;
+  }
+
   async function renderPlots(){
     if(!flavSel.size){ return; }
     $("plotEmpty").style.display="none"; $("pgrid").innerHTML='<div class="spin">Rendering…</div>'; $("plotBtn").disabled=true;
-    try{ paintPlots(await call("get_pdf_plots",{flavors:Array.from(flavSel),q2:parseFloat($("plotQ2").value)||10})); }
+    const args={flavors:Array.from(flavSel),q2:parseFloat($("plotQ2").value)||10};
+    const b=$("plotBatch").value;
+    if(b) args.batch_ids=[b];
+    try{ paintPlots(await call("get_pdf_plots",args)); }
     catch(e){ $("pgrid").innerHTML='<div class="note warn">Failed: '+(e&&e.message||e)+'</div>'; }
     $("plotBtn").disabled=false;
   }
