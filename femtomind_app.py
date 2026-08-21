@@ -52,7 +52,7 @@ REPLICA_PLOT_URI = "ui://femtomind/replica-plot/v2.html"
 # hundred kB; 150 replicas of one flavour is ~260 kB before rounding.
 PLOT_REPLICA_LIMIT = int(os.environ.get("FEMTOMIND_PLOT_REPLICA_LIMIT", "150"))
 
-OPERATIONS_URI = "ui://femtomind/operations/v24.html"
+OPERATIONS_URI = "ui://femtomind/operations/v25.html"
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=False, destructiveHint=False)
 WRITE_SAFE = ToolAnnotations(readOnlyHint=False, openWorldHint=False, destructiveHint=False, idempotentHint=False)
@@ -160,22 +160,42 @@ def _hpc_status(chat_id: str = "chatgpt-composer") -> dict[str, Any]:
             configured = True
         elif acct.get("connected") is False or acct.get("socket_exists") is False:
             configured = False
-    connected = reachable and configured
-    # Is the gateway hop still up? If so the panel can skip the one-time code.
     gw_user = ""
     if isinstance(acct, dict):
         gw_user = str(acct.get("hpc_username") or acct.get("username") or "").strip()
     gw_user = gw_user or _hpc_user_for_scope()
+    named = bool(re.fullmatch(r"[A-Za-z0-9._-]{1,32}", gw_user or ""))
+
+    # The probe is one SSH round trip through the same ControlMaster the fits
+    # use, so submitting a few hundred jobs starves it and it times out. That
+    # was being read as "not connected": the panel dropped to the sign-in form
+    # and offered to re-authenticate a session that was working fine, in the
+    # middle of the submission it was busy with. An open master is the stronger
+    # evidence — a timed-out probe says the channel is busy, not that it is
+    # gone. Ask the socket directly before concluding anything.
+    master_open = False
+    if named:
+        master_open = _master_alive(_ifarm_socket(gw_user), f"{gw_user}@{HPC_LOGIN_HOST}")
+    probe_timed_out = (not reachable) and master_open
+    connected = configured and (reachable or master_open)
+
+    # Is the gateway hop still up? If so the panel can skip the one-time code.
     gateway_open = False
-    if re.fullmatch(r"[A-Za-z0-9._-]{1,32}", gw_user or ""):
+    if named:
         gateway_open = _master_alive(_gateway_socket(gw_user), f"{gw_user}@{GATEWAY_HOST}")
     return {
         "connected": bool(connected),
         "cluster_reachable": bool(reachable),
+        "master_open": bool(master_open),
+        "probe_timed_out": bool(probe_timed_out),
         "gateway_open": bool(gateway_open),
         "account": acct if isinstance(acct, dict) else {"raw": str(acct)[:500]},
         "slurm_info": info if isinstance(info, dict) else {"raw": str(info)[:1000]},
         "note": (
+            "Connected, but the status probe timed out — the SSH channel is "
+            "busy, most likely with a large submission still going out. "
+            "Jobs already queued are unaffected; do not re-authenticate."
+            if probe_timed_out else
             "Connected to the JLab HPC cluster."
             if connected else
             "Not connected. Open the SSH ControlMaster on the FemtoMind host, then press Re-check."
@@ -1780,9 +1800,41 @@ def add_replicas(
     This returns the operations panel on the Collections tab, so the growing
     campaign is visible without scrolling back. Do NOT also call
     jam_analysis_panel for the same request — that would open a second panel.
+
+    If the cluster session is closed it submits NOTHING and returns the panel
+    on the Connect tab with the request held as `pending_action`. The panel
+    runs it the moment sign-in succeeds. Say that the run is queued behind
+    sign-in; do not retry the tool and do not ask the user to repeat the
+    request afterwards.
     """
     if not 1 <= count <= 2000:
         return {"error": "count must be between 1 and 2000 replicas"}
+
+    # Launching into a closed ControlMaster fails deep in the submission, after
+    # the campaign has already been touched, and the error that comes back
+    # describes a timeout rather than a missing session. Check first, and hand
+    # the request to the panel instead of half-running it: the user signs in
+    # once and the run goes out by itself, with nothing to re-enter.
+    status = _hpc_status(chat_id)
+    if not status.get("connected"):
+        return {
+            "tab": "connect",
+            "status": "not_connected",
+            "pending_action": {
+                "tool": "add_replicas",
+                "args": {"count": count, "batch_id": batch_id,
+                         "batch_label": batch_label},
+                "describe": f"add {count} replicas"
+                            + (f" and rename to {batch_label}" if batch_label.strip() else ""),
+            },
+            "connection": {k: status.get(k) for k in
+                           ("connected", "cluster_reachable", "gateway_open", "note")},
+            "message": (
+                "Not connected to the cluster, so nothing was submitted. "
+                "Sign in on the Connect tab — this run starts on its own once "
+                "the session is open, and the panel moves to Collections."
+            ),
+        }
 
     wanted = (batch_id or "").strip()
     prior = _call_mcpo("/fitpack/list_chat_tasks", {"chat_id": _scope(chat_id), "sync": False})

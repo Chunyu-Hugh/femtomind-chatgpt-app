@@ -315,6 +315,14 @@
   // Connect. unwrap is a hoisted function declaration, so calling it here is
   // safe even though boot is bound above its definition.
   let active = (unwrap(boot) || {}).tab || boot.tab || ws().tab || "connect";
+
+  // A request that arrived while the cluster session was closed. The tool
+  // submits nothing in that case and hands the request over here, so the user
+  // signs in once and the run goes out by itself — rather than being told to
+  // connect and then having to say the whole thing again.
+  let pending = (unwrap(boot) || {}).pending_action || boot.pending_action
+                || ws().pending_action || null;
+  function setPending(p){ pending = p || null; persist({pending_action: pending}); }
   function renderTabs(){
     const n=$("tabs"); n.innerHTML="";
     TABS.forEach(([id,label],i)=>{
@@ -400,11 +408,29 @@
       clear();
       if(r && r.connected){
         paintConnection(r);
-        // connect_hpc already inspected the workspace — show it straight away
-        // and land the user on it, so a missing piece is seen now, not later.
-        if (r.workspace){ paintProject(r.workspace); entered.project = true; }
-        else { entered.project = true; loadProject(); }
-        active = "project"; syncTabs();
+        if (pending && pending.tool){
+          // Run what the user already asked for, then land where its result
+          // shows up. Sending them to Project to re-navigate would waste the
+          // sign-in they just did.
+          const p = pending; setPending(null);
+          active = "collections"; syncTabs();
+          $("collBody").innerHTML = '<div class="spin">Running ' +
+            String(p.describe || p.tool).slice(0,80) + '…</div>';
+          try{
+            await call(p.tool, p.args || {});
+            entered.collections = true;
+            paintCollections(await call("list_campaigns",{}));
+          }catch(e){
+            $("collBody").innerHTML = '<div class="note warn">Queued request failed: '
+              + (e && e.message || e) + '</div>';
+          }
+        } else {
+          // connect_hpc already inspected the workspace — show it straight away
+          // and land the user on it, so a missing piece is seen now, not later.
+          if (r.workspace){ paintProject(r.workspace); entered.project = true; }
+          else { entered.project = true; loadProject(); }
+          active = "project"; syncTabs();
+        }
       }
       else {
         paintConnection({connected:false,cluster_reachable:false,note:"The SSH ControlMaster is not open."});

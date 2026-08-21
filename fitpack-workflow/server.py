@@ -1772,11 +1772,43 @@ def run_fitting_job(
         logger.info(
             f"Append mode: adding {count} replicas to existing batch {append_to_batch_id}"
         )
+        # Appended replicas were generated with no batch_label at all: the
+        # normal path passes one, this branch never did. A campaign therefore
+        # split in two the moment it was extended — the original replicas kept
+        # the name and the new ones had none. Relabelling from the caller
+        # cannot fix it either, because a large append keeps inserting rows
+        # long after the caller's HTTP request has timed out, so whatever it
+        # relabels is only the prefix that existed at that instant.
+        eff_label = (batch_label or "").strip()
+        if not eff_label:
+            try:
+                with _get_db() as _c:
+                    _row = _c.execute(
+                        "SELECT batch_label FROM tasks WHERE batch_id=?"
+                        " AND batch_label IS NOT NULL AND batch_label<>''"
+                        " LIMIT 1", (append_to_batch_id,)).fetchone()
+                if _row:
+                    eff_label = str(_row[0])
+            except Exception as _e:
+                logger.warning("could not inherit batch_label for %s: %s"
+                               % (append_to_batch_id, _e))
+        elif eff_label:
+            # An explicit rename covers the whole campaign, not just the
+            # arrivals, and doing it here keeps it atomic with the insert.
+            try:
+                with _get_db() as _c:
+                    _c.execute("UPDATE tasks SET batch_label=? WHERE batch_id=?",
+                               (eff_label, append_to_batch_id))
+            except Exception as _e:
+                logger.warning("could not relabel batch %s: %s"
+                               % (append_to_batch_id, _e))
+
         new_tasks = generate_random_tasks(
             count=count,
             chat_id=chat_id,
             job_number=job_number,
             batch_id_override=append_to_batch_id,
+            batch_label=eff_label,
         )
         if not new_tasks or "error" in new_tasks[0]:
             return {"status": "error", "phase": "generate", "detail": new_tasks}
