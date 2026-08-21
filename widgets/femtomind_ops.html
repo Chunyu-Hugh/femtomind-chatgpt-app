@@ -356,7 +356,13 @@
     $("connIc").className="status-ic "+(ok?"st-ok":"st-no"); $("connIc").textContent = ok?"✓":"○";
     $("connTitle").textContent = ok ? "Connected to JLab HPC" : "Not connected";
     const acct=c.account||{}; const user=acct.username||acct.hpc_username||acct.user||"—";
-    $("connLine").textContent = ok ? ("as "+user+" · cluster reachable") : "SSH ControlMaster is not open";
+    // Say which of the two is actually missing. Claiming the master is shut
+    // when it is open and only the workspace is unchosen sends the user to
+    // sign in again for no reason.
+    $("connLine").textContent = ok
+      ? ("as "+user+" · cluster reachable")
+      : (c.master_open ? ("as "+user+" · signed in, no workspace chosen")
+                       : "SSH ControlMaster is not open");
     const rows=[
       ["Cluster reachable", c.cluster_reachable?"yes":"no"],
       ["Account", user],

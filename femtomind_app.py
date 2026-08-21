@@ -52,7 +52,7 @@ REPLICA_PLOT_URI = "ui://femtomind/replica-plot/v2.html"
 # hundred kB; 150 replicas of one flavour is ~260 kB before rounding.
 PLOT_REPLICA_LIMIT = int(os.environ.get("FEMTOMIND_PLOT_REPLICA_LIMIT", "150"))
 
-OPERATIONS_URI = "ui://femtomind/operations/v27.html"
+OPERATIONS_URI = "ui://femtomind/operations/v28.html"
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=False, destructiveHint=False)
 WRITE_SAFE = ToolAnnotations(readOnlyHint=False, openWorldHint=False, destructiveHint=False, idempotentHint=False)
@@ -191,6 +191,11 @@ def _hpc_status(chat_id: str = "chatgpt-composer") -> dict[str, Any]:
         "gateway_open": bool(gateway_open),
         "account": acct if isinstance(acct, dict) else {"raw": str(acct)[:500]},
         "slurm_info": info if isinstance(info, dict) else {"raw": str(info)[:1000]},
+        # Two independent facts were being reported as one. A session can be
+        # open while the account has no workspace configured, and saying "the
+        # SSH ControlMaster is not open" in that case is simply false — it
+        # sends the user to re-authenticate a session that is already up,
+        # when what is missing is a choice on the Project tab.
         "note": (
             "Connected, but the status probe timed out — the SSH channel is "
             "busy, most likely with a large submission still going out. "
@@ -198,6 +203,10 @@ def _hpc_status(chat_id: str = "chatgpt-composer") -> dict[str, Any]:
             if probe_timed_out else
             "Connected to the JLab HPC cluster."
             if connected else
+            "Signed in to the cluster, but no workspace has been chosen yet. "
+            "Pick or create one on the Project tab — there is nothing to "
+            "re-authenticate."
+            if master_open else
             "Not connected. Open the SSH ControlMaster on the FemtoMind host, then press Re-check."
         ),
     }
