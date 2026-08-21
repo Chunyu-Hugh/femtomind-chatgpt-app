@@ -1766,9 +1766,14 @@ def add_replicas(
 
     `batch_label` renames the campaign. Replicas appended this way join the
     SAME batch, so the name belongs to the whole campaign rather than to the
-    new arrivals — pass it when the user gives the run a new name, and the
-    existing replicas are relabelled with it too so the campaign keeps one
-    name. Leave empty to keep the current one.
+    new arrivals: the existing replicas are relabelled with it too, so the
+    campaign keeps one name.
+
+    ONLY pass `batch_label` when the user supplied a name in this request —
+    "and call it X", "rename it to X". Leave it EMPTY otherwise. Do not
+    invent one, do not derive one from the count or the datasets, and do not
+    re-send the campaign's current name. The rename overwrites the old name
+    with no way back, so a helpful guess is a silent loss.
 
     This returns the operations panel on the Collections tab, so the growing
     campaign is visible without scrolling back. Do NOT also call
