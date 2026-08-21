@@ -52,7 +52,7 @@ REPLICA_PLOT_URI = "ui://femtomind/replica-plot/v2.html"
 # hundred kB; 150 replicas of one flavour is ~260 kB before rounding.
 PLOT_REPLICA_LIMIT = int(os.environ.get("FEMTOMIND_PLOT_REPLICA_LIMIT", "150"))
 
-OPERATIONS_URI = "ui://femtomind/operations/v20.html"
+OPERATIONS_URI = "ui://femtomind/operations/v22.html"
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=False, destructiveHint=False)
 WRITE_SAFE = ToolAnnotations(readOnlyHint=False, openWorldHint=False, destructiveHint=False, idempotentHint=False)
@@ -1370,9 +1370,17 @@ def _group_campaigns(rows: list[Any]) -> list[dict[str, Any]]:
     out = list(groups.values())
     for g in out:
         g["status"] = ("failed" if g["failed"] and not g["completed"]
-                       else "completed" if g["completed"] >= g["replicas"]
+                       else "completed" if g["completed"] + g["failed"] >= g["replicas"]
                        else "running")
         g["progress"] = f"{g['completed']}/{g['replicas']}"
+        # completed_at is recorded unevenly, so MAX() over a running batch can
+        # return a real timestamp from the handful that finished. Only a batch
+        # that is actually done gets a finish time, and one that finished
+        # without any timestamp says so rather than borrowing a wrong one.
+        if g["status"] == "running":
+            g["finished_at"] = None
+        elif not g["finished_at"]:
+            g["finished_at"] = "done"
     out.sort(key=lambda g: str(g.get("submitted_at") or ""), reverse=True)
     return out
 
@@ -1415,6 +1423,14 @@ def _compact_plot(raw: dict[str, Any]) -> dict[str, Any]:
     for flav, curves in cbf.items():
         cbf[flav] = [[r(v) for v in curve] for curve in curves]
     spec = raw.get("spec") or {}
+    # Lift the replica counts out before the trace is dropped: the panel and
+    # the model both need to know whether any of these curves belong to fits
+    # that are still moving, and the trace is the only place carrying it.
+    for ev in (spec.get("trace") or []):
+        if "n_running" in ev:
+            raw["n_running"] = ev.get("n_running")
+            raw["n_completed"] = ev.get("n_completed")
+            break
     spec.pop("trace", None)       # UI progress log — not needed once rendered
     spec.pop("reproducer", None)  # multi-KB code snippet the panel never shows
     return raw
@@ -1434,11 +1450,17 @@ def get_pdf_plots(
     max_replicas: int = 0,
 ) -> dict[str, Any]:
     """Render the fitted PDF replica curves — x·f(x) vs x at a given Q² — for a
-    completed campaign. THIS is the JAM analysis plot (gluon/up/down/strange
-    replica bands). Renders in an inline SVG widget. If HPC is not connected or
-    no fit has completed yet, it returns representative placeholder curves
-    (clearly marked) so the plot still renders; real replica PDFs appear here
-    once a campaign finishes on the cluster."""
+    campaign. THIS is the JAM analysis plot (gluon/up/down/strange replica
+    bands). Renders in an inline SVG widget.
+
+    Replicas that are still fitting are included: their curves come from the
+    current parameter vector in progress.json rather than the randomised
+    starting point, so a campaign can be watched as it converges. The result
+    carries `n_completed` and `n_running` — when `n_running` is non-zero, say
+    how many are still fitting instead of presenting the band as final.
+
+    If HPC is not connected or the campaign has produced nothing at all yet,
+    it returns representative placeholder curves (clearly marked)."""
     flavs = flavors or ["g", "u", "d", "s"]
     # 80 points is visually identical to the backend's 120 in an SVG this size
     # and keeps the payload well inside what the widget bridge will carry.

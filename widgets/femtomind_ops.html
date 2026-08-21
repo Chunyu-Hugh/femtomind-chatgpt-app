@@ -657,7 +657,9 @@
           +'<td class="mono">'+(g.progress||"")+'</td>'
           +'<td class="mono" style="font-size:11px">'+fmt(when(g.submitted_at))+'</td>'
           +'<td class="mono" style="font-size:11px">'
-          +(g.finished_at?fmt(when(g.finished_at)):(g.completed?"in progress":"—"))+'</td>'
+          +(g.status==="running" ? "in progress"
+             : g.finished_at==="done" ? "done"
+             : g.finished_at ? fmt(when(g.finished_at)) : "—")+'</td>'
           +'<td class="mono" style="font-size:11px">'+(g.batch_id||"")+'</td></tr>';
       });
       $("collBody").innerHTML = hg+'</tbody></table><div id="whyBox"></div>';
@@ -817,7 +819,11 @@
         + String(out.backend_note || "no completed fit yet; submit one from the Campaign tab").slice(0,110)
         + '</span>'
       : "";
-    $("plotHead").innerHTML=(params.q2?("Q² = "+params.q2+" GeV² · "):"")+flavors.length+" flavor(s) · "+nrep+" replicas"+why;
+    // A band drawn while replicas are still iterating is a snapshot, not a
+    // result — label it, or it reads as final.
+    const nrun = out && out.n_running;
+    const live = nrun ? ' · <span style="color:var(--warn)">'+nrun+' still fitting</span>' : "";
+    $("plotHead").innerHTML=(params.q2?("Q² = "+params.q2+" GeV² · "):"")+flavors.length+" flavor(s) · "+nrep+" replicas"+live+why;
     const g=$("pgrid"); g.innerHTML="";
     if(!x.length||!flavors.length){
       // Surface whatever the backend actually said — a bare "no curves" message
