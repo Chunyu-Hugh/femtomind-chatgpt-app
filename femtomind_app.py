@@ -1760,9 +1760,11 @@ def add_replicas(
     more replicas on the same campaign" — it appends to that batch instead of
     starting a new fit, so the ensemble grows rather than being replaced.
 
-    Leave `batch_id` empty to extend the most recent campaign. This is the one
-    case where a fit may be launched without opening the composer, because the
-    physics configuration is inherited unchanged — only the ensemble grows.
+    `batch_id` accepts either the opaque id (batch_...) or the campaign's
+    name as the user says it ("testnew"). Leave it empty to extend the most
+    recently submitted campaign. This is the one case where a fit may be
+    launched without opening the composer, because the physics configuration
+    is inherited unchanged — only the ensemble grows.
 
     `batch_label` renames the campaign. Replicas appended this way join the
     SAME batch, so the name belongs to the whole campaign rather than to the
@@ -1782,17 +1784,50 @@ def add_replicas(
     if not 1 <= count <= 2000:
         return {"error": "count must be between 1 and 2000 replicas"}
 
-    target = (batch_id or "").strip()
+    wanted = (batch_id or "").strip()
     prior = _call_mcpo("/fitpack/list_chat_tasks", {"chat_id": _scope(chat_id), "sync": False})
     rows = prior if isinstance(prior, list) else []
     if not rows:
         return {"error": "No campaign found to extend — submit one from the composer first."}
-    if not target:
-        target = str(rows[-1].get("batch_id") or "")
-    match = [r for r in rows if str(r.get("batch_id")) == target]
-    if not match:
-        known = sorted({str(r.get("batch_id")) for r in rows})
-        return {"error": f"No campaign {target!r}. Known: {', '.join(known[-5:])}"}
+
+    def _newest(candidates: list[Any]) -> str:
+        """Batch id with the most recent replica.
+
+        Was rows[-1], which assumed the backend returns oldest-last. It
+        returns newest-FIRST, so "extend the most recent campaign" reached
+        for the oldest one — on this deployment that meant a request to add
+        200 replicas would have landed on a finished thousand-replica batch.
+        Read the timestamps instead of trusting an order nobody promised.
+        """
+        best, best_at = "", ""
+        for r in candidates:
+            at = str(r.get("created_at") or r.get("submitted_at") or "")
+            if at >= best_at:
+                best_at, best = at, str(r.get("batch_id") or "")
+        return best
+
+    if wanted:
+        match = [r for r in rows if str(r.get("batch_id")) == wanted]
+        if not match:
+            # People refer to a campaign by the name they gave it, so the model
+            # passes that name here. Accept it: matching only on the opaque
+            # batch id turned "add 200 to testnew" into "No campaign 'testnew'".
+            named = [r for r in rows
+                     if str(r.get("batch_label") or "").strip().lower() == wanted.lower()]
+            if named:
+                match = [r for r in rows if str(r.get("batch_id")) == _newest(named)]
+        if not match:
+            ids = sorted({str(r.get("batch_id")) for r in rows})[-5:]
+            names = sorted({str(r.get("batch_label")).strip() for r in rows
+                            if str(r.get("batch_label") or "").strip()})
+            return {"error": f"No campaign {wanted!r}.",
+                    "known_names": names, "known_ids": ids}
+        target = str(match[0].get("batch_id") or "")
+    else:
+        target = _newest(rows)
+        match = [r for r in rows if str(r.get("batch_id")) == target]
+        if not match:
+            return {"error": "Could not resolve the most recent campaign."}
 
     # The backend reuses the batch's stored datasets/settings, so only the batch
     # pointer and the extra replica count need to travel.
