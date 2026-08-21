@@ -473,7 +473,56 @@
     const ready = p.ready!==undefined?p.ready:(p.ok!==undefined?p.ok:items.every(i=>i.ok===true));
     return {ready, items, note:p.note||p.message||p.error||""};
   }
+  // The picker, shared by the "nothing chosen yet" screen and the normal
+  // report. Attaching the handler is separate because both paths need it.
+  function wsPickerHtml(cands, heading){
+    if (!Array.isArray(cands) || !cands.length) return "";
+    return '<div class="label" style="margin:16px 0 6px">' + heading + '</div>'
+      + cands.map(c =>
+          '<label class="ds" style="cursor:pointer">'
+          + '<input type="radio" name="wsPick" value="'+c.path+'"'+(c.active?" checked":"")+'>'
+          + '<span class="mono" style="font-size:12px">'+c.path+'</span>'
+          + (c.active?' <span class="muted">· in use</span>':'')
+          + '</label>').join("")
+      + '<div class="actions"><button class="btn" id="useWsBtn">Use selected</button></div>';
+  }
+  function wireWsPicker(){
+    const useBtn = $("useWsBtn");
+    if (!useBtn) return;
+    useBtn.onclick = async () => {
+      const sel = document.querySelector('input[name=wsPick]:checked');
+      if (!sel) return;
+      useBtn.disabled = true; useBtn.textContent = "Switching…";
+      try{
+        const r = await call("use_workspace", {path: sel.value});
+        if (r && r.ok && r.report) paintProject(r.report);
+        else { useBtn.disabled=false; useBtn.textContent="Use selected";
+               $("projBody").insertAdjacentHTML("beforeend",
+                 '<div class="note warn">'+((r&&r.message)||"Could not switch.")+'</div>'); }
+      }catch(e){
+        useBtn.disabled=false; useBtn.textContent="Use selected";
+        $("projBody").insertAdjacentHTML("beforeend",
+          '<div class="note warn">Switch failed: '+(e&&e.message||e)+'</div>');
+      }
+    };
+  }
+
   function paintProject(p){
+    // Nothing has been chosen yet. Say so and show the choice rather than
+    // reporting on a workspace the backend guessed from a name template —
+    // a green report for a tree the user never picked reads as "you are set
+    // up" and the first fit then runs somewhere they did not intend.
+    if (p && p.configured === false){
+      const cands = p.candidates || [];
+      $("projBody").innerHTML =
+        '<div class="note warn">' + (p.note || "No workspace chosen yet.") + '</div>'
+        + wsPickerHtml(cands, "Existing checkouts in your cluster area")
+        + '<div class="dt" style="margin-top:12px">'
+        + (cands.length ? 'Or create a new one below.' : 'Create one below to get started.')
+        + '</div>';
+      wireWsPicker();
+      return;
+    }
     // Preferred shape: the per-item report with real paths and, where something
     // is missing, what the user has to do about it.
     if (p && Array.isArray(p.items) && p.items.length){
@@ -495,17 +544,8 @@
       const repairBtn = needsRepair
         ? '<div class="actions"><button class="btn" id="repairBtn">Repair grid links</button></div>' : "";
       // More than one checkout means the choice is the user's to make, not ours.
-      let pick = "";
-      if (Array.isArray(p.candidates) && p.candidates.length > 1){
-        pick = '<div class="label" style="margin:16px 0 6px">Which workspace to use</div>'
-             + p.candidates.map(c =>
-                 '<label class="ds" style="cursor:pointer">'
-                 + '<input type="radio" name="wsPick" value="'+c.path+'"'+(c.active?" checked":"")+'>'
-                 + '<span class="mono" style="font-size:12px">'+c.path+'</span>'
-                 + (c.active?' <span class="muted">· in use</span>':'')
-                 + '</label>').join("")
-             + '<div class="actions"><button class="btn" id="useWsBtn">Use selected</button></div>';
-      }
+      const pick = (Array.isArray(p.candidates) && p.candidates.length > 1)
+        ? wsPickerHtml(p.candidates, "Which workspace to use") : "";
       $("projBody").innerHTML = rows + pm + note + repairBtn + pick;
       const rb = $("repairBtn");
       if (rb) rb.onclick = async () => {
@@ -523,23 +563,7 @@
             '<div class="note warn">Repair failed: '+(e&&e.message||e)+'</div>');
         }
       };
-      const useBtn = $("useWsBtn");
-      if (useBtn) useBtn.onclick = async () => {
-        const sel = document.querySelector('input[name=wsPick]:checked');
-        if (!sel) return;
-        useBtn.disabled = true; useBtn.textContent = "Switching…";
-        try{
-          const r = await call("use_workspace", {path: sel.value});
-          if (r && r.ok && r.report) paintProject(r.report);
-          else { useBtn.disabled=false; useBtn.textContent="Use selected";
-                 $("projBody").insertAdjacentHTML("beforeend",
-                   '<div class="note warn">'+((r&&r.message)||"Could not switch.")+'</div>'); }
-        }catch(e){
-          useBtn.disabled=false; useBtn.textContent="Use selected";
-          $("projBody").insertAdjacentHTML("beforeend",
-            '<div class="note warn">Switch failed: '+(e&&e.message||e)+'</div>');
-        }
-      };
+      wireWsPicker();
       return;
     }
     const r=readiness(p);

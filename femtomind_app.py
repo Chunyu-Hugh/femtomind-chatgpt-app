@@ -52,7 +52,7 @@ REPLICA_PLOT_URI = "ui://femtomind/replica-plot/v2.html"
 # hundred kB; 150 replicas of one flavour is ~260 kB before rounding.
 PLOT_REPLICA_LIMIT = int(os.environ.get("FEMTOMIND_PLOT_REPLICA_LIMIT", "150"))
 
-OPERATIONS_URI = "ui://femtomind/operations/v26.html"
+OPERATIONS_URI = "ui://femtomind/operations/v27.html"
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=False, destructiveHint=False)
 WRITE_SAFE = ToolAnnotations(readOnlyHint=False, openWorldHint=False, destructiveHint=False, idempotentHint=False)
@@ -1327,6 +1327,30 @@ def use_workspace(path: str, chat_id: str = "chatgpt-composer") -> dict[str, Any
             "report": _workspace_report(username, p)}
 
 
+def _chosen_workspace(chat_id: str = "") -> str:
+    """The workspace this identity actually picked, or "" if it never has.
+
+    Distinct from get_remote_base, which falls back to a templated
+    <area>/fitpack_legacy when nothing is stored. That default is fine as a
+    suggestion and wrong as an answer: on a cluster account that already has
+    a checkout by that name, a collaborator who has chosen nothing is told
+    they are set up and submits into a tree they never picked.
+    """
+    try:
+        import sqlite3
+        with sqlite3.connect(os.environ.get(
+                "FITPACK_DB_PATH",
+                str(Path.home() / "femtomind" / "fitpack-workflow" / "hpc_tasks.db")),
+                timeout=5) as c:
+            row = c.execute(
+                "SELECT remote_base FROM user_hpc_config WHERE user_id=?"
+                " AND remote_base IS NOT NULL AND remote_base != ''",
+                (_scope(chat_id),)).fetchone()
+        return str(row[0]) if row else ""
+    except Exception:
+        return ""
+
+
 @mcp.tool(annotations=READ_ONLY, meta=CALLABLE_META, structured_output=True)
 def check_project(chat_id: str = "chatgpt-composer") -> dict[str, Any]:
     """Check that the JAM project is in place in the user's HPC workspace —
@@ -1335,7 +1359,28 @@ def check_project(chat_id: str = "chatgpt-composer") -> dict[str, Any]:
     connection; otherwise reports what it could not reach."""
     acct = _call_mcpo("/fitpack/get_hpc_account", {"chat_id": _scope(chat_id)})
     username = (acct.get("hpc_username") if isinstance(acct, dict) else "") or _hpc_user_for_scope()
-    report = _workspace_report(username)
+    chosen = _chosen_workspace(chat_id)
+    report = _workspace_report(username, chosen)
+    report["configured"] = bool(chosen)
+    if not chosen:
+        # Report on nothing until they have said which tree is theirs. The
+        # candidates are still listed, so choosing is one click rather than a
+        # question, but nothing is adopted on their behalf.
+        cands = report.get("candidates") or []
+        return {
+            "ok": False,
+            "ready": False,
+            "configured": False,
+            "cluster_account": username,
+            "candidates": cands,
+            "items": [],
+            "note": ("No workspace chosen yet."
+                     + (f" {len(cands)} existing checkout(s) found under your"
+                        " cluster area — pick one, or create a new one."
+                        if cands else
+                        " Create one in the Project tab; nothing is set up yet.")),
+            "action": "Choose a workspace with use_workspace, or create one with setup_workspace.",
+        }
     # Whether the files are present and whether the fit parameters are usable
     # are different questions; surfacing both stops one from masking the other.
     params = _call_mcpo("/fitpack/check_fitting_readiness", {"chat_id": _scope(chat_id)})
