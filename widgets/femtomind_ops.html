@@ -261,6 +261,9 @@
         <div class="pc"><span class="label">Campaign</span>
           <select id="plotBatch" style="min-width:230px"><option value="">Latest campaign</option></select></div>
         <div class="pc"><span class="label">Q² (GeV²)</span><input type="number" id="plotQ2" value="10" style="width:90px"></div>
+        <div class="pc"><span class="label">Show</span>
+          <label style="font-size:12px;display:flex;align-items:center;gap:5px;height:32px">
+            <input type="checkbox" id="plotReps" checked> replicas</label></div>
         <button class="btn primary" id="plotBtn">Render plots</button>
       </div>
       <div id="plotHead" class="sub"></div>
@@ -745,7 +748,14 @@
                     "#B279A2","#FF9DA6","#9D755D","#7F7F7F","#17BECF","#BCBD22"];
   const FLAVOR_MATH={g:"xg",u:"xu",d:"xd",s:"xs",ub:"xū",db:"xd̄",uv:"xuᵥ",dv:"xdᵥ",sea:"xS"};
 
-  function drawPanel(x,curves,flavor,q2){
+  // Linear-interpolated percentile of an already-sorted array.
+  function pctl(sorted,p){
+    if(!sorted.length) return NaN;
+    const i=(sorted.length-1)*p, lo=Math.floor(i), hi=Math.ceil(i);
+    return lo===hi ? sorted[lo] : sorted[lo]+(sorted[hi]-sorted[lo])*(i-lo);
+  }
+
+  function drawPanel(x,curves,flavor,q2,showReps){
     const W=420,H=310,m={l:58,r:14,t:14,b:46},pw=W-m.l-m.r,ph=H-m.t-m.b;
     const svg=document.createElementNS(NS,"svg"); svg.setAttribute("viewBox","0 0 "+W+" "+H); svg.setAttribute("class","plot");
     const el=(t,a)=>{const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);svg.appendChild(e);return e;};
@@ -758,9 +768,23 @@
     const xlo=Math.max(1e-3, x[0]>0?x[0]:1e-3), xhi=x[x.length-1];
     const inWin=i=>x[i]>=xlo&&x[i]<=xhi;
 
-    // Linear y, ranged over the visible window only, always including 0.
+    // Per-x order statistics over the WHOLE ensemble, not the drawn sample:
+    // the band is the result, the spaghetti is only an illustration of it.
+    const stat=x.map((_,i)=>{
+      const col=[];
+      curves.forEach(c=>{ const v=c[i]; if(isFinite(v)) col.push(v); });
+      col.sort((a,b)=>a-b);
+      return {lo:pctl(col,0.16), mid:pctl(col,0.50), hi:pctl(col,0.84), n:col.length};
+    });
+
+    // Range on the 68% band, not on the extremes. A single replica that
+    // diverged to chi2 ~ 1e6 used to set the y-axis by itself — the axis ran
+    // -195 to 128 and the nine sane replicas were a flat smear at the middle.
+    // Percentiles are immune to that by construction.
     let minV=Infinity,maxV=-Infinity;
-    drawn.forEach(c=>c.forEach((v,i)=>{ if(!isFinite(v)||!inWin(i))return; if(v<minV)minV=v; if(v>maxV)maxV=v; }));
+    stat.forEach((st,i)=>{ if(!inWin(i))return;
+      if(isFinite(st.lo)&&st.lo<minV)minV=st.lo;
+      if(isFinite(st.hi)&&st.hi>maxV)maxV=st.hi; });
     if(!isFinite(maxV)) return svg;
     let ylo=Math.min(0,minV), yhi=maxV;
     const pad=(yhi-ylo)*0.08||0.1; ylo-=pad*0.4; yhi+=pad;
@@ -786,21 +810,44 @@
     // zero reference
     if(ylo<0&&yhi>0) el("line",{x1:m.l,y1:sy(0),x2:m.l+pw,y2:sy(0),stroke:muted,"stroke-width":1,"stroke-dasharray":"4 3"});
 
-    const pts=cv=>{let s="";for(let i=0;i<cv.length;i++){ if(!inWin(i))continue; const v=cv[i]; if(!isFinite(v))continue;
-      s+=(s?" ":"")+sx(x[i]).toFixed(1)+","+sy(v).toFixed(1);} return s;};
+    // clip=true drops points outside the y window instead of pinning them to
+    // the frame: an outlier should leave the picture, not draw a rail along
+    // the top edge that reads as a real curve.
+    const pts=(cv,clip)=>{let s="";for(let i=0;i<cv.length;i++){ if(!inWin(i))continue; const v=cv[i];
+      if(!isFinite(v))continue; if(clip&&(v<ylo||v>yhi)){ s+=s?" ":""; continue; }
+      s+=(s&&!s.endsWith(" ")?" ":"")+sx(x[i]).toFixed(1)+","+sy(v).toFixed(1);} return s.trim();};
 
-    // replicas, each its own colour
-    drawn.forEach((c,i)=>el("polyline",{points:pts(c),fill:"none",
-      stroke:REP_COLORS[i%REP_COLORS.length],"stroke-width":0.9,"stroke-opacity":0.75}));
-    // ensemble mean — black dashed, like the JAM reference
-    const mn=x.map((_,i)=>{let s=0,n=0;drawn.forEach(c=>{if(isFinite(c[i])){s+=c[i];n++;}});return n?s/n:NaN;});
-    el("polyline",{points:pts(mn),fill:"none",stroke:fg,"stroke-width":2.4,"stroke-dasharray":"7 4"});
+    // 68% band first, so everything else reads on top of it.
+    const idx=x.map((_,i)=>i).filter(inWin).filter(i=>isFinite(stat[i].lo)&&isFinite(stat[i].hi));
+    if(idx.length>1){
+      let poly="";
+      idx.forEach(i=>{ poly+=(poly?" ":"")+sx(x[i]).toFixed(1)+","+sy(stat[i].hi).toFixed(1); });
+      for(let k=idx.length-1;k>=0;k--){ const i=idx[k]; poly+=" "+sx(x[i]).toFixed(1)+","+sy(stat[i].lo).toFixed(1); }
+      el("polygon",{points:poly,fill:cc.getPropertyValue("--mean"),"fill-opacity":0.20,stroke:"none"});
+    }
+    // replicas, each its own colour — an illustration of the band, off by
+    // default in spirit: thin and translucent so they never outweigh it.
+    if(showReps){
+      drawn.forEach((c,i)=>el("polyline",{points:pts(c,true),fill:"none",
+        stroke:REP_COLORS[i%REP_COLORS.length],"stroke-width":0.8,"stroke-opacity":0.5}));
+    }
+    // median — the central value a band is quoted around
+    el("polyline",{points:pts(stat.map(s2=>s2.mid)),fill:"none",
+      stroke:cc.getPropertyValue("--mean"),"stroke-width":2.2});
+    // ensemble mean — black dashed, like the JAM reference. Kept alongside the
+    // median: the gap between them is itself the tell that outliers are present.
+    const mn=x.map((_,i)=>{let s2=0,n=0;curves.forEach(c=>{if(isFinite(c[i])){s2+=c[i];n++;}});return n?s2/n:NaN;});
+    el("polyline",{points:pts(mn,true),fill:"none",stroke:fg,"stroke-width":2.0,"stroke-dasharray":"7 4"});
 
     el("rect",{x:m.l,y:m.t,width:pw,height:ph,fill:"none",stroke:muted,"stroke-width":1});
 
     // legend + in-plot Q² annotation (matches the published figure layout)
-    el("line",{x1:m.l+pw-58,y1:m.t+13,x2:m.l+pw-34,y2:m.t+13,stroke:fg,"stroke-width":2.4,"stroke-dasharray":"7 4"});
-    el("text",{x:m.l+pw-29,y:m.t+17,fill:fg,"font-size":11,"font-family":"Georgia,serif"}).textContent="mean";
+    const mean_c=cc.getPropertyValue("--mean");
+    el("rect",{x:m.l+pw-58,y:m.t+6,width:24,height:9,fill:mean_c,"fill-opacity":0.20});
+    el("line",{x1:m.l+pw-58,y1:m.t+10.5,x2:m.l+pw-34,y2:m.t+10.5,stroke:mean_c,"stroke-width":2.2});
+    el("text",{x:m.l+pw-29,y:m.t+14,fill:fg,"font-size":10,"font-family":"Georgia,serif"}).textContent="68%";
+    el("line",{x1:m.l+pw-58,y1:m.t+25,x2:m.l+pw-34,y2:m.t+25,stroke:fg,"stroke-width":2.0,"stroke-dasharray":"7 4"});
+    el("text",{x:m.l+pw-29,y:m.t+29,fill:fg,"font-size":10,"font-family":"Georgia,serif"}).textContent="mean";
     if(q2){ const t=el("text",{x:m.l+10,y:m.t+ph-10,fill:fg,"font-size":13,"font-family":"Georgia,serif","font-style":"italic"});
       t.textContent="Q"; const s1=document.createElementNS(NS,"tspan"); s1.setAttribute("dy","-5"); s1.setAttribute("font-size","9"); s1.textContent="2"; t.appendChild(s1);
       const s2=document.createElementNS(NS,"tspan"); s2.setAttribute("dy","5"); s2.setAttribute("font-style","normal"); s2.textContent=" = "+q2+" GeV"; t.appendChild(s2);
@@ -812,7 +859,11 @@
       transform:"rotate(-90 16 "+(m.t+ph/2)+")"}).textContent=FLAVOR_MATH[flavor]||flavor;
     return svg;
   }
+  // Keep the last payload so toggling replicas redraws from memory instead of
+  // recomputing a thousand curves on the cluster.
+  let lastPlot=null;
   function paintPlots(out){
+    if(out) lastPlot=out;
     const ci=(out&&out.curves_inline)||{}; const params=(out&&out.spec&&out.spec.params)||{}; const ps=(out&&out.spec&&out.spec.panel_state)||{};
     const x=ci.x_grid||[]; const cbf=ci.curves_by_flavor||{}; const flavors=ci.flavors||Object.keys(cbf);
     const nrep=(ci.replica_ids&&ci.replica_ids.length)||(flavors[0]&&cbf[flavors[0]]?cbf[flavors[0]].length:0);
@@ -846,7 +897,7 @@
     }
     flavors.forEach(f=>{ const card=document.createElement("div"); card.className="pcard";
       const t=document.createElement("div"); t.className="t"; t.textContent=FLABEL[f]||f; card.appendChild(t);
-      card.appendChild(drawPanel(x, cbf[f]||[], f, params.q2)); g.appendChild(card); });
+      card.appendChild(drawPanel(x, cbf[f]||[], f, params.q2, $("plotReps").checked)); g.appendChild(card); });
   }
   // The Analysis tab used to plot whatever campaign ran last, with no way to
   // reach an earlier one — the comparison a fit is actually for. Offer the same
@@ -885,6 +936,7 @@
     $("plotBtn").disabled=false;
   }
   $("plotBtn").onclick=renderPlots;
+  $("plotReps").onchange=()=>{ if(lastPlot) paintPlots(lastPlot); };
 
   /* ---------- init ---------- */
   function restore(){
