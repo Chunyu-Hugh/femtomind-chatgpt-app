@@ -1744,9 +1744,16 @@ def submit_fitting_job(
     return raw if isinstance(raw, dict) else {"result": raw}
 
 
-@mcp.tool(annotations=WRITE_SAFE, meta=CALLABLE_META, structured_output=True)
+@mcp.tool(
+    annotations=WRITE_SAFE,
+    meta=_ui_meta(OPERATIONS_URI, "Adding replicas…", "Replicas queued"),
+    structured_output=True,
+)
 def add_replicas(
-    count: int, batch_id: str = "", chat_id: str = "chatgpt-composer"
+    count: int,
+    batch_id: str = "",
+    batch_label: str = "",
+    chat_id: str = "chatgpt-composer",
 ) -> dict[str, Any]:
     """Launch MORE replicas on an EXISTING campaign, reusing its exact dataset
     selection and settings. Use this when the user says something like "run 1000
@@ -1756,6 +1763,16 @@ def add_replicas(
     Leave `batch_id` empty to extend the most recent campaign. This is the one
     case where a fit may be launched without opening the composer, because the
     physics configuration is inherited unchanged — only the ensemble grows.
+
+    `batch_label` renames the campaign. Replicas appended this way join the
+    SAME batch, so the name belongs to the whole campaign rather than to the
+    new arrivals — pass it when the user gives the run a new name, and the
+    existing replicas are relabelled with it too so the campaign keeps one
+    name. Leave empty to keep the current one.
+
+    This returns the operations panel on the Collections tab, so the growing
+    campaign is visible without scrolling back. Do NOT also call
+    jam_analysis_panel for the same request — that would open a second panel.
     """
     if not 1 <= count <= 2000:
         return {"error": "count must be between 1 and 2000 replicas"}
@@ -1774,20 +1791,47 @@ def add_replicas(
 
     # The backend reuses the batch's stored datasets/settings, so only the batch
     # pointer and the extra replica count need to travel.
+    label = (batch_label or "").strip() or (match[0].get("batch_label") or "chatgpt-fit")
     raw = _call_mcpo("/fitpack/run_fitting_job", {
         "observable": match[0].get("observable") or "idis",
         "selected_ids": [],
         "count": count,
         "chat_id": _scope(chat_id),
         "append_to_batch_id": target,
-        "batch_label": match[0].get("batch_label") or "chatgpt-fit",
+        "batch_label": label,
     })
     if isinstance(raw, dict) and raw.get("status") == "error":
         return {"error": raw.get("message") or "backend rejected the append", "batch_id": target}
+
+    # Relabel the replicas that were already there. Appending puts the new ones
+    # in the same batch, so leaving the old rows under the old name would split
+    # one campaign across two names in every listing that groups by label.
+    renamed, rename_error = 0, ""
+    if batch_label.strip():
+        try:
+            import sqlite3
+            with sqlite3.connect(os.environ.get(
+                    "FITPACK_DB_PATH",
+                    str(Path.home() / "femtomind" / "fitpack-workflow" / "hpc_tasks.db")),
+                    timeout=10) as _c:
+                renamed = _c.execute(
+                    "UPDATE tasks SET batch_label=? WHERE batch_id=? AND chat_id=?",
+                    (label, target, _scope(chat_id))).rowcount
+        except Exception as e:
+            # Surfaced, not swallowed: the replicas did launch, so the caller
+            # needs to know the rename is the only part that did not take.
+            rename_error = f"{type(e).__name__}: {e}"
+
     return {
+        # Land on Collections: the point of adding replicas is watching the
+        # count move, and a text-only reply made the user scroll back for it.
+        "tab": "collections",
         "appended_to": target,
+        "campaign": label,
         "requested": count,
         "replicas_before": len(match),
+        "renamed_rows": renamed,
+        **({"rename_error": rename_error} if rename_error else {}),
         "result": raw if isinstance(raw, dict) else {"raw": str(raw)[:400]},
     }
 
