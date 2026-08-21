@@ -4778,11 +4778,16 @@ def _resolve_plot_replicas(
             wheres.append("j.final_chi2_npts >= ?")
             params.append(chi2_npts_min)
 
+        # SQLite sorts NULL first on ASC. Replicas whose chi-square was never
+        # recorded therefore won a chi2_asc ordering outright, so asking for
+        # "the best N" returned the N with no chi-square at all — the ordering
+        # was not merely inert, it was inverted. Push unknowns to the back in
+        # both directions.
         order_sql = {
-            "chi2_asc":  "j.final_chi2_npts ASC",
-            "chi2_desc": "j.final_chi2_npts DESC",
+            "chi2_asc":  "(j.final_chi2_npts IS NULL), j.final_chi2_npts ASC",
+            "chi2_desc": "(j.final_chi2_npts IS NULL), j.final_chi2_npts DESC",
             "created":   "t.created_at ASC",
-        }.get(order_by, "j.final_chi2_npts ASC")
+        }.get(order_by, "(j.final_chi2_npts IS NULL), j.final_chi2_npts ASC")
 
         # Cap at 1000 even without an explicit limit so we never load the
         # whole table into JSON if a chat ran a huge sweep.

@@ -426,8 +426,60 @@ def check_status(batch_id: str) -> Dict[str, Any]:
     }
 
 
+def _record_chi2_from_summary(con, batch_id: str, result: Dict[str, Any]) -> int:
+    """Persist each replica's chi2/npt into job_history.
+
+    The summary has computed this per replica all along — run_state carries
+    latest_chi2_npts for every run — but it only ever lived inside the
+    batch_summaries JSON blob. The plot path LEFT JOINs job_history for
+    final_chi2_npts, and that table was never written, so every replica came
+    back with chi2_npts=None. Three things quietly did nothing as a result:
+    order_by='chi2_asc' could not order, chi2_npts_max could not filter, and
+    the 150-replica cap took an arbitrary 150 instead of the best 150 — on a
+    thousand-replica batch with a ~19% divergence rate that is roughly
+    twenty-eight junk curves in a band presented as the result.
+    """
+    runs = result.get("run_state") or []
+    if not runs:
+        return 0
+    by_name = {}
+    for path, jid, user in con.execute(
+            "SELECT path, slurm_job_id, hpc_username FROM tasks WHERE batch_id=?",
+            (batch_id,)):
+        by_name[str(path).rstrip("/").rsplit("/", 1)[-1]] = (path, jid, user)
+    n = 0
+    for entry in runs:
+        name = str(entry.get("run") or "")
+        val = entry.get("latest_chi2_npts")
+        if name not in by_name or not isinstance(val, (int, float)):
+            continue
+        path, jid, user = by_name[name]
+        iters = entry.get("n_iters")
+        if con.execute("SELECT 1 FROM job_history WHERE task_path=?", (path,)).fetchone():
+            con.execute(
+                "UPDATE job_history SET final_chi2_npts=?,"
+                " total_iterations=COALESCE(?, total_iterations),"
+                " recorded_at=CURRENT_TIMESTAMP WHERE task_path=?",
+                (float(val), iters, path))
+        else:
+            con.execute(
+                "INSERT INTO job_history (batch_id, task_path, slurm_job_id,"
+                " hpc_username, final_chi2_npts, total_iterations, recorded_at)"
+                " VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)",
+                (batch_id, path, jid, user, float(val), iters))
+        n += 1
+    return n
+
+
 def _mark_done(batch_id: str, result: Dict[str, Any]) -> None:
     with _db() as con:
+        try:
+            n = _record_chi2_from_summary(con, batch_id, result)
+            if n:
+                logger.info("recorded chi2/npt for %d replicas of %s" % (n, batch_id))
+        except Exception as e:
+            # Never let bookkeeping lose a summary that already cost cluster time.
+            logger.warning("could not record job_history for %s: %s" % (batch_id, e))
         con.execute("""
             UPDATE batch_summaries
                SET status='done',
