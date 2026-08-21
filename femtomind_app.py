@@ -1327,6 +1327,15 @@ def check_project(chat_id: str = "chatgpt-composer") -> dict[str, Any]:
     return report
 
 
+# States that mean the job is still on the cluster. Anything not in here is
+# terminal — including states we have not seen yet, so a new SLURM state can
+# never strand a campaign at "in progress".
+_ACTIVE_STATES = {
+    "submitted", "pending", "queued", "running", "completing",
+    "configuring", "suspended", "requeued", "resizing",
+}
+
+
 def _group_campaigns(rows: list[Any]) -> list[dict[str, Any]]:
     """Fold per-replica rows into one entry per campaign.
 
@@ -1353,12 +1362,19 @@ def _group_campaigns(rows: list[Any]) -> list[dict[str, Any]]:
             g["campaign"] = r.get("batch_label") or ""
         g["replicas"] += 1
         st = str(r.get("status") or "").lower()
-        if "complet" in st or "done" in st:
-            g["completed"] += 1
-        elif "fail" in st or "cancel" in st or "error" in st:
-            g["failed"] += 1
-        else:
+        # Whitelist the states that mean "still on the cluster" and treat
+        # everything else as terminal. Substring matching the other way round
+        # left a campaign in progress forever: 'timeout' matched none of the
+        # failure words, fell through to the running bucket, and a batch that
+        # ended two days ago still read "in progress". It also mistook SLURM's
+        # 'completing' — a job that is still finishing — for a finished one,
+        # because 'completing' contains 'complet'. Order matters here.
+        if st in _ACTIVE_STATES:
             g["running"] += 1
+        elif "complet" in st or "done" in st or "finish" in st:
+            g["completed"] += 1
+        else:
+            g["failed"] += 1
         # created_at/submitted_at/completed_at are UTC; updated_at is not, so it
         # is left out of the comparison rather than mixing clocks.
         first = r.get("submitted_at") or r.get("created_at")
