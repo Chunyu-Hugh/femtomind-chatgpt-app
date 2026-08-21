@@ -1416,6 +1416,61 @@ def list_campaigns(chat_id: str = "chatgpt-composer") -> dict[str, Any]:
     return {"campaigns": [], "count": 0, "raw": raw}
 
 
+# Anchors a phenomenologist actually quotes: valence peak, sea/gluon region,
+# and the large-x tail where the extrapolation starts to dominate.
+_BAND_X = (0.001, 0.003, 0.01, 0.03, 0.1, 0.3, 0.5, 0.7)
+
+
+def _pctl(sorted_vals: list[float], p: float) -> float:
+    i = (len(sorted_vals) - 1) * p
+    lo, hi = int(i), min(int(i) + 1, len(sorted_vals) - 1)
+    if lo == hi:
+        return sorted_vals[lo]
+    return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * (i - lo)
+
+
+def _band_summary(ci: dict[str, Any]) -> dict[str, Any]:
+    """Per-flavour 16/50/84 percentiles at a handful of x.
+
+    The widget draws the band from the raw curves, but the model only ever
+    saw those curves — hundreds of floats it cannot honestly do statistics
+    on. Asked for the uncertainty on the gluon it had to either eyeball the
+    array or decline. A dozen numbers per flavour is what a person quotes,
+    so send that too.
+    """
+    xs = ci.get("x_grid") or []
+    cbf = ci.get("curves_by_flavor") or {}
+    if not xs or not cbf:
+        return {}
+    idx = []
+    for target in _BAND_X:
+        if target < xs[0] or target > xs[-1]:
+            continue
+        idx.append(min(range(len(xs)), key=lambda k: abs(xs[k] - target)))
+    idx = sorted(set(idx))
+    out: dict[str, Any] = {}
+    for flav, curves in cbf.items():
+        rows = []
+        for k in idx:
+            col = sorted(c[k] for c in curves
+                         if k < len(c) and isinstance(c[k], (int, float)))
+            if not col:
+                continue
+            rows.append({
+                "x":   float(f"{xs[k]:.4g}"),
+                "p16": float(f"{_pctl(col, 0.16):.4g}"),
+                "p50": float(f"{_pctl(col, 0.50):.4g}"),
+                "p84": float(f"{_pctl(col, 0.84):.4g}"),
+            })
+        if rows:
+            out[flav] = rows
+    if not out:
+        return {}
+    n = len(next(iter(cbf.values()), []))
+    return {"level": "68% (16th-84th percentile across replicas)",
+            "n_replicas": n, "by_flavor": out}
+
+
 def _compact_plot(raw: dict[str, Any]) -> dict[str, Any]:
     """Shrink the curve payload so it survives the widget bridge.
 
@@ -1447,6 +1502,9 @@ def _compact_plot(raw: dict[str, Any]) -> dict[str, Any]:
             raw["n_running"] = ev.get("n_running")
             raw["n_completed"] = ev.get("n_completed")
             break
+    band = _band_summary(ci)
+    if band:
+        raw["band"] = band
     spec.pop("trace", None)       # UI progress log — not needed once rendered
     spec.pop("reproducer", None)  # multi-KB code snippet the panel never shows
     return raw
@@ -1474,6 +1532,14 @@ def get_pdf_plots(
     starting point, so a campaign can be watched as it converges. The result
     carries `n_completed` and `n_running` — when `n_running` is non-zero, say
     how many are still fitting instead of presenting the band as final.
+
+    The result carries `band`: 16/50/84 percentiles per flavour at a handful
+    of x. Quote uncertainties FROM THAT — never compute statistics over
+    `curves_inline` yourself. A value is stated as p50 with the 68% interval,
+    e.g. "xg(x=0.1) = -13.7, 68% interval [-37.6, -3.5]". A band that spans
+    both signs, or whose width exceeds its central value, means the data in
+    this fit does not constrain that flavour — say so rather than reporting
+    the median as if it were a measurement.
 
     If HPC is not connected or the campaign has produced nothing at all yet,
     it returns representative placeholder curves (clearly marked)."""
