@@ -1,0 +1,43 @@
+# OpenWebUI MCP Configuration for FitPack
+# This file configures the MCP server for use with OpenWebUI
+# Optimized for FastMCP and uvx execution
+
+name: "FitPack Parameter Management"
+description: "High-level PDF computation parameter management tools"
+version: "1.1.0"
+
+# MCP Server Configuration
+mcp:
+  # Using uvx to launch the server as requested
+  # Note: --from . tells uvx to use the local directory to build the tool
+  command: "uvx"
+  args: 
+    - "--from"
+    - "."
+    - "fitpack-mcp"
+  # Environmental variables to help the server find the core FitPack modules
+  env:
+    PYTHONPATH: "/home/temp-user/fitpack_legacy_copy"
+
+# Tool definitions
+tools:
+  - name: "list_parameters"
+    description: "List all available PDF computation parameters with their descriptions"
+  
+  - name: "explain_parameters"
+    description: "Get detailed physics context and explanations for specific parameters"
+  
+  - name: "get_current_values"
+    description: "Retrieve current parameter values for the active session"
+  
+  - name: "update_parameters"
+    description: "Modify parameter values using dot-notation paths"
+  
+  - name: "save_configuration"
+    description: "Persist the current session parameters to a YAML file"
+  
+  - name: "check_readiness"
+    description: "Check if the setup is correctly configured and ready for computation"
+  
+  - name: "reset_to_defaults"
+    description: "Reset the current session to standard system defaults"

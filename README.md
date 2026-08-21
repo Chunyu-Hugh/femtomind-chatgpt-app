@@ -52,6 +52,10 @@ keep the rest — though the two-hop login is specific to this facility.
 ```
 femtomind_app.py     MCP server: tools, widget resources, auth middleware
 femtomind_auth.py    OAuth 2.1 authorization server (invite codes, PKCE)
+fitpack-workflow/    the physics backend — dataset catalogue, job submission,
+                     SLURM tracking, chi-square, replica plotting. The app
+                     itself holds no domain logic; it authenticates and
+                     forwards here. See fitpack-workflow/README.md.
 widgets/             the five-tab panel and the inline result cards
 scripts/femtoadmin.py   invite / list / revoke collaborators
 scripts/run.sh          start the server locally

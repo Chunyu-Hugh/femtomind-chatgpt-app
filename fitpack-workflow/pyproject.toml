@@ -1,0 +1,27 @@
+[project]
+name = "fitpack-workflow"
+version = "0.1.0"
+description = "FastMCP Server for FitPack Parameter Management"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp[cli]>=1.2.0",
+    "pyyaml>=6.0.1",
+    "numpy>=1.26.0",
+    "pandas>=2.1.0",
+    "requests>=2.31.0",
+    "pydantic>=2.0.0",
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "python-multipart>=0.0.6",
+]
+
+[project.scripts]
+fitpack-mcp = "server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

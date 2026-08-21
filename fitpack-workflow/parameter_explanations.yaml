@@ -1,0 +1,101 @@
+# Parameter explanations for PDF computation
+# This file contains explanations for all parameters in the YAML configuration
+
+# Top-level configuration parameters
+parameters:
+  "grid path":
+    description: "Path to the grid files directory"
+    type: "string"
+    default: "grids"
+  
+  "ftol":
+    description: "Tolerance for fit convergence"
+    type: "float"
+    default: 1.0e-06
+  
+  "bootstrap":
+    description: "Enable bootstrap resampling"
+    type: "boolean"
+    default: false
+  
+  "flat par":
+    description: "Use flat parameter initialization"
+    type: "boolean"
+    default: false
+  
+  "dglap mode":
+    description: "DGLAP evolution mode (truncated, etc.)"
+    type: "string"
+    default: "truncated"
+  
+  "alphaSmode":
+    description: "Alpha_s evolution mode (backward/forward)"
+    type: "string"
+    default: "backward"
+    options: ["backward", "forward"]
+  
+  "order":
+    description: "Perturbative order (LO/NLO/NNLO)"
+    type: "string"
+    default: "NLO"
+    options: ["LO", "NLO", "NNLO"]
+  
+  "Q20":
+    description: "Initial scale squared (Q^2_0) in GeV^2"
+    type: "float"
+    default: 1.6129
+  
+  "nuc":
+    description: "Enable nuclear corrections"
+    type: "boolean"
+    default: true
+  
+  "tmc":
+    description: "Target mass correction scheme (AOT/none)"
+    type: "string"
+    default: "AOT"
+    options: ["AOT", "none"]
+  
+  "ht":
+    description: "Enable higher-twist corrections"
+    type: "boolean"
+    default: false
+  
+  "ht type":
+    description: "Higher-twist correction type"
+    type: "string"
+    default: "mult"
+  
+  "offpdf":
+    description: "Enable off-shell PDF effects"
+    type: "boolean"
+    default: false
+
+# Dataset parameters (for idis workflow)
+datasets:
+  idis:
+    description: "IDIS (Inclusive Deep Inelastic Scattering) dataset configuration"
+    
+    filters:
+      description: "Data filtering conditions (e.g., Q2>1.69, W2>10.0)"
+      type: "list of strings"
+      example: ["Q2>1.69", "W2>10.0"]
+    
+    xlsx:
+      description: "Mapping of dataset indices to Excel file paths"
+      type: "dictionary"
+      note: "Dataset indices correspond to experiments listed in database/idis/README.md"
+    
+    norm:
+      description: "Normalization parameters for each dataset"
+      type: "dictionary"
+      structure:
+        value: "Normalization value (typically around 1.0)"
+        min: "Minimum allowed value"
+        max: "Maximum allowed value"
+        fixed: "Whether the normalization is fixed (true) or free (false)"
+
+# PDF parameters (read-only for now)
+pdf_params:
+  description: "PDF functional form parameters"
+  note: "These parameters define the PDF functional form and are typically not modified by users in the chatbot interface"
