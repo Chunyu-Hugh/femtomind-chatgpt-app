@@ -52,7 +52,7 @@ REPLICA_PLOT_URI = "ui://femtomind/replica-plot/v2.html"
 # hundred kB; 150 replicas of one flavour is ~260 kB before rounding.
 PLOT_REPLICA_LIMIT = int(os.environ.get("FEMTOMIND_PLOT_REPLICA_LIMIT", "150"))
 
-OPERATIONS_URI = "ui://femtomind/operations/v25.html"
+OPERATIONS_URI = "ui://femtomind/operations/v26.html"
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=False, destructiveHint=False)
 WRITE_SAFE = ToolAnnotations(readOnlyHint=False, openWorldHint=False, destructiveHint=False, idempotentHint=False)
@@ -1880,6 +1880,35 @@ def add_replicas(
         match = [r for r in rows if str(r.get("batch_id")) == target]
         if not match:
             return {"error": "Could not resolve the most recent campaign."}
+
+    # Replicas are generated into the ACTIVE workspace, not the campaign's:
+    # generate_random_tasks resolves its runs directory from the caller's
+    # current remote_base. Extending a campaign that lives somewhere else
+    # therefore scatters one ensemble across two trees AND fits the new
+    # replicas against the other workspace's inputs/default.yaml — a single
+    # ensemble carrying two different configurations, which no chi-square or
+    # band computed from it would mean anything. Refuse instead.
+    def _root(p: str) -> str:
+        m = re.match(r"(.*)/runs/[^/]+/?$", str(p or ""))
+        return m.group(1) if m else ""
+    campaign_roots = {r for r in (_root(x.get("path")) for x in match) if r}
+    active_root = ""
+    cfg = _call_mcpo("/fitpack/get_hpc_account", {"chat_id": _scope(chat_id)})
+    if isinstance(cfg, dict):
+        active_root = str(cfg.get("remote_base") or "").rstrip("/")
+    if campaign_roots and active_root and active_root not in campaign_roots:
+        return {
+            "error": "This campaign lives in a different workspace.",
+            "campaign": str(match[0].get("batch_label") or target),
+            "campaign_workspace": sorted(campaign_roots),
+            "active_workspace": active_root,
+            "action": (
+                "New replicas are written into the ACTIVE workspace and fitted "
+                "against ITS inputs/default.yaml, so extending from here would "
+                "split the ensemble across two trees and two configurations. "
+                "Switch with use_workspace first, then add the replicas."
+            ),
+        }
 
     # The backend reuses the batch's stored datasets/settings, so only the batch
     # pointer and the extra replica count need to travel.

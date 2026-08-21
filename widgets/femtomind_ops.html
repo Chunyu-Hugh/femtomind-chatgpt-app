@@ -414,8 +414,17 @@
           // sign-in they just did.
           const p = pending; setPending(null);
           active = "collections"; syncTabs();
-          $("collBody").innerHTML = '<div class="spin">Running ' +
-            String(p.describe || p.tool).slice(0,80) + '…</div>';
+          // Name the workspace the run is going into. Skipping the Project tab
+          // saves the user a detour, but it must not cost them the one fact
+          // that decides whether the run is the one they meant: replicas are
+          // written into the ACTIVE workspace, not the campaign's.
+          const w = r.workspace || {};
+          const wsPath = w.remote_base || w.path || w.workspace
+            || (Array.isArray(w.items) && (w.items.find(i => i && i.path) || {}).path) || "";
+          $("collBody").innerHTML =
+            (wsPath ? '<div class="dt" style="margin-bottom:6px">Workspace <span class="mono">'
+                      + String(wsPath).slice(0,120) + '</span></div>' : '')
+            + '<div class="spin">Running ' + String(p.describe || p.tool).slice(0,80) + '…</div>';
           try{
             await call(p.tool, p.args || {});
             entered.collections = true;
