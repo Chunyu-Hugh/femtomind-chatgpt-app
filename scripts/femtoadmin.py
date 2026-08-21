@@ -10,11 +10,33 @@ and they are set up. Revoking kills their live sessions too, not just future
 sign-ins, so a departed collaborator loses access immediately.
 """
 
+import os
 import sys
 from pathlib import Path
 
 # Run from anywhere: the auth module lives in the package root above scripts/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# The service reads its environment through systemd's EnvironmentFile; this
+# script does not, so it fell back to the localhost default and printed
+# "https://localhost:8010/mcp" as the server URL on every invite. That URL is
+# the whole point of the invite — a collaborator handed it cannot connect and
+# has no way to tell the address is wrong. Load the same file first.
+for _cand in (os.environ.get("FEMTOMIND_ENV_FILE"),
+              Path.home() / "femtomind" / "env.conf",
+              Path(__file__).resolve().parent.parent / ".env"):
+    if not _cand:
+        continue
+    _p = Path(_cand)
+    if not _p.is_file():
+        continue
+    for _line in _p.read_text().splitlines():
+        _line = _line.strip()
+        if not _line or _line.startswith("#") or "=" not in _line:
+            continue
+        _k, _v = _line.split("=", 1)
+        os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
+    break
 
 import femtomind_auth as auth
 
