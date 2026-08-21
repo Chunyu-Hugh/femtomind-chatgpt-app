@@ -42,7 +42,7 @@ WIDGET_DIR = Path(__file__).parent / "widgets"
 # Widget resource URIs are cache keys: bump the version segment on any
 # breaking HTML/JS change and update the tool _meta that references them.
 JOBS_CARD_URI = "ui://femtomind/jobs-card/v1.html"
-FIT_SUMMARY_URI = "ui://femtomind/fit-summary/v1.html"
+FIT_SUMMARY_URI = "ui://femtomind/fit-summary/v9.html"
 COMPOSER_URI = "ui://femtomind/fit-composer/v1.html"
 REPLICA_PLOT_URI = "ui://femtomind/replica-plot/v2.html"
 # v2: the host can populate window.openai.toolOutput after the widget script

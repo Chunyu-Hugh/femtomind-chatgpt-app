@@ -32,38 +32,73 @@
 
   function render(out) {
     if (!out) return;
-    // Be liberal in what we accept: summary payload shapes vary slightly.
-    const s = out.summary || out.result || out;
-    const chi2   = pick(s, ['chi2_per_point', 'chi2ppt', 'chi2', 'central_chi2_per_point']);
-    const nrep   = pick(s, ['completed_replicas', 'n_replicas', 'replicas', 'good_replicas']);
-    const good   = pick(s, ['good_replicas', 'n_good']);
-    const zscore = pick(s, ['mean_global_z', 'mean_z_score', 'zscore', 'mean_global_zscore']);
-    const npts   = pick(s, ['n_points', 'total_points', 'total_data_points']);
-    const batch  = pick(out, ['batch_id']) || pick(s, ['batch_id']) || '';
+    // The payload the backend actually returns. This card was written against
+    // a shape that never existed — it looked for chi2_per_point, n_replicas,
+    // mean_global_z and top_tension_datasets, none of which the summary has
+    // ever carried — so it could not render a single result and sat on its
+    // placeholder forever. The real keys are below; the old ones are still
+    // accepted in case an older backend is on the other end.
+    const s = out.result || out.summary || out;
+    const table = s.process_table || [];
+    const total = table.find(r => String(r.process).toUpperCase() === 'TOTAL') || table[table.length - 1] || {};
+    const chi2  = pick(total, ['chi2_red']) ?? pick(s, ['chi2_per_point', 'chi2ppt', 'chi2']);
+    const zscore= pick(total, ['z_score'])  ?? pick(s, ['mean_global_z', 'mean_z_score']);
+    const npts  = pick(total, ['N_dat'])    ?? pick(s, ['n_points', 'total_points']);
+    const nrep  = pick(s, ['n_survivors', 'completed_replicas', 'n_replicas']);
+    const ntot  = pick(s, ['n_total']);
+    const batch = pick(out, ['batch_id']) || pick(s, ['batch_id']) || '';
     document.getElementById('sub').textContent = batch ? ('batch ' + batch) : '';
 
     const body = document.getElementById('body');
-    if (chi2 === undefined && nrep === undefined && !s.tension && !s.top_tension_datasets) {
+    if (chi2 === undefined && nrep === undefined) {
       body.innerHTML = '<div class="empty">' +
         (out.error ? String(out.error).slice(0, 200)
-                   : 'Summary not ready yet — the batch may still be running.') + '</div>';
+         : out.status === 'computing'
+           ? 'Computing on the cluster — ask again in a few minutes.'
+           : 'Summary not ready yet — the batch may still be running.') + '</div>';
       return;
     }
-    const chi2cls = chi2 !== undefined ? (+chi2 < 1.3 ? 'good' : 'warn') : '';
+
+    // A reduced chi-square is not "good" below 1.3 in a global fit; 1 is the
+    // target and anything past ~2 is a real tension, so flag on that instead.
+    const chi2cls = chi2 === undefined ? '' : (+chi2 < 1.5 ? 'good' : 'warn');
+    const repTxt = (nrep ?? '—') + (ntot && ntot !== nrep
+      ? ' <span style="font-size:12px;opacity:.6">of ' + ntot + '</span>' : '');
     let html = '<div class="tiles">' +
-      '<div class="tile ' + chi2cls + '"><div class="v">' + fmt(chi2, 3) + '</div><div class="k">χ² / point</div></div>' +
-      '<div class="tile"><div class="v">' + (nrep ?? '—') + (good && good !== nrep ? ' <span style="font-size:12px;opacity:.6">(' + good + ' good)</span>' : '') + '</div><div class="k">replicas</div></div>' +
-      '<div class="tile"><div class="v">' + fmt(zscore, 3) + '</div><div class="k">mean Z-score</div></div>' +
+      '<div class="tile ' + chi2cls + '"><div class="v">' + fmt(chi2, 2) + '</div><div class="k">&#967;&#178; / point</div></div>' +
+      '<div class="tile"><div class="v">' + repTxt + '</div><div class="k">replicas</div></div>' +
+      '<div class="tile"><div class="v">' + fmt(zscore, 1) + '</div><div class="k">global Z</div></div>' +
       '<div class="tile"><div class="v">' + (npts ?? '—') + '</div><div class="k">data points</div></div>' +
       '</div>';
-    const tension = s.top_tension_datasets || s.tension || [];
-    if (Array.isArray(tension) && tension.length) {
-      html += '<div class="sec">Top-tension datasets</div><table>' +
-        tension.slice(0, 5).map(t => {
-          const id = t.dataset || t.id || t.name || JSON.stringify(t).slice(0, 30);
+
+    // An ensemble can report every replica as passing and still contain one
+    // that landed far outside the rest. That is the first thing to say.
+    const sp = out.replica_spread || s.replica_spread;
+    if (sp && sp.warning) {
+      html += '<div class="sec" style="color:#b0560a">Ensemble</div>' +
+        '<div style="font-size:12px;opacity:.85">' + String(sp.warning).slice(0, 240) + '</div>';
+      if (sp.chi2_npts_median !== undefined) {
+        html += '<div style="font-size:12px;opacity:.7;margin-top:3px">&#967;&#178;/pt across replicas: '
+             + fmt(sp.chi2_npts_min, 2) + ' &ndash; ' + fmt(sp.chi2_npts_max, 2)
+             + ' (median ' + fmt(sp.chi2_npts_median, 2) + ')</div>';
+      }
+    }
+
+    // Per-dataset rows, worst first: this is where a tension is actually read.
+    const rows = (s.per_idx || s.top_tension_datasets || s.tension || []).slice();
+    if (Array.isArray(rows) && rows.length) {
+      rows.sort((a, b) => (pick(b, ['z_score', 'z']) ?? 0) - (pick(a, ['z_score', 'z']) ?? 0));
+      html += '<div class="sec">Datasets, worst tension first</div><table>' +
+        rows.slice(0, 6).map(t => {
+          const name = (t.col ? t.col + ' ' : '') + (t.obs || '') + (t.tar ? ' (' + t.tar + ')' : '')
+                       || t.dataset || t.id || t.name || '';
           const z = pick(t, ['z_score', 'zscore', 'z']);
-          const c = pick(t, ['chi2_per_point', 'chi2']);
-          return '<tr><td>' + id + '</td><td>Z ' + fmt(z, 2) + '</td><td>χ²/pt ' + fmt(c, 3) + '</td></tr>';
+          const c = pick(t, ['chi2_red', 'chi2_per_point', 'chi2']);
+          const n = pick(t, ['npts', 'N_dat']);
+          const cls = (c !== undefined && +c > 2) ? ' style="color:#b0560a"' : '';
+          return '<tr><td>' + name + '</td><td>' + (n ?? '—') + ' pts</td>'
+               + '<td' + cls + '>&#967;&#178;/pt ' + fmt(c, 2) + '</td>'
+               + '<td' + cls + '>Z ' + fmt(z, 1) + '</td></tr>';
         }).join('') + '</table>';
     }
     body.innerHTML = html;
