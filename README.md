@@ -120,7 +120,20 @@ protocol: `submit_fitting_job` takes ordinary parameters, and its guards reject
 known-bad datasets and out-of-range counts rather than values a model invented.
 Making the restriction explicit at the protocol level is the obvious next step.
 
-Fitted PDF curves cannot be drawn mid-run. A replica's `parameters.yaml` holds
-its random starting point until the fit ends, so plotting it would show a curve
-that has nothing to do with the fit. Use `get_fit_progress` for convergence
-while a campaign is still running, and `get_pdf_plots` once replicas finish.
+Curves drawn from a running campaign are a snapshot, not a result. A replica's
+`parameters.yaml` holds its randomised starting point until the fit ends, so
+mid-run curves come from the current parameter vector that the patched
+`fitlib.maxlike_jam` appends to `progress.json` on every iteration. Those
+replicas are still moving and the band will narrow; `get_pdf_plots` returns
+`n_running` alongside `n_completed` so the count can be stated rather than
+implied. Pass `include_running=False` for finished replicas only.
+
+This depends on the fitter being the patched one shipped in `fitpack_overlay/`.
+Against stock fitlib, `progress.json` carries chi-square but no parameters, and
+running replicas are skipped with a note instead of being drawn from a starting
+point that means nothing.
+
+RESMAN is bootstrapped from a full multi-distribution input card, so a PDF-only
+fit legitimately leaves the fragmentation, polarised and higher-twist families
+at their central values. Those positions do not enter a proton PDF curve; the
+worker warns only when the family actually being plotted is short of values.
