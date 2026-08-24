@@ -192,45 +192,49 @@ def start_compute(
     )
 
     # Write a launcher shell script on remote, then invoke it. This avoids all
-    # shell-quoting hazards with nohup/apptainer arg escaping.
+    # shell-quoting hazards with nohup/apptainer arg escaping — every value is
+    # additionally single-quoted so a hostile run-name (which flows from the
+    # caller's job_number) can never smuggle shell syntax into the launcher.
+    import shlex as _shlex
+    _q = lambda v: _shlex.quote(str(v))
     remote_log = f"{remote_cache}/{batch_id}.log"
     remote_pid = f"{remote_cache}/{batch_id}.pid"
     remote_launcher = f"{remote_cache}/{batch_id}.run.sh"
     runs_arg = ",".join(run_names)
     if is_iri_enabled():
         launcher_script = f"""#!/bin/bash
-# auto-generated launcher for batch {batch_id}
+# auto-generated launcher for batch {_q(batch_id)}
 apptainer exec --bind /w/ceph24,/work \\
-  --env FITPACK={remote_base} \\
+  --env FITPACK={_q(remote_base)} \\
   --env LHAPDF_DATA_PATH=/work/JAM/ccocuzza/lhapdf/python3/sets \\
-  --env PYTHONPATH={remote_base} \\
-  {SIF_PATH} \\
-  python3 {remote_worker} \\
-    --batch-id {batch_id} \\
-    --runs {runs_arg} \\
-    --remote-base {remote_base} \\
-    --output {remote_output} \\
-    --status {remote_status} \\
-    --convergence-gate {convergence_gate} \\
-  > {remote_log} 2>&1
+  --env PYTHONPATH={_q(remote_base)} \\
+  {_q(SIF_PATH)} \\
+  python3 {_q(remote_worker)} \\
+    --batch-id {_q(batch_id)} \\
+    --runs {_q(runs_arg)} \\
+    --remote-base {_q(remote_base)} \\
+    --output {_q(remote_output)} \\
+    --status {_q(remote_status)} \\
+    --convergence-gate {_q(convergence_gate)} \\
+  > {_q(remote_log)} 2>&1
 """
     else:
         launcher_script = f"""#!/bin/bash
-# auto-generated launcher for batch {batch_id}
+# auto-generated launcher for batch {_q(batch_id)}
 nohup apptainer exec --bind /w/ceph24,/work \\
-  --env FITPACK={remote_base} \\
+  --env FITPACK={_q(remote_base)} \\
   --env LHAPDF_DATA_PATH=/work/JAM/ccocuzza/lhapdf/python3/sets \\
-  --env PYTHONPATH={remote_base} \\
-  {SIF_PATH} \\
-  python3 {remote_worker} \\
-    --batch-id {batch_id} \\
-    --runs {runs_arg} \\
-    --remote-base {remote_base} \\
-    --output {remote_output} \\
-    --status {remote_status} \\
-    --convergence-gate {convergence_gate} \\
-  > {remote_log} 2>&1 &
-echo $! > {remote_pid}
+  --env PYTHONPATH={_q(remote_base)} \\
+  {_q(SIF_PATH)} \\
+  python3 {_q(remote_worker)} \\
+    --batch-id {_q(batch_id)} \\
+    --runs {_q(runs_arg)} \\
+    --remote-base {_q(remote_base)} \\
+    --output {_q(remote_output)} \\
+    --status {_q(remote_status)} \\
+    --convergence-gate {_q(convergence_gate)} \\
+  > {_q(remote_log)} 2>&1 &
+echo $! > {_q(remote_pid)}
 """
     ssh_write_file(remote_launcher, launcher_script, username=hpc_username)
 

@@ -43,3 +43,19 @@ a 30-second one. Use `-o "%i|%t"`.
 Copied to the application host and served by `mcpo`; it is not installed as a
 package. `hpc_tasks.db` lives beside the code and is **not** in this repo — it
 holds per-user run history. Back it up before any destructive operation.
+
+## Trust boundary (read before exposing anything)
+
+`server.py` performs **no transport-level authentication**: it trusts the
+`chat_id` its callers pass. The security of the whole system depends on the
+gateway in front of it. Two rules, in order:
+
+1. **`mcpo` must bind loopback only** (or otherwise enforce the same identity
+   resolution the front end does). The ChatGPT-facing server
+   (`femtomind_app.py`) is the authenticated entry point; the tools here must
+   never be reachable from the public internet directly.
+2. Tools that DO receive an identity (`compute_summary_bf`,
+   `get_summary_bf_result`) verify batch ownership against the ledger
+   (`_batch_owned_by`). Any new tool that acts on a `batch_id`/`task_path`
+   should do the same rather than trusting the argument.
+

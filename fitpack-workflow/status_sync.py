@@ -311,13 +311,17 @@ def _sync_task_statuses_inner(batch_id: str = "") -> Dict[str, Any]:
 
                     logger.info(f"Updated task {path}: {old_status} -> {new_status}")
 
-                    # Record job history when task completes
+                    # Record job history when task completes. Use the task's
+                    # own batch_id, not the sweep's filter argument: a full
+                    # sweep passes no batch_id, and recording "" broke every
+                    # later WHERE batch_id=? join (drop/redo previews, the
+                    # plot's job_history join).
                     if new_status == 'completed':
                         try:
                             from server import _record_job_history
                             _record_job_history(
                                 task_path=path,
-                                batch_id=batch_id if batch_id else "",
+                                batch_id=task.get('batch_id') or "",
                                 slurm_job_id=job_id,
                                 username=task_user,
                             )

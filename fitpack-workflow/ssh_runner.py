@@ -400,8 +400,19 @@ def ssh_run(
     timeout: int = 10,
     input_data: Optional[str] = None,
     username: Optional[str] = None,
+    quote: bool = True,
 ) -> subprocess.CompletedProcess:
-    """Execute a command on the remote HPC via ControlMaster."""
+    """Execute a command on the remote HPC via ControlMaster.
+
+    ssh concatenates the argv elements after ``--`` into ONE command line that
+    the remote login shell re-parses. Unquoted elements are therefore shell
+    words on the remote side: a path or job name containing spaces or shell
+    metacharacters would be split or executed. ``quote=True`` (the default)
+    shell-quotes every element so each argv entry arrives as exactly one
+    remote word; callers that deliberately pass a pre-quoted whole-script
+    element (e.g. ``["sh", "-c", shlex.quote(script)]``) set ``quote=False``
+    to keep it verbatim.
+    """
     if is_iri_enabled():
         return _iri_run(remote_cmd, timeout=timeout, input_data=input_data, username=username)
 
@@ -412,10 +423,11 @@ def ssh_run(
             f"SSH ControlMaster socket not found for user '{cfg['username']}': {cfg['control_path']}. "
             "Ensure the HPC connection is established."
         )
+    remote_argv = [shlex.quote(str(a)) for a in remote_cmd] if quote else [str(a) for a in remote_cmd]
     cmd = [
         "ssh", "-S", socket_path, "-o", "BatchMode=yes",
         cfg["user_host"], "--",
-    ] + remote_cmd
+    ] + remote_argv
     kwargs = dict(capture_output=True, text=True, timeout=timeout)
     if input_data is not None:
         kwargs["input"] = input_data

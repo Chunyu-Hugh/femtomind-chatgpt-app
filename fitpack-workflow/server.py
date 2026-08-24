@@ -319,6 +319,29 @@ def _username_for_task(task_path: str) -> str:
         return ""
 
 
+def _batch_owned_by(batch_id: str, chat_id: str) -> bool:
+    """Does at least one task row of this batch belong to the caller?
+
+    The server itself is unauthenticated at the transport layer (deployment
+    boundary: mcpo must bind loopback only — see README). Where a tool DOES
+    receive an identity, it must still verify that the resource it is asked
+    to act on belongs to that identity, otherwise any caller can address any
+    batch by guessing an id. An empty chat_id keeps the legacy call path
+    (internal callers) working.
+    """
+    if not batch_id or not chat_id:
+        return True
+    try:
+        with _get_db() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE batch_id = ? AND chat_id = ?",
+                (batch_id, chat_id),
+            ).fetchone()
+            return bool(row and row[0])
+    except Exception:
+        return True  # never break legacy flows on a ledger read failure
+
+
 def _require_hpc_username(chat_id: str) -> str:
     """Get HPC username or raise an error with a helpful message."""
     username = _get_hpc_username(chat_id)
@@ -3405,26 +3428,37 @@ def get_fit_results(task_path: str) -> Dict[str, Any]:
     # which compounded when the LLM fanned out over N replicas.
     import shlex
     quoted_dir = shlex.quote(task_path)
+    slurm_file = ""  # resolved below; previously referenced but never assigned
     try:
         if is_iri_enabled():
+            matched = iri_find(task_path, "slurm_*.out")
+            if not matched:
+                raise FileNotFoundError(f"No file matching slurm_*.out found in {task_path}")
+            slurm_file = matched[0]
             output = iri_tail_first_matching(task_path, "slurm_*.out", lines=120)
         else:
             remote = (
                 f'f=$(ls -1 {quoted_dir}/slurm_*.out 2>/dev/null | head -1); '
-                f'[ -n "$f" ] && tail -120 "$f" || echo __NO_SLURM_FILE__'
+                f'if [ -n "$f" ]; then echo __SLURM_FILE__$f; tail -120 "$f"; '
+                f'else echo __NO_SLURM_FILE__; fi'
             )
             # ssh joins argv into one command line and the login shell parses it
             # first — on ifarm that shell is tcsh, which chokes on $(...) and $f
             # ("Illegal variable name"). Quoting the script keeps it intact until
-            # sh actually runs it.
+            # sh actually runs it. The pre-quoted script element is passed with
+            # quote=False so ssh_run does not double-quote it.
             content = ssh_run(
-                ["sh", "-c", shlex.quote(remote)], timeout=15, username=username
+                ["sh", "-c", shlex.quote(remote)], quote=False, timeout=15, username=username
             )
             if content.returncode != 0:
                 return {"error": f"Cannot read slurm output in {task_path}: {content.stderr}"}
             output = content.stdout
             if output.strip() == "__NO_SLURM_FILE__":
                 return {"error": f"No SLURM output file found in {task_path}"}
+            if output.startswith("__SLURM_FILE__"):
+                first_line, _, rest = output.partition("\n")
+                slurm_file = first_line.replace("__SLURM_FILE__", "", 1).strip()
+                output = rest
     except FileNotFoundError:
         return {"error": f"No SLURM output file found in {task_path}"}
     except Exception as e:
@@ -4569,6 +4603,14 @@ def compute_summary_bf(
     """
     if not CHI2_BF_OK:
         return {"error": "chi2_bootstrap_false module unavailable"}
+    # Ownership gate: the batch must contain rows filed under this caller.
+    # Without it, anyone who can reach this unauthenticated transport could
+    # trigger cluster compute against a batch id they guessed.
+    if not _batch_owned_by(batch_id, chat_id):
+        return {
+            "error": "batch does not belong to this caller",
+            "batch_id": batch_id,
+        }
     hpc_username = _get_hpc_username(chat_id) if chat_id else ""
 
     # HPC connectivity preflight — must come BEFORE start_compute, because
@@ -4658,7 +4700,7 @@ def compute_summary_bf(
 
 
 @mcp.tool()
-def get_summary_bf_result(batch_id: str) -> Dict[str, Any]:
+def get_summary_bf_result(batch_id: str, chat_id: str = "") -> Dict[str, Any]:
     """Poll the bootstrap=False summary job started by `compute_summary_bf`.
 
     Returns one of:
@@ -4669,6 +4711,9 @@ def get_summary_bf_result(batch_id: str) -> Dict[str, Any]:
     """
     if not CHI2_BF_OK:
         return {"error": "chi2_bootstrap_false module unavailable"}
+    if not _batch_owned_by(batch_id, chat_id):
+        return {"status": "error", "error": "batch does not belong to this caller",
+                "batch_id": batch_id}
     return _chi2bf.check_status(batch_id)
 
 
