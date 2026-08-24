@@ -99,6 +99,7 @@ their own jobs and runs them under their own cluster account and quota. Every
 replica is stored under the researcher who submitted it, with the configuration
 that produced it and the χ² it reached, so authorship can be audited.
 
+How to bring it back if the instance is lost is in [RECOVERY.md](RECOVERY.md).
 How the running instance is put together — host, services, TLS,
 backups and the security posture — is in [DEPLOYMENT.md](DEPLOYMENT.md).
 
