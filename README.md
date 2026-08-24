@@ -99,6 +99,9 @@ their own jobs and runs them under their own cluster account and quota. Every
 replica is stored under the researcher who submitted it, with the configuration
 that produced it and the χ² it reached, so authorship can be audited.
 
+How the running instance is put together — host, services, TLS,
+backups and the security posture — is in [DEPLOYMENT.md](DEPLOYMENT.md).
+
 ## Connecting from ChatGPT
 
 The server advertises no dynamic client registration, so register it as a
