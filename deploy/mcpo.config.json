@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "fitpack": {
+      "command": "/home/ec2-user/femtomind/.venv/bin/python",
+      "args": ["/home/ec2-user/femtomind/fitpack-workflow/server.py"]
+    },
+    "hpc": {
+      "command": "/home/ec2-user/femtomind/.venv/bin/python",
+      "args": ["/home/ec2-user/femtomind/hpc-monitor/hpc_mcp_server/server.py"]
+    }
+  }
+}

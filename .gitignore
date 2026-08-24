@@ -3,6 +3,11 @@ __pycache__/
 .venv/
 *.db
 *.db-journal
+# WAL mode is on for hpc_tasks.db, and the write-ahead log routinely holds
+# rows the .db file does not — 11 of 24 at one measurement. Ignoring the
+# database without its sidecars would let a partial copy look complete.
+*.db-wal
+*.db-shm
 .env
 env.conf
 *.prev
