@@ -213,7 +213,9 @@ class MAXLIKE:
                 pmax=conf['params'][k][kk]['max']
                 if  p<pmin or p>pmax:
                     print ('%s-%s out of limits. '%(k,kk))
-                    sys.exit()
+                    # Non-zero exit: an out-of-bounds start must fail the
+                    # SLURM job, not be recorded as a completed replica.
+                    sys.exit(1)
 
         for k in conf['datasets']:
             for kk in conf['datasets'][k]['norm']:
@@ -222,7 +224,7 @@ class MAXLIKE:
                 pmax=conf['datasets'][k]['norm'][kk]['max']
                 if  p<pmin or p>pmax:
                     print ('%s-%s out of limits. '%(k,kk))
-                    sys.exit()
+                    sys.exit(1)
 
     def get_conf(self,_conf,step):
 
@@ -444,7 +446,21 @@ class MAXLIKE:
         #--run fit
         self.history = deque(maxlen = 2)
         self.history.append(copy.deepcopy(guess))
-        fit = least_squares(self.get_residuals, guess,bounds=bounds,method='trf',ftol=conf['ftol'])
+        # The UI and the schema advertise maxiter and optimizer; honour them
+        # instead of silently ignoring them. least_squares bounds support
+        # limits the method to trf/dogbox.
+        ls_kwargs = dict(bounds=bounds, ftol=conf['ftol'])
+        method = str(conf.get('method') or 'trf').lower()
+        if method not in ('trf', 'dogbox'):
+            method = 'trf'
+        ls_kwargs['method'] = method
+        try:
+            max_nfev = int(conf.get('maxiter') or 0)
+        except (TypeError, ValueError):
+            max_nfev = 0
+        if max_nfev > 0:
+            ls_kwargs['max_nfev'] = max_nfev
+        fit = least_squares(self.get_residuals, guess, **ls_kwargs)
         sol = fit.x
 
         self.parman.set_new_params(sol,initial=True)

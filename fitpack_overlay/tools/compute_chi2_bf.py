@@ -308,7 +308,13 @@ def main():
                     val   = np.asarray(t["value"])
                     alpha = np.asarray(t["alpha"])
                     thy   = np.asarray(t["prediction"])
-                    r = (val - thy) / alpha
+                    # Same NaN/zero-error guards as fitpack-workflow's copy —
+                    # keep the two files in sync until they are consolidated.
+                    good = (np.isfinite(val) & np.isfinite(thy)
+                            & np.isfinite(alpha) & (alpha > 0))
+                    if not bool(good.any()):
+                        continue
+                    r = (val[good] - thy[good]) / alpha[good]
                     c = float(np.sum(r ** 2))
                     n = int(r.size)
                     key = (rxn, idx)
@@ -358,8 +364,8 @@ def main():
         process_table.append({
             "process": "TOTAL",
             "N_dat": total_npts,
-            "chi2_red": total_chi2 / total_npts,
-            "z_score": zscore(total_chi2, total_npts),
+            "chi2_red": (total_chi2 / total_npts) if total_npts else None,
+            "z_score": zscore(total_chi2, total_npts) if total_npts else None,
         })
 
         per_idx = []

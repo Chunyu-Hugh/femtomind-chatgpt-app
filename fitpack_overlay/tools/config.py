@@ -35,7 +35,10 @@ def load_config(fname):
             loaded = _load_python(fname)
     except Exception as exc:
         print(f'ERR parsing the input card "{fname}": {exc}')
-        sys.exit()
+        # Exit NON-zero: a bad input card must fail the SLURM job. A bare
+        # sys.exit() exits 0 and the scheduler reports success, which is how
+        # broken cards silently produced "completed" replicas.
+        sys.exit(1)
 
     conf.update(loaded)
 
