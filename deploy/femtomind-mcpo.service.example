@@ -1,0 +1,16 @@
+[Unit]
+Description=FemtoMind mcpo gateway (fitpack + hpc MCP servers)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ec2-user
+WorkingDirectory=/home/ec2-user/femtomind
+EnvironmentFile=/home/ec2-user/femtomind/env.conf
+ExecStart=/home/ec2-user/femtomind/.venv/bin/mcpo --port 8000 --config /home/ec2-user/femtomind/mcpo.config.json
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

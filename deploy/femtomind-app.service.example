@@ -1,21 +1,23 @@
-# systemd unit for the MCP server.
+# FemtoMind ChatGPT MCP app + OAuth server.
 #
 # KillMode=process is load-bearing: the SSH ControlMasters that hold each
 # collaborator's cluster session are children of this process, and the default
 # control-group mode would kill them on every restart, forcing everyone to
 # re-enter a one-time code.
-
 [Unit]
 Description=FemtoMind ChatGPT MCP app
-After=network-online.target
+After=femtomind-mcpo.service
+Requires=femtomind-mcpo.service
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/femtomind
-EnvironmentFile=/opt/femtomind/env.conf
-ExecStart=/opt/femtomind/.venv/bin/python /opt/femtomind/femtomind-chatgpt-app/femtomind_app.py
-Restart=on-failure
+User=ec2-user
+WorkingDirectory=/home/ec2-user/femtomind
+EnvironmentFile=/home/ec2-user/femtomind/env.conf
+ExecStart=/home/ec2-user/femtomind/.venv/bin/python /home/ec2-user/femtomind/femtomind-chatgpt-app/femtomind_app.py
 KillMode=process
+Restart=always
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target

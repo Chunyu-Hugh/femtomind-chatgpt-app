@@ -47,12 +47,20 @@ An AWS Lightsail instance is enough — the measured footprint is small:
   env.conf                   systemd EnvironmentFile — see Configuration
   mcpo.config.json           which MCP servers the gateway starts
   femtomind-chatgpt-app/     this repository
-  fitpack-workflow/          the QCD backend (also in this repository)
-  hpc-monitor/               cluster status MCP server
+  fitpack-workflow/          the QCD backend (nested in this repo, a sibling here)
+  hpc-monitor/               cluster status MCP server (nested in this repo, a sibling here)
   backup_db.py               daily snapshot of both databases
   backups/                   snapshots, seven kept per database
   duckdns_sync.sh            keeps the DNS record pointed here
 ```
+
+> **Repo vs. host layout.** In this repository, `fitpack-workflow/` and
+> `hpc-monitor/` are *nested* under `femtomind-chatgpt-app/`. On the host they
+> are *siblings* of `femtomind-chatgpt-app/`, and `mcpo.config.json` points at
+> the sibling paths. When deploying a fix to the backend, copy it to
+> `~/femtomind/fitpack-workflow/` (and `~/femtomind/hpc-monitor/`), **not**
+> into `femtomind-chatgpt-app/` — otherwise the app and the gateway run
+> different code.
 
 ## Build from scratch
 
@@ -87,13 +95,14 @@ femtomind.duckdns.org {
 and RFC 8414 authorization-server documents that the client reads before it
 will attempt OAuth.
 
-**5. Services.** Three units, examples in `deploy/`. Each takes
+**5. Services.** Four units plus one timer, examples in `deploy/`. Each takes
 `EnvironmentFile=/home/ec2-user/femtomind/env.conf` and `Restart=always`.
 
 ```
 femtomind-app      .venv/bin/python femtomind-chatgpt-app/femtomind_app.py
 femtomind-mcpo     .venv/bin/mcpo --port 8000 --config mcpo.config.json
 femtomind-tunnel   tunnel-client run --profile femtomind
+femtomind-backup   .venv/bin/python backup_db.py          (oneshot, on timer)
 ```
 
 > **`femtomind-app` must keep `KillMode=process`.** The SSH ControlMasters that

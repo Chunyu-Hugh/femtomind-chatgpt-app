@@ -1,0 +1,16 @@
+[Unit]
+Description=OpenAI Secure MCP Tunnel for FemtoMind
+After=femtomind-app.service
+Requires=femtomind-app.service
+
+[Service]
+Type=simple
+User=ec2-user
+WorkingDirectory=/home/ec2-user
+# the runtime key lives in a 600 file, not in the unit
+ExecStart=/bin/bash -lc "CONTROL_PLANE_API_KEY=$(cat /home/ec2-user/.config/tunnel-client/key) CONTROL_PLANE_TUNNEL_ID=tunnel_<YOUR_TUNNEL_ID> /home/ec2-user/.local/bin/tunnel-client run --profile femtomind --log.level=info --log.format=struct-text"
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

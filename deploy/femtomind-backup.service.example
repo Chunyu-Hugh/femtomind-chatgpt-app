@@ -1,0 +1,7 @@
+[Unit]
+Description=Daily backup of the FemtoMind task database
+
+[Service]
+Type=oneshot
+User=ec2-user
+ExecStart=/home/ec2-user/femtomind/.venv/bin/python /home/ec2-user/femtomind/backup_db.py
