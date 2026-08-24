@@ -35,15 +35,22 @@
   <div class="raw" id="raw"></div>
 </div>
 <script>
+  const esc = (s) => String(s === undefined || s === null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   function render(out) {
     if (!out) return;
+    // The host broadcasts tool results for EVERY call in the conversation.
+    // Only paint payloads that are actually this tool's shape, so an
+    // unrelated result can never wipe a live queue table.
+    if (!Array.isArray(out.jobs) && out.error === undefined && out.raw === undefined) return;
     const jobs = out.jobs || [];
     const body = document.getElementById('body');
     document.getElementById('count').textContent =
       jobs.length ? jobs.length + ' job' + (jobs.length > 1 ? 's' : '') : '';
     if (!jobs.length) {
       body.innerHTML = '<div class="empty">Queue is empty' +
-        (out.error ? ' — ' + String(out.error).slice(0, 160) : '') + '</div>';
+        (out.error ? ' — ' + esc(String(out.error).slice(0, 160)) : '') + '</div>';
       const raw = document.getElementById('raw');
       if (out.raw) { raw.textContent = out.raw; raw.style.display = 'block'; }
       return;
@@ -52,11 +59,12 @@
     body.innerHTML = '<table><thead><tr>' +
       '<th>Job</th><th>Name</th><th>User</th><th>State</th><th>Time</th><th>Left</th>' +
       '</tr></thead><tbody>' +
-      jobs.map(j =>
-        '<tr><td>' + j.job_id + '</td><td class="name" title="' + j.name + '">' + j.name +
-        '</td><td>' + j.user + '</td><td><span class="state ' + cls(j.state) + '">' + j.state +
-        '</span></td><td>' + j.time + '</td><td>' + (j.time_left || '—') + '</td></tr>'
-      ).join('') + '</tbody></table>';
+      jobs.map(j => {
+        const name = esc(j.name || '—');
+        return '<tr><td>' + esc(j.job_id) + '</td><td class="name" title="' + name + '">' + name +
+          '</td><td>' + esc(j.user) + '</td><td><span class="state ' + cls(j.state) + '">' + esc(j.state) +
+          '</span></td><td>' + esc(j.time) + '</td><td>' + esc(j.time_left || '—') + '</td></tr>';
+      }).join('') + '</tbody></table>';
   }
 
   // Primary: ChatGPT host bridge exposes the tool output directly.

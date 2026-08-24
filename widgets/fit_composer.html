@@ -120,12 +120,8 @@
         <select id="jobOpt"><option value="trf">trf</option></select></div>
     </div>
     <div class="field">
-      <div class="label">Parameter initialization</div>
-      <label class="inline"><input type="radio" name="pinit" value="default" checked /> Use default JAM starting values</label>
-      <label class="inline" style="margin-top:6px"><input type="radio" name="pinit" value="random_within_bounds" /> Randomize within parameter bounds</label>
-    </div>
-    <div class="field">
       <label class="inline"><input type="checkbox" class="chk" id="jobBootstrap" checked /> Inference: ensemble approach (bootstrap pseudo-data replicas)</label>
+      <div class="hint">Starting values are sampled randomly within each parameter's bounds — that is what makes every replica an independent fit.</div>
     </div>
   </div>
 
@@ -212,36 +208,50 @@
       grp.innerHTML = "<h3>" + rk.toUpperCase() + "</h3>";
       (catalog[rk] || []).forEach((d) => {
         const bp = d.blueprint || d.enabled === false;
+        const key = rk + ":" + d.id;   // idis and dy share numeric ids — never key on id alone
         const row = document.createElement("label");
         row.className = "ds" + (bp ? " blueprint" : "");
         row.innerHTML =
-          '<input type="checkbox" class="chk" ' + (selected.has(d.id) ? "checked " : "") +
-          (bp ? "disabled " : "") + 'data-id="' + d.id + '">' +
+          '<input type="checkbox" class="chk" ' + (selected.has(key) ? "checked " : "") +
+          (bp ? "disabled " : "") + 'data-id="' + key + '">' +
           '<span class="id">' + d.id + '</span><span>' + (d.label || d.experiment || d.id) + '</span>';
         const cb = row.querySelector("input");
-        if (!bp) cb.onchange = () => { cb.checked ? selected.add(d.id) : selected.delete(d.id); persist(); };
+        if (!bp) cb.onchange = () => { cb.checked ? selected.add(key) : selected.delete(key); persist(); };
         grp.appendChild(row);
       });
       c.appendChild(grp);
     });
   }
 
+  function selGroups() {
+    const groups = {};
+    selected.forEach(k => {
+      const idx = k.indexOf(":"), rk = idx > 0 ? k.slice(0, idx) : "idis", id = idx > 0 ? k.slice(idx + 1) : k;
+      (groups[rk] = groups[rk] || []).push(id);
+    });
+    return groups;
+  }
+
   function buildCard() {
-    const pinit = (document.querySelector('input[name=pinit]:checked') || {}).value || "default";
+    const groups = selGroups();
+    const fams = []; Object.keys(catalog).forEach(rk => { if (groups[rk] && groups[rk].length) fams.push([rk, groups[rk]]); });
+    if (!fams.length) fams.push(["idis", []]);
+    const replicas = (() => { const n = parseInt($("jobReplicas").value, 10); return (isFinite(n) && n >= 1 && n <= 200) ? n : 10; })();
+    const maxIterations = (() => { const n = parseInt($("jobMaxIter").value, 10); return (isFinite(n) && n >= 1) ? n : 500; })();
     return {
       object: { type: objectType, label: (OBJECTS.find(o => o.value === objectType) || {}).label || objectType },
-      observable: "idis",
-      selected_ids: Array.from(selected),
+      observable: fams[0][0],
+      selected_ids: fams[0][1],
+      extra_observables: fams.slice(1).map(([rk, ids]) => ({ observable: rk, selected_ids: ids })),
       qcd: {
         order: $("qcdOrder").value, Q20: parseFloat($("qcdQ20").value),
         tmc: $("qcdTmc").value, higherTwist: $("qcdHT").checked,
         dglapMode: $("qcdDglap").value, asMode: $("qcdAs").value,
       },
-      parameters: { initialization: pinit },
       job: {
         campaignName: $("jobName").value.trim() || "chatgpt-fit",
-        replicas: parseInt($("jobReplicas").value, 10) || 10,
-        maxIterations: parseInt($("jobMaxIter").value, 10) || 500,
+        replicas: replicas,
+        maxIterations: maxIterations,
         tolerance: $("jobTol").value.trim() || "1e-6",
         optimizer: $("jobOpt").value,
         bootstrap: $("jobBootstrap").checked,
@@ -251,15 +261,16 @@
 
   function renderReview() {
     const card = buildCard();
+    const famTxt = [[card.observable, card.selected_ids.length], ...card.extra_observables.map(e => [e.observable, e.selected_ids.length])]
+      .map(([rk, n]) => rk + ": " + n).join("  +  ");
     const rows = [
       ["Object", card.object.label],
-      ["Datasets", card.selected_ids.length ? card.selected_ids.join(", ") : "(none selected)"],
+      ["Datasets", famTxt || "(none selected)"],
       ["Order / Q₀²", card.qcd.order + "  /  " + card.qcd.Q20],
       ["TMC / DGLAP / αS", card.qcd.tmc + " / " + card.qcd.dglapMode + " / " + card.qcd.asMode +
                             (card.qcd.higherTwist ? "  +HT" : "")],
       ["Replicas", card.job.replicas],
       ["Max iter / tol", card.job.maxIterations + "  /  " + card.job.tolerance],
-      ["Param init", card.parameters.initialization === "default" ? "default JAM" : "random within bounds"],
       ["Campaign", card.job.campaignName],
     ];
     $("reviewBox").innerHTML = rows.map(r =>
@@ -295,8 +306,18 @@
         count: card.job.replicas,
         job_number: "001",
         batch_label: card.job.campaignName,
-        advanced: { qcd: card.qcd, parameters: card.parameters, job: card.job, object: card.object },
+        extra_observables: card.extra_observables.length ? card.extra_observables : undefined,
+        advanced: { qcd: card.qcd, job: card.job, object: card.object },
       });
+      // The server rejects with {error:...} dicts, not thrown exceptions.
+      // Locking the composer on a rejection showed "Submitted ✓" while
+      // nothing ran on the cluster.
+      const r = (res && res.structuredContent) || res;
+      if (r && (r.error || r.status === "error")) {
+        $("globalErr").textContent = String(r.error || r.message || "The submission was rejected.").slice(0, 400);
+        $("nextBtn").disabled = false; $("nextBtn").textContent = "Submit fitting job";
+        return;
+      }
       submitted = true;
       persist();
       sync();
@@ -338,7 +359,11 @@
   function restoreCard(st) {
     try {
       if (st.object && st.object.type) objectType = st.object.type;
-      if (Array.isArray(st.selected_ids)) st.selected_ids.forEach((id) => selected.add(id));
+      if (Array.isArray(st.selected_ids)) st.selected_ids.forEach((k) => {
+        // Legacy state stored bare ids (idis-only era); namespace them so
+        // they cannot collide with dy selections sharing the same id.
+        selected.add(k.includes(":") ? k : ("idis:" + k));
+      });
       const q = st.qcd || {};
       if ($("qcdOrder") && q.order) $("qcdOrder").value = q.order;
       if ($("qcdQ20") && q.Q20 != null) $("qcdQ20").value = q.Q20;
@@ -346,11 +371,6 @@
       if ($("qcdDglap") && q.dglapMode) $("qcdDglap").value = q.dglapMode;
       if ($("qcdAs") && q.asMode) $("qcdAs").value = q.asMode;
       if ($("qcdHT")) $("qcdHT").checked = !!q.higherTwist;
-      const p = st.parameters || {};
-      if (p.initialization) {
-        const r = document.querySelector('input[name=pinit][value="' + p.initialization + '"]');
-        if (r) r.checked = true;
-      }
       const j = st.job || {};
       if ($("jobName") && j.campaignName != null) $("jobName").value = j.campaignName;
       if ($("jobReplicas") && j.replicas != null) $("jobReplicas").value = j.replicas;

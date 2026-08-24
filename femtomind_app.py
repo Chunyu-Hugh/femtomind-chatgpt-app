@@ -27,6 +27,7 @@ import re
 import secrets
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -41,10 +42,10 @@ WIDGET_DIR = Path(__file__).parent / "widgets"
 
 # Widget resource URIs are cache keys: bump the version segment on any
 # breaking HTML/JS change and update the tool _meta that references them.
-JOBS_CARD_URI = "ui://femtomind/jobs-card/v1.html"
-FIT_SUMMARY_URI = "ui://femtomind/fit-summary/v9.html"
-COMPOSER_URI = "ui://femtomind/fit-composer/v1.html"
-REPLICA_PLOT_URI = "ui://femtomind/replica-plot/v2.html"
+JOBS_CARD_URI = "ui://femtomind/jobs-card/v2.html"
+FIT_SUMMARY_URI = "ui://femtomind/fit-summary/v10.html"
+COMPOSER_URI = "ui://femtomind/fit-composer/v2.html"
+REPLICA_PLOT_URI = "ui://femtomind/replica-plot/v3.html"
 # v2: the host can populate window.openai.toolOutput after the widget script
 # runs; v1 painted once and stuck on "not connected". Bumping the version is
 # what forces ChatGPT to drop its cached copy of the HTML.
@@ -52,7 +53,7 @@ REPLICA_PLOT_URI = "ui://femtomind/replica-plot/v2.html"
 # hundred kB; 150 replicas of one flavour is ~260 kB before rounding.
 PLOT_REPLICA_LIMIT = int(os.environ.get("FEMTOMIND_PLOT_REPLICA_LIMIT", "150"))
 
-OPERATIONS_URI = "ui://femtomind/operations/v28.html"
+OPERATIONS_URI = "ui://femtomind/operations/v29.html"
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=False, destructiveHint=False)
 WRITE_SAFE = ToolAnnotations(readOnlyHint=False, openWorldHint=False, destructiveHint=False, idempotentHint=False)
@@ -114,15 +115,38 @@ def _hpc_user_for_scope(default: str = "") -> str:
 
 
 def _call_mcpo(path: str, payload: dict) -> Any:
-    """POST to the mcpo gateway and return parsed JSON (or error dict)."""
+    """POST to the mcpo gateway and return parsed JSON (or error dict).
+
+    Every tool invocation funnels through here, so it doubles as the usage
+    meter: with FEMTOMIND_USAGE_LOG set, one JSONL line per backend call
+    (timestamp, caller, tool path, latency, error flag) is appended. That is
+    the raw material for the token-savings position paper — the meetings
+    agreed to report token consumption as a success metric, and per-call
+    counts are the number to divide by.
+    """
+    _started = time.monotonic()
     try:
         r = httpx.post(f"{MCPO_BASE}{path}", json=payload, timeout=60.0)
         r.raise_for_status()
-        return r.json()
+        result = r.json()
     except httpx.HTTPStatusError as e:
-        return {"error": f"backend {e.response.status_code}: {e.response.text[:300]}"}
+        result = {"error": f"backend {e.response.status_code}: {e.response.text[:300]}"}
     except Exception as e:  # connection refused, timeout, bad JSON …
-        return {"error": f"backend unreachable: {type(e).__name__}: {e}"}
+        result = {"error": f"backend unreachable: {type(e).__name__}: {e}"}
+    usage_log = os.environ.get("FEMTOMIND_USAGE_LOG")
+    if usage_log:
+        try:
+            with open(usage_log, "a") as fh:
+                fh.write(json.dumps({
+                    "ts": int(time.time()),
+                    "user": _scope(),
+                    "path": path,
+                    "ms": round((time.monotonic() - _started) * 1000, 1),
+                    "error": isinstance(result, dict) and "error" in result,
+                }) + "\n")
+        except OSError:
+            pass
+    return result
 
 
 def _hpc_status(chat_id: str = "chatgpt-composer") -> dict[str, Any]:
@@ -346,37 +370,35 @@ mcp = FastMCP(
 
 # ─── widgets ────────────────────────────────────────────────────────────────
 
-@mcp.resource(
-    JOBS_CARD_URI,
-    name="jobs-card",
-    description="Inline card rendering the SLURM job table",
-    mime_type="text/html+skybridge",
-    meta=WIDGET_RESOURCE_META,
-)
-def jobs_card() -> str:
-    return (WIDGET_DIR / "jobs_card.html").read_text()
+def _register_versioned_resource(
+    base_uri: str, name: str, description: str, html_path: str
+) -> None:
+    """Serve today's HTML under the current URI AND every retired version.
+
+    A client holding a stale tool list keeps asking for the URI it cached; if
+    that URI is gone it shows "Failed to fetch template". Keeping old URIs
+    alive (all returning today's HTML) makes a version bump non-breaking.
+    """
+    current = int(base_uri.rsplit("/v", 1)[1].split(".")[0])
+    for v in range(1, current + 1):
+        uri = f"{base_uri.rsplit('/v', 1)[0]}/v{v}.html"
+        mcp.resource(
+            uri,
+            name=f"{name}-v{v}",
+            description=description,
+            mime_type="text/html+skybridge",
+            meta=WIDGET_RESOURCE_META,
+        )(lambda: (WIDGET_DIR / html_path).read_text())
 
 
-@mcp.resource(
-    FIT_SUMMARY_URI,
-    name="fit-summary-card",
-    description="Inline card rendering fit quality metrics for a batch",
-    mime_type="text/html+skybridge",
-    meta=WIDGET_RESOURCE_META,
-)
-def fit_summary_card() -> str:
-    return (WIDGET_DIR / "fit_summary_card.html").read_text()
+_register_versioned_resource(
+    JOBS_CARD_URI, "jobs-card", "Inline card rendering the SLURM job table", "jobs_card.html")
+_register_versioned_resource(
+    FIT_SUMMARY_URI, "fit-summary-card", "Inline card rendering fit quality metrics for a batch", "fit_summary_card.html")
 
 
-@mcp.resource(
-    COMPOSER_URI,
-    name="fit-composer",
-    description="Interactive form for configuring and submitting a fitting campaign",
-    mime_type="text/html+skybridge",
-    meta=WIDGET_RESOURCE_META,
-)
-def fit_composer() -> str:
-    return (WIDGET_DIR / "fit_composer.html").read_text()
+_register_versioned_resource(
+    COMPOSER_URI, "fit-composer", "Interactive form for configuring and submitting a fitting campaign", "fit_composer.html")
 
 
 def _register_replica_plot_widget() -> None:
@@ -564,7 +586,7 @@ def get_fit_summary(batch_id: str) -> dict[str, Any]:
     gate filtered them. When it carries a warning, lead with that: a campaign can
     report every replica as passing and still contain one that landed far outside
     the rest."""
-    raw = _call_mcpo("/fitpack/get_summary_bf_result", {"batch_id": batch_id})
+    raw = _call_mcpo("/fitpack/get_summary_bf_result", {"batch_id": batch_id, "chat_id": _scope()})
     if isinstance(raw, dict) and str(raw.get("status")) != "not_found":
         return _compact_summary(raw)
     # Never computed for this batch — start it. compute_summary_bf REQUIRES a
@@ -576,7 +598,7 @@ def get_fit_summary(batch_id: str) -> dict[str, Any]:
         "/fitpack/compute_summary_bf",
         {"batch_id": batch_id, "chat_id": _scope()},
     )
-    retry = _call_mcpo("/fitpack/get_summary_bf_result", {"batch_id": batch_id})
+    retry = _call_mcpo("/fitpack/get_summary_bf_result", {"batch_id": batch_id, "chat_id": _scope()})
     if isinstance(retry, dict) and str(retry.get("status")) != "not_found":
         return _compact_summary(retry)
     return {
@@ -1431,6 +1453,10 @@ def _group_campaigns(rows: list[Any]) -> list[dict[str, Any]]:
             "campaign": r.get("batch_label") or "",
             "replicas": 0, "completed": 0, "running": 0, "failed": 0,
             "submitted_at": None, "finished_at": None,
+            # First failed replica's path: the Collections tab hands it to
+            # explain_failure so "failed" never leaves the user digging through
+            # SLURM logs by hand.
+            "failed_path": None,
         })
         if not g["campaign"]:
             g["campaign"] = r.get("batch_label") or ""
@@ -1449,6 +1475,8 @@ def _group_campaigns(rows: list[Any]) -> list[dict[str, Any]]:
             g["completed"] += 1
         else:
             g["failed"] += 1
+            if g["failed_path"] is None and r.get("path"):
+                g["failed_path"] = r["path"]
         # created_at/submitted_at/completed_at are UTC; updated_at is not, so it
         # is left out of the comparison rather than mixing clocks.
         first = r.get("submitted_at") or r.get("created_at")
@@ -1768,49 +1796,74 @@ def submit_fitting_job(
     job_number: str = "001",
     batch_label: str = "chatgpt-composer",
     advanced: Optional[dict[str, Any]] = None,
+    extra_observables: Optional[list[dict[str, Any]]] = None,
     chat_id: str = "chatgpt-composer",
     continue_chain: bool = False,
 ) -> dict[str, Any]:
     """Submit a fitting campaign to the HPC cluster. Intended to be called BY
     THE COMPOSER FORM with the user's exact selections — never invent
     selected_ids, count, or advanced settings yourself; open the composer
-    instead. `advanced` carries the QCD settings, parameter initialization,
-    and job config the user chose in the form (order/Q20/TMC/DGLAP/alphaS,
-    max iterations, tolerance, optimizer, campaign name, …).
+    instead. `advanced` carries the QCD settings and job config the user chose
+    in the form (order/Q20/TMC/DGLAP/alphaS, max iterations, tolerance,
+    optimizer, campaign name, …).
 
     By default each submission is a self-contained fit: the form shows a full
     dataset list, so what the user sees is what runs. Set continue_chain=True
     only for a deliberate staged analysis, where this step should INHERIT the
-    previous batch's datasets and add to them."""
+    previous batch's datasets and add to them.
+
+    When the selection spans several reaction families (e.g. idis + dy), the
+    composer groups it and passes each additional family through
+    `extra_observables` — the backend fits them jointly in ONE SLURM
+    submission instead of mislabeling them under the primary observable."""
     if not selected_ids:
         return {"error": "selected_ids is empty — open the composer and let the user pick datasets"}
-    if observable == "idis":
-        blocked = [i for i in selected_ids if str(i) in _IDIS_UNUSABLE]
-        if blocked:
-            # One of these anywhere in the selection fails the entire batch on
-            # the cluster, so refuse here rather than burning the SLURM jobs.
-            return {
-                "error": (
-                    "These datasets cannot be fitted — their tables have no 'col' "
-                    f"column and the job would fail on the cluster: {', '.join(map(str, blocked))}. "
-                    "Deselect them and submit again."
-                ),
-                "unusable_datasets": blocked,
-            }
+    # job_number becomes a directory-name prefix and reaches remote shells via
+    # the backend's launcher scripts: restrict it to a harmless charset so it
+    # can never smuggle shell syntax. Same for batch_label, which also becomes
+    # the SLURM job name.
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,16}", job_number or "001"):
+        return {"error": "job_number may only contain letters, digits, dots, dashes or underscores (max 16)"}
+    label = str(batch_label or "").strip()
+    if not label or len(label) > 64 or "\n" in label or "\r" in label:
+        return {"error": "batch_label must be 1–64 characters on one line"}
+    for family in ({"observable": observable, "selected_ids": selected_ids},
+                   *([e for e in (extra_observables or []) if isinstance(e, dict)])):
+        fam_obs = str(family.get("observable") or "")
+        fam_ids = [str(i) for i in (family.get("selected_ids") or [])]
+        if not re.fullmatch(r"[a-z0-9_-]{1,32}", fam_obs):
+            return {"error": f"Invalid observable {fam_obs!r}."}
+        if not fam_ids:
+            return {"error": f"empty selected_ids for observable {fam_obs!r}"}
+        if fam_obs == "idis":
+            blocked = [i for i in fam_ids if i in _IDIS_UNUSABLE]
+            if blocked:
+                # One of these anywhere in the selection fails the entire batch on
+                # the cluster, so refuse here rather than burning the SLURM jobs.
+                return {
+                    "error": (
+                        "These datasets cannot be fitted — their tables have no 'col' "
+                        f"column and the job would fail on the cluster: {', '.join(blocked)}. "
+                        "Deselect them and submit again."
+                    ),
+                    "unusable_datasets": blocked,
+                }
     if not 1 <= count <= 200:
         return {"error": "count (replicas) must be between 1 and 200"}
     payload = {
         "observable": observable,
-        "selected_ids": selected_ids,
+        "selected_ids": [str(i) for i in selected_ids],
         "count": count,
         "job_number": job_number,
-        "batch_label": batch_label,
+        "batch_label": label,
         "chat_id": _scope(chat_id),
         # Without this the backend treats every submit as the NEXT STEP of a
         # chain and INHERITS the previous batch's datasets, so a form showing 3
         # datasets can silently run 8 — including ones the user deselected.
         "fresh_start": not continue_chain,
     }
+    if extra_observables:
+        payload["extra_observables"] = extra_observables
     mapped = _to_advanced_payload(advanced)
     if mapped:
         payload["advanced"] = mapped
@@ -2098,7 +2151,10 @@ def get_fit_progress(batch_id: str = "", chat_id: str = "chatgpt-composer") -> d
     blob = base64.b64encode(_PROGRESS_AGG.encode()).decode()
     # base64 keeps the script clear of ifarm's tcsh login shell; the run list
     # rides in on stdin so a thousand names never touch the command line.
-    cmd = f"echo {blob} | base64 -d > /tmp/_fm_agg.py && python3 /tmp/_fm_agg.py"
+    # mktemp + cleanup: a fixed /tmp path meant two collaborators polling at
+    # once overwrote each other's script and left droppings on the login node.
+    cmd = (f"T=$(mktemp /tmp/_fm_agg.XXXXXX.py) && "
+           f"echo {blob} | base64 -d > \"$T\" && python3 \"$T\"; rc=$?; rm -f \"$T\"; exit $rc")
     try:
         r = subprocess.run(
             ["ssh", "-S", socket, f"{username}@{IFARM_HOST}", "sh", "-c", f"'{cmd}'"],
@@ -2127,12 +2183,16 @@ def get_fit_progress(batch_id: str = "", chat_id: str = "chatgpt-composer") -> d
     return agg
 
 
-@mcp.tool(annotations=WRITE_SAFE, structured_output=True)
-def echo_write_test(text: str = "hello") -> dict[str, Any]:
-    """Harmless connectivity test for write-annotated tools. Echoes the input
-    back; changes nothing. Used to check whether this ChatGPT plan permits
-    write tools."""
-    return {"echo": text, "write_tools_work": True}
+# Dev-only connectivity probe; registered only when explicitly enabled so the
+# production tool surface stays free of test scaffolding.
+if os.environ.get("FEMTOMIND_ENABLE_TEST_TOOL", "").lower() in ("1", "true", "yes"):
+
+    @mcp.tool(annotations=WRITE_SAFE, structured_output=True)
+    def echo_write_test(text: str = "hello") -> dict[str, Any]:
+        """Harmless connectivity test for write-annotated tools. Echoes the input
+        back; changes nothing. Used to check whether this ChatGPT plan permits
+        write tools."""
+        return {"echo": text, "write_tools_work": True}
 
 
 # ─── entrypoint ─────────────────────────────────────────────────────────────

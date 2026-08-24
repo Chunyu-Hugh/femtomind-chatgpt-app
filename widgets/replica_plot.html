@@ -142,6 +142,10 @@
 
   function render(out) {
     if (!out || !out.curves_inline) { $("err").textContent = "No plot data received."; return; }
+    // A good render clears any earlier error/mock banner — a transient
+    // "No plot data received" must not sit under a live plot forever.
+    $("err").textContent = "";
+    $("mockNote").style.display = "none";
     const ci = out.curves_inline;
     const params = (out.spec && out.spec.params) || {};
     const panelState = (out.spec && out.spec.panel_state) || {};
@@ -195,8 +199,14 @@
   }
   function paint() {
     const raw = window.openai && window.openai.toolOutput;
-    if (raw) { render(unwrap(raw)); return true; }
-    return false;
+    if (!raw) return false;
+    const v = unwrap(raw);
+    // The host broadcasts the latest tool output for EVERY call in the
+    // conversation. Only repaint when the payload is actually this tool's
+    // plot shape, otherwise a follow-up tool call (e.g. list_campaigns)
+    // would overwrite a perfectly good render with "No plot data received".
+    if (v && v.curves_inline) { render(v); return true; }
+    return true;   // payload exists but is not ours — keep the current plot
   }
   if (!paint()) {
     render(null);

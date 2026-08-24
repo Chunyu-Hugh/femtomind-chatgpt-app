@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import html
 import os
 import secrets
 import sqlite3
@@ -50,6 +51,13 @@ ISSUER = f"https://{PUBLIC_HOST}" if not PUBLIC_HOST.startswith("localhost") els
 # older is far more likely to be a replay than a slow user.
 AUTH_CODE_TTL_S = 300
 TOKEN_TTL_S = int(os.environ.get("FEMTOMIND_TOKEN_TTL_S", str(90 * 24 * 3600)))
+
+# Per (client-ip, invite-code) failed-attempt ledger for the consent form.
+# In-memory on purpose: single-process uvicorn, and a restart clearing it is
+# harmless. Behind a TLS proxy all attempts share the proxy IP, which only
+# makes the lockout stricter (one bot poisons its own window, real users on
+# other networks are unaffected).
+_INVITE_FAILS: dict[str, list[int]] = {}
 
 
 def _db() -> sqlite3.Connection:
@@ -233,9 +241,15 @@ background:#1d5fd0;color:#fff;cursor:pointer}}
 
 
 async def authorize(request: Request):
-    """Consent screen. GET shows the form; POST validates the code."""
+    """Consent screen. GET shows the form; POST validates the code.
+
+    `q` is attacker-influenced query data round-tripped through a hidden form
+    field, so it is HTML-escaped on every render — unescaped it breaks out of
+    the `value="…"` attribute and is a reflected-XSS vector on the page where
+    the collaborator types their invite code.
+    """
     if request.method == "GET":
-        q = request.url.query
+        q = html.escape(request.url.query)
         return HTMLResponse(_PAGE.format(q=q, err=""))
 
     form = await request.form()
@@ -248,24 +262,36 @@ async def authorize(request: Request):
     challenge = params.get("code_challenge", "")
     method = params.get("code_challenge_method", "S256")
     if not redirect_uri or not challenge:
-        return HTMLResponse(_PAGE.format(q=str(form.get("q", "")),
+        return HTMLResponse(_PAGE.format(q=html.escape(str(form.get("q", ""))),
                                          err='<div class="err">Missing PKCE parameters.</div>'), 400)
     # Without this the endpoint is an open redirector: anyone could send a
     # collaborator a link that harvests their authorization code. ChatGPT mints
     # a fresh callback path per connector, so match on the prefix.
     if not _redirect_allowed(redirect_uri):
-        return HTMLResponse(_PAGE.format(q=str(form.get("q", "")),
+        return HTMLResponse(_PAGE.format(q=html.escape(str(form.get("q", ""))),
                                          err='<div class="err">That redirect address is not allowed.</div>'), 400)
 
     supplied = str(form.get("code", "")).strip().upper()
+    # Public endpoint: throttle invite-code guessing. The code space is large
+    # (~32^12), but a per-key failure lockout makes brute force pointless even
+    # against a lucky short key, and caps the page-render abuse surface.
+    ip = (request.client.host if request.client else "unknown")
+    key = f"{ip}|{supplied[:64]}"
+    now = _now()
+    _INVITE_FAILS[key] = [t for t in _INVITE_FAILS.get(key, []) if now - t < 900]
+    if len(_INVITE_FAILS[key]) >= 5:
+        return HTMLResponse(_PAGE.format(q=html.escape(str(form.get("q", ""))),
+                                         err='<div class="err">Too many attempts — wait a few minutes.</div>'), 429)
     init_db()
     with _db() as c:
         row = c.execute(
             "SELECT user_id FROM users WHERE invite_code=? AND revoked=0", (supplied,)
         ).fetchone()
     if not row:
-        return HTMLResponse(_PAGE.format(q=str(form.get("q", "")),
+        _INVITE_FAILS[key].append(now)
+        return HTMLResponse(_PAGE.format(q=html.escape(str(form.get("q", ""))),
                                          err='<div class="err">That code is not valid.</div>'), 401)
+    _INVITE_FAILS.pop(key, None)
 
     auth_code = secrets.token_urlsafe(32)
     with _db() as c:

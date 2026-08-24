@@ -221,11 +221,11 @@
           <div class="field"><div class="label">Tolerance</div><input type="text" id="jobTol" value="1e-6"></div>
           <div class="field"><div class="label">Optimizer</div><select id="jobOpt"><option value="trf">trf</option></select></div>
         </div>
-        <div class="field"><div class="label">Parameter initialization</div>
-          <label class="inline"><input type="radio" name="pinit" value="default" checked> Default JAM starting values</label>
-          <label class="inline" style="margin-top:6px"><input type="radio" name="pinit" value="random_within_bounds"> Randomize within bounds</label>
-        </div>
         <div class="field"><label class="inline"><input type="checkbox" id="jobBootstrap" checked> Bootstrap pseudo-data replicas</label></div>
+        <p class="hint" style="font-size:11px;color:var(--muted);margin:4px 0 0">
+          Starting values are sampled randomly within each parameter's bounds — that is
+          what makes every replica an independent fit.
+        </p>
       </div>
       <div class="panel" data-step="review">
         <div class="rev" id="reviewBox"></div>
@@ -280,6 +280,12 @@
   const ws = () => (oai && oai.widgetState) || {};
   const $ = (id)=>document.getElementById(id);
   const NS = "http://www.w3.org/2000/svg";
+  // Every backend/user string that lands in innerHTML goes through esc().
+  // Backend text includes cluster log tails, git stderr and campaign names
+  // the user typed — unescaped, any of them can inject markup into this panel.
+  const esc = (s)=>String(s===undefined||s===null?"":s)
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
   // Hosts differ in what callTool resolves to: the bare structured result, or
   // an MCP CallToolResult wrapper ({structuredContent}, {content:[{text}]},
   // sometimes nested under .result). Unwrap all of them so a tab never renders
@@ -373,7 +379,7 @@
                     : (ok && acct.remote_base ? acct.remote_base + "  (default, not yet checked)"
                                               : "set up in the Project tab")],
     ];
-    $("connRows").innerHTML = rows.map(r=>'<div class="row"><span class="k">'+r[0]+'</span><span class="v">'+r[1]+'</span></div>').join("");
+    $("connRows").innerHTML = rows.map(r=>'<div class="row"><span class="k">'+esc(r[0])+'</span><span class="v">'+esc(r[1])+'</span></div>').join("");
     const note=$("connNote");
     if(ok){ note.className="note"; note.textContent = c.note||"Ready to run fits."; }
     else { note.className="note warn"; note.textContent = c.note||"The SSH ControlMaster is not open."; }
@@ -432,7 +438,15 @@
                       + String(wsPath).slice(0,120) + '</span></div>' : '')
             + '<div class="spin">Running ' + String(p.describe || p.tool).slice(0,80) + '…</div>';
           try{
-            await call(p.tool, p.args || {});
+            const rr=await call(p.tool, p.args || {});
+            // The queued tool rejects with {error:...} dicts rather than
+            // throwing; treating that as success would drop the user onto a
+            // fresh Collections list as if the run had gone out.
+            if(rr && (rr.error || rr.status==="error")){
+              $("collBody").innerHTML='<div class="note warn">Queued request was rejected: '
+                +String(rr.error||rr.message||"").slice(0,400)+'</div>';
+              return;
+            }
             entered.collections = true;
             paintCollections(await call("list_campaigns",{}));
           }catch(e){
@@ -483,11 +497,11 @@
   // report. Attaching the handler is separate because both paths need it.
   function wsPickerHtml(cands, heading){
     if (!Array.isArray(cands) || !cands.length) return "";
-    return '<div class="label" style="margin:16px 0 6px">' + heading + '</div>'
+    return '<div class="label" style="margin:16px 0 6px">' + esc(heading) + '</div>'
       + cands.map(c =>
           '<label class="ds" style="cursor:pointer">'
-          + '<input type="radio" name="wsPick" value="'+c.path+'"'+(c.active?" checked":"")+'>'
-          + '<span class="mono" style="font-size:12px">'+c.path+'</span>'
+          + '<input type="radio" name="wsPick" value="'+esc(c.path)+'"'+(c.active?" checked":"")+'>'
+          + '<span class="mono" style="font-size:12px">'+esc(c.path)+'</span>'
           + (c.active?' <span class="muted">· in use</span>':'')
           + '</label>').join("")
       + '<div class="actions"><button class="btn" id="useWsBtn">Use selected</button></div>';
@@ -598,25 +612,25 @@
     const token=$("setupToken").value;
     const out=$("setupResult");
     $("setupBtn").disabled=true; $("setupBtn").textContent="Cloning… (can take a few minutes)";
-    out.innerHTML='<div class="spin">Creating '+name+' and cloning fitpack_legacy'+(branch?" @ "+branch:"")+'…</div>';
+    out.innerHTML='<div class="spin">Creating '+esc(name)+' and cloning fitpack_legacy'+(branch?" @ "+esc(branch):"")+'…</div>';
     try{
       const r=await call("setup_workspace",{folder_name:name, branch:branch, github_token:token});
       $("setupToken").value="";                       // never leave a token in the DOM
       if(r && r.ok){
-        out.innerHTML='<div class="note">✓ '+(r.message||"Workspace created.")+'</div>';
+        out.innerHTML='<div class="note">✓ '+esc(r.message||"Workspace created.")+'</div>';
         if(r.report) paintProject(r.report);
         $("setupBox").style.display="none";
       } else {
-        const act = r && r.action ? '<div class="dt" style="color:var(--warn);margin-top:6px">'+r.action+'</div>' : "";
+        const act = r && r.action ? '<div class="dt" style="color:var(--warn);margin-top:6px">'+esc(r.action)+'</div>' : "";
         const det = r && r.detail ? '<pre class="mono" style="font-size:11px;white-space:pre-wrap;'
                     +'background:var(--surface-2);border:1px solid var(--line);border-radius:8px;'
-                    +'padding:8px;margin-top:8px;max-height:140px;overflow:auto">'+r.detail+'</pre>' : "";
-        out.innerHTML='<div class="note warn">'+((r&&r.message)||"Setup failed.")+act+det+'</div>';
+                    +'padding:8px;margin-top:8px;max-height:140px;overflow:auto">'+esc(r.detail)+'</pre>' : "";
+        out.innerHTML='<div class="note warn">'+esc((r&&r.message)||"Setup failed.")+act+det+'</div>';
         // An auth failure is the one the user can fix right here — point at it.
         if(r && r.reason==="auth"){ $("setupToken").focus(); $("setupToken").placeholder="paste a GitHub token"; }
       }
     }catch(e){
-      out.innerHTML='<div class="note warn">Setup failed: '+(e&&e.message||e)+'</div>';
+      out.innerHTML='<div class="note warn">Setup failed: '+esc(e&&e.message||e)+'</div>';
     }
     $("setupBtn").disabled=false; $("setupBtn").textContent="Create and clone";
   }
@@ -632,6 +646,19 @@
     const out={}; Object.keys(cat||{}).forEach(rk=>{ const v=cat[rk]; out[rk]=Array.isArray(v)?v:Object.keys(v||{}).map(id=>Object.assign({id},v[id])); }); return out;
   }
   function campaignState(){ return {selected_ids:Array.from(selected), submitted, objectType}; }
+
+  // Dataset identity is (reaction, id) — idis and dy SHARE numeric ids
+  // (10001–10010…), so a selection keyed on id alone silently picks the
+  // wrong dataset when both families are in the catalog. Keys are "reaction:id".
+  const selKey=(d)=>d.reaction+":"+d.id;
+  function selGroups(){
+    const groups={};
+    selected.forEach(k=>{
+      const idx=k.indexOf(":"), rk=idx>0?k.slice(0,idx):"idis", id=idx>0?k.slice(idx+1):k;
+      (groups[rk]=groups[rk]||[]).push(id);
+    });
+    return groups;
+  }
 
   function renderCSteps(){
     const c=$("cSteps"); c.innerHTML="";
@@ -649,31 +676,42 @@
     const c=$("dsList"); c.innerHTML="";
     const rows=[]; Object.keys(catalog).forEach(rk=>{ (catalog[rk]||[]).forEach(d=>rows.push(Object.assign({reaction:rk},d))); });
     if(!rows.length){ c.innerHTML='<div class="empty">No datasets in catalog.</div>'; return; }
-    rows.forEach(d=>{ const id=d.id; const en=d.enabled!==false&&!submitted; const el=document.createElement("label");
+    rows.forEach(d=>{ const id=d.id, key=selKey(d); const en=d.enabled!==false&&!submitted; const el=document.createElement("label");
       el.className="ds"; if(d.enabled===false) el.style.opacity=".55";
       const why = d.disabled_reason
-        ? ' <span style="color:var(--warn);font-size:11px">· '+d.disabled_reason+'</span>' : "";
-      el.innerHTML='<input type="checkbox" data-id="'+id+'" '+(selected.has(id)?"checked ":"")+(en?"":"disabled ")+'>'
-        +'<span class="mono" style="font-size:12px">'+id+'</span> <span class="muted">'+((d.experiment||d.reaction||"")+(d.label?" · "+d.label:""))+'</span>'+why;
+        ? ' <span style="color:var(--warn);font-size:11px">· '+esc(d.disabled_reason)+'</span>' : "";
+      el.innerHTML='<input type="checkbox" data-key="'+esc(key)+'" '+(selected.has(key)?"checked ":"")+(en?"":"disabled ")+'>'
+        +'<span class="mono" style="font-size:12px">'+esc(id)+'</span> <span class="muted">'+esc((d.experiment||d.reaction||"")+(d.label?" · "+d.label:""))+'</span>'+why;
       const cb=el.querySelector("input");
-      if(en) cb.onchange=()=>{ cb.checked?selected.add(id):selected.delete(id); persistC(); };
+      if(en) cb.onchange=()=>{ cb.checked?selected.add(key):selected.delete(key); persistC(); };
       c.appendChild(el); });
   }
   function buildCard(){
-    const pinit=(document.querySelector('input[name=pinit]:checked')||{}).value||"default";
-    return { object:{type:objectType,label:(OBJECTS.find(o=>o[0]===objectType)||[])[1]||objectType},
-      observable:"idis", selected_ids:Array.from(selected),
-      qcd:{order:$("qcdOrder").value,Q20:parseFloat($("qcdQ20").value),tmc:$("qcdTmc").value,higherTwist:$("qcdHT").checked,dglapMode:$("qcdDglap").value,asMode:$("qcdAs").value},
-      parameters:{initialization:pinit},
-      job:{campaignName:$("jobName").value.trim()||"chatgpt-fit",replicas:parseInt($("jobReplicas").value,10)||10,maxIterations:parseInt($("jobMaxIter").value,10)||500,tolerance:$("jobTol").value.trim()||"1e-6",optimizer:$("jobOpt").value,bootstrap:$("jobBootstrap").checked} };
+    const groups=selGroups();
+    // Reaction order follows the catalog order; the first family with a
+    // selection is the primary observable, the rest ride extra_observables
+    // so the backend fits them JOINTLY in one submission (never mislabeled).
+    const fams=[]; Object.keys(catalog).forEach(rk=>{ if(groups[rk]&&groups[rk].length) fams.push([rk,groups[rk]]); });
+    if(!fams.length){ fams.push(["idis",[]]); }
+    const qcd={order:$("qcdOrder").value,Q20:parseFloat($("qcdQ20").value),tmc:$("qcdTmc").value,higherTwist:$("qcdHT").checked,dglapMode:$("qcdDglap").value,asMode:$("qcdAs").value};
+    const replicas=(()=>{ const n=parseInt($("jobReplicas").value,10); return (isFinite(n)&&n>=1&&n<=200)?n:10; })();
+    const maxIter=(()=>{ const n=parseInt($("jobMaxIter").value,10); return (isFinite(n)&&n>=1)?n:500; })();
+    return {
+      object:{type:objectType,label:(OBJECTS.find(o=>o[0]===objectType)||[])[1]||objectType},
+      observable:fams[0][0], selected_ids:fams[0][1],
+      extra_observables:fams.slice(1).map(([rk,ids])=>({observable:rk,selected_ids:ids})),
+      qcd:qcd,
+      job:{campaignName:$("jobName").value.trim()||"chatgpt-fit",replicas:replicas,maxIterations:maxIter,tolerance:$("jobTol").value.trim()||"1e-6",optimizer:$("jobOpt").value,bootstrap:$("jobBootstrap").checked} };
   }
   function renderReview(){
     const c=buildCard();
-    const rows=[["Object",c.object.label],["Datasets",c.selected_ids.length?c.selected_ids.join(", "):"(none)"],
+    const famTxt=[[c.observable,c.selected_ids.length],...c.extra_observables.map(e=>[e.observable,e.selected_ids.length])]
+      .map(([rk,n])=>rk+": "+n).join("  +  ");
+    const rows=[["Object",c.object.label],["Datasets",famTxt||"(none)"],
       ["Order / Q₀²",c.qcd.order+" / "+c.qcd.Q20],["TMC / DGLAP / αS",c.qcd.tmc+" / "+c.qcd.dglapMode+" / "+c.qcd.asMode+(c.qcd.higherTwist?" +HT":"")],
       ["Replicas",c.job.replicas],["Max iter / tol",c.job.maxIterations+" / "+c.job.tolerance],
-      ["Param init",c.parameters.initialization==="default"?"default JAM":"random"],["Campaign",c.job.campaignName]];
-    $("reviewBox").innerHTML=rows.map(r=>'<div class="row"><span class="k">'+r[0]+'</span><span class="v">'+r[1]+'</span></div>').join("");
+      ["Campaign",c.job.campaignName]];
+    $("reviewBox").innerHTML=rows.map(r=>'<div class="row"><span class="k">'+esc(r[0])+'</span><span class="v">'+esc(r[1])+'</span></div>').join("");
     $("reviewErr").textContent=c.selected_ids.length?"":"Select at least one dataset.";
   }
   function cSync(){
@@ -693,7 +731,15 @@
     if(!card.selected_ids.length){ $("cErr").textContent="Pick at least one dataset."; return; }
     $("cNext").disabled=true; $("cNext").textContent="Submitting…"; $("cErr").textContent="";
     try{
-      await call("submit_fitting_job",{observable:card.observable,selected_ids:card.selected_ids,count:card.job.replicas,job_number:"001",batch_label:card.job.campaignName,advanced:{qcd:card.qcd,parameters:card.parameters,job:card.job,object:card.object}});
+      const r=await call("submit_fitting_job",{observable:card.observable,selected_ids:card.selected_ids,count:card.job.replicas,job_number:"001",batch_label:card.job.campaignName,extra_observables:card.extra_observables.length?card.extra_observables:undefined,advanced:{qcd:card.qcd,job:card.job,object:card.object}});
+      // The server rejects invalid submissions with {error:...} dicts, not
+      // thrown exceptions. Treating that as success locked the composer as
+      // "Submitted ✓" while nothing ran on the cluster.
+      if(r && (r.error || r.status==="error")){
+        $("cErr").textContent=String(r.error||r.message||"The submission was rejected.").slice(0,400);
+        $("cNext").disabled=false; $("cNext").textContent="Submit fitting job";
+        return;
+      }
       submitted=true; persist(); cSync();
       if(oai&&oai.sendFollowUpMessage){ oai.sendFollowUpMessage({prompt:"The fitting job was submitted from the FemtoMind composer. Briefly confirm and offer to check its status in Collections."}); }
     }catch(e){ $("cErr").textContent="Submit failed: "+(e&&e.message||e); $("cNext").disabled=false; $("cNext").textContent="Submit fitting job"; }
@@ -722,20 +768,23 @@
     // dropped its name, so detect the shape instead of assuming raw rows.
     if (list.length && list[0] && list[0].progress !== undefined){
       let hg='<table class="tbl"><thead><tr><th>Campaign</th><th>Status</th><th>Replicas</th>'
-            +'<th>Submitted</th><th>Finished</th><th>ID</th></tr></thead><tbody>';
+            +'<th>Submitted</th><th>Finished</th><th>ID</th><th></th></tr></thead><tbody>';
       list.forEach(g=>{
         const st = g.status || "—";
-        hg+='<tr><td>'+(g.campaign||'<span style="color:var(--muted)">unnamed</span>')+'</td>'
-          +'<td><span class="tag '+tagCls(st)+'">'+st+'</span></td>'
-          +'<td class="mono">'+(g.progress||"")+'</td>'
+        hg+='<tr><td>'+(esc(g.campaign)||'<span style="color:var(--muted)">unnamed</span>')+'</td>'
+          +'<td><span class="tag '+tagCls(st)+'">'+esc(st)+'</span></td>'
+          +'<td class="mono">'+esc(g.progress||"")+'</td>'
           +'<td class="mono" style="font-size:11px">'+fmt(when(g.submitted_at))+'</td>'
           +'<td class="mono" style="font-size:11px">'
           +(g.status==="running" ? "in progress"
              : g.finished_at==="done" ? "done"
              : g.finished_at ? fmt(when(g.finished_at)) : "—")+'</td>'
-          +'<td class="mono" style="font-size:11px">'+(g.batch_id||"")+'</td></tr>';
+          +'<td class="mono" style="font-size:11px">'+esc(g.batch_id||"")+'</td>'
+          +'<td>'+((st==="failed"&&g.failed_path)
+                 ?'<button class="btn" style="padding:3px 9px;font-size:12px" data-path="'+esc(g.failed_path)+'">Why?</button>':'')+'</td></tr>';
       });
       $("collBody").innerHTML = hg+'</tbody></table><div id="whyBox"></div>';
+      bindWhyButtons();
       return;
     }
 
@@ -770,18 +819,23 @@
         +'<td>'+(g.failedIdx!==null?'<button class="btn" style="padding:3px 9px;font-size:12px" data-why="'+g.failedIdx+'">Why?</button>':'')+'</td></tr>';
     });
     h+='</tbody></table><div id="whyBox"></div>'; $("collBody").innerHTML=h;
-    // Explain a failure in place — "failed" with no reason is what sends people
-    // digging through SLURM logs by hand.
-    $("collBody").querySelectorAll("button[data-why]").forEach(b=>{
+    bindWhyButtons();
+  }
+  // Explain a failure in place — "failed" with no reason is what sends people
+  // digging through SLURM logs by hand. Two affordances: the folded branch
+  // carries a direct data-path, the legacy raw-row branch an index into list.
+  function bindWhyButtons(){
+    $("collBody").querySelectorAll("button[data-path], button[data-why]").forEach(b=>{
       b.onclick=async()=>{
-        const c=list[parseInt(b.dataset.why,10)];
+        const p=b.dataset.path || (list[(parseInt(b.dataset.why,10)||0)]||{}).path || "";
+        if(!p){ $("whyBox").innerHTML='<div class="note warn" style="margin-top:12px">No task path recorded for this campaign.</div>'; return; }
         b.disabled=true; b.textContent="…";
         try{
-          const r=await call("explain_failure",{task_path:c.path});
+          const r=await call("explain_failure",{task_path:p});
           $("whyBox").innerHTML='<div class="note warn" style="margin-top:12px">'
-            +'<div style="font-weight:600;margin-bottom:6px">'+(r.reason||"unknown cause")+'</div>'
-            +(r.hint?'<div style="margin-bottom:8px">'+r.hint+'</div>':'')
-            +'<pre class="mono" style="font-size:11px;overflow-x:auto;margin:0;white-space:pre-wrap">'+(r.error_tail||"")+'</pre></div>';
+            +'<div style="font-weight:600;margin-bottom:6px">'+esc(r.reason||"unknown cause")+'</div>'
+            +(r.hint?'<div style="margin-bottom:8px">'+esc(r.hint)+'</div>':'')
+            +'<pre class="mono" style="font-size:11px;overflow-x:auto;margin:0;white-space:pre-wrap">'+esc(r.error_tail||"")+'</pre></div>';
         }catch(e){ $("whyBox").innerHTML='<div class="note warn" style="margin-top:12px">Could not read the log: '+(e&&e.message||e)+'</div>'; }
         b.disabled=false; b.textContent="Why?";
       };
@@ -937,18 +991,18 @@
     // whenever the real cause was simply that no fit has finished yet.
     const why = out && out.mock
       ? ' · <span style="color:var(--warn)">example curves — '
-        + String(out.backend_note || "no completed fit yet; submit one from the Campaign tab").slice(0,110)
+        + esc(String(out.backend_note || "no completed fit yet; submit one from the Campaign tab").slice(0,110))
         + '</span>'
       : "";
     // A band drawn while replicas are still iterating is a snapshot, not a
     // result — label it, or it reads as final.
     const nrun = out && out.n_running;
-    const live = nrun ? ' · <span style="color:var(--warn)">'+nrun+' still fitting</span>' : "";
+    const live = nrun ? ' · <span style="color:var(--warn)">'+esc(nrun)+' still fitting</span>' : "";
     // Say which campaign these curves came from. Without it a plot of an older
     // batch is indistinguishable from a plot of the newest one.
     const bsel=$("plotBatch");
     const bname=(bsel && bsel.value && bsel.selectedIndex>0)
-      ? String(bsel.options[bsel.selectedIndex].text).split(" — ")[0]+" · " : "";
+      ? esc(String(bsel.options[bsel.selectedIndex].text).split(" — ")[0])+" · " : "";
     $("plotHead").innerHTML=bname+(params.q2?("Q² = "+params.q2+" GeV² · "):"")+flavors.length+" flavor(s) · "+nrep+" replicas"+live+why;
     const g=$("pgrid"); g.innerHTML="";
     if(!x.length||!flavors.length){
@@ -957,7 +1011,7 @@
       const why = (out && (out.error || out.backend_note || out.message)) ||
                   (out && out.kind ? "unexpected payload: "+out.kind : "") ||
                   "empty response from the server";
-      g.innerHTML='<div class="empty">No curves returned — '+String(why).slice(0,240)+'</div>';
+      g.innerHTML='<div class="empty">No curves returned — '+esc(String(why).slice(0,240))+'</div>';
       return;
     }
     flavors.forEach(f=>{ const card=document.createElement("div"); card.className="pcard";
@@ -980,7 +1034,7 @@
         if(!g||!g.batch_id) return;
         const nm=g.campaign||"unnamed";
         const st=g.status?(" · "+g.status):"";
-        html+='<option value="'+g.batch_id+'">'+nm+' — '+(g.progress||"")+st+'</option>';
+        html+='<option value="'+esc(g.batch_id)+'">'+esc(nm)+' — '+esc(g.progress||"")+esc(st)+'</option>';
       });
       sel.innerHTML=html;
       // Survive a refresh: a batch the user picked should stay picked unless
@@ -1006,7 +1060,11 @@
   /* ---------- init ---------- */
   function restore(){
     const st=ws().campaign||{};
-    if(Array.isArray(st.selected_ids)) st.selected_ids.forEach(id=>selected.add(id));
+    if(Array.isArray(st.selected_ids)) st.selected_ids.forEach(k=>{
+      // Legacy persisted state stored bare ids (idis-only era); namespace
+      // them so they cannot collide with dy selections sharing the same id.
+      selected.add(k.includes(":")?k:("idis:"+k));
+    });
     if(st.objectType) objectType=st.objectType;
     if(st.submitted) submitted=true;
   }

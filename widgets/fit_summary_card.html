@@ -27,11 +27,19 @@
   <div id="body"><div class="empty">Waiting for summary…</div></div>
 </div>
 <script>
+  const esc = (s) => String(s === undefined || s === null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   const fmt = (x, d) => (x === null || x === undefined || isNaN(+x)) ? '—' : (+x).toFixed(d);
   function pick(o, keys) { for (const k of keys) if (o && o[k] !== undefined && o[k] !== null) return o[k]; }
 
   function render(out) {
     if (!out) return;
+    // The host broadcasts tool results for EVERY call in the conversation.
+    // Only paint payloads shaped like a fit summary, so an unrelated result
+    // (jobs list, campaign list…) can never clobber a valid summary card.
+    if (!out.result && !out.summary && !out.process_table && !out.per_idx
+        && !out.replica_spread && out.error === undefined && out.status === undefined) return;
     // The payload the backend actually returns. This card was written against
     // a shape that never existed — it looked for chi2_per_point, n_replicas,
     // mean_global_z and top_tension_datasets, none of which the summary has
@@ -52,7 +60,7 @@
     const body = document.getElementById('body');
     if (chi2 === undefined && nrep === undefined) {
       body.innerHTML = '<div class="empty">' +
-        (out.error ? String(out.error).slice(0, 200)
+        (out.error ? esc(String(out.error).slice(0, 200))
          : out.status === 'computing'
            ? 'Computing on the cluster — ask again in a few minutes.'
            : 'Summary not ready yet — the batch may still be running.') + '</div>';
@@ -76,7 +84,7 @@
     const sp = out.replica_spread || s.replica_spread;
     if (sp && sp.warning) {
       html += '<div class="sec" style="color:#b0560a">Ensemble</div>' +
-        '<div style="font-size:12px;opacity:.85">' + String(sp.warning).slice(0, 240) + '</div>';
+        '<div style="font-size:12px;opacity:.85">' + esc(String(sp.warning).slice(0, 240)) + '</div>';
       if (sp.chi2_npts_median !== undefined) {
         html += '<div style="font-size:12px;opacity:.7;margin-top:3px">&#967;&#178;/pt across replicas: '
              + fmt(sp.chi2_npts_min, 2) + ' &ndash; ' + fmt(sp.chi2_npts_max, 2)
@@ -96,7 +104,7 @@
           const c = pick(t, ['chi2_red', 'chi2_per_point', 'chi2']);
           const n = pick(t, ['npts', 'N_dat']);
           const cls = (c !== undefined && +c > 2) ? ' style="color:#b0560a"' : '';
-          return '<tr><td>' + name + '</td><td>' + (n ?? '—') + ' pts</td>'
+          return '<tr><td>' + esc(name) + '</td><td>' + esc(n ?? '—') + ' pts</td>'
                + '<td' + cls + '>&#967;&#178;/pt ' + fmt(c, 2) + '</td>'
                + '<td' + cls + '>Z ' + fmt(z, 1) + '</td></tr>';
         }).join('') + '</table>';
