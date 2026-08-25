@@ -1,0 +1,66 @@
+name: Deploy to AWS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The private key is stored as a repo secret (AWS_SSH_KEY) and never
+      # committed. The host key is pinned so a deploy cannot be MITM'd onto a
+      # look-alike host.
+      - name: Install SSH key and pin host key
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${{ secrets.AWS_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          printf '%s\n' 'femtomind.duckdns.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPC+13PtpPWLHKw5nKAJnWoTFMZRPKmm+JHkbeUWnqAd' > ~/.ssh/known_hosts
+
+      # The repo nests fitpack-workflow/ and hpc-monitor/ under
+      # femtomind-chatgpt-app/, but on the host they are SIBLINGS and mcpo
+      # points at the sibling paths. The app rsync therefore excludes them,
+      # and they are deployed to their own top-level dirs below. Nothing here
+      # uses --delete, so host-only files (auth.db, hpc_tasks.db, runs, logs)
+      # are never removed.
+      - name: Deploy app, widgets and overlay
+        run: |
+          rsync -rlDz \
+            --exclude '.git' --exclude '.github' --exclude '__pycache__' --exclude '*.pyc' \
+            --exclude '.venv' --exclude 'docs' --exclude 'deploy' \
+            --exclude 'DEPLOYMENT.md' --exclude 'RECOVERY.md' \
+            --exclude 'fitpack-workflow' --exclude 'hpc-monitor' \
+            -e "ssh -o StrictHostKeyChecking=yes" \
+            ./ ec2-user@femtomind.duckdns.org:/home/ec2-user/femtomind/femtomind-chatgpt-app/
+
+      - name: Deploy fitpack backend (sibling on host)
+        run: |
+          rsync -rlDz --exclude '__pycache__' --exclude '*.pyc' \
+            -e "ssh -o StrictHostKeyChecking=yes" \
+            fitpack-workflow/ ec2-user@femtomind.duckdns.org:/home/ec2-user/femtomind/fitpack-workflow/
+
+      - name: Deploy hpc-monitor (sibling on host)
+        run: |
+          rsync -rlDz --exclude '__pycache__' --exclude '*.pyc' \
+            -e "ssh -o StrictHostKeyChecking=yes" \
+            hpc-monitor/ ec2-user@femtomind.duckdns.org:/home/ec2-user/femtomind/hpc-monitor/
+
+      # mcpo first, then app. app keeps KillMode=process so a restart does not
+      # tear down collaborators' SSH ControlMasters.
+      - name: Restart services
+        run: |
+          ssh -o StrictHostKeyChecking=yes ec2-user@femtomind.duckdns.org \
+            "sudo systemctl restart femtomind-mcpo && sleep 2 && sudo systemctl restart femtomind-app \
+             && systemctl is-active femtomind-mcpo femtomind-app femtomind-tunnel"
+
+      # The stack returns 200 while being wrong, so check the thing that
+      # matters: the OAuth discovery doc is the client's first real read.
+      - name: Smoke test
+        run: |
+          code=$(curl -fsS -o /dev/null -w '%{http_code}' https://femtomind.duckdns.org/.well-known/oauth-protected-resource)
+          test "$code" = "200" || { echo "smoke test failed: HTTP $code"; exit 1; }
+          echo "smoke test OK: HTTP 200"
