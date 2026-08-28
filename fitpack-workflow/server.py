@@ -160,14 +160,31 @@ def _record_job_history(task_path: str, batch_id: str = "", slurm_job_id: str = 
         final_chi2 = None
         final_npts = None
         n_datasets = 0
+        # Recorded on the task row at generation. It was initialised here and
+        # never assigned, so every row landed with observable='' and the
+        # estimator's history lookup could never match anything.
         observable = ""
+        try:
+            with _get_db() as _c:
+                _row = _c.execute("SELECT observable FROM tasks WHERE path=?",
+                                  (task_path,)).fetchone()
+            if _row and _row[0]:
+                observable = str(_row[0])
+        except Exception:
+            pass
 
         try:
             progress_content = ssh_read_file(f"{task_path}/progress.json", username=username)
             import json as _json
             progress_data = _json.loads(progress_content)
-            if isinstance(progress_data, list) and len(progress_data) > 0:
-                last = progress_data[-1]
+            # progress.json is written either as a bare list or as
+            # {"history": [...]}. Only the list form was handled, so on the
+            # other shape elapsed_min stayed NULL and the history branch of the
+            # estimator had nothing to average over.
+            _hist = (progress_data if isinstance(progress_data, list)
+                     else (progress_data or {}).get("history") or [])
+            if _hist:
+                last = _hist[-1]
                 elapsed_min = last.get("elapsed_min")
                 total_iterations = last.get("iter")
                 final_chi2 = last.get("chi2")
@@ -732,13 +749,13 @@ def _insert_task(task: dict) -> None:
     try:
         with _get_db() as conn:
             conn.execute("""
-                INSERT OR IGNORE INTO tasks (chat_id, batch_id, batch_label, file_id, path, is_running, slurm_job_id, parameters_file, step_index, parent_batch_id, hpc_username)
-                VALUES (?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?)
+                INSERT OR IGNORE INTO tasks (chat_id, batch_id, batch_label, file_id, path, is_running, slurm_job_id, parameters_file, step_index, parent_batch_id, hpc_username, observable)
+                VALUES (?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?)
             """, (
                 task["chat_id"], task["batch_id"], task.get("batch_label", ""),
                 task["file_id"], task["path"], task["parameters_file"],
                 task.get("step_index", 0), task.get("parent_batch_id", ""),
-                task.get("hpc_username", ""),
+                task.get("hpc_username", ""), task.get("observable", ""),
             ))
     except Exception as e:
         logger.error(f"Task insert failed: {e}")
@@ -1459,6 +1476,7 @@ def generate_random_tasks(
     batch_id_override: Optional[str] = None,
     prior_paths: Optional[List[str]] = None,
     batch_label: str = "",
+    observable: str = "",
 ) -> List[Dict[str, Any]]:
     """
     Generate multiple parameter sets by randomly sampling non-fixed PDF parameters
@@ -1553,6 +1571,7 @@ def generate_random_tasks(
                 "step_index": step_index,
                 "parent_batch_id": parent_batch_id,
                 "hpc_username": username,
+                "observable": observable or (selected_datasets or {}).get("observable", ""),
             })
             results.append({
                 "task_index": i,
@@ -1802,6 +1821,21 @@ def run_fitting_job(
         # cannot fix it either, because a large append keeps inserting rows
         # long after the caller's HTTP request has timed out, so whatever it
         # relabels is only the prefix that existed at that instant.
+        # The batch already knows its observable; a resource estimate made
+        # without it silently falls back to the static table.
+        match_observable = ""
+        try:
+            with _get_db() as _c:
+                _r = _c.execute("SELECT observable FROM tasks WHERE batch_id=?"
+                                " AND observable IS NOT NULL AND observable<>''"
+                                " LIMIT 1", (append_to_batch_id,)).fetchone()
+            if _r:
+                match_observable = str(_r[0])
+        except Exception:
+            pass
+        if not match_observable:
+            match_observable = observable
+
         eff_label = (batch_label or "").strip()
         if not eff_label:
             try:
@@ -1832,6 +1866,7 @@ def run_fitting_job(
             job_number=job_number,
             batch_id_override=append_to_batch_id,
             batch_label=eff_label,
+            observable=match_observable,
         )
         if not new_tasks or "error" in new_tasks[0]:
             return {"status": "error", "phase": "generate", "detail": new_tasks}
@@ -1844,6 +1879,7 @@ def run_fitting_job(
             append_to_batch_id,
             chat_id=chat_id,
             slurm_config=resource_estimate["slurm_config"],
+        estimate=resource_estimate,
         )
         return {
             "status": "success",
@@ -2083,6 +2119,7 @@ def run_fitting_job(
         parent_batch_id=parent_batch_id,
         prior_paths=parent_msr_paths or None,
         batch_label=batch_label,
+        observable=observable,
     )
     if not tasks or "error" in tasks[0]:
         return {"status": "error", "phase": "generate", "detail": tasks}
@@ -2103,6 +2140,7 @@ def run_fitting_job(
         batch_id,
         chat_id=chat_id,
         slurm_config=resource_estimate["slurm_config"],
+        estimate=resource_estimate,
     )
 
     # Step 4: Update chain state. selected_ids/filters are persisted so that
@@ -3183,6 +3221,7 @@ def submit_batch_tasks(
     batch_id: str,
     chat_id: str = "",
     slurm_config: Optional[Dict[str, Any]] = None,
+    estimate: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Submit all tasks in a batch to SLURM.
@@ -3198,6 +3237,39 @@ def submit_batch_tasks(
         return {"error": "slurm_tools module not available."}
 
     summary = {"batch_id": batch_id, "submitted_count": 0, "failed_count": 0, "tasks": []}
+
+    # Record what was asked for, before anything runs. Only the actuals were
+    # ever stored, so the obvious question -- did the estimate fit the job? --
+    # could not be answered from the database at all, and the estimator could
+    # never be scored against its own history.
+    if estimate:
+        try:
+            _sc = estimate.get("slurm_config") or {}
+            _hhmmss = str(_sc.get("time", "")).split(":")
+            _tmin = (int(_hhmmss[0]) * 60 + int(_hhmmss[1])) if len(_hhmmss) >= 2 else None
+            _src = estimate.get("estimation_sources")
+            if isinstance(_src, (list, tuple)):
+                _src = ", ".join(str(x) for x in _src)
+            with _get_db() as _c:
+                for _row in _c.execute(
+                        "SELECT path, slurm_job_id, hpc_username FROM tasks WHERE batch_id=?",
+                        (batch_id,)).fetchall():
+                    _c.execute(
+                        "INSERT INTO job_history (batch_id, task_path, slurm_job_id,"
+                        " hpc_username, proposed_cpus, proposed_time_min,"
+                        " proposed_mem_mb, estimation_source)"
+                        " VALUES (?,?,?,?,?,?,?,?)"
+                        " ON CONFLICT(task_path) DO UPDATE SET"
+                        "   proposed_cpus=excluded.proposed_cpus,"
+                        "   proposed_time_min=excluded.proposed_time_min,"
+                        "   proposed_mem_mb=excluded.proposed_mem_mb,"
+                        "   estimation_source=excluded.estimation_source",
+                        (batch_id, _row[0], _row[1], _row[2] or "",
+                         _sc.get("cpus"), _tmin,
+                         estimate.get("estimated_mem_mb"), str(_src or "")))
+        except Exception as _e:
+            logger.warning("could not record proposed resources for %s: %s"
+                           % (batch_id, _e))
 
     try:
         with _get_db() as conn:
@@ -4233,6 +4305,7 @@ def assemble_paired_prior_tasks(
         batch_id,
         chat_id=chat_id,
         slurm_config=resource_estimate["slurm_config"],
+        estimate=resource_estimate,
     )
 
     # Persist chain_state entry. `paired_parents` is the first-class lineage

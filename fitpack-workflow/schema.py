@@ -78,6 +78,10 @@ _CREATE_STATEMENTS: list[str] = [
         final_chi2_npts REAL,
         peak_memory_mb REAL,
         cpus INTEGER DEFAULT 4,
+        proposed_cpus INTEGER,
+        proposed_time_min INTEGER,
+        proposed_mem_mb INTEGER,
+        estimation_source TEXT DEFAULT '',
         node_name TEXT DEFAULT '',
         recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
@@ -158,6 +162,20 @@ _PER_TABLE_MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # frontend, the LLM, and the DB all share one display name (replaces
         # the legacy frontend-side `deriveBatchLabel` reconstruction).
         ("batch_label",     "TEXT DEFAULT ''"),
+        # The fit's observable, recorded at generation. Without it every
+        # job_history row landed with observable='' and the resource
+        # estimator's history branch could never match a past run, so it fell
+        # back to a static per-observable table forever.
+        ("observable",      "TEXT DEFAULT ''"),
+    ],
+    "job_history": [
+        # What the estimator ASKED for, kept beside what the job actually used.
+        # Only the actuals were ever stored, so "did the proposal fit?" was not
+        # a question the database could answer.
+        ("proposed_cpus",     "INTEGER"),
+        ("proposed_time_min", "INTEGER"),
+        ("proposed_mem_mb",   "INTEGER"),
+        ("estimation_source", "TEXT DEFAULT ''"),
     ],
     "chain_state": [
         ("staged_config",   "TEXT DEFAULT '{}'"),
