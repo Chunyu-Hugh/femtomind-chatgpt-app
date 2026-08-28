@@ -2045,7 +2045,12 @@ def run_fitting_job(
         if conf_mutated:
             ssh_write_file(remote_config, yaml.dump(config, default_flow_style=False), username=hpc_user)
     except Exception as e:
+        # This block exists to make the cluster's default.yaml match the request.
+        # If it raised, that did not happen, and submitting anyway runs the fit
+        # against a stale configuration without telling anyone.
         logger.warning(f"Could not manage datasets: {e}")
+        return {"status": "error", "phase": "configure",
+                "message": "Could not apply the dataset selection on the cluster: %s" % e}
 
     # Assemble the track's replay list.  For observables different from the
     # current one, replay them verbatim.  For the *same* observable appearing
@@ -2106,10 +2111,17 @@ def run_fitting_job(
                 ex_sel["filters"] = list(ex_filters)
             extra_selections.append(ex_sel)
 
-    compose_dataset_config(
+    composed = compose_dataset_config(
         replay_selections + [obs_selection] + extra_selections,
         chat_id=chat_id,
     )
+    if isinstance(composed, dict) and composed.get("error"):
+        # compose_dataset_config reports by return value and never raises, so a
+        # discarded result let a failed write to the cluster's default.yaml
+        # through to sbatch: the fit then ran against whatever configuration was
+        # already there while the submission reported the requested dataset
+        # count back as a success.
+        return {"status": "error", "phase": "compose", "message": composed["error"]}
 
     # Step 2: Generate tasks (inherited from parent .msr or random)
     tasks = generate_random_tasks(
@@ -4280,7 +4292,10 @@ def assemble_paired_prior_tasks(
         return {"status": "error", "message": f"Failed to rebuild default.yaml: {e}"}
 
     # Replay α + β history + stage B observable into YAML datasets section.
-    compose_dataset_config(replay_list, chat_id=chat_id)
+    composed = compose_dataset_config(replay_list, chat_id=chat_id)
+    if isinstance(composed, dict) and composed.get("error"):
+        return {"status": "error",
+                "message": "Failed to compose dataset config: %s" % composed["error"]}
 
     # Reload the composed YAML — this is what each replica's parameters.yaml
     # will be a deepcopy of, except pdf values come from α_{i_α} and ff*
