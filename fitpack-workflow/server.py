@@ -1702,6 +1702,7 @@ def run_fitting_job(
     append_to_batch_id: Optional[str] = None,
     extra_observables: Optional[List[Dict[str, Any]]] = None,
     batch_label: str = "",
+    resources: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     One-shot tool: compose dataset config, generate random tasks, and submit to SLURM.
@@ -1873,7 +1874,7 @@ def run_fitting_job(
 
         resource_estimate = _estimate_slurm_resources(
             observable, len(selected_ids) or 1, 0,
-            replica_count=count, hpc_username=hpc_user,
+            replica_count=count, hpc_username=hpc_user, proposed=resources,
         )
         submit_result = submit_batch_tasks(
             append_to_batch_id,
@@ -2134,7 +2135,7 @@ def run_fitting_job(
     )
     resource_estimate = _estimate_slurm_resources(
         observable, total_dataset_count, step_index,
-        replica_count=count, hpc_username=hpc_user,
+        replica_count=count, hpc_username=hpc_user, proposed=resources,
     )
     submit_result = submit_batch_tasks(
         batch_id,
@@ -2962,6 +2963,7 @@ def _estimate_slurm_resources(
     step_index: int,
     replica_count: int = 1,
     hpc_username: str = "",
+    proposed: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Estimate SLURM resources by combining three information sources:
@@ -3037,6 +3039,9 @@ def _estimate_slurm_resources(
     user_usage = {"running_jobs": 0, "running_cpus": 0,
                   "pending_jobs": 0, "pending_cpus": 0}
     best_partition = "production"
+    # Names this cluster actually reports, collected where sinfo is parsed so a
+    # proposal can be checked against reality rather than a list written once.
+    known_partitions: set[str] = set()
     try:
         if SLURM_TOOLS_OK:
             info = get_server_info(username=hpc_username or None)
@@ -3045,6 +3050,8 @@ def _estimate_slurm_resources(
                 sources.append("live_cluster")
                 # Pick partition with the most idle CPUs
                 parts = info.get("partitions", [])
+                known_partitions |= {str(p.get("name")) for p in parts
+                                     if isinstance(p, dict) and p.get("name")}
                 if parts:
                     best_part = max(parts, key=lambda p: p.get("cpus_idle", 0))
                     if best_part.get("cpus_idle", 0) > 0:
@@ -3148,6 +3155,41 @@ def _estimate_slurm_resources(
         sources.append("heuristic")
 
     # ------------------------------------------------------------------
+    # A proposal from the conversational model, which has just read the same
+    # cluster state and job history through get_resource_context. It is applied
+    # here rather than trusted: each field is clamped to a range a fit can
+    # actually run in, and an unknown partition is dropped, so a bad suggestion
+    # degrades to the estimate rather than to a failed submission.
+    # ------------------------------------------------------------------
+    if proposed:
+        def _clamp(val, lo, hi):
+            try:
+                return max(lo, min(hi, int(val)))
+            except (TypeError, ValueError):
+                return None
+        _c = _clamp(proposed.get("cpus"), 1, 64)
+        _t = _clamp(proposed.get("time_min"), 10, 1440)
+        _m = _clamp(proposed.get("mem_mb"), 512, 128000)
+        _p = str(proposed.get("partition") or "").strip()
+        applied = []
+        if _c is not None:
+            chosen_cpus = _c; applied.append("cpus")
+        if _t is not None:
+            est_time_min = _t; applied.append("time")
+        if _m is not None:
+            est_mem_mb = _m; applied.append("mem")
+        # Validate against what this cluster actually reports, not a list
+        # written down once: the heuristic above already picks partitions
+        # (jupyter, for one) that the hardcoded set does not contain, so
+        # checking a proposal against that set alone would reject a partition
+        # the estimator itself had just chosen.
+        _known = set(_VALID_PARTITIONS) | known_partitions | {str(best_partition)}
+        if _p and _p in _known:
+            best_partition = _p; applied.append("partition")
+        if applied:
+            sources.append("model proposal (%s)" % "+".join(applied))
+
+    # ------------------------------------------------------------------
     # 5. Memory cap per node (applies to both LLM and heuristic paths)
     # ------------------------------------------------------------------
     node_mem = cluster.get("mem_per_node_mb", 0)
@@ -3188,6 +3230,11 @@ def _estimate_slurm_resources(
         "estimated_time_min": est_time_min,
         "estimated_mem_mb": est_mem_mb,
         "estimation_sources": sources,
+        # Returned so a caller can see what the estimate was argued from, not
+        # just what it concluded.
+        "history_summary": history_summary,
+        "known_partitions": sorted(set(_VALID_PARTITIONS) | known_partitions
+                                   | {str(best_partition)}),
         "cluster_snapshot": {
             "idle_cpus": idle_cpus,
             "total_cpus": cluster["total_cpus"],
@@ -3217,6 +3264,43 @@ def _estimate_slurm_resources(
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
+@mcp.tool()
+def get_resource_context(
+    observable: str,
+    n_datasets: int = 1,
+    replica_count: int = 1,
+    step_index: int = 0,
+    chat_id: str = "",
+) -> Dict[str, Any]:
+    """What a replica of this observable has cost before, and what the cluster
+    looks like right now. Read-only: it submits nothing.
+
+    Returns the recorded runtimes and peak memory for past runs of the same
+    observable, the live idle-CPU and partition picture, the caller's own
+    running jobs, and the estimate those imply. Call it before submitting so a
+    resource request can be argued from the cluster as it is rather than from a
+    default, then pass the numbers to submit_fitting_job. Values out of range
+    are clamped there, so a proposal can never make a submission fail.
+    """
+    hpc_user = _get_hpc_username(chat_id) if chat_id else ""
+    est = _estimate_slurm_resources(
+        observable, max(n_datasets, 1), step_index,
+        replica_count=replica_count, hpc_username=hpc_user,
+    )
+    return {
+        "observable": observable,
+        "baseline_estimate": est.get("slurm_config"),
+        "estimated_time_min": est.get("estimated_time_min"),
+        "estimated_mem_mb": est.get("estimated_mem_mb"),
+        "estimation_sources": est.get("estimation_sources"),
+        "cluster": est.get("cluster_snapshot"),
+        "history": est.get("history_summary"),
+        "allocation_decision": est.get("allocation_decision"),
+        "valid_partitions": est.get("known_partitions") or [],
+        "bounds": {"cpus": [1, 64], "time_min": [10, 1440], "mem_mb": [512, 128000]},
+    }
+
+
 def submit_batch_tasks(
     batch_id: str,
     chat_id: str = "",

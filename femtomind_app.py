@@ -1788,6 +1788,35 @@ def _to_advanced_payload(adv: Optional[dict[str, Any]]) -> dict[str, Any]:
     return out
 
 
+@mcp.tool(annotations=READ_ONLY, meta=CALLABLE_META, structured_output=True)
+def get_resource_context(
+    observable: str,
+    n_datasets: int = 1,
+    replica_count: int = 1,
+    chat_id: str = "chatgpt-composer",
+) -> dict[str, Any]:
+    """What a replica of this observable has cost before, and what the cluster
+    looks like right now. Read-only: it submits nothing.
+
+    Returns the recorded runtimes and peak memory of past runs of the same
+    observable, the live idle-CPU and partition picture, the caller's own
+    running jobs, and the estimate those imply, with the valid partitions and
+    the accepted range for each field.
+
+    Call this before submit_fitting_job whenever you are about to launch a
+    campaign, then pass cpus, time_min, mem_mb and partition to that tool with
+    values you can justify from what came back. A short campaign on an idle
+    cluster deserves more cores than the same campaign on a busy one; an
+    observable whose past runs took four hours should not be given a one-hour
+    wall clock. Do not invent numbers with this unread. Anything out of range
+    is clamped at submission, so a proposal can never cause a failure --- but a
+    proposal made without reading this is a guess with a number attached."""
+    return _call_mcpo("/fitpack/get_resource_context", {
+        "observable": observable, "n_datasets": n_datasets,
+        "replica_count": replica_count, "chat_id": _scope(chat_id),
+    })
+
+
 @mcp.tool(annotations=WRITE_SAFE, meta=CALLABLE_META, structured_output=True)
 def submit_fitting_job(
     observable: str,
@@ -1799,6 +1828,10 @@ def submit_fitting_job(
     extra_observables: Optional[list[dict[str, Any]]] = None,
     chat_id: str = "chatgpt-composer",
     continue_chain: bool = False,
+    cpus: int = 0,
+    time_min: int = 0,
+    mem_mb: int = 0,
+    partition: str = "",
 ) -> dict[str, Any]:
     """Submit a fitting campaign to the HPC cluster. Intended to be called BY
     THE COMPOSER FORM with the user's exact selections — never invent
@@ -1815,7 +1848,23 @@ def submit_fitting_job(
     When the selection spans several reaction families (e.g. idis + dy), the
     composer groups it and passes each additional family through
     `extra_observables` — the backend fits them jointly in ONE SLURM
-    submission instead of mislabeling them under the primary observable."""
+    submission instead of mislabeling them under the primary observable.
+
+    Resource proposal. Call get_resource_context first, then pass `cpus`,
+    `time_min`, `mem_mb` and `partition` here with values you can justify from
+    what it returned --- the observable's recorded runtimes, the cluster's idle
+    capacity right now, and the caller's own running jobs. Leave a field at 0
+    (or partition empty) to let the estimate stand for it. Every value is
+    clamped at the backend and an unknown partition is dropped, so a proposal
+    can degrade the estimate but never fail a submission. What was proposed and
+    what the job went on to use are both recorded, so the proposal can be
+    scored later against the outcome.
+
+    These are operational values only. They are yours to choose. The
+    fit-defining values --- datasets, cuts, perturbative order, $Q_0^2$,
+    replica count --- are the researcher's and arrive from the panel; never
+    substitute your own.
+    """
     if not selected_ids:
         return {"error": "selected_ids is empty — open the composer and let the user pick datasets"}
     # job_number becomes a directory-name prefix and reaches remote shells via
@@ -1867,6 +1916,14 @@ def submit_fitting_job(
     mapped = _to_advanced_payload(advanced)
     if mapped:
         payload["advanced"] = mapped
+    # Only send fields that were actually proposed. An empty proposal leaves
+    # the estimate alone rather than pinning it to zeros.
+    proposal = {k: v for k, v in (("cpus", cpus), ("time_min", time_min),
+                                  ("mem_mb", mem_mb)) if v}
+    if partition.strip():
+        proposal["partition"] = partition.strip()
+    if proposal:
+        payload["resources"] = proposal
     raw = _call_mcpo("/fitpack/run_fitting_job", payload)
     return raw if isinstance(raw, dict) else {"result": raw}
 
