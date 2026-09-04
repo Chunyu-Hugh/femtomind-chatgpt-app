@@ -980,6 +980,12 @@ def _globus_error_payload(exc: Exception) -> Dict[str, Any]:
         return {"status": "permission_denied", "message": str(exc), "retryable": False}
     if isinstance(exc, globus_tx.GlobusEndpointUnavailable):
         return {"status": "endpoint_unavailable", "message": str(exc), "retryable": True}
+    if isinstance(exc, globus_tx.GlobusAlreadyInFlight):
+        return {
+            "status": "already_in_flight",
+            "message": str(exc),
+            "next_step": "Call globus_list_transfers to find the running task and poll that.",
+        }
     if isinstance(exc, globus_tx.GlobusNotConfigured):
         return {"status": "not_configured", "message": str(exc)}
     return {"status": "error", "message": str(exc)}
@@ -1111,7 +1117,8 @@ def globus_list_remote(chat_id: str, collection: str, path: str,
 @mcp.tool()
 def globus_transfer(chat_id: str, source_collection: str, source_path: str,
                     dest_collection: str, dest_path: str,
-                    recursive: bool = False, label: str = "") -> Dict[str, Any]:
+                    recursive: bool = False, label: str = "",
+                    batch_id: str = "") -> Dict[str, Any]:
     """
     Move a file or a directory between two facilities, for example to send a
     finished campaign's results from Jefferson Lab to NERSC.
@@ -1119,6 +1126,11 @@ def globus_transfer(chat_id: str, source_collection: str, source_path: str,
     Returns as soon as the task is queued; the copy happens in the
     background between the two facilities and does not pass through this
     server. Poll globus_transfer_status with the returned task_id.
+
+    Pass batch_id whenever the data belongs to a fit — it is what lets the
+    question "where did this campaign's results go" be answered later, via
+    globus_list_transfers. Without it the move is still recorded, just not
+    connected to the science.
 
     Args:
         chat_id:           Current chat/session ID.
@@ -1128,6 +1140,7 @@ def globus_transfer(chat_id: str, source_collection: str, source_path: str,
         dest_path:         Where to put it. Parent directories are created.
         recursive:         True to copy a directory, False for a single file.
         label:             Optional name for the task, shown in Globus.
+        batch_id:          Batch this data belongs to, if any.
     """
     try:
         user_id = _globus_user(chat_id)
@@ -1138,10 +1151,47 @@ def globus_transfer(chat_id: str, source_collection: str, source_path: str,
                 dest_collection, dest_path,
                 recursive=recursive,
                 label=label or None,
+                chat_id=chat_id,
+                batch_id=batch_id,
             )
         result["status"] = "submitted"
         result["next_step"] = "Poll globus_transfer_status with this task_id."
         return result
+    except Exception as e:
+        return _globus_error_payload(e)
+
+
+@mcp.tool()
+def globus_list_transfers(chat_id: str, batch_id: str = "",
+                          this_chat_only: bool = False,
+                          limit: int = 20) -> Dict[str, Any]:
+    """
+    What this user has moved, most recent first.
+
+    Use it to answer "where did the results of this fit end up", to check
+    what has already been copied before copying a whole campaign again, and
+    to recover a task_id that was mentioned in an earlier conversation.
+
+    Statuses are as of the last time each task was polled, so a row may read
+    SUBMITTED for a transfer that has since finished; call
+    globus_transfer_status on it to refresh.
+
+    Args:
+        chat_id:        Current chat/session ID.
+        batch_id:       Only transfers recorded against this batch.
+        this_chat_only: Only transfers started from this chat.
+        limit:          Maximum rows to return.
+    """
+    try:
+        user_id = _globus_user(chat_id)
+        with _get_db() as conn:
+            rows = globus_tx.list_transfers(
+                conn, user_id,
+                batch_id=batch_id or None,
+                chat_id=chat_id if this_chat_only else None,
+                limit=limit,
+            )
+        return {"status": "ok", "count": len(rows), "transfers": rows}
     except Exception as e:
         return _globus_error_payload(e)
 

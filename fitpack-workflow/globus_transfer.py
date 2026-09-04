@@ -123,6 +123,15 @@ class GlobusEndpointUnavailable(GlobusError):
     """The collection's server did not answer. Retrying later is reasonable."""
 
 
+class GlobusAlreadyInFlight(GlobusError):
+    """The same paths are already being moved.
+
+    Globus refuses a duplicate rather than copying twice, which is a useful
+    answer and not really a failure: the right response is to poll the task
+    that is already running, not to submit again.
+    """
+
+
 # --------------------------------------------------------------------------
 # Token storage, one row per user.
 # --------------------------------------------------------------------------
@@ -423,6 +432,13 @@ def _translate_error(conn: sqlite3.Connection, user_id: str, exc: Exception) -> 
         )
 
     lowered = message.lower()
+    if code == "Conflict" or "has not yet completed" in lowered:
+        return GlobusAlreadyInFlight(
+            "The same paths are already being transferred. Globus will not "
+            "copy them twice; check the transfer that is already running "
+            "instead of submitting again."
+        )
+
     if "reauthenticate" in lowered or "session" in lowered:
         domains: List[str] = []
         info = getattr(exc, "info", None)
@@ -531,18 +547,110 @@ def list_remote(conn: sqlite3.Connection, user_id: str, collection: str,
     return entries
 
 
+def _record_submission(conn: sqlite3.Connection, user_id: str, task_id: str,
+                       chat_id: str, batch_id: str,
+                       source_collection: str, source_path: str,
+                       dest_collection: str, dest_path: str,
+                       recursive: bool, label: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO globus_transfers
+            (task_id, user_id, chat_id, batch_id,
+             source_collection, source_path, dest_collection, dest_path,
+             recursive, label, status, submitted_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SUBMITTED', CURRENT_TIMESTAMP)
+        ON CONFLICT(task_id) DO NOTHING
+        """,
+        (task_id, user_id, chat_id or "", batch_id or "",
+         source_collection, source_path, dest_collection, dest_path,
+         1 if recursive else 0, label or ""),
+    )
+    conn.commit()
+
+
+def _record_status(conn: sqlite3.Connection, task_id: str, task: Dict[str, Any]) -> None:
+    """Fold a polled task back into the row, so the table converges on the
+    truth without anything polling in the background."""
+    status = task.get("status")
+    conn.execute(
+        """
+        UPDATE globus_transfers
+           SET status            = ?,
+               files_transferred = ?,
+               bytes_transferred = ?,
+               completed_at      = CASE WHEN ? IN ('SUCCEEDED', 'FAILED')
+                                        THEN COALESCE(?, CURRENT_TIMESTAMP)
+                                        ELSE completed_at END
+         WHERE task_id = ?
+        """,
+        (status, task.get("files_transferred"), task.get("bytes_transferred"),
+         status, task.get("completion_time"), task_id),
+    )
+    conn.commit()
+
+
+def list_transfers(conn: sqlite3.Connection, user_id: str,
+                   batch_id: Optional[str] = None,
+                   chat_id: Optional[str] = None,
+                   limit: int = 20) -> List[Dict[str, Any]]:
+    """What this user has moved, most recent first.
+
+    Filter by ``batch_id`` to answer "where did this campaign's results go",
+    which is the question the table exists for.
+    """
+    ensure_token_table(conn)
+    clauses = ["user_id = ?"]
+    params: List[Any] = [user_id]
+    if batch_id:
+        clauses.append("batch_id = ?")
+        params.append(batch_id)
+    if chat_id:
+        clauses.append("chat_id = ?")
+        params.append(chat_id)
+    params.append(limit)
+    rows = conn.execute(
+        f"""
+        SELECT task_id, batch_id, source_collection, source_path,
+               dest_collection, dest_path, recursive, status,
+               files_transferred, bytes_transferred, submitted_at, completed_at
+          FROM globus_transfers
+         WHERE {' AND '.join(clauses)}
+         ORDER BY submitted_at DESC
+         LIMIT ?
+        """,
+        params,
+    ).fetchall()
+    keys = ("task_id", "batch_id", "source_collection", "source_path",
+            "dest_collection", "dest_path", "recursive", "status",
+            "files_transferred", "bytes_transferred", "submitted_at",
+            "completed_at")
+    out = []
+    for row in rows:
+        item = dict(zip(keys, row))
+        item["recursive"] = bool(item["recursive"])
+        out.append(item)
+    return out
+
+
 def submit_transfer(conn: sqlite3.Connection, user_id: str,
                     source_collection: str, source_path: str,
                     dest_collection: str, dest_path: str,
                     recursive: bool = False,
-                    label: Optional[str] = None) -> Dict[str, Any]:
-    """Submit one file or one directory. Returns immediately with a task id."""
+                    label: Optional[str] = None,
+                    chat_id: str = "",
+                    batch_id: str = "") -> Dict[str, Any]:
+    """Submit one file or one directory. Returns immediately with a task id.
+
+    ``batch_id`` links the move back to the campaign whose output it is; it is
+    what lets a finished campaign be asked where its results went.
+    """
     tc = get_transfer_client(conn, user_id)
     src = resolve_collection(source_collection)
     dst = resolve_collection(dest_collection)
+    task_label = label or f"femtomind-{int(time.time())}"
     data = _new_transfer_data(
         tc, src, dst,
-        label=label or f"femtomind-{int(time.time())}",
+        label=task_label,
         sync_level="checksum",
         verify_checksum=True,
     )
@@ -552,11 +660,17 @@ def submit_transfer(conn: sqlite3.Connection, user_id: str,
         recursive=recursive,
     )
     response = _call(conn, user_id, tc.submit_transfer, data)
+    task_id = response["task_id"]
+    _record_submission(conn, user_id, task_id, chat_id, batch_id,
+                       source_collection, source_path,
+                       dest_collection, dest_path,
+                       recursive, task_label)
     return {
-        "task_id": response["task_id"],
+        "task_id": task_id,
         "source": f"{source_collection}:{source_path}",
         "destination": f"{dest_collection}:{dest_path}",
         "recursive": recursive,
+        "batch_id": batch_id or None,
     }
 
 
@@ -578,4 +692,5 @@ def transfer_status(conn: sqlite3.Connection, user_id: str, task_id: str) -> Dic
              "details": e.get("details")}
             for e in events
         ]
+    _record_status(conn, task_id, out)
     return out

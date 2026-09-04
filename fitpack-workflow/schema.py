@@ -161,6 +161,30 @@ _CREATE_STATEMENTS: list[str] = [
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """,
+    # What was moved where. `batch_id` is the point of the table: without it
+    # this is a file-copy log, and with it a finished campaign can be asked
+    # where its outputs went. Rows are written at submission and updated in
+    # place whenever the task is polled, so the table converges on the truth
+    # without anything having to poll in the background.
+    """
+    CREATE TABLE IF NOT EXISTS globus_transfers (
+        task_id           TEXT PRIMARY KEY,
+        user_id           TEXT NOT NULL,
+        chat_id           TEXT DEFAULT '',
+        batch_id          TEXT DEFAULT '',
+        source_collection TEXT DEFAULT '',
+        source_path       TEXT DEFAULT '',
+        dest_collection   TEXT DEFAULT '',
+        dest_path         TEXT DEFAULT '',
+        recursive         INTEGER DEFAULT 0,
+        label             TEXT DEFAULT '',
+        status            TEXT DEFAULT 'SUBMITTED',
+        files_transferred INTEGER,
+        bytes_transferred INTEGER,
+        submitted_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        completed_at      TIMESTAMP
+    )
+    """,
 ]
 
 
@@ -170,6 +194,8 @@ _CREATE_INDEXES: list[str] = [
     "CREATE INDEX IF NOT EXISTS idx_saved_is_best ON saved_results(is_best)",
     "CREATE INDEX IF NOT EXISTS idx_batch_events_chat_pending ON batch_events(chat_id, processed)",
     "CREATE INDEX IF NOT EXISTS idx_fit_campaigns_chat ON fit_campaigns(chat_id)",
+    "CREATE INDEX IF NOT EXISTS idx_globus_transfers_batch ON globus_transfers(batch_id)",
+    "CREATE INDEX IF NOT EXISTS idx_globus_transfers_user ON globus_transfers(user_id, submitted_at)",
 ]
 
 
@@ -298,4 +324,5 @@ def schema_tables() -> Iterable[str]:
         "fit_campaigns",
         "user_globus_tokens",
         "globus_pending_logins",
+        "globus_transfers",
     )
