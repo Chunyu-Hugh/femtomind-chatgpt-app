@@ -45,6 +45,12 @@ from iri_backend import (
     iri_submit_script,
     iri_tail_first_matching,
 )
+try:
+    import globus_transfer as globus_tx
+    GLOBUS_OK = True
+except Exception:  # globus-sdk not installed, or the module failed to import
+    globus_tx = None  # type: ignore[assignment]
+    GLOBUS_OK = False
 
 
 def _default_config(username: str) -> str:
@@ -919,6 +925,243 @@ def get_hpc_account(chat_id: str) -> Dict[str, Any]:
         "ssh_connected": socket_exists,
         "backend": "iri" if is_iri_enabled() else "ssh",
     }
+
+
+# ---------------------------------------------------------------------------
+# Tools: Cross-facility data transfer (Globus)
+# ---------------------------------------------------------------------------
+#
+# Globus tokens belong to a person, not to a chat, so these resolve the Open
+# WebUI user_id behind the chat and key on that. There is deliberately NO
+# "if only one user is configured, use that" fallback here: these are
+# credentials, and such a fallback would let one user move files as another.
+
+def _get_webui_user_id(chat_id: str) -> Optional[str]:
+    """Resolve the Open WebUI user_id that owns a chat."""
+    try:
+        _project_root = _SERVER_DIR.parent.parent
+        _default_webui_db = str(_project_root / "open-webui" / "backend" / "data" / "webui.db")
+        webui_db = os.environ.get("WEBUI_DB_PATH", _default_webui_db)
+        if os.path.exists(webui_db):
+            conn = sqlite3.connect(webui_db)
+            row = conn.execute("SELECT user_id FROM chat WHERE id = ?", (chat_id,)).fetchone()
+            conn.close()
+            if row:
+                return row[0]
+    except Exception as e:
+        logger.warning(f"Could not look up user_id for chat {chat_id}: {e}")
+    return None
+
+
+def _globus_error_payload(exc: Exception) -> Dict[str, Any]:
+    """Turn a transfer failure into something the model can act on.
+
+    The four cases need four different things from the user, so they stay
+    apart: a consent URL to open, an identity to re-authenticate, a facility
+    membership to request, or simply waiting for an endpoint to come back.
+    """
+    if not GLOBUS_OK:
+        return {"status": "unavailable", "message": "Globus support is not installed on this server."}
+    if isinstance(exc, globus_tx.GlobusNeedsConsent):
+        return {
+            "status": "needs_consent",
+            "message": str(exc),
+            "authorization_url": exc.url,
+            "next_step": "Show the user this URL, then call globus_login_finish with the code they get back.",
+        }
+    if isinstance(exc, globus_tx.GlobusNeedsSession):
+        return {
+            "status": "needs_session",
+            "message": str(exc),
+            "domains": exc.domains,
+            "next_step": "The user must re-authenticate that identity; this is not a permissions problem.",
+        }
+    if isinstance(exc, globus_tx.GlobusPermissionDenied):
+        return {"status": "permission_denied", "message": str(exc), "retryable": False}
+    if isinstance(exc, globus_tx.GlobusEndpointUnavailable):
+        return {"status": "endpoint_unavailable", "message": str(exc), "retryable": True}
+    if isinstance(exc, globus_tx.GlobusNotConfigured):
+        return {"status": "not_configured", "message": str(exc)}
+    return {"status": "error", "message": str(exc)}
+
+
+def _globus_user(chat_id: str) -> str:
+    if not GLOBUS_OK:
+        raise RuntimeError("Globus support is not installed on this server.")
+    user_id = _get_webui_user_id(chat_id)
+    if not user_id:
+        raise RuntimeError(
+            "Could not identify which user this chat belongs to, so Globus "
+            "credentials cannot be looked up."
+        )
+    return user_id
+
+
+@mcp.tool()
+def globus_login_start(chat_id: str) -> Dict[str, Any]:
+    """
+    Begin Globus authorization for this user and return a URL to open.
+
+    Call this when the user has never authorized Globus, or when another
+    transfer tool came back with status "needs_consent" and you want to
+    restart the flow. The user opens the URL, approves, and is given a code;
+    pass that code to globus_login_finish.
+
+    Authorization is needed once per user, plus once more for each new
+    collection touched. It does not expire on its own.
+
+    Tell the user the prerequisite before they start: transferring between two
+    facilities requires an account at each of them, both linked to the same
+    Globus account. Authorizing without that succeeds, and then the first
+    transfer fails with an identity-mapping error that is hard to read.
+
+    Args:
+        chat_id: Current chat/session ID.
+    """
+    try:
+        user_id = _globus_user(chat_id)
+        with _get_db() as conn:
+            url = globus_tx.login_start(conn, user_id)
+        return {
+            "status": "ok",
+            "authorization_url": url,
+            "prerequisite": (
+                "Moving data between two facilities needs an account at each "
+                "one (for example a Jefferson Lab CUE account and a NERSC "
+                "account), both linked to the same Globus account. Without "
+                "both, authorization still succeeds but the first transfer is "
+                "refused by the facility."
+            ),
+            "next_step": "Show this URL to the user and ask for the code it gives them.",
+        }
+    except Exception as e:
+        return _globus_error_payload(e)
+
+
+@mcp.tool()
+def globus_logout(chat_id: str) -> Dict[str, Any]:
+    """
+    Forget this user's stored Globus credentials.
+
+    Use when the user asks to disconnect Globus, or to recover if a transfer
+    tool reports that the stored credentials cannot be decrypted. They can
+    authorize again afterwards with globus_login_start.
+
+    Args:
+        chat_id: Current chat/session ID.
+    """
+    try:
+        user_id = _globus_user(chat_id)
+        with _get_db() as conn:
+            removed = globus_tx.forget_tokens(conn, user_id)
+        return {
+            "status": "ok",
+            "had_credentials": removed,
+            "message": "Globus credentials removed." if removed
+                       else "No Globus credentials were stored for this user.",
+        }
+    except Exception as e:
+        return _globus_error_payload(e)
+
+
+@mcp.tool()
+def globus_login_finish(chat_id: str, code: str) -> Dict[str, Any]:
+    """
+    Complete Globus authorization with the code the user pasted back.
+
+    Stores a refresh token for this user, after which transfers run without
+    any further browser step.
+
+    Args:
+        chat_id: Current chat/session ID.
+        code:    The authorization code the user copied from the Globus page.
+    """
+    try:
+        user_id = _globus_user(chat_id)
+        with _get_db() as conn:
+            return globus_tx.login_finish(conn, user_id, code)
+    except Exception as e:
+        return _globus_error_payload(e)
+
+
+@mcp.tool()
+def globus_list_remote(chat_id: str, collection: str, path: str,
+                       limit: int = 50) -> Dict[str, Any]:
+    """
+    List a directory on a facility collection, to check what is there before
+    or after a transfer.
+
+    Args:
+        chat_id:    Current chat/session ID.
+        collection: "jlab", "nersc", or a Globus collection UUID.
+        path:       Directory to list. JLab paths may be given the way the
+                    rest of the workflow stores them (/w/ceph24/JAM/...);
+                    they are rewritten to the form Globus expects.
+        limit:      Maximum entries to return.
+    """
+    try:
+        user_id = _globus_user(chat_id)
+        with _get_db() as conn:
+            entries = globus_tx.list_remote(conn, user_id, collection, path, limit=limit)
+        return {"status": "ok", "collection": collection, "path": path, "entries": entries}
+    except Exception as e:
+        return _globus_error_payload(e)
+
+
+@mcp.tool()
+def globus_transfer(chat_id: str, source_collection: str, source_path: str,
+                    dest_collection: str, dest_path: str,
+                    recursive: bool = False, label: str = "") -> Dict[str, Any]:
+    """
+    Move a file or a directory between two facilities, for example to send a
+    finished campaign's results from Jefferson Lab to NERSC.
+
+    Returns as soon as the task is queued; the copy happens in the
+    background between the two facilities and does not pass through this
+    server. Poll globus_transfer_status with the returned task_id.
+
+    Args:
+        chat_id:           Current chat/session ID.
+        source_collection: "jlab", "nersc", or a collection UUID.
+        source_path:       File or directory to copy.
+        dest_collection:   "jlab", "nersc", or a collection UUID.
+        dest_path:         Where to put it. Parent directories are created.
+        recursive:         True to copy a directory, False for a single file.
+        label:             Optional name for the task, shown in Globus.
+    """
+    try:
+        user_id = _globus_user(chat_id)
+        with _get_db() as conn:
+            result = globus_tx.submit_transfer(
+                conn, user_id,
+                source_collection, source_path,
+                dest_collection, dest_path,
+                recursive=recursive,
+                label=label or None,
+            )
+        result["status"] = "submitted"
+        result["next_step"] = "Poll globus_transfer_status with this task_id."
+        return result
+    except Exception as e:
+        return _globus_error_payload(e)
+
+
+@mcp.tool()
+def globus_transfer_status(chat_id: str, task_id: str) -> Dict[str, Any]:
+    """
+    Check a transfer. Status is one of ACTIVE, SUCCEEDED or FAILED; a failed
+    task also comes back with the last few error events.
+
+    Args:
+        chat_id: Current chat/session ID.
+        task_id: The task_id returned by globus_transfer.
+    """
+    try:
+        user_id = _globus_user(chat_id)
+        with _get_db() as conn:
+            return globus_tx.transfer_status(conn, user_id, task_id)
+    except Exception as e:
+        return _globus_error_payload(e)
 
 
 # ---------------------------------------------------------------------------

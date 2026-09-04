@@ -133,6 +133,34 @@ _CREATE_STATEMENTS: list[str] = [
         updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """,
+    # Globus credentials, one row per Open WebUI user. Keyed on user_id rather
+    # than chat_id because the authorization belongs to a person: the same
+    # tokens serve every chat they open, and no chat may borrow another
+    # person's. The refresh token is what removes the browser step from every
+    # transfer after the first authorization.
+    """
+    CREATE TABLE IF NOT EXISTS user_globus_tokens (
+        user_id       TEXT PRIMARY KEY,
+        refresh_token TEXT NOT NULL,
+        access_token  TEXT,
+        expires_at    INTEGER,
+        scope         TEXT,
+        updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    # A login is two calls with the user's browser in between, so the PKCE
+    # verifier has to outlive the first call. Keeping it in process memory
+    # works for one user on one process and silently breaks with several
+    # workers or across a restart, so it lives here instead. Rows are
+    # short-lived and are deleted as soon as the code is exchanged.
+    """
+    CREATE TABLE IF NOT EXISTS globus_pending_logins (
+        user_id    TEXT PRIMARY KEY,
+        verifier   TEXT NOT NULL,
+        scopes     TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
 ]
 
 
@@ -268,4 +296,6 @@ def schema_tables() -> Iterable[str]:
         "saved_results",
         "batch_events",
         "fit_campaigns",
+        "user_globus_tokens",
+        "globus_pending_logins",
     )
