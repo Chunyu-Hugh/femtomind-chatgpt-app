@@ -275,7 +275,12 @@ def _get_hpc_username_by_user_id(user_id: str) -> Optional[str]:
 
 
 def _get_hpc_username(chat_id: str) -> Optional[str]:
-    """Look up HPC username for a chat. Tries: 1) chat's user_id in config, 2) any configured user (single-user fallback)."""
+    """Look up the HPC username for a caller.
+
+    Tries the Open WebUI chat's owner, then the caller id itself, which is what
+    the ChatGPT app sends. A caller with no account of their own gets None
+    rather than someone else's.
+    """
     # Try to find the Open WebUI user_id for this chat
     try:
         import sqlite3 as _sq
@@ -953,6 +958,43 @@ def _get_webui_user_id(chat_id: str) -> Optional[str]:
     return None
 
 
+def _resolve_user_id(chat_id: str) -> Optional[str]:
+    """Work out which person a call belongs to, under either front end.
+
+    The ChatGPT app does not trust the chat_id it is given: `femtomind_app._scope`
+    substitutes the authenticated user's id into that argument, so there the
+    chat_id *is* the user id. Open WebUI sends a real chat id, whose owner has to
+    be looked up. Both are tried, and neither ever borrows another person's
+    identity — a call that cannot be attributed is refused rather than served as
+    whoever happens to be configured.
+    """
+    chat_id = (chat_id or "").strip()
+    if not chat_id:
+        return None
+
+    # Already a user we hold records for, under either name.
+    try:
+        with _get_db() as conn:
+            for table in ("user_hpc_config", "user_globus_tokens"):
+                row = conn.execute(
+                    f"SELECT user_id FROM {table} WHERE user_id = ?", (chat_id,)
+                ).fetchone()
+                if row:
+                    return row[0]
+    except Exception as e:
+        logger.warning(f"user lookup failed for {chat_id}: {e}")
+
+    owner = _get_webui_user_id(chat_id)
+    if owner:
+        return owner
+
+    # An authenticated id the app issued, for someone with no records yet —
+    # the shape is set by femtomind_auth when an invite code is redeemed.
+    if chat_id.startswith("u_"):
+        return chat_id
+    return None
+
+
 def _globus_error_payload(exc: Exception) -> Dict[str, Any]:
     """Turn a transfer failure into something the model can act on.
 
@@ -994,11 +1036,12 @@ def _globus_error_payload(exc: Exception) -> Dict[str, Any]:
 def _globus_user(chat_id: str) -> str:
     if not GLOBUS_OK:
         raise RuntimeError("Globus support is not installed on this server.")
-    user_id = _get_webui_user_id(chat_id)
+    user_id = _resolve_user_id(chat_id)
     if not user_id:
         raise RuntimeError(
-            "Could not identify which user this chat belongs to, so Globus "
-            "credentials cannot be looked up."
+            "Could not identify which user this request belongs to, so Globus "
+            "credentials cannot be looked up. Sign in again, or configure an "
+            "HPC account first."
         )
     return user_id
 
