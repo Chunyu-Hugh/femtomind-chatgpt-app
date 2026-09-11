@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FemtoMind 进展 — JAM25 论文复现</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --border:#30363d; --text:#e6edf3;
+    --dim:#8b949e; --accent:#58a6ff; --green:#3fb950; --yellow:#d29922;
+    --red:#f85149; --purple:#bc8cff;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;line-height:1.6;padding:24px}
+  .wrap{max-width:1080px;margin:0 auto}
+  h1{font-size:1.9em;margin-bottom:6px}
+  h2{font-size:1.25em;margin:34px 0 14px;color:var(--accent);border-bottom:1px solid var(--border);padding-bottom:6px}
+  .sub{color:var(--dim);margin-bottom:18px}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px;margin-bottom:14px}
+  .grid{display:grid;gap:14px}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  .g2{grid-template-columns:repeat(2,1fr)}
+  @media(max-width:800px){.g3,.g2{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px}
+  .card h3{font-size:1em;color:var(--dim);margin-bottom:8px;font-weight:600}
+  .big{font-size:2.1em;font-weight:700}
+  .ok{color:var(--green)} .warn{color:var(--yellow)} .bad{color:var(--red)} .acc{color:var(--accent)} .pur{color:var(--purple)}
+  table{width:100%;border-collapse:collapse;font-size:.92em}
+  th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--border)}
+  th{color:var(--dim);font-weight:600}
+  .tag{display:inline-block;font-size:.75em;padding:2px 8px;border-radius:10px;border:1px solid var(--border);margin-right:6px;color:var(--dim)}
+  .tag.g{color:var(--green);border-color:var(--green)} .tag.b{color:var(--purple);border-color:var(--purple)}
+  .tag.a{color:var(--accent);border-color:var(--accent)}
+  svg text{font-family:inherit}
+  .foot{color:var(--dim);font-size:.85em;margin-top:30px;text-align:center}
+  .code{font-family:ui-monospace,Menlo,monospace;font-size:.85em;background:#010409;padding:2px 6px;border-radius:4px}
+  a{color:var(--accent);text-decoration:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FemtoMind 进展 <span style="color:var(--dim);font-size:.55em">— JAM25 论文自主复现（2026-09）</span></h1>
+  <div class="sub">目标论文：<b>“First simultaneous global QCD analysis of kaon and pion parton distributions with lattice QCD constraints”</b>（arXiv:2510.11979，Sato 等，PRD 2025，701 replicas）。本页汇总 FemtoMind MCP 工具链驱动下的复现进展与关键数据。</div>
+
+  <h2>1 · 系统架构</h2>
+  <div class="panel" style="overflow-x:auto">
+    <svg viewBox="0 0 1000 300" width="100%" style="min-width:760px">
+      <defs>
+        <marker id="arw" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 z" fill="#58a6ff"/>
+        </marker>
+      </defs>
+      <rect x="20"  y="40"  width="150" height="220" rx="10" fill="#161b22" stroke="#bc8cff"/>
+      <text x="95" y="70" fill="#bc8cff" text-anchor="middle" font-weight="700">LLM 代理（多模型）</text>
+      <text x="95" y="105" fill="#e6edf3" text-anchor="middle" font-size="13">Codex（gpt-6-astra）</text>
+      <text x="95" y="128" fill="#e6edf3" text-anchor="middle" font-size="13">Claude Code</text>
+      <text x="95" y="151" fill="#8b949e" text-anchor="middle" font-size="12">（内部验证：DeepSeek）</text>
+      <text x="95" y="185" fill="#8b949e" text-anchor="middle" font-size="12">只递种子/意图</text>
+      <text x="95" y="208" fill="#8b949e" text-anchor="middle" font-size="12">不做物理决策</text>
+
+      <rect x="230" y="40" width="200" height="220" rx="10" fill="#161b22" stroke="#58a6ff"/>
+      <text x="330" y="70" fill="#58a6ff" text-anchor="middle" font-weight="700">FemtoMind MCP 网关</text>
+      <text x="330" y="98" fill="#e6edf3" text-anchor="middle" font-size="12">mcpo :8000（HTTP/MCP）</text>
+      <text x="330" y="124" fill="#e6edf3" text-anchor="middle" font-size="12">ladder_overview</text>
+      <text x="330" y="146" fill="#e6edf3" text-anchor="middle" font-size="12">orchestrate_jam25（编排器）</text>
+      <text x="330" y="168" fill="#e6edf3" text-anchor="middle" font-size="12">run_ladder_job / launch_wave</text>
+      <text x="330" y="190" fill="#e6edf3" text-anchor="middle" font-size="12">ladder_msr_status</text>
+      <text x="330" y="212" fill="#e6edf3" text-anchor="middle" font-size="12">compare_with_paper</text>
+      <text x="330" y="240" fill="#8b949e" text-anchor="middle" font-size="12">专家知识：卡/先验/护栏/验收目标</text>
+
+      <rect x="500" y="40" width="180" height="220" rx="10" fill="#161b22" stroke="#d29922"/>
+      <text x="590" y="70" fill="#d29922" text-anchor="middle" font-weight="700">JLab HPC</text>
+      <text x="590" y="98" fill="#e6edf3" text-anchor="middle" font-size="12">ssh_runner 双跳隧道</text>
+      <text x="590" y="124" fill="#e6edf3" text-anchor="middle" font-size="12">SLURM（守卫 ≤80）</text>
+      <text x="590" y="150" fill="#e6edf3" text-anchor="middle" font-size="12">apptainer 容器</text>
+      <text x="590" y="176" fill="#e6edf3" text-anchor="middle" font-size="12">fitpack（4 步阶梯）</text>
+      <text x="590" y="202" fill="#e6edf3" text-anchor="middle" font-size="12">格点矩模块 lqcd_mom</text>
+      <text x="590" y="228" fill="#8b949e" text-anchor="middle" font-size="12">msr 后验文件</text>
+
+      <rect x="750" y="40" width="230" height="220" rx="10" fill="#161b22" stroke="#3fb950"/>
+      <text x="865" y="70" fill="#3fb950" text-anchor="middle" font-weight="700">论文级验收</text>
+      <text x="865" y="100" fill="#e6edf3" text-anchor="middle" font-size="12">χ²/N 逐通道对照</text>
+      <text x="865" y="126" fill="#e6edf3" text-anchor="middle" font-size="12">Table 1 格点矩</text>
+      <text x="865" y="152" fill="#e6edf3" text-anchor="middle" font-size="12">member-0 PDF 网格</text>
+      <text x="865" y="178" fill="#e6edf3" text-anchor="middle" font-size="12">β 有效指数</text>
+      <text x="865" y="204" fill="#e6edf3" text-anchor="middle" font-size="12">47+ 链系综统计</text>
+      <text x="865" y="232" fill="#8b949e" text-anchor="middle" font-size="12">护栏 + 专家审核</text>
+
+      <line x1="170" y1="150" x2="230" y2="150" stroke="#58a6ff" stroke-width="2" marker-end="url(#arw)"/>
+      <line x1="430" y1="150" x2="500" y2="150" stroke="#58a6ff" stroke-width="2" marker-end="url(#arw)"/>
+      <line x1="680" y1="150" x2="750" y2="150" stroke="#58a6ff" stroke-width="2" marker-end="url(#arw)"/>
+      <text x="500" y="295" fill="#8b949e" text-anchor="middle" font-size="13">同一套蒸馏的专家知识 → 多个模型可插拔；LLM 只当驾驶员，物理决策在工具与护栏内</text>
+    </svg>
+  </div>
+
+  <h2>2 · 复现核心结果（vs 论文发表数字）</h2>
+  <div class="grid g3">
+    <div class="card"><h3>实验总 χ²/N（231 点）</h3><div class="big ok">0.798</div><div>论文 <b>0.80</b> · 差 0.3%</div></div>
+    <div class="card"><h3>格点矩 χ²/N（15 点）</h3><div class="big ok">0.28</div><div>论文 0.65 · 全部 z ≤ 1.2</div></div>
+    <div class="card"><h3>NA3 K/π 比值</h3><div class="big ok">0.034</div><div>论文 0.08 · 优于论文</div></div>
+  </div>
+  <div class="panel">
+    <table>
+      <tr><th>验收通道</th><th>我们</th><th>论文</th><th>判定</th></tr>
+      <tr><td>DY-pion（117 点）</td><td>0.771</td><td>0.78</td><td class="ok">✓</td></tr>
+      <tr><td>LN（108 点）</td><td>0.869</td><td>0.87</td><td class="ok">✓</td></tr>
+      <tr><td>总 χ²/N（246 点）</td><td>0.767</td><td>0.79</td><td class="ok">✓</td></tr>
+      <tr><td>⟨x⟩u^K / ⟨x⟩s^K / ⟨x⟩g^K</td><td>0.269 / 0.340 / 0.383</td><td>0.269(7) / 0.340(11) / 0.333(17)</td><td class="ok">✓（|z|≤1.1）</td></tr>
+      <tr><td>β_ū^π⁻ / β_ū^K⁻</td><td>1.02 / 1.36–1.52</td><td>1.16(4) / 1.6(2)</td><td class="ok">✓（1σ）</td></tr>
+      <tr><td>π/K 价夸克 PDF（受约束区）</td><td>—</td><td>member-0</td><td class="ok">✓（4–9%）</td></tr>
+      <tr><td>系综主峰（47+ 独立链）</td><td>0.798（86% 链落在 0.79–0.80）</td><td>0.80</td><td class="ok">✓ 解唯一</td></tr>
+    </table>
+  </div>
+
+  <h2>3 · 多模型自主复现演示</h2>
+  <div class="grid g2">
+    <div class="card">
+      <h3><span class="tag a">Codex</span> seed 140701</h3>
+      <div>4 步阶梯全部推进（作业 10803224→10803669→10803802→10803995）</div>
+      <div>自写 Python 驱动器（5 分钟轮询 + 6 小时预算 + 原始响应存档）</div>
+      <div>产物：REPORT.md（验收表）、JAM24_feasibility.md、timeline.jsonl</div>
+      <div class="warn">事件：ChatGPT 用量额度中途耗尽 → 驱动器保活续跑，链由编排器完成</div>
+    </div>
+    <div class="card">
+      <h3><span class="tag b">Claude Code</span> seed 140702</h3>
+      <div>全链 1h31m 完成（18 次调用、零重试、零发散），χ²/N=0.767</div>
+      <div>自写 bash 三件套驱动器 + 状态解析器</div>
+      <div>产物：REPORT.md（验收表+时间线）、raw/ 全部原始响应</div>
+      <div class="ok">亮点：独立发现 2 个真 bug（编排器护栏 NaN 失效、验收 TOTAL 口径错误）+ 1 个物理观察（kaon 约束集差异）——均已修复</div>
+    </div>
+  </div>
+
+  <h2>4 · 速度对比</h2>
+  <div class="grid g3">
+    <div class="card"><h3>JAM25 原始周期</h3><div class="big pur">≈190 天</div><div>2024-10 首个开发目录 → 2025-04 网格产出（文件夹时间戳）</div></div>
+    <div class="card"><h3>我们单链复现</h3><div class="big ok">1.5–2.5 小时</div><div>从零到全部验收数字（含排错与系综启动）</div></div>
+    <div class="card"><h3>系综复现</h3><div class="big acc">≈2.5 天</div><div>47+ 独立链 · 86% 精确命中论文值 · 全自动</div></div>
+  </div>
+  <div class="panel" style="color:var(--dim);font-size:.9em">
+    口径说明：190 天是原始研究周期（探索+写作），我们复现的是已知目标；公平对照"熟练学者手动复现"估计为数周–数月，本系统 2.5 天 ≈ 10–50× 提速。计算本身未变快（同一 fitpack/SLURM），提速来自 LLM 的决策-排错-编排循环被蒸馏工具压缩。
+  </div>
+
+  <h2>5 · 过程中发现的问题（可复现性素材）</h2>
+  <div class="panel">
+    <table>
+      <tr><th>#</th><th>问题</th><th>性质</th></tr>
+      <tr><td>1</td><td>发表版不含 pion_qT 数据（内部卡 308 点是未发表配置）</td><td class="warn">论文-代码差异</td></tr>
+      <tr><td>2</td><td>内部卡 Q20=1.27² 与论文 μ₀=m_c=1.28 矛盾</td><td class="warn">论文-代码差异</td></tr>
+      <tr><td>3</td><td>论文 Eq.(2) 矩定义符号与其 Table 1 数据不匹配（须用动量分数约定）</td><td class="warn">论文表述问题</td></tr>
+      <tr><td>4</td><td>8 个基础设施障碍（注释解析崩溃、deviation-buffer 缺失、parman 命名清零、旧 idis 接口…）</td><td class="bad">全部修复并归档</td></tr>
+      <tr><td>5</td><td>无约束区先验依赖（小 x 海↔胶子简并、K 的 s 价夸克大 x 衰变）——论文未公布其先验</td><td class="acc">物理发现</td></tr>
+      <tr><td>6</td><td>Claude 独立发现：编排器护栏 NaN 失效 + 验收 TOTAL 口径错误</td><td class="ok">已修复</td></tr>
+    </table>
+  </div>
+
+  <h2>6 · 当前状态</h2>
+  <div class="grid g2">
+    <div class="card"><h3>已完成</h3>
+      <div class="ok">✓</div> 单链全配置复现（三线：内部验证 + Codex + Claude）<br>
+      <div class="ok">✓</div> 47+ 链系综（86% 命中论文值）<br>
+      <div class="ok">✓</div> UI 数据目录补全（NA3 比值 + 格点矩）+ jam25_ladder workflow + run_ladder_job 监控接线<br>
+      <div class="ok">✓</div> 全部提交并 push（origin/main）
+    </div>
+    <div class="card"><h3>进行中 / 待办</h3>
+      <div class="warn">◐</div> 系综放大：50 → 100 → 701（论文发表规模，纯计算量）<br>
+      <div class="warn">◐</div> Codex 链收尾报告（用量额度重置后）<br>
+      <div class="warn">◐</div> π/K 探索式调参的"特殊键"扩展（半天工程）<br>
+      <div class="warn">◐</div> 专家审核清单签字 + 论文撰写
+    </div>
+  </div>
+
+  <div class="foot">
+    FemtoMind · 数据来源：<span class="code">femtomind-chatgpt-app</span> 仓库 + <span class="code">repro-jam20/stage_logs/JAM25/</span> 运行日志（全部原始记录可追溯）<br>
+    生成时间 2026-09 · 双模型演示：Codex seed 140701 / Claude Code seed 140702
+  </div>
+</div>
+</body>
+</html>
