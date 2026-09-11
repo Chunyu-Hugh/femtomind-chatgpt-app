@@ -41,7 +41,9 @@ logger = logging.getLogger(__name__)
 
 # --- SSH Configuration ---
 HPC_HOST = "ifarm.jlab.org"
-CONTROL_MASTERS_DIR = os.path.expanduser("~/.ssh/controlmasters")
+CONTROL_MASTERS_DIR = os.environ.get(
+    "FEMTOMIND_SSH_DIR", os.path.expanduser("~/.ssh/controlmasters")
+)
 DEFAULT_REMOTE_BASE_TEMPLATE = os.environ.get(
     "HPC_REMOTE_BASE_TEMPLATE", "/w/ceph24/JAM/{username}/fitpack_legacy"
 )

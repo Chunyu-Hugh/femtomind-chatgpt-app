@@ -99,3 +99,53 @@ datasets:
 pdf_params:
   description: "PDF functional form parameters"
   note: "These parameters define the PDF functional form and are typically not modified by users in the chatbot interface"
+
+  # --- JAM25 pion/kaon ladder parameters (L2 from-scratch reproduction) ---
+  "pdf-pion ubv1 a":
+    description: "Pion valence quark small-x exponent. Flat-prior range [-1.0, 0.9]; constrained by DY data."
+    type: "float"
+  "pdf-pion ubv1 b":
+    description: "Pion valence quark large-x falloff exponent (1-x)^b. Constrained by DY at x>0.2."
+    type: "float"
+  "pdf-pion ubv1 c":
+    description: "Pion valence subleading-shape coefficient (1+c x^d)."
+    type: "float"
+  "pdf-pion ubv1 d":
+    description: "Pion valence subleading-shape exponent."
+    type: "float"
+  "pdf-pion u1 a":
+    description: "Pion sea quark small-x exponent. Physics prior [-1,0]: sea not more singular than valence."
+    type: "float"
+  "pdf-pion u1 b":
+    description: "Pion sea quark large-x falloff. Physics prior [4,12]: sea steep at large x (unconstrained by data)."
+    type: "float"
+  "pdf-pion g1 N":
+    description: "Pion gluon normalization. Fixed in step 1 (DY alone cannot constrain the gluon), freed from step 2 (LN data)."
+    type: "float"
+  "pdf-pion g1 a":
+    description: "Pion gluon small-x exponent."
+    type: "float"
+  "pdf-pion g1 b":
+    description: "Pion gluon large-x falloff. Physics prior [4,12]."
+    type: "float"
+  "p->pi,n lambda":
+    description: "Cutoff mass of the p->pi+n splitting function for leading-neutron observables (McKenney-Sato model)."
+    type: "float"
+  "pdf-kaon ubv1 a":
+    description: "Kaon ubar-valence small-x exponent. Valence-like prior [-0.5,0.9]: no small-x divergence (NA3 and lattice do not constrain small x)."
+    type: "float"
+  "pdf-kaon ubv1 b":
+    description: "Kaon ubar-valence large-x falloff. Constrained by NA3 ratio and lattice moments."
+    type: "float"
+  "pdf-kaon sv1 a":
+    description: "Kaon strange-valence small-x exponent (valence-like prior)."
+    type: "float"
+  "pdf-kaon sv1 b":
+    description: "Kaon strange-valence large-x falloff."
+    type: "float"
+  "pdf-kaon u1 N":
+    description: "Kaon sea normalization — free (paper: normalizations vary); kaon gluon normalization is fixed by the momentum sum rule."
+    type: "float"
+  "kaon fitting scenario":
+    description: "Sum-rule attribution scheme for the kaon PDF: 6 = sea N free, gluon N from kaon momentum sum rule (paper text)."
+    type: "integer"

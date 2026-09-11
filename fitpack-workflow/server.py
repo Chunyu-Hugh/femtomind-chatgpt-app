@@ -781,6 +781,15 @@ mcp = FastMCP(
     dependencies=["mcp[cli]", "pyyaml", "numpy", "pandas"],
 )
 
+# --- JAM25 reproduction campaign tools (ladder + paper acceptance) ---
+try:
+    from campaign_tools import register_campaign_tools
+    register_campaign_tools(mcp)
+    logger.info("campaign tools registered")
+except Exception as e:
+    logger.error(f"campaign tools not registered: {e}")
+
+
 
 # ---------------------------------------------------------------------------
 # Workflow definitions

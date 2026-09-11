@@ -366,6 +366,15 @@ DATASET_CATALOG: Dict[str, List[Dict[str, Any]]] = {
         {"id": "20001", "xlsx": "dy-pion/expdata/20001.xlsx", "label": "CERN NA3 proton DY", "target": "Pt", "obs": "DY xsec", "experiment": "CERN NA3", "default_on": False, "norm": None},
     ],
 
+    "dy-kaon": [
+        {"id": "11980", "xlsx": "dy-kaon/expdata/11980.xlsx", "label": "CERN NA3 K/pi DY ratio", "target": "Pt", "obs": "ratio", "experiment": "CERN NA3", "default_on": True, "norm": None},
+    ],
+
+    "lqcd_mom": [
+        {"id": "1000", "xlsx": "lqcd_mom/expdata/1000.xlsx", "label": "ETMC kaon PDF moments", "target": "lattice", "obs": "moments", "experiment": "ETMC/Alexandrou", "default_on": True, "norm": None},
+        {"id": "1001", "xlsx": "lqcd_mom/expdata/1001.xlsx", "label": "ETMC pion PDF moments", "target": "lattice", "obs": "moments", "experiment": "ETMC/Alexandrou", "default_on": True, "norm": None},
+    ],
+
     "ln": [
         {"id": "1000", "xlsx": "ln/expdata/1000.xlsx", "label": "H1 F2LN diffractive", "target": "p", "obs": "F2LN", "experiment": "H1", "default_on": True, "norm": None},
         {"id": "1100", "xlsx": "ln/expdata/1100.xlsx", "label": "H1 F2LN (split func unc)", "target": "p", "obs": "F2LN", "experiment": "H1", "default_on": False, "norm": None},
@@ -505,6 +514,8 @@ DATASET_FILTERS: Dict[str, List[str]] = {
     "pidis": ["Q2>1.69", "W2>10.0"],
     "dy": [],
     "dy-pion": [],
+    "dy-kaon": [],
+    "lqcd_mom": [],
     "dy_qT": [],
     "sidis": [],
     "psidis": [],

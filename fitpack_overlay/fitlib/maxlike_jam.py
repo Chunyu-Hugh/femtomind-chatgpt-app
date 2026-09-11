@@ -540,6 +540,10 @@ class MAXLIKE:
                     del self.order [self.current_step]
                     del self.params[self.current_step]
                     del prior['deviation']
+                else:
+                    # plain posterior->prior chain (no msr-buffer): get_residuals
+                    # may snapshot a buffer msr and needs this key to exist
+                    conf['deviation-buffer'] = []
                 print('prior   step(s):', prior_steps)
                 print('current step   :', self.current_step)
             else:

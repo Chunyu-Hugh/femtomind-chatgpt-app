@@ -1205,3 +1205,34 @@
       description: Review summary and submit all tasks to SLURM.
       tool: submit_batch_tasks
       confirm: true
+
+- id: jam25_ladder
+  name: JAM25 Reproduction Ladder (from-scratch)
+  description: >-
+    Four-step from-scratch ladder reproducing JAM25 (arXiv:2510.11979):
+    step1 dy-pion, step2 +LN, step3 +pion lattice moments, step4 +NA3 ratio
+    and kaon sector (246 pts, 25 params). Driven by the orchestrate_jam25 tool.
+  observable: dy-pion
+  steps:
+    - id: overview
+      title: Ladder Overview
+      description: Inspect the ladder recipe and paper acceptance targets.
+      type: ladder_overview
+      tool: ladder_overview
+    - id: seed
+      title: Seed
+      description: Replica seed (each seed is one independent chain).
+      fields:
+        - name: seed
+          type: number
+          label: Seed
+          default: 140801
+        - name: partition
+          type: text
+          label: Partition
+          default: priority
+    - id: run
+      title: Run Ladder
+      description: Advance the orchestrator state machine (call repeatedly).
+      type: ladder_run
+      tool: orchestrate_jam25
