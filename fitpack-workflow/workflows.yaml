@@ -1233,6 +1233,6 @@
           default: priority
     - id: run
       title: Run Ladder
-      description: Advance the orchestrator state machine (call repeatedly).
+      description: Submit ladder chains (each chain runs the 4-step ladder; progress shows in FittingMonitor).
       type: ladder_run
-      tool: orchestrate_jam25
+      tool: run_ladder_job

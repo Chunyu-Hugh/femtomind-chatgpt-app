@@ -784,7 +784,7 @@ mcp = FastMCP(
 # --- JAM25 reproduction campaign tools (ladder + paper acceptance) ---
 try:
     from campaign_tools import register_campaign_tools
-    register_campaign_tools(mcp)
+    register_campaign_tools(mcp, insert_task=_insert_task)
     logger.info("campaign tools registered")
 except Exception as e:
     logger.error(f"campaign tools not registered: {e}")

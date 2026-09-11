@@ -103,7 +103,7 @@ def _wait_job(job_id: str, username: str, timeout_min: int = 180) -> Dict[str, A
     return {"waited_min": waited // 60}
 
 
-def register_campaign_tools(mcp) -> None:
+def register_campaign_tools(mcp, insert_task=None) -> None:
 
 
     @mcp.tool()
@@ -190,14 +190,18 @@ mkdir -p $OUT/step1 $OUT/step2 $OUT/step3 $OUT/step4
 S=$(({seed} + SLURM_ARRAY_TASK_ID))
 RUN() {{ apptainer exec --bind /w/ceph24 {ENV} {SIF} python3 -m fitlib.maxlike_jam "$@"; }}
 RUN {L2}/input_l2_s1.py $OUT/step1 -n 4 -v 10 -s $S || exit 1
+cp "$OUT/step1/progress.json" "$OUT/progress.json" 2>/dev/null || true
 P1=$(ls $OUT/step1/msr/*.msr | head -1)
 RUN {L2}/input_l2.py    $OUT/step2 -n 4 -v 10 -s $S -p $P1 || exit 1
+cp "$OUT/step2/progress.json" "$OUT/progress.json" 2>/dev/null || true
 P2=$(ls $OUT/step2/msr/*.msr | head -1)
 RUN {L2}/input_l2_s3.py $OUT/step3 -n 4 -v 10 -s $S -p $P2 || exit 1
+cp "$OUT/step3/progress.json" "$OUT/progress.json" 2>/dev/null || true
 P3=$(ls $OUT/step3/msr/*.msr | head -1)
 apptainer exec --bind /w/ceph24 --env PYTHONPATH={FP}:/usr/local/lib/python3.11/site-packages \
   {SIF} python3 {L2}/update_s4_shapes.py $P3 || exit 1
 RUN {L2}/input_l2_s4.py $OUT/step4 -n 4 -v 10 -s $S -p $P3 || exit 1
+cp "$OUT/step4/progress.json" "$OUT/progress.json" 2>/dev/null || true
 echo "CHAIN=$CHAIN DONE"
 """
         ssh_write_file(f"{L2}/appwave/submit.sh", script, username=username)
@@ -310,6 +314,74 @@ echo "CHAIN=$CHAIN DONE"
         return {"stage": f"s{step+1}_running", "step": step + 1,
                 "job_id": info["job_id"], "prior_msr": msr,
                 "chi2N_so_far": state["chi2N"], "hint": "call again to continue"}
+
+    @mcp.tool()
+    def run_ladder_job(count: int, seed: int, chat_id: str = "",
+                       username: str = "", partition: str = "production",
+                       concurrent: int = 10) -> Dict[str, Any]:
+        """UI-facing ladder batch: launch `count` JAM25 ladder chains and
+        register them in the app's task ledger so FittingMonitor shows them.
+
+        Each chain runs the 4-step from-scratch ladder with our cards
+        (identical to the reproduction); progress.json is copied to the chain
+        root after each step so the standard monitor reads it.
+        """
+        import time
+        ssh_mkdir(f"{L2}/appwave", username)
+        batch_id = f"l2ladder_{seed}_{int(time.time())}"
+        wave = f"{L2}/appwave/{batch_id}"
+        ssh_mkdir(f"{wave}", username)
+        script = f"""#!/bin/bash
+#SBATCH --job-name=l2ui
+#SBATCH --partition={partition}
+#SBATCH --nodes=1 --ntasks=1 --cpus-per-task=4
+#SBATCH --time={"04:00:00" if partition == "priority" else "10:00:00"} --mem=4G
+#SBATCH --array=1-{count}%{concurrent}
+#SBATCH --output={wave}/logs/slurm_%A_%a.out --error={wave}/logs/slurm_%A_%a.err
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+cd {FP}
+CEPH_GRIDS="/w/ceph24/JAM/share/fitpack_grids"
+for obs in dy zrap wasym wzrv jet wc pjet dypion pp_hadron; do
+  [ -d "$CEPH_GRIDS/$obs" ] && [ ! -e "{FP}/grids/$obs" ] && ln -sfn "$CEPH_GRIDS/$obs" "{FP}/grids/$obs"
+done
+CHAIN=$(printf "%03d" $SLURM_ARRAY_TASK_ID)
+OUT={wave}/$CHAIN
+mkdir -p $OUT/step1 $OUT/step2 $OUT/step3 $OUT/step4
+S=$(({seed} + SLURM_ARRAY_TASK_ID))
+RUN() {{ apptainer exec --bind /w/ceph24 {ENV} {SIF} python3 -m fitlib.maxlike_jam "$@"; }}
+RUN {L2}/input_l2_s1.py $OUT/step1 -n 4 -v 10 -s $S || exit 1
+cp "$OUT/step1/progress.json" "$OUT/progress.json" 2>/dev/null || true
+P1=$(ls $OUT/step1/msr/*.msr | head -1)
+RUN {L2}/input_l2.py    $OUT/step2 -n 4 -v 10 -s $S -p $P1 || exit 1
+cp "$OUT/step2/progress.json" "$OUT/progress.json" 2>/dev/null || true
+P2=$(ls $OUT/step2/msr/*.msr | head -1)
+RUN {L2}/input_l2_s3.py $OUT/step3 -n 4 -v 10 -s $S -p $P2 || exit 1
+cp "$OUT/step3/progress.json" "$OUT/progress.json" 2>/dev/null || true
+P3=$(ls $OUT/step3/msr/*.msr | head -1)
+apptainer exec --bind /w/ceph24 --env PYTHONPATH={FP}:/usr/local/lib/python3.11/site-packages \
+  {SIF} python3 {L2}/update_s4_shapes.py $P3 || exit 1
+RUN {L2}/input_l2_s4.py $OUT/step4 -n 4 -v 10 -s $S -p $P3 || exit 1
+cp "$OUT/step4/progress.json" "$OUT/progress.json" 2>/dev/null || true
+echo "CHAIN=$CHAIN DONE"
+"""
+        ssh_write_file(f"{wave}/submit.sh", script, username=username)
+        p = _shell(f"cd {FP} && sbatch {wave}/submit.sh", username)
+        m = re.search(r"Submitted batch job (\d+)", p["stdout"])
+        array_id = m.group(1) if m else None
+        if array_id and insert_task is not None:
+            for i in range(1, count + 1):
+                insert_task({
+                    "chat_id": chat_id, "batch_id": batch_id,
+                    "batch_label": f"JAM25 ladder seed {seed}",
+                    "file_id": f"{i:03d}", "path": f"{wave}/{i:03d}",
+                    "parameters_file": "input_l2_s1.py",
+                    "step_index": 0, "parent_batch_id": "",
+                    "hpc_username": username, "observable": "dy-pion",
+                })
+        return {"status": "submitted" if array_id else "error",
+                "batch_id": batch_id, "slurm_array_id": array_id,
+                "nchains": count, "seed": seed, "wave_dir": wave,
+                "monitor": "chain progress visible in FittingMonitor via progress.json"}
 
     @mcp.tool()
     def compare_with_paper(chat_id: str = "", msr: str = "",
