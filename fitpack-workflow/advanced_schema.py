@@ -95,6 +95,17 @@ class AdvancedFitConfig(BaseModel if _HAS_PYDANTIC else object):  # type: ignore
     # Composite blocks
     qcd_config: Optional[_QcdConfig] = None
     pdf_params: Optional[Dict[str, _PdfParamOverride]] = None
+    pdf_pion_params: Optional[Dict[str, _PdfParamOverride]] = None
+    pdf_kaon_params: Optional[Dict[str, _PdfParamOverride]] = None
+
+    # Meson / lattice special keys (fitpack top-level conf)
+    kaon_fitting_scenario: Optional[int] = None
+    pion_fitting_scenario: Optional[int] = None
+    pion_resummation: Optional[bool] = None
+    mp_method: Optional[str] = None
+    dis_version: Optional[int] = None
+    ln_mode: Optional[str] = None
+    splfunc_model: Optional[str] = None
 
     # Quality thresholds — written into chain_state history for the next
     # compute_batch_prior call. Not consumed by _apply_advanced_overrides

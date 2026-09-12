@@ -1415,6 +1415,30 @@ def _build_params_for_review(username: str) -> Dict[str, Any]:
         "items": pdf_items,
     })
 
+    # Meson distributions (pion / kaon) — shown when the card defines them.
+    for dist, label in (("pdf-pion", "Pion PDF Parameters"),
+                        ("pdf-kaon", "Kaon PDF Parameters")):
+        dist_params = conf.get("params", {}).get(dist, {})
+        if not dist_params:
+            continue
+        items = []
+        for name, info in dist_params.items():
+            fixed = info.get("fixed", False)
+            items.append({
+                "name": name,
+                "value": info.get("value"),
+                "min": info.get("min"),
+                "max": info.get("max"),
+                "fixed": fixed,
+                "editable": not fixed,
+            })
+        result["groups"].append({
+            "id": dist,
+            "label": label,
+            "editable": True,
+            "items": items,
+        })
+
     # Note: Dataset normalizations are now handled by the dataset_select step,
     # so we no longer inject them here as a separate group.
 
@@ -1741,6 +1765,42 @@ def _apply_advanced_overrides(
         if applied_qcd:
             applied_out["qcd_config"] = applied_qcd
             mutated = True
+
+    # Meson/lattice special keys → top-level conf (fitpack spelling).
+    special_keys = {
+        "kaon_fitting_scenario": "kaon fitting scenario",
+        "pion_fitting_scenario": "pion fitting scenario",
+        "pion_resummation": "pion resummation",
+        "mp_method": "MP method",
+        "dis_version": "dis version",
+        "ln_mode": "ln mode",
+        "splfunc_model": "SPLFUNC model",
+    }
+    for ui_key, yaml_key in special_keys.items():
+        if ui_key in advanced and advanced[ui_key] is not None:
+            conf[yaml_key] = advanced[ui_key]
+            applied_out[yaml_key] = advanced[ui_key]
+            mutated = True
+
+    # Meson distribution param overrides → conf.params[<dist>].
+    # Unlike the nucleon block, entries are CREATED here: the param names are
+    # standard fitpack slots (N/a/b/c/d per flavor), so the UI may define a
+    # distribution the default card doesn't carry.
+    for ui_block, dist in (("pdf_pion_params", "pdf-pion"),
+                           ("pdf_kaon_params", "pdf-kaon")):
+        overrides = advanced.get(ui_block) or {}
+        if not isinstance(overrides, dict) or not overrides:
+            continue
+        section = conf.setdefault("params", {}).setdefault(dist, {})
+        for name, override in overrides.items():
+            if not isinstance(override, dict):
+                continue
+            target = section.setdefault(name, {})
+            for field in ("value", "min", "max", "fixed"):
+                if field in override and override[field] is not None:
+                    target[field] = override[field]
+                    mutated = True
+        applied_out[dist] = list(overrides.keys())
 
     # PDF param overrides → conf.params.pdf (existing entries only — don't invent new ones).
     pdf_overrides = advanced.get("pdf_params") or {}
