@@ -3113,13 +3113,114 @@ def get_fitting_chain(chat_id: str) -> Dict[str, Any]:
             "batch_label": past.get("batch_label", ""),
             "completed": bool(batch_id and _is_batch_completed(batch_id)),
         })
+    # best-effort per-batch summary so the agent can review chi2 in one call
+    for entry in history:
+        entry["chi2_per_point"] = None
+        entry["n_replicas"] = None
+        entry["summary_status"] = "absent"
+        try:
+            if CHI2_BF_OK and entry["batch_id"]:
+                st = _chi2bf.check_status(entry["batch_id"])
+                entry["summary_status"] = st.get("status", "unknown")
+                res = st.get("result") or {}
+                if entry["summary_status"] == "done":
+                    cpp = res.get("chi2_per_point")
+                    if cpp is None and isinstance(res.get("global"), dict):
+                        cpp = res["global"].get("chi2_per_point")
+                    entry["chi2_per_point"] = cpp
+                    entry["n_replicas"] = res.get("n_replicas")
+        except Exception:
+            pass
     return {
         "status": "ok",
         "current_step": state.get("current_step", 0),
         "active_batch_id": state.get("active_batch_id", ""),
         "active_observable": state.get("active_observable", ""),
         "history": history,
-        "note": "Appending a stage (continue mode) inherits the latest COMPLETED batch's per-replica posteriors as priors; datasets accumulate, so pass the full cumulative selection.",
+        "note": "Appending a stage (continue mode) inherits the latest COMPLETED batch's per-replica posteriors as priors; datasets accumulate, so pass the full cumulative selection. chi2_per_point is best-effort (needs compute_summary_bf to have run).",
+    }
+
+
+# JAM-standard ladder: family introduction order, track, and what each stage frees.
+_LADDER_ORDER = ["idis", "dy", "wzrv", "wasym", "zrap", "jet", "sia", "sidis", "wc"]
+_LADDER_TRACK = {"idis": "alpha", "dy": "alpha", "wzrv": "alpha", "wasym": "alpha",
+                 "zrap": "alpha", "jet": "alpha", "sidis": "alpha", "wc": "alpha",
+                 "sia": "beta"}
+_LADDER_FREES = {
+    "idis": "sea symmetric (S1=S2, delta=0)",
+    "dy": "free delta-ubar, delta-dbar",
+    "wzrv": "W/Z flavor separation",
+    "wasym": "W/Z flavor separation",
+    "zrap": "W/Z flavor separation",
+    "jet": "gluon at large x",
+    "sia": "free S2, delta-s, delta-sbar + fragmentation functions",
+    "sidis": "PDF x FF multiplicities",
+    "wc": "strange sector",
+}
+
+
+@mcp.tool()
+def suggest_next_stage(chat_id: str) -> Dict[str, Any]:
+    """The methodology as a function: given where the ladder stands, return the
+    JAM-standard next step - the next reaction family to add (or finalize), the
+    required cumulative dataset selection (everything fitted so far plus the new
+    family's default datasets), what parameters the stage frees, and the run
+    mode. Call this whenever the user asks "what is the next step" or before
+    appending a stage; it encodes the standard ladder order
+    (DIS -> DY -> W/Z -> jets -> SIA -> SIDIS -> W+charm)."""
+    _init_db()
+    state = _get_chain_state(chat_id)
+    fitted = set()
+    cumulative_ids = []
+    for past in (state.get("history") or []):
+        if not isinstance(past, dict):
+            continue
+        obs = str(past.get("observable") or "")
+        ids = [str(i) for i in (past.get("selected_ids") or [])]
+        if obs not in fitted:
+            fitted.add(obs)
+            cumulative_ids.append((obs, ids))
+        else:
+            for i, (o, _) in enumerate(cumulative_ids):
+                if o == obs:
+                    cumulative_ids[i] = (obs, ids)
+    if not fitted:
+        ids = [ds["id"] for ds in DATASET_CATALOG.get("idis", []) if ds.get("default_on")]
+        return {
+            "status": "ok", "stage": 1, "letter": "A", "action": "run",
+            "mode": "fresh_start", "observable": "idis",
+            "add_datasets": [str(i) for i in ids],
+            "cumulative_selection": {"idis": [str(i) for i in ids]},
+            "frees": _LADDER_FREES.get("idis", ""), "track": "alpha",
+            "explanation": "Ladder starts with inclusive DIS: PDFs first, sea symmetric.",
+        }
+    n_stages = len(fitted)
+    next_family = None
+    for fam in _LADDER_ORDER:
+        if _LADDER_TRACK.get(fam) == "alpha" and fam not in fitted:
+            next_family = fam
+            break
+    if next_family:
+        add_ids = [ds["id"] for ds in DATASET_CATALOG.get(next_family, []) if ds.get("default_on")]
+        full = dict(cumulative_ids)
+        existing = [str(i) for i in full.get(next_family, [])]
+        full[next_family] = existing + [str(i) for i in add_ids if str(i) not in existing]
+        return {
+            "status": "ok", "stage": n_stages + 1, "letter": chr(ord("A") + n_stages),
+            "action": "append", "mode": "continue", "observable": next_family,
+            "add_datasets": [str(i) for i in add_ids],
+            "cumulative_selection": full,
+            "frees": _LADDER_FREES.get(next_family, ""),
+            "track": _LADDER_TRACK.get(next_family, ""),
+            "explanation": "Add the next reaction in the standard JAM ladder order and refit from the previous stage's posteriors.",
+        }
+    has_beta = "sia" in fitted
+    return {
+        "status": "ok", "stage": n_stages + 1, "letter": chr(ord("A") + n_stages),
+        "action": "finalize", "mode": "finalize", "observable": "",
+        "add_datasets": [], "cumulative_selection": dict(cumulative_ids),
+        "frees": "", "track": "both" if has_beta else "alpha",
+        "explanation": "All standard families fitted. Finalize (compute_batch_prior_tool / Stage B pairing) or keep iterating: remove/adjust a problematic dataset and refit in continue mode.",
     }
 
 

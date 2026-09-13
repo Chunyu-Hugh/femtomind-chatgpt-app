@@ -1896,6 +1896,20 @@ def get_resource_context(
     annotations=READ_ONLY,
     structured_output=True,
 )
+def next_stage_suggestion(chat_id: str = "chatgpt-composer") -> dict[str, Any]:
+    """Ask the backend what the JAM-standard next stage of the ladder is: the
+    next reaction family to add (or finalize), the cumulative dataset selection
+    to submit, and what parameters the stage frees. The methodology encoded as
+    a function — call it when the user asks "what is the next step" or wants to
+    extend a fit."""
+    raw = _call_mcpo("/fitpack/suggest_next_stage", {"chat_id": _scope(chat_id)})
+    return raw if isinstance(raw, dict) else {"result": raw}
+
+
+@mcp.tool(
+    annotations=READ_ONLY,
+    structured_output=True,
+)
 def ladder_status(chat_id: str = "chatgpt-composer") -> dict[str, Any]:
     """Report where the staged fitting ladder stands for this chat: the
     current step, the active batch, and every completed stage so far (step,

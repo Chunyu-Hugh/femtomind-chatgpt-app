@@ -199,6 +199,7 @@
       <label class="inline"><input type="checkbox" class="chk" id="revAppend" /> Append stage — continue the ladder (inherit the previous campaign's posterior)</label>
       <div class="hint">Staged fit: keep the full cumulative dataset list (everything fitted so far plus the new datasets) — this submission refits starting from the previous stage's per-replica posteriors.</div>
     </div>
+    <div class="rev" id="ladderLine" style="display:none;border-color:var(--accent)"></div>
     <div class="guide"><b>One last check.</b> These are the fit-defining values — a
       misconfigured fit runs to completion and returns numbers shaped exactly like a correct
       one. Verify the datasets and physics settings below, then submit to HPC. After this
@@ -484,6 +485,32 @@
     };
   }
 
+  async function loadLadderLine() {
+    const box = $("ladderLine");
+    try {
+      const res = await window.openai.callTool("ladder_status", {});
+      const r = (res && res.structuredContent) || res || {};
+      const sug = await window.openai.callTool("next_stage_suggestion", {});
+      const s = (sug && sug.structuredContent) || sug || {};
+      const hist = Array.isArray(r.history) ? r.history : [];
+      const last = hist[hist.length - 1] || null;
+      let html = '<div class="row"><span class="k">Ladder</span><span class="v">step ' + (r.current_step || 0) + '</span></div>';
+      if (last) {
+        const c = last.chi2_per_point != null ? '\u03c7\u00b2/N = ' + last.chi2_per_point : '(summary not computed)';
+        html += '<div class="row"><span class="k">Last stage</span><span class="v">' + (last.observable || '?') + ' \u00b7 ' + c + '</span></div>';
+      }
+      if (s && s.status === "ok" && s.action) {
+        html += '<div class="row"><span class="k">Suggested next</span><span class="v">' +
+          (s.action === 'append' ? 'Stage ' + s.letter + ': add ' + s.observable : (s.action === 'run' ? 'Stage A: start with ' + s.observable : 'finalize')) +
+          '</span></div>';
+      }
+      box.innerHTML = html;
+      box.style.display = "block";
+    } catch (e) {
+      box.style.display = "none";
+    }
+  }
+
   function renderReview() {
     const card = buildCard();
     const famTxt = [[card.observable, card.selected_ids.length], ...card.extra_observables.map(e => [e.observable, e.selected_ids.length])]
@@ -515,7 +542,7 @@
     document.querySelectorAll(".panel").forEach((p) =>
       p.classList.toggle("active", p.dataset.step === STEPS[stepIdx].id));
     const cur = STEPS[stepIdx].id;
-    if (cur === "review") renderReview();
+    if (cur === "review") { renderReview(); loadLadderLine(); }
     if (cur === "job") renderStagePlan();
     if (cur === "parameters") loadParams();
     $("backBtn").style.visibility = (stepIdx === 0 || submitted) ? "hidden" : "visible";
