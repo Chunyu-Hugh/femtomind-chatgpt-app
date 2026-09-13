@@ -91,6 +91,9 @@
     toolOutput: null,
   };
 
-  if (token) bootWidget().catch(function () {});
-  else showToken(false);
+  // The boot endpoints are public shells (no data): always load the UI first,
+  // and only demand a token when a tool call actually needs one.
+  bootWidget().catch(function () {
+    showToken(false);
+  });
 })();
