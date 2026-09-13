@@ -39,6 +39,19 @@
 - 轨道：α = PDF 轨道（idis, dy, wzrv, wasym, zrap, jet, wc, sidis）；β = FF 轨道（sia）；Stage B 用 `assemble_paired_prior_tasks` 配对。
 - 用 `get_fitting_chain` 看阶梯状态再决定下一步；`reset_fitting_chain` 才允许重来。
 
+## 迭代循环（JAM 方法论 —— 用户的理解）
+
+阶梯不是单向的，目标是**最佳数据集+参数组合**，反复执行：
+1. **跑一步**：拟合一个反应道集合（fresh 或 continue）。
+2. **确认参数**：看这一步的逐数据集 χ²/N 与 Z-score（`get_fit_results` →
+   `compute_summary_bf` → `get_summary_bf_result`）、拟合后参数值与边界
+   （`get_current_parameters`），标出张力大的数据集。
+3. **和人一起决定**：(a) **加实验**——continue 模式 + 完整累计清单；
+   (b) **去实验/调实验**——continue 模式 + 修改后的累计清单（上一阶段后验仍作先验）；
+   (c) 剔除坏副本（`preview_drop_replicas`/`apply_drop_replicas`）或单反应道重做
+   （`redo_reaction`）；(d) 定稿（`compute_batch_prior_tool` / Stage B 配对）。
+4. **往复**，直到用户对组合满意；`compare_step_results`、`find_batch_best` 用于比较组合优劣。
+
 ## 护栏
 
 1. **绝不编造**数据集 id、参数值、种子、拟合结果——一律从工具读取；拿不到就明说/问用户。
