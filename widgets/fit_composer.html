@@ -199,6 +199,10 @@
       <label class="inline"><input type="checkbox" class="chk" id="revAppend" /> Append stage — continue the ladder (inherit the previous campaign's posterior)</label>
       <div class="hint">Staged fit: keep the full cumulative dataset list (everything fitted so far plus the new datasets) — this submission refits starting from the previous stage's per-replica posteriors.</div>
     </div>
+    <div class="field" style="margin-bottom:10px">
+      <label class="inline"><input type="checkbox" class="chk" id="revAutoLadder" /> Auto-ladder — fit the selected reactions one by one, in JAM order, each from the previous stage's posterior</label>
+      <div class="hint">Pick several reaction families, tick this, and the backend runs them as sequential stages automatically (DIS → DY → W/Z → jets → SIA → SIDIS → W+charm) instead of one joint fit.</div>
+    </div>
     <div class="rev" id="ladderLine" style="display:none;border-color:var(--accent)"></div>
     <div class="guide"><b>One last check.</b> These are the fit-defining values — a
       misconfigured fit runs to completion and returns numbers shaped exactly like a correct
@@ -482,6 +486,7 @@
       kaon_parameters: blocks.kaon_parameters,
       quality_thresholds: { chi2_ok: numOrNull($("qtChi2ok")), chi2_warn: numOrNull($("qtChi2warn")), good_fraction: numOrNull($("qtGood")) },
       continue_chain: $("revAppend").checked,
+      auto_ladder: $("revAutoLadder").checked,
     };
   }
 
@@ -519,7 +524,7 @@
     const qtTxt = ["chi2_ok", "chi2_warn", "good_fraction"].map((k) => k + "=" + (qt[k] == null ? "—" : qt[k])).join(", ");
     const nParamOver = Object.keys(card.parameters).length + Object.keys(card.pion_parameters).length + Object.keys(card.kaon_parameters).length;
     const rows = [
-      ["Mode", card.continue_chain ? "Append stage (inherit posterior)" : "Fresh fit"],
+      ["Mode", card.auto_ladder ? "Auto-ladder (stages one by one)" : (card.continue_chain ? "Append stage (inherit posterior)" : "Fresh fit")],
       ["Object", card.object.label],
       ["Datasets", famTxt || "(none selected)"],
       ["Parameters overridden", String(nParamOver)],
@@ -557,7 +562,17 @@
     if (!card.selected_ids.length) { $("globalErr").textContent = "Pick at least one dataset."; return; }
     $("nextBtn").disabled = true; $("nextBtn").textContent = "Submitting…"; $("globalErr").textContent = "";
     try {
-      const res = await window.openai.callTool("submit_fitting_job", {
+      const families = [{ observable: card.observable, selected_ids: card.selected_ids }]
+        .concat(card.extra_observables.map((e) => ({ observable: e.observable, selected_ids: e.selected_ids })));
+      let res;
+      if (card.auto_ladder) {
+        res = await window.openai.callTool("run_staged_ladder", {
+          families: families,
+          count: card.job.replicas,
+          chat_id: "",
+        });
+      } else {
+      res = await window.openai.callTool("submit_fitting_job", {
         observable: card.observable,
         selected_ids: card.selected_ids,
         count: card.job.replicas,
@@ -569,6 +584,7 @@
                     parameters: card.parameters, pion_parameters: card.pion_parameters,
                     kaon_parameters: card.kaon_parameters, quality_thresholds: card.quality_thresholds },
       });
+      }
       const r = (res && res.structuredContent) || res;
       if (r && (r.error || r.status === "error")) {
         $("globalErr").textContent = String(r.error || r.message || "The submission was rejected.").slice(0, 400);
@@ -595,7 +611,7 @@
     if (STEPS[stepIdx].id === "review") { submit(); return; }
     stepIdx++; sync();
   };
-  ["qcdOrder","qcdQ20","qcdTmc","qcdDglap","qcdAs","qcdHT","qcdNuc","jobName","jobReplicas","jobMaxIter","jobTol","jobOpt","jobBootstrap","qtChi2ok","qtChi2warn","qtGood","revAppend"]
+  ["qcdOrder","qcdQ20","qcdTmc","qcdDglap","qcdAs","qcdHT","qcdNuc","jobName","jobReplicas","jobMaxIter","jobTol","jobOpt","jobBootstrap","qtChi2ok","qtChi2warn","qtGood","revAppend","revAutoLadder"]
     .forEach((id) => { const el = $(id); if (el) el.addEventListener("change", persist); });
 
   function init(out) {
@@ -649,6 +665,7 @@
       if ($("qtChi2warn") && qt.chi2_warn != null) $("qtChi2warn").value = qt.chi2_warn;
       if ($("qtGood") && qt.good_fraction != null) $("qtGood").value = qt.good_fraction;
       if ($("revAppend")) $("revAppend").checked = !!st.continue_chain;
+      if ($("revAutoLadder")) $("revAutoLadder").checked = !!st.auto_ladder;
       if (st._submitted) submitted = true;
     } catch (e) {}
   }

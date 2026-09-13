@@ -211,6 +211,167 @@ echo "CHAIN=$CHAIN DONE"
                 "slurm_array_id": m.group(1) if m else None,
                 "nchains": nchains, "seed": seed, "wave_dir": wave}
 
+    # Generic ladder order (same as server._LADDER_ORDER; sia is the beta track).
+    _GEN_LADDER_ORDER = ["idis", "dy", "wzrv", "wasym", "zrap", "jet", "sia", "sidis", "wc"]
+
+    @mcp.tool()
+    def run_staged_ladder(
+        chat_id: str = "",
+        families: Optional[List[Dict[str, Any]]] = None,
+        count: int = 10,
+        partition: str = "production",
+        cpus: int = 0,
+        time_min: int = 0,
+        mem_mb: int = 0,
+        advanced: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Run a MULTI-REACTION selection as an automatic sequential ladder.
+
+        The user picks several reaction families at once (e.g. DIS + DY + jets);
+        this tool orders them by the standard JAM ladder, then runs them ONE BY
+        ONE: stage 1 fits the first family alone, stage 2 refits the first two
+        together starting from stage 1's posterior, and so on — each stage
+        inherits the previous stage's per-replica posteriors as initial values.
+
+        `families` is a list of {"observable": "idis", "selected_ids": [...]}.
+        Leave selected_ids empty to use each family's default datasets. The
+        standard order is DIS -> DY -> W/Z -> jets -> SIA -> SIDIS -> W+charm;
+        families not in that table keep their given position.
+
+        This is a RESUME-STYLE state machine: call it repeatedly, each call
+        advances one unit of work (submit a stage / collect a finished stage and
+        submit the next / finalize). The returned dict has "stage", "status"
+        ("submitted"/"running"/"diverged"/"complete") and a "hint" telling you
+        when to call again. If a stage diverges (chi2/N > 5) it STOPS and asks
+        the human to decide — that is the confirm-parameters step of the loop."""
+        import os as _os
+        import time as _time
+        from dataset_catalog import DATASET_CATALOG, DATASET_FILTERS
+
+        state_file = _os.path.join("/tmp", f"fm_ladder_{chat_id or 'default'}.json")
+
+        def load_state():
+            try:
+                with open(state_file) as f:
+                    return json.load(f)
+            except Exception:
+                return None
+
+        def save_state(st):
+            with open(state_file, "w") as f:
+                json.dump(st, f)
+
+        def submit_stage(plan, k):
+            from server import run_fitting_job
+            fams = plan["families"]
+            primary = fams[0]["observable"]
+            extra = [{"observable": fams[j]["observable"],
+                      "selected_ids": fams[j]["selected_ids"]} for j in range(1, k + 1)]
+            res = run_fitting_job(
+                chat_id=chat_id,
+                observable=primary,
+                selected_ids=[str(i) for i in fams[0]["selected_ids"]],
+                count=count,
+                job_number=f"lad{plan['nonce']}",
+                batch_label=f"auto-ladder-{chat_id or 'default'[:8]}",
+                extra_observables=extra,
+                fresh_start=(k == 0),
+                partition=partition,
+                cpus=cpus,
+                time_min=time_min,
+                mem_mb=mem_mb,
+                advanced=advanced,
+            )
+            if isinstance(res, dict) and (res.get("error") or res.get("status") == "error"):
+                return {"error": res}
+            batch_id = res.get("batch_id") or ""
+            plan["submitted"] = {"stage": k, "batch_id": batch_id}
+            save_state(plan)
+            return {"stage": k + 1, "status": "submitted", "batch_id": batch_id,
+                    "hint": "call again in a few minutes to check the stage"}
+
+        def check_batch(batch_id):
+            from server import _is_batch_completed
+            try:
+                return bool(_is_batch_completed(batch_id))
+            except Exception:
+                return False
+
+        def batch_chi2n(batch_id):
+            try:
+                import chi2_bootstrap_false as _chi2bf
+                st = _chi2bf.check_status(batch_id)
+                if st.get("status") == "done":
+                    res = st.get("result") or {}
+                    cpp = res.get("chi2_per_point")
+                    if cpp is None and isinstance(res.get("global"), dict):
+                        cpp = res["global"].get("chi2_per_point")
+                    return cpp
+            except Exception:
+                pass
+            return None
+
+        fams = families or []
+        if not fams:
+            return {"status": "error", "message": "families is required (list of {observable, selected_ids})"}
+
+        state = load_state()
+        if state is None:
+            plan_fams = []
+            seen = set()
+            for fam in fams:
+                obs = str(fam.get("observable") or "")
+                if obs in seen or obs not in DATASET_CATALOG:
+                    continue
+                ids = [str(i) for i in (fam.get("selected_ids") or [])]
+                if not ids:
+                    ids = [str(ds["id"]) for ds in DATASET_CATALOG[obs] if ds.get("default_on")]
+                if not ids:
+                    continue
+                seen.add(obs)
+                plan_fams.append({"observable": obs, "selected_ids": ids})
+            if not plan_fams:
+                return {"status": "error", "message": "no valid families with datasets"}
+            order = {obs: i for i, obs in enumerate(self._GEN_LADDER_ORDER)} if hasattr(self, "_GEN_LADDER_ORDER") else {}
+            plan_fams.sort(key=lambda f: (order.get(f["observable"], 99),))
+            plan = {
+                "families": plan_fams,
+                "nonce": str(int(_time.time()))[-6:],
+                "started": _time.time(),
+                "submitted": None,
+                "stages": [],
+            }
+            save_state(plan)
+            return submit_stage(plan, 0)
+
+        # resume
+        fams_n = len(state["families"])
+        if state.get("submitted"):
+            k = state["submitted"]["stage"]
+            batch_id = state["submitted"]["batch_id"]
+            if not check_batch(batch_id):
+                return {"stage": k + 1, "status": "running", "batch_id": batch_id,
+                        "hint": "stage still fitting; call again later"}
+            chi2n = batch_chi2n(batch_id)
+            state["stages"].append({"stage": k + 1, "batch_id": batch_id,
+                                    "observables": [f["observable"] for f in state["families"][:k + 1]],
+                                    "chi2_per_point": chi2n})
+            state["submitted"] = None
+            save_state(state)
+            if chi2n is not None and chi2n > 5.0:
+                return {"stage": k + 1, "status": "diverged", "batch_id": batch_id,
+                        "chi2_per_point": chi2n,
+                        "hint": "this stage diverged (chi2/N > 5). Review the datasets and parameters with the human before continuing — remove/adjust a problematic family and restart the ladder."}
+            if k + 1 < fams_n:
+                return submit_stage(state, k + 1)
+            return {"stage": fams_n, "status": "complete", "stages": state["stages"],
+                    "hint": "ladder finished. Review each stage's chi2, then finalize (compute_batch_prior_tool / Stage B pairing)."}
+
+        # all stages recorded but nothing submitted -> complete
+        return {"stage": fams_n, "status": "complete", "stages": state["stages"],
+                "hint": "ladder finished."}
+
+
     @mcp.tool()
     def orchestrate_jam25(seed: int, chat_id: str = "",
                           username: str = "", partition: str = "production") -> Dict[str, Any]:

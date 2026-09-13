@@ -44,7 +44,7 @@ WIDGET_DIR = Path(__file__).parent / "widgets"
 # breaking HTML/JS change and update the tool _meta that references them.
 JOBS_CARD_URI = "ui://femtomind/jobs-card/v2.html"
 FIT_SUMMARY_URI = "ui://femtomind/fit-summary/v10.html"
-COMPOSER_URI = "ui://femtomind/fit-composer/v4.html"
+COMPOSER_URI = "ui://femtomind/fit-composer/v5.html"
 REPLICA_PLOT_URI = "ui://femtomind/replica-plot/v3.html"
 
 # Reaction families the composer exposes. Kept to the set whose data and theory
@@ -340,6 +340,13 @@ mcp = FastMCP(
         "removed or adjusted (same continue mode, modified cumulative list), "
         "or the fit is finalized - repeating until the best combination is "
         "found. Removing a dataset is the same loop in reverse.\n\n"
+        "AUTOMATIC LADDER: when the user picks SEVERAL reaction families and "
+        "wants them fitted, use `run_staged_ladder` (NOT a single joint "
+        "submit_fitting_job): it orders the families by the standard JAM "
+        "ladder and runs them one stage at a time, each stage inheriting the "
+        "previous stage's posterior. Call it repeatedly (resume-style) until "
+        "status is complete or diverged; report each stage's result and never "
+        "continue past a divergence without the human's decision.\n\n"
         "EXPLAINING TERMS: when the user asks what a parameter, dataset family, "
         "cut or methodology word means (e.g. Q20, sea symmetric, jets, Z-score), "
         "call `explain_fit_terms` with those terms and answer from what it returns "
@@ -1896,6 +1903,30 @@ def get_resource_context(
     })
 
 
+
+
+@mcp.tool(
+    annotations=WRITE_SAFE,
+    structured_output=True,
+)
+def run_staged_ladder(
+    chat_id: str = "chatgpt-composer",
+    families: Optional[list[dict[str, Any]]] = None,
+    count: int = 10,
+    partition: str = "production",
+) -> dict[str, Any]:
+    """Run a multi-reaction selection as an automatic sequential ladder: the
+    backend orders the families by the standard JAM ladder, fits stage 1 alone,
+    then refits each next stage from the previous stage's posterior, one by
+    one. RESUME-STYLE: call repeatedly; each call advances one unit of work.
+    The returned dict has "status" (submitted/running/diverged/complete) and a
+    "hint" for when to call again. If a stage diverges it stops and asks the
+    human to decide — never auto-continue past a divergence."""
+    raw = _call_mcpo("/fitpack/run_staged_ladder", {
+        "chat_id": _scope(chat_id), "families": families, "count": count,
+        "partition": partition,
+    })
+    return raw if isinstance(raw, dict) else {"result": raw}
 
 
 @mcp.tool(
