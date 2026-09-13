@@ -1507,6 +1507,60 @@ def list_parameters(chat_id: str) -> str:
     return list_params(chat_id)
 
 
+def _load_fit_terms() -> Dict[str, Dict[str, str]]:
+    """Curated glossary: term -> {description, reference}. No HPC needed."""
+    try:
+        path = Path(_SERVER_DIR) / "fit_terms.yaml"
+        data = yaml.safe_load(path.read_text()) or {}
+        return data.get("terms", {}) or {}
+    except Exception:
+        return {}
+
+
+@mcp.tool()
+def explain_fit_terms(terms: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Explain fit-related terms with literature grounding. Call this whenever
+    the user asks what a parameter, dataset family, cut or methodology word
+    means (e.g. "what is Q20", "what does sea symmetric mean", "what does jets
+    constrain"). Works WITHOUT an HPC connection - answers come from a curated
+    glossary with references, never from the model's memory. Pass a list of
+    terms (case-insensitive, substring-matched) or omit to list all available
+    terms. Terms not in the glossary are reported as unknown - then tell the
+    user honestly instead of inventing an explanation."""
+    glossary = _load_fit_terms()
+    if terms:
+        wanted = [str(t).strip().lower() for t in terms if str(t).strip()]
+    else:
+        wanted = None
+    hits, missing = {}, []
+    if wanted is None:
+        hits = dict(glossary)
+    else:
+        for w in wanted:
+            matched = False
+            # 1) exact match first (case-insensitive)
+            for key, entry in glossary.items():
+                if w == key.lower():
+                    hits[key] = entry
+                    matched = True
+            # 2) substring match only for multi-char terms; single-letter keys
+            #    never match by substring (a/c are real parameter slots).
+            if not matched and len(w) >= 3:
+                for key, entry in glossary.items():
+                    if len(key) >= 3 and (w in key.lower() or key.lower() in w):
+                        hits[key] = entry
+                        matched = True
+            if not matched:
+                missing.append(w)
+    return {
+        "status": "ok",
+        "explained": hits,
+        "unknown": missing,
+        "available_terms": sorted(glossary.keys()),
+        "note": "Answers are from the curated glossary (JAM papers cited); do not paraphrase beyond what is written here. If a term is in 'unknown', tell the user it is not covered and suggest consulting the JAM paper directly.",
+    }
+
+
 @mcp.tool()
 def explain_parameters(chat_id: str, param_names: Optional[List[str]] = None) -> str:
     """
@@ -3175,15 +3229,21 @@ def suggest_next_stage(chat_id: str) -> Dict[str, Any]:
     for past in (state.get("history") or []):
         if not isinstance(past, dict):
             continue
-        obs = str(past.get("observable") or "")
-        ids = [str(i) for i in (past.get("selected_ids") or [])]
-        if obs not in fitted:
-            fitted.add(obs)
-            cumulative_ids.append((obs, ids))
-        else:
-            for i, (o, _) in enumerate(cumulative_ids):
-                if o == obs:
-                    cumulative_ids[i] = (obs, ids)
+        for obs, ids in [(str(past.get("observable") or ""),
+                          [str(i) for i in (past.get("selected_ids") or [])])] + [
+            (str(e.get("observable") or ""), [str(i) for i in (e.get("selected_ids") or [])])
+            for e in (past.get("extra_observables") or [])
+            if isinstance(e, dict) and e.get("observable")
+        ]:
+            if not obs:
+                continue
+            if obs not in fitted:
+                fitted.add(obs)
+                cumulative_ids.append((obs, ids))
+            else:
+                for i, (o, _) in enumerate(cumulative_ids):
+                    if o == obs:
+                        cumulative_ids[i] = (obs, ids)
     if not fitted:
         ids = [ds["id"] for ds in DATASET_CATALOG.get("idis", []) if ds.get("default_on")]
         return {

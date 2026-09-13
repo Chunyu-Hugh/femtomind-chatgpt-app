@@ -340,6 +340,12 @@ mcp = FastMCP(
         "removed or adjusted (same continue mode, modified cumulative list), "
         "or the fit is finalized - repeating until the best combination is "
         "found. Removing a dataset is the same loop in reverse.\n\n"
+        "EXPLAINING TERMS: when the user asks what a parameter, dataset family, "
+        "cut or methodology word means (e.g. Q20, sea symmetric, jets, Z-score), "
+        "call `explain_fit_terms` with those terms and answer from what it returns "
+        "(descriptions + literature references). NEVER answer physics terminology "
+        "questions from memory or web search; if the term comes back 'unknown', say "
+        "so honestly and point to the JAM paper instead.\n\n"
         "ANSWERING QUESTIONS ABOUT AN EXISTING CAMPAIGN is different — do NOT "
         "open the panel for these, answer in chat with the tool results:\n"
         "  • \"summarize / how are the results of campaign X\" → `list_campaigns` "
@@ -1890,6 +1896,20 @@ def get_resource_context(
     })
 
 
+
+
+@mcp.tool(
+    annotations=READ_ONLY,
+    structured_output=True,
+)
+def explain_fit_terms(terms: Optional[list[str]] = None) -> dict[str, Any]:
+    """Explain a fit-related term the user asked about (parameter, dataset
+    family, cut, methodology word) using the curated, literature-grounded
+    glossary — NOT your own knowledge. Works without an HPC connection. Pass
+    the terms the user asked about; unknown ones come back as 'unknown', and
+    you must then say honestly that it is not covered instead of inventing."""
+    raw = _call_mcpo("/fitpack/explain_fit_terms", {"terms": terms})
+    return raw if isinstance(raw, dict) else {"result": raw}
 
 
 @mcp.tool(

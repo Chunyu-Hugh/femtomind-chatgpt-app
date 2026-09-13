@@ -66,3 +66,24 @@
   后端 agent 指引。
 - **待办**：① CI 部署管道修复（需 GitHub Actions 日志/secret 检查，可由用户提供）；
   ② Claude Code 在正常环境复测；③ JAM24 s2-s7 阶梯继续（s1 后验已就绪）。
+
+## 6. 自审（2026-09-13 第二轮，按用户要求自查）
+
+审查方式：逐段重读本轮新写代码 + 重新跑本地/线上验证 + 针对可疑点做定向检查。
+
+发现并修复的问题：
+1. **suggest_next_stage 漏掉 extra_observables**：一次提交含多个反应道时，
+   链历史把次要反应道存在 entry["extra_observables"]，建议函数只读了主
+   observable → 累计清单会漏族。已修复（现在遍历 extra_observables）。
+2. **explain_fit_terms 术语匹配过松**：单字母参数键（a/c/N/d…）会被任意包含
+   该字母的查询词误命中（如问 "sea symmetric" 会把 'a'/'c' 拉进来）。
+   已修复：精确匹配优先；子串匹配仅限 ≥3 字符的查询词；单字母键只走精确匹配。
+   复验：问 ["Q20","sea symmetric","jets","a","N"] → 恰好命中 5 个、unknown 空。
+3. 复核通过项：链历史 schema 确实含 selected_ids（suggest 依赖成立）；
+   _chi2bf 模块级导入 + CHI2_BF_OK 守卫正确；app 启动 26 个工具无重复注册；
+   composer/panel/shim 的 JS 全部可解析、getElementById 目标全部存在；
+   独立网页路由 /app/* 线上 200；发现 Caddy 未转发 /app（已修，见 §1）。
+
+仍在跟踪（未闭环）：
+- JAM24 阶梯第 2 步 DY 发散：诊断脚本运行中（固定 s1 后验看 DY 残差量级）。
+- CI 自动部署失效（手动部署可用）；Claude Code 本沙箱受限。

@@ -1,0 +1,191 @@
+# FemtoMind 拟合术语库 —— 用户问"这是什么意思"时，LLM 必须从这里取答案，
+# 不得自由发挥。每条给出：面向非专家的解释 + 文献出处。
+# 引用约定：JAM 论文用 arXiv 号；通用概念给出标准教科书/综述。
+
+terms:
+
+  # ---------- QCD 设置 ----------
+  "order":
+    description: "微扰阶数。NLO = 次领头阶，是 JAM 全局分析的标配精度；LO 太粗，NNLO 对部分反应道（如 W+charm）尚无完整实现。"
+    reference: "JAM 全局分析统一采用 NLO，见 arXiv:2501.00665 Sec. II"
+  "Q20":
+    description: "参数化标度 Q₀²——PDF 在这个标度上用模板函数写出来，再经 DGLAP 演化到数据标度。JAM 取 Q₀² = m_c² = 1.28² = 1.6384 GeV²（输入标度取粲夸克质量）。"
+    reference: "arXiv:2501.00665 Sec. II.1（input scale mu = m_c）"
+  "dglap mode":
+    description: "DGLAP 演化方程的求解方式。truncated = 截断解（JAM 标准）；iterated = 迭代解。"
+    reference: "fitpack 手册；JAM 卡片 conf['dglap mode']='truncated'"
+  "alphaSmode":
+    description: "强耦合 αs 的跑动方向。backward = 从高标度往回演化（JAM 标准）。"
+    reference: "JAM 卡片 conf['alphaSmode']='backward'"
+  "tmc":
+    description: "靶质量修正（Target Mass Corrections）——修正核子质量在 DIS 运动学中的效应。JAM24 分析通过运动学截断（W²>10）规避该区域，默认关闭。"
+    reference: "arXiv:2501.00665 Sec. IV.3（用 cuts 抑制高阶扭度而非 TMC）"
+  "ht":
+    description: "高阶扭度（Higher Twist）修正——超出领头扭度的 1/Q² 幂次修正。JAM24 默认关闭，靠 Q²>m_c² 截断规避。"
+    reference: "arXiv:2501.00665 Sec. IV.3"
+  "nuc smearing":
+    description: "氘核涂抹（deuteron smearing）——对氘靶数据做核束缚修正，把氘核结构函数和自由核子联系起来的卷积。"
+    reference: "JAM 卡片 conf['nuc smearing']=True；nuclib/deuterium 模块"
+  "bootstrap":
+    description: "数据重抽样开关：为系综推断对实验数据做伪数据重抽样，每个副本拟合一份重抽样数据。"
+    reference: "JAM 多步 MC 方法学，arXiv:2501.00665 Sec. IV.1"
+  "flat par":
+    description: "平坦先验抽样：在参数 [min,max] 区间内均匀随机取初值，使每个副本成为独立拟合。"
+    reference: "JAM MC replica 方法"
+  "ftol":
+    description: "拟合收敛容差：目标函数相对变化小于该值即判收敛。1e-6~1e-8 为 JAM 常用。"
+    reference: "scipy least_squares 文档"
+  "maxiter":
+    description: "最大迭代次数上限（传给优化器的 max_nfev）。"
+    reference: "scipy least_squares 文档"
+  "method":
+    description: "优化算法。trf = Trust Region Reflective（带参数边界，JAM 标准）；dogbox 亦可。"
+    reference: "scipy least_squares 文档"
+
+  # ---------- 核子 PDF 味道 ----------
+  "g1":
+    description: "胶子分布 xg(x) 的模板函数。其归一化 N 由动量求和规则固定（所有夸克+胶子共占 1），形状 a,b,c,d 自由。"
+    reference: "arXiv:2501.00665 Eq. (5),(9)"
+  "uv1":
+    description: "u 价夸克分布 xu_v(x)。N 由价数规则 ∫u_v dx = 2 固定。"
+    reference: "arXiv:2501.00665 Eq. (8)"
+  "dv1":
+    description: "d 价夸克分布 xd_v(x)。N 由 ∫d_v dx = 1 固定。"
+    reference: "arXiv:2501.00665 Eq. (8)"
+  "sea1":
+    description: "轻海基准分布 S₁——ū 和 d̄ 的共同主体部分。"
+    reference: "arXiv:2501.00665 Eq. (7)（ū = S₁ + δū, d̄ = S₁ + δd̄）"
+  "sea2":
+    description: "奇异海基准分布 S₂——s 和 s̄ 的共同主体部分。阶梯前期固定等于 S₁（海对称），SIA 阶段才放开。"
+    reference: "arXiv:2501.00665 Eq. (7) 与 Sec. IV.1"
+  "ub1":
+    description: "δū——ū 相对 S₁ 的味破缺修正。DY 数据加入后才放开。"
+    reference: "arXiv:2501.00665 Eq. (7)"
+  "db1":
+    description: "δd̄——d̄ 相对 S₁ 的味破缺修正。DY（E866/E906）主要约束 ū/d̄ 比。"
+    reference: "arXiv:2501.00665 Eq. (7)"
+  "s1":
+    description: "δs——s 相对 S₂ 的修正；N 由 ∫(s−s̄)=0 固定。"
+    reference: "arXiv:2501.00665 Eq. (7),(8)"
+  "sb1":
+    description: "δs̄——s̄ 相对 S₂ 的修正；s−s̄ 不对称由它体现。"
+    reference: "arXiv:2501.00665 Eq. (7)"
+  "mix":
+    description: "d/u 混合项（dv 上叠加小量 uv 形状）。JAM24 参数化不含此项，固定为零。"
+    reference: "fitpack pdf.py get_mix；JAM24 自由参数计数不含 mix"
+  "N":
+    description: "模板函数 f = N x^a (1-x)^b (1+c√x+dx) 的归一化参数；价夸克/胶子/δs 的 N 由求和规则计算，其余自由。"
+    reference: "arXiv:2501.00665 Eq. (5),(8),(9)"
+  "a":
+    description: "小 x 行为指数（f ~ x^a）。"
+    reference: "arXiv:2501.00665 Eq. (5)"
+  "b":
+    description: "大 x 行为指数（f ~ (1-x)^b）。"
+    reference: "arXiv:2501.00665 Eq. (5)"
+  "c":
+    description: "中 x 修正系数（乘 √x）。δs/δs̄/S₂ 的 c、d 固定为零。"
+    reference: "arXiv:2501.00665 Eq. (5) 与 Sec. IV.1"
+  "d":
+    description: "中 x 修正系数（乘 x）。δs/δs̄/S₂ 的 c、d 固定为零。"
+    reference: "arXiv:2501.00665 Eq. (5) 与 Sec. IV.1"
+
+  # ---------- 介子分布 ----------
+  "pdf-pion":
+    description: "π 介子 PDF。电荷对称下 ū^π⁻ = d^π⁻；价 N 由价数、海 N 由动量求和规则固定。"
+    reference: "arXiv:2510.11979（JAM25 π 分析）"
+  "pdf-kaon":
+    description: "K 介子 PDF。奇异含量使其形状与 π 不同，由 DY K/π 比值与格点约束。"
+    reference: "arXiv:2510.11979（JAM25 K 分析）"
+  "ffpion":
+    description: "π 介子碎裂函数（q → π）。SIA 与 SIDIS 联合约束。"
+    reference: "arXiv:2501.00665 Sec. II.2 Eq. (10)"
+  "ffkaon":
+    description: "K 介子碎裂函数。favored（u→K⁺、s̄→K⁺）独立，unfavored 相等。"
+    reference: "arXiv:2501.00665 Sec. II.2 Eq. (11)"
+  "ffhadron":
+    description: "未鉴别带电强子碎裂函数 = π + K + 残余项（残余主要由质子贡献）。"
+    reference: "arXiv:2501.00665 Sec. II.2 Eq. (12)"
+
+  # ---------- 反应道 ----------
+  "idis":
+    description: "单举深度非弹散射（DIS）——电子/μ子打质子/氘核，测 F₂ 与约化截面。同时约束价夸克与胶子，是阶梯的锚。"
+    reference: "arXiv:2501.00665 Table 1（[39-43]：SLAC/BCDMS/NMC/HERA）"
+  "dy":
+    description: "强子-强子 Drell-Yan 轻子对产生。E866/E906 的 p+p 与 p+d 截面比主要约束 d̄/ū 味不对称。"
+    reference: "arXiv:2501.00665 Table 1（[2,3]：E866/E906）"
+  "wzrv":
+    description: "W 轻子不对称（CMS/LHCb/STAR）——W± 衰变轻子的 η 不对称，对 u/d 味分离敏感。"
+    reference: "arXiv:2501.00665 Table 1（[19-21,23,46,47,50]）"
+  "wasym":
+    description: "W 电荷不对称（CDF/D0）——W⁺/W⁻ 截面对 u/d 敏感。"
+    reference: "arXiv:2501.00665 Table 1（[48,49]）"
+  "zrap":
+    description: "Z 玻色子快度分布（CDF/D0）——约束中 x 轻夸克。"
+    reference: "arXiv:2501.00665 Table 1（[51,52]）"
+  "jet":
+    description: "单举喷注截面（D0/CDF/STAR，pT>8 GeV）——大 x 胶子的主要约束。"
+    reference: "arXiv:2501.00665 Table 1（[53-55]）"
+  "wc":
+    description: "W+粲伴随产生（ATLAS/CMS）——奇异夸克 PDF 的敏感探针（s→c 过程）。"
+    reference: "arXiv:2501.00665 Sec. II.1（[25-27]）"
+  "sidis":
+    description: "半单举深度非弹散射（COMPASS μ+d → π/K/h + X 多重数）——PDF 与碎裂函数的乘积约束，两者分离的关键。"
+    reference: "arXiv:2501.00665 Table 1（[44,45]）"
+  "sia":
+    description: "e⁺e⁻ 单举湮灭（TASSO/TPC/SLD/ALEPH/OPAL/DELPHI/BaBar/Belle/ARGUS 的 π/K/h 碎裂）——碎裂函数的主要约束。"
+    reference: "arXiv:2501.00665 Table 1（[56-72]）"
+  "dy-kaon":
+    description: "NA3 的 K/π Drell-Yan 比值——K 介子 PDF 的直接约束。"
+    reference: "arXiv:2510.11979（JAM25）"
+  "lqcd_mom":
+    description: "格点 QCD 的介子动量分数矩 ⟨x^n⟩——第一性原理约束，压低外推区的不确定性。"
+    reference: "arXiv:2510.11979（JAM25 格点约束）"
+
+  # ---------- 截断 ----------
+  "Q2>1.69":
+    description: "DIS 的 Q² 下截断（=1.3²，JAM 数据库惯例）：去掉低 Q² 区的高阶扭度/共振污染。"
+    reference: "JAM 数据库 filters；arXiv:2501.00665 用 Q²>m_c²"
+  "W2>10":
+    description: "DIS 的 W² 下截断（10 GeV²）：避开核子共振区。"
+    reference: "arXiv:2501.00665 Sec. IV.3"
+  "pT>8":
+    description: "喷注数据的横动量下截断（8 GeV）：喷注算法与因子化可靠区。"
+    reference: "arXiv:2501.00665 Table 1"
+  "z cuts":
+    description: "SIA 的碎裂变量截断：高能实验 z>0.02、低能 z>0.15、BaBar K 例外取 z>0.2，统一 z<0.9——避开小 z 大对数与大 z 质量效应。"
+    reference: "arXiv:2501.00665 Sec. IV.3"
+  "W2SIDIS>7":
+    description: "SIDIS 的 W² 截断（7 GeV²，p_hT=0 计算）与 0.2<z<0.8 区间——COMPASS 运动学内的领头扭度区。"
+    reference: "arXiv:2501.00665 Sec. IV.3"
+
+  # ---------- 方法学 ----------
+  "ladder":
+    description: "多步阶梯：先拟合一组反应道，后验作为下一步先验，逐步加数据重拟合。避免一步到位时的参数边界堆积与过参数化。"
+    reference: "arXiv:2501.00665 Sec. IV.1"
+  "posterior":
+    description: "贝叶斯后验——拟合后参数的概率分布（这里用 MC 副本集合表示）。作为下一阶梯的先验输入。"
+    reference: "arXiv:2501.00665 Sec. IV.1"
+  "replica":
+    description: "系综副本：一个独立拟合（随机初值/重抽样数据）得到的一套参数。几百个副本构成后验分布。"
+    reference: "JAM MC 方法学；arXiv:2501.00665 Sec. IV.1"
+  "chi2/N":
+    description: "约化卡方 χ²/N——每数据点的拟合优度；~1 表示描述良好，显著大于 1 表示张力。"
+    reference: "arXiv:2501.00665 Sec. IV.2 Eq. (15)"
+  "Z-score":
+    description: "把 χ² 按自由度换算成标准正态偏差：|Z| 越大说明偏离统计预期越显著。"
+    reference: "arXiv:2501.00665 Sec. IV.2 Eq. (16)"
+  "continue mode":
+    description: "阶梯叠加模式：提交时带上累计数据集清单，后端自动继承上一阶段每个副本的后验作先验（1:1 副本继承）。"
+    reference: "FemtoMind 后端 run_fitting_job 文档；arXiv:2501.00665 Sec. IV.1"
+  "alpha track":
+    description: "PDF 轨道：DIS/DY/W/Z/jets/W+charm/SIDIS 等约束 PDF 的反应道链。"
+    reference: "FemtoMind 阶梯状态机（workflow_fsm.md）"
+  "beta track":
+    description: "FF 轨道：SIA 约束碎裂函数；Stage B 将 α、β 两轨后验配对做联合拟合。"
+    reference: "FemtoMind 阶梯状态机（workflow_fsm.md）"
+  "sea symmetric":
+    description: "海对称假设：S₁=S₂ 且 δ=0。阶梯起步阶段使用（DIS 单独无法分味），后续逐步放开。"
+    reference: "arXiv:2501.00665 Sec. IV.1"
+  "sum rules":
+    description: "求和规则：价夸克数 ∫u_v=2、∫d_v=1；动量 ∫x(Σq+g)=1；∫(s−s̄)=0。用来固定对应模板的归一化 N。"
+    reference: "arXiv:2501.00665 Eq. (8),(9)"
