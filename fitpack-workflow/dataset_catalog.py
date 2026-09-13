@@ -391,14 +391,14 @@ DATASET_CATALOG: Dict[str, List[Dict[str, Any]]] = {
     ],
 
     "jet": [
-        {"id": "10001", "xlsx": "jet/expdata/10001.xlsx", "label": "Jet dataset 1", "target": "pp", "obs": "jet", "experiment": "LHC", "default_on": True, "norm": None},
-        {"id": "10002", "xlsx": "jet/expdata/10002.xlsx", "label": "Jet dataset 2", "target": "pp", "obs": "jet", "experiment": "LHC", "default_on": True, "norm": None},
-        {"id": "10003", "xlsx": "jet/expdata/10003.xlsx", "label": "Jet dataset 3", "target": "pp", "obs": "jet", "experiment": "LHC", "default_on": False, "norm": None},
-        {"id": "10004", "xlsx": "jet/expdata/10004.xlsx", "label": "Jet dataset 4", "target": "pp", "obs": "jet", "experiment": "LHC", "default_on": False, "norm": None},
-        {"id": "11002", "xlsx": "jet/expdata/11002.xlsx", "label": "Jet dataset 5", "target": "pp", "obs": "jet", "experiment": "LHC", "default_on": False, "norm": None},
-        {"id": "160901", "xlsx": "jet/expdata/160901.xlsx", "label": "Jet dijet balance", "target": "pp", "obs": "jet", "experiment": "LHC", "default_on": False, "norm": None},
-        {"id": "160902", "xlsx": "jet/expdata/160902.xlsx", "label": "Jet trijet", "target": "pp", "obs": "jet", "experiment": "LHC", "default_on": False, "norm": None},
-        {"id": "160903", "xlsx": "jet/expdata/160903.xlsx", "label": "Jet resonances", "target": "pp", "obs": "jet", "experiment": "LHC", "default_on": False, "norm": None},
+        {"id": "10001", "xlsx": "jet/expdata/10001.xlsx", "label": "D0 inclusive jets Tevatron", "target": "ppbar", "obs": "jet", "experiment": "D0", "default_on": True, "norm": None},
+        {"id": "10002", "xlsx": "jet/expdata/10002.xlsx", "label": "CDF inclusive jets Tevatron", "target": "ppbar", "obs": "jet", "experiment": "CDF", "default_on": True, "norm": None},
+        {"id": "10003", "xlsx": "jet/expdata/10003.xlsx", "label": "STAR inclusive jets RHIC 2003", "target": "pp", "obs": "jet", "experiment": "STAR", "default_on": True, "norm": None},
+        {"id": "10004", "xlsx": "jet/expdata/10004.xlsx", "label": "STAR inclusive jets RHIC 2004", "target": "pp", "obs": "jet", "experiment": "STAR", "default_on": True, "norm": None},
+        {"id": "11002", "xlsx": "jet/expdata/11002.xlsx", "label": "ATLAS/CMS inclusive jets 7TeV", "target": "pp", "obs": "jet", "experiment": "LHC", "default_on": False, "norm": None},
+        {"id": "160901", "xlsx": "jet/expdata/160901.xlsx", "label": "CMS dijet balance", "target": "pp", "obs": "jet", "experiment": "CMS", "default_on": False, "norm": None},
+        {"id": "160902", "xlsx": "jet/expdata/160902.xlsx", "label": "CMS trijet", "target": "pp", "obs": "jet", "experiment": "CMS", "default_on": False, "norm": None},
+        {"id": "160903", "xlsx": "jet/expdata/160903.xlsx", "label": "CMS jet resonances", "target": "pp", "obs": "jet", "experiment": "CMS", "default_on": False, "norm": None},
     ],
 
     "pjet": [
@@ -481,11 +481,11 @@ DATASET_CATALOG: Dict[str, List[Dict[str, Any]]] = {
     ],
 
     "wc": [
-        {"id": "ATLAS7Wp", "xlsx": "wc/expdata/ATLAS7Wp.xlsx", "label": "ATLAS W+c LHC 7TeV W+", "target": "pp", "obs": "W+c_xsec", "experiment": "ATLAS", "default_on": True, "norm": None},
-        {"id": "ATLAS7Wm", "xlsx": "wc/expdata/ATLAS7Wm.xlsx", "label": "ATLAS W+c LHC 7TeV W-", "target": "pp", "obs": "W-c_xsec", "experiment": "ATLAS", "default_on": True, "norm": None},
-        {"id": "CMS7WpWm_add", "xlsx": "wc/expdata/CMS7WpWm_add.xlsx", "label": "CMS W+c 7TeV W+W- sum", "target": "pp", "obs": "WpWm_xsec", "experiment": "CMS", "default_on": False, "norm": None},
-        {"id": "CMS7WpWm_ratio", "xlsx": "wc/expdata/CMS7WpWm_ratio.xlsx", "label": "CMS W+c 7TeV W+/W- ratio", "target": "pp", "obs": "WpWm_ratio", "experiment": "CMS", "default_on": False, "norm": None},
-        {"id": "CMS13WpWm_add", "xlsx": "wc/expdata/CMS13WpWm_add.xlsx", "label": "CMS W+c 13TeV W+W- sum", "target": "pp", "obs": "WpWm_xsec", "experiment": "CMS", "default_on": False, "norm": None},
+        {"id": "10001", "xlsx": "wc/expdata/10001.xlsx", "label": "ATLAS W-+c 7TeV", "target": "pp", "obs": "W+c_xsec", "experiment": "ATLAS", "default_on": True, "norm": None},
+        {"id": "10002", "xlsx": "wc/expdata/10002.xlsx", "label": "ATLAS W-+cbar 7TeV", "target": "pp", "obs": "W+c_xsec", "experiment": "ATLAS", "default_on": True, "norm": None},
+        {"id": "20001", "xlsx": "wc/expdata/20001.xlsx", "label": "CMS W+c 7TeV", "target": "pp", "obs": "W+c_xsec", "experiment": "CMS", "default_on": False, "norm": None},
+        {"id": "20002", "xlsx": "wc/expdata/20002.xlsx", "label": "CMS W+c/W-c ratio 7TeV", "target": "pp", "obs": "WpWm_ratio", "experiment": "CMS", "default_on": False, "norm": None},
+        {"id": "20003", "xlsx": "wc/expdata/20003.xlsx", "label": "CMS W+c 13TeV", "target": "pp", "obs": "W+c_xsec", "experiment": "CMS", "default_on": False, "norm": None},
     ],
 
     "RpITD": [
