@@ -13,6 +13,11 @@
   你（专家侧代理）主要用 :8000 的 REST 端点。
 - SSH/集群访问已由 app 托管（ControlMaster 隧道）；**你自己绝不直接 SSH JLab**，
   一切经工具。
+- 人类 UI（通用兜底，任何 agent 平台都可用）：独立网页
+  `https://<host>/app/composer`（六步拟合向导）与 `https://<host>/app/panel`（运维面板）。
+  ChatGPT/Codex 内嵌同一份 UI；**Claude Code 等无 widget 协议的 agent**：直接让用户
+  打开这个 URL（或在 mac 上 `open <url>`），页面自带登录（粘贴 access token）并直连
+  /mcp 工具——同一份 UI、同一套工具。
 
 ## 工作流地图（用户问什么 → 组装什么）
 

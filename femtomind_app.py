@@ -2380,7 +2380,7 @@ app.add_middleware(
 # reachable by anyone who learns the URL.
 import femtomind_auth as auth  # noqa: E402
 from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
-from starlette.responses import JSONResponse as _JSON  # noqa: E402
+from starlette.responses import JSONResponse as _JSON, HTMLResponse, Response  # noqa: E402
 from starlette.routing import Route  # noqa: E402
 
 auth.init_db()
@@ -2430,6 +2430,67 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(AuthMiddleware)
+
+# ---------------------------------------------------------------------------
+# Standalone web UI: the same composer / ops-panel widgets served as plain
+# pages with a thin shim (widgets/standalone-shim.js) that maps the ChatGPT
+# widget bridge onto the app's own /mcp endpoint. Any agent that cannot host
+# HTML widgets (Claude Code, arbitrary LLM harnesses) simply opens these URLs:
+#   /app/composer   — the six-step fit composer
+#   /app/panel      — the operations panel (Connect..Analysis tabs)
+# The pages themselves are public shells (no data); every data call goes
+# through /mcp, which stays token-protected.
+_STANDALONE_WIDGETS = {"composer": "fit_composer.html", "panel": "femtomind_ops.html"}
+
+
+def _standalone_page(kind: str) -> Response:
+    fname = _STANDALONE_WIDGETS.get(kind)
+    if not fname:
+        return _JSON({"error": f"unknown standalone widget {kind!r}"}, status_code=404)
+    html = (WIDGET_DIR / fname).read_text()
+    inject = (
+        "<script>window.__FM_WIDGET = %r;</script>\n"
+        "<script src=\"/app/standalone-shim.js\"></script>\n"
+    ) % kind
+    html = html.replace("<head>", "<head>\n" + inject, 1)
+    return HTMLResponse(html)
+
+
+async def _standalone_composer(request):
+    return _standalone_page("composer")
+
+
+async def _standalone_panel(request):
+    return _standalone_page("panel")
+
+
+async def _standalone_shim(request):
+    return Response((WIDGET_DIR / "standalone-shim.js").read_text(), media_type="text/javascript")
+
+
+async def _standalone_boot_composer(request):
+    # Same payload shape the plugin host passes as toolOutput for the composer.
+    return _JSON(get_dataset_catalog())
+
+
+async def _standalone_boot_panel(request):
+    # Mirrors jam_analysis_panel's structured output the ops panel expects.
+    return _JSON({
+        "tab": "connect",
+        "connection": _hpc_status(),
+        "catalog": get_dataset_catalog().get("catalog", {}),
+        "suggested_observable": "idis",
+    })
+
+
+app.router.routes.extend([
+    Route("/app/composer", _standalone_composer, methods=["GET"]),
+    Route("/app/panel", _standalone_panel, methods=["GET"]),
+    Route("/app/standalone-shim.js", _standalone_shim, methods=["GET"]),
+    Route("/app/boot/composer", _standalone_boot_composer, methods=["GET"]),
+    Route("/app/boot/panel", _standalone_boot_panel, methods=["GET"]),
+])
+
 
 # OAuth endpoints live beside /mcp on the same host so discovery just works.
 app.router.routes.extend([
