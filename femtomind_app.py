@@ -1779,8 +1779,11 @@ def _to_advanced_payload(adv: Optional[dict[str, Any]]) -> dict[str, Any]:
         qc["Q20"] = float(qcd["Q20"])
     if "tmc" in qcd:
         tmc = qcd["tmc"]
-        # the form spells "no target-mass corrections" as "off"
-        qc["tmc"] = None if str(tmc).lower() in ("off", "none", "") else tmc
+        # The form spells "no target-mass corrections" as "off". Pass the
+        # string through: the backend coerces "off"/"none"/"" to False and
+        # writes conf.tmc=False. Mapping to None here would make the backend
+        # SKIP the key and silently keep the default.yaml value.
+        qc["tmc"] = tmc
     if qcd.get("higherTwist") is not None:
         qc["ht"] = bool(qcd["higherTwist"])
     if qcd.get("dglapMode"):

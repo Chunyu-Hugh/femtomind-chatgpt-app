@@ -206,11 +206,11 @@
       <div class="panel" data-step="qcd">
         <div class="grid2">
           <div class="field"><div class="label">Perturbative order</div><select id="qcdOrder"><option>NLO</option><option>NNLO</option></select></div>
-          <div class="field"><div class="label">Q₀² (GeV²)</div><input type="text" id="qcdQ20" value="1.6129"></div>
-          <div class="field"><div class="label">Target-mass corrections</div><select id="qcdTmc"><option value="AOT">AOT</option><option value="off">off</option></select></div>
+          <div class="field"><div class="label">Q₀² (GeV²)</div><input type="text" id="qcdQ20" value="1.6384"></div>
+          <div class="field"><div class="label">Target-mass corrections</div><select id="qcdTmc"><option value="off">off</option><option value="AOT">AOT</option></select></div>
           <div class="field"><div class="label">DGLAP solution</div><select id="qcdDglap"><option value="truncated">truncated</option><option value="iterated">iterated</option></select></div>
           <div class="field"><div class="label">αS running</div><select id="qcdAs"><option value="backward">backward</option><option value="forward">forward</option></select></div>
-          <div class="field"><label class="inline" style="margin-top:26px"><input type="checkbox" id="qcdHT"> Higher-twist corrections</label></div>
+          <div class="field"><label class="inline" style="margin-top:26px"><input type="checkbox" id="qcdHT"> Higher-twist corrections</label></div><div class="field"><label class="inline"><input type="checkbox" id="qcdNuc" checked> Deuteron smearing</label></div>
         </div>
       </div>
       <div class="panel" data-step="job">
@@ -693,7 +693,7 @@
     // so the backend fits them JOINTLY in one submission (never mislabeled).
     const fams=[]; Object.keys(catalog).forEach(rk=>{ if(groups[rk]&&groups[rk].length) fams.push([rk,groups[rk]]); });
     if(!fams.length){ fams.push(["idis",[]]); }
-    const qcd={order:$("qcdOrder").value,Q20:parseFloat($("qcdQ20").value),tmc:$("qcdTmc").value,higherTwist:$("qcdHT").checked,dglapMode:$("qcdDglap").value,asMode:$("qcdAs").value};
+    const qcd={order:$("qcdOrder").value,Q20:parseFloat($("qcdQ20").value),tmc:$("qcdTmc").value,higherTwist:$("qcdHT").checked,dglapMode:$("qcdDglap").value,asMode:$("qcdAs").value,nuc:$("qcdNuc").checked};
     const replicas=(()=>{ const n=parseInt($("jobReplicas").value,10); return (isFinite(n)&&n>=1&&n<=200)?n:10; })();
     const maxIter=(()=>{ const n=parseInt($("jobMaxIter").value,10); return (isFinite(n)&&n>=1)?n:500; })();
     return {
@@ -708,7 +708,7 @@
     const famTxt=[[c.observable,c.selected_ids.length],...c.extra_observables.map(e=>[e.observable,e.selected_ids.length])]
       .map(([rk,n])=>rk+": "+n).join("  +  ");
     const rows=[["Object",c.object.label],["Datasets",famTxt||"(none)"],
-      ["Order / Q₀²",c.qcd.order+" / "+c.qcd.Q20],["TMC / DGLAP / αS",c.qcd.tmc+" / "+c.qcd.dglapMode+" / "+c.qcd.asMode+(c.qcd.higherTwist?" +HT":"")],
+      ["Order / Q₀²",c.qcd.order+" / "+c.qcd.Q20],["TMC / DGLAP / αS",c.qcd.tmc+" / "+c.qcd.dglapMode+" / "+c.qcd.asMode+(c.qcd.higherTwist?" +HT":"")+(c.qcd.nuc?" +nuc":"")],
       ["Replicas",c.job.replicas],["Max iter / tol",c.job.maxIterations+" / "+c.job.tolerance],
       ["Campaign",c.job.campaignName]];
     $("reviewBox").innerHTML=rows.map(r=>'<div class="row"><span class="k">'+esc(r[0])+'</span><span class="v">'+esc(r[1])+'</span></div>').join("");
@@ -722,7 +722,7 @@
     if(onReview) renderReview();
     $("cBack").style.visibility=(cStep===0||submitted)?"hidden":"visible"; $("cBack").disabled=submitted;
     $("cNext").disabled=submitted;
-    $("cNext").textContent=submitted?"Submitted ✓":(onReview?"Submit fitting job":"Next");
+    $("cNext").textContent=submitted?"Submitted ✓":(onReview?"Submit to HPC":"Next");
     $("cSubmittedNote").style.display=submitted?"block":"none";
   }
   function persistC(){ persist(); }
@@ -737,16 +737,16 @@
       // "Submitted ✓" while nothing ran on the cluster.
       if(r && (r.error || r.status==="error")){
         $("cErr").textContent=String(r.error||r.message||"The submission was rejected.").slice(0,400);
-        $("cNext").disabled=false; $("cNext").textContent="Submit fitting job";
+        $("cNext").disabled=false; $("cNext").textContent="Submit to HPC";
         return;
       }
       submitted=true; persist(); cSync();
       if(oai&&oai.sendFollowUpMessage){ oai.sendFollowUpMessage({prompt:"The fitting job was submitted from the FemtoMind composer. Briefly confirm and offer to check its status in Collections."}); }
-    }catch(e){ $("cErr").textContent="Submit failed: "+(e&&e.message||e); $("cNext").disabled=false; $("cNext").textContent="Submit fitting job"; }
+    }catch(e){ $("cErr").textContent="Submit failed: "+(e&&e.message||e); $("cNext").disabled=false; $("cNext").textContent="Submit to HPC"; }
   }
   $("cBack").onclick=()=>{ if(!submitted&&cStep>0){cStep--;cSync();} };
   $("cNext").onclick=()=>{ if(submitted) return; if(STEPS[cStep][0]==="review"){submitCampaign();return;} cStep++; cSync(); };
-  ["qcdOrder","qcdQ20","qcdTmc","qcdDglap","qcdAs","qcdHT","jobName","jobReplicas","jobMaxIter","jobTol","jobOpt","jobBootstrap"].forEach(id=>{const el=$(id);if(el)el.addEventListener("change",persistC);});
+  ["qcdOrder","qcdQ20","qcdTmc","qcdDglap","qcdAs","qcdHT","qcdNuc","jobName","jobReplicas","jobMaxIter","jobTol","jobOpt","jobBootstrap"].forEach(id=>{const el=$(id);if(el)el.addEventListener("change",persistC);});
 
   /* ---------- collections ---------- */
   function paintCollections(d){
