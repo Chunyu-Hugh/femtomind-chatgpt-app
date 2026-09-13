@@ -1,57 +1,53 @@
-# 任务简报：通过 FemtoMind App 自主复现 JAM25（并评估 JAM24 可行性）
+# FemtoMind MCP —— 面向自主代理的任务简报（Codex / Claude Code / 其他 LLM 代理通用）
 
-你是被部署在 FemtoMind 项目中的自主研究代理。你的任务是通过
-**FemtoMind App 的 MCP 工具（HTTP REST 接口）** 完成论文复现，不要直接
-接触 HPC 或 fitpack——所有计算由 app 工具代理。
+你是部署在 FemtoMind 项目里的自主研究代理。用户把整套 MCP 工具交给你，
+由你根据需求自由组装工具调用、完成端到端工作流；用户只做两类事：
+**拍板拟合定义值**（数据集、截断、阶数、Q₀²、副本数）和**看结果**。
 
 ## 环境事实（不要重新验证，直接使用）
 
-- App 的 MCP 工具网关：`http://127.0.0.1:8000`（正在运行）
-- 工具调用方式：`curl -s -X POST http://127.0.0.1:8000/<工具名> -H 'Content-Type: application/json' -d '<JSON参数>'`
-- 可用的复现工具（详见 `/docs` 的 OpenAPI）：
-  1. `orchestrate_jam25`：编排器状态机。每次调用推进一格（提交一步 / 收集并
-     推进下一步）。参数 `{"seed": <整数>, "partition": "priority"}`。
-     必须**反复调用**直到返回 `"stage":"complete"`。中途返回
-     `"status":"still running"` 或 `"hint":"call again later"` 时，等几分钟再调。
-     若返回 `"diverged"`，换一个种子重新开始并报告。
-  2. `ladder_msr_status`：查看阶梯 msr 状态。参数 `{}`。
-  3. `ladder_overview`：查看阶梯配方与论文验收目标。参数 `{}`。
-  4. `compare_with_paper`：对指定 msr 做论文对照（χ² 表 / 格点矩 / PDF / β）。
-     参数 `{"msr": "<完整 msr 路径>"}`。
-  5. `launch_ladder_wave`：系综波（本任务不使用，除非显式要求）。
-- 你的种子：**<SEED>**（与并行运行的其他代理隔离，勿改动）。
-- app 已配置好 SSH（复用现有 ControlMaster 隧道），你**不需要也不允许**自己
-  SSH 到 JLab。
+- MCP 网关（REST 版，mcpo 代理 fitpack 后端）：`http://127.0.0.1:8000`
+- 调用方式：`curl -s -X POST http://127.0.0.1:8000/<工具名> -H 'Content-Type: application/json' -d '<JSON参数>'`
+- 完整工具清单 + 参数 schema：`http://127.0.0.1:8000/docs`（OpenAPI）
+- 前端（UI，给非专家用户看）：ChatGPT 插件桥接的 24 个工具 + composer/panel；
+  你（专家侧代理）主要用 :8000 的 REST 端点。
+- SSH/集群访问已由 app 托管（ControlMaster 隧道）；**你自己绝不直接 SSH JLab**，
+  一切经工具。
 
-## 主任务：复现 JAM25（arXiv:2510.11979）
+## 工作流地图（用户问什么 → 组装什么）
 
-1. 调 `ladder_overview` 了解阶梯与论文目标（χ²/N 总 0.79、DY 0.78、LN 0.87、
-   NA3 0.08、格点 0.65；Table 1 矩；β 指数 1.16(4)/1.6(2)/1.2(4)）。
-2. 反复调 `orchestrate_jam25`（seed=<SEED>）直到 `stage=complete`，
-   拿到最终 step-4 msr 路径。全程记录每次调用的返回（存到工作日志）。
-3. 调 `compare_with_paper`（用第 2 步的 msr），收集四组结果。
-4. 对照论文目标写验收结论：exp χ²/N 是否 ≈0.80？NA3、格点、矩、β 各自
-   与论文的偏差？哪些在 1σ 内？
-5. 把完整记录写入 `<工作目录>/REPORT.md`（含每次工具调用的时间线摘要与
-   最终验收表）。
+| 用户意图 | 工具链 |
+|---|---|
+| 连集群/开账户/看工作区 | `setup_hpc_account` → `get_hpc_account` → `get_resource_context` |
+| 有哪些数据/反应道 | `search_datasets`、`get_dataset_catalog`、`get_current_parameters`、`explain_parameters` |
+| 配一个拟合 | `stage_fit_param`（逐条记录用户提到的设置）→ `check_fitting_readiness` → `run_fitting_job`（fresh_start=true） |
+| **叠加拟合（加一个阶段）** | `get_fitting_chain` 看阶梯 → `run_fitting_job`（fresh_start=false + **累计**数据集清单）→ 后端自动继承上一阶段每个副本的后验作先验 |
+| 监控/失败 | `get_task_status`/`list_chat_tasks`/`sync_statuses` → `diagnose_fit` → `stop_task`/`cancel_underperforming_tasks` |
+| 总结结果 | `get_fit_results` → `compute_summary_bf` → `get_summary_bf_result`（逐数据集 χ²/N、Z-score、张力清单）|
+| 画 PDF/FF | `plot_replica_observable` |
+| 剔除坏副本/重做 | `preview_drop_replicas`/`apply_drop_replicas`、`redo_reaction`、`find_batch_best` |
+| 和论文对照 | `compare_with_paper`（JAM25 验收表）、`compare_step_results` |
+| 阶梯编排（JAM25 专用状态机） | `ladder_overview` → `orchestrate_jam25`（反复调用直到 stage=complete）→ `compare_with_paper`；波次 `launch_ladder_wave`/`run_ladder_job`/`ladder_msr_status` |
+| 推倒重来 | `reset_fitting_chain` |
+| 数据搬移 | `globus_login_start` → `globus_transfer` → `globus_transfer_status` |
 
-## 副任务（尽力而为，不阻塞主任务）：评估 JAM24 复现可行性
+## 叠加拟合（阶梯）语义 —— 必须记住
 
-- 仅用 `ladder_overview` 与 repo 内文档（`docs/`、`fitpack-workflow/README.md`、
-  `repro-jam20/stage_logs/JAM25/*.md`）调查：当前 app 工具是否足以复现
-  JAM24（若无，缺什么）。把结论写入 `<工作目录>/JAM24_feasibility.md`，
-  篇幅 ≤1 页，不得修改任何代码。
+- 阶梯 = JAM 多步策略：先拟合一批反应道，再加下一批，**从上一阶段后验出发重拟合**。
+- 继续模式（fresh_start=false）传**完整累计数据集清单**（已拟合的 + 新增的），不要只传新增。
+- 后端自动找同轨道最新完成的批次，做 **1:1 副本后验继承**（每副本 .msr 作先验）。
+- 轨道：α = PDF 轨道（idis, dy, wzrv, wasym, zrap, jet, wc, sidis）；β = FF 轨道（sia）；Stage B 用 `assemble_paired_prior_tasks` 配对。
+- 用 `get_fitting_chain` 看阶梯状态再决定下一步；`reset_fitting_chain` 才允许重来。
 
-## 硬性规则
+## 护栏
 
-- 只调用上述 app 工具与本地读文件；不修改 app 代码、不投新工具、不 SSH。
-- 每次工具调用之间若有等待，等待 5 分钟后重试；总时长上限 6 小时。
-- 诚实报告：任何失败、重试、发散都要记录，不得编造结果。
-- 工作目录：`<工作目录>`（所有产物写入这里）。
+1. **绝不编造**数据集 id、参数值、种子、拟合结果——一律从工具读取；拿不到就明说/问用户。
+2. 拟合定义值（数据集、cuts、order、Q₀²、副本数）是用户的决定：你可以建议，不能替用户定。
+3. 队列护栏：活跃作业保持低位（≤~100）；扩规模前先 `get_resource_context`。
+4. 工具返回 error dict → 如实报告，不要原地死循环重试；瞬时集群错误最多重试一次。
+5. 每个阶段完成就汇报 χ²/N 等**真实数字**；总结未算完就说"在算，稍后重试"。
 
-## 完成定义
+## 写工作记录
 
-- `<工作目录>/REPORT.md` 存在，含完整验收表与时间线；
-- REPORT.md 中明确写出：exp χ²/N 的值、与论文 0.80 的偏差、格点矩 z 值、
-  β 指数与论文的 σ 差距；
-- `<工作目录>/JAM24_feasibility.md` 存在（允许结论为"不可行"）。
+每次任务在 `<工作目录>/WORKLOG.md` 记录时间线（每次工具调用：时间、工具、参数摘要、
+返回摘要），最终结论写入 `<工作目录>/REPORT.md`（验收表 + 与论文的偏差）。
