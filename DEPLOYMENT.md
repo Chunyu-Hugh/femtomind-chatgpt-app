@@ -163,8 +163,8 @@ in this stack will tell you; only looking will.
 
 ## Security
 
-**What reaches the internet.** Ports 80, 443 and 22. Caddy forwards four
-paths to the app and answers everything else with a fixed string. The MCP
+**What reaches the internet.** Ports 80, 443 and 22. Caddy forwards the
+MCP/OAuth paths plus /app/* to the app and answers everything else with a fixed string. The MCP
 endpoint returns 401 until an OAuth 2.1 flow completes with PKCE; the
 authorization server is this app.
 
