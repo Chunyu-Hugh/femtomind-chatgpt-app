@@ -44,7 +44,7 @@ WIDGET_DIR = Path(__file__).parent / "widgets"
 # breaking HTML/JS change and update the tool _meta that references them.
 JOBS_CARD_URI = "ui://femtomind/jobs-card/v2.html"
 FIT_SUMMARY_URI = "ui://femtomind/fit-summary/v10.html"
-COMPOSER_URI = "ui://femtomind/fit-composer/v3.html"
+COMPOSER_URI = "ui://femtomind/fit-composer/v4.html"
 REPLICA_PLOT_URI = "ui://femtomind/replica-plot/v3.html"
 
 # Reaction families the composer exposes. Kept to the set whose data and theory
@@ -322,6 +322,18 @@ mcp = FastMCP(
         "locks. To start another fit the user works in a freshly opened panel — "
         "only reopen `jam_analysis_panel` (tab='campaign') when they EXPLICITLY ask "
         "to run another / reconfigure a fit; never proactively after a submit.\n\n"
+        "STAGED (LADDER) FITTING — the JAM multi-step strategy. A global fit is "
+        "built in stages: fit one reaction set, then ADD the next reaction set "
+        "and refit starting from the previous stage's posterior. When the user "
+        "asks to extend a fit ('now add DY', 'add jets on top', '叠加', '下一阶段'), "
+        "use `ladder_status` to see where the ladder stands, then call "
+        "`submit_fitting_job` with continue_chain=True and the FULL cumulative "
+        "dataset list (everything fitted so far plus the new datasets). The "
+        "backend automatically inherits the previous stage's per-replica "
+        "posteriors as priors — do not re-submit the old datasets alone and do "
+        "not reset the chain unless the user asks to start over. When a stage "
+        "finishes, report its summary and offer the next stage. "
+        "`reset_fitting_chain` abandons the ladder and starts fresh.\n\n"
         "ANSWERING QUESTIONS ABOUT AN EXISTING CAMPAIGN is different — do NOT "
         "open the panel for these, answer in chat with the tool results:\n"
         "  • \"summarize / how are the results of campaign X\" → `list_campaigns` "
@@ -1872,6 +1884,21 @@ def get_resource_context(
     })
 
 
+
+
+@mcp.tool(
+    annotations=READ_ONLY,
+    structured_output=True,
+)
+def ladder_status(chat_id: str = "chatgpt-composer") -> dict[str, Any]:
+    """Report where the staged fitting ladder stands for this chat: the
+    current step, the active batch, and every completed stage so far (step,
+    reaction track, batch id, whether it converged). Call this when the user
+    asks "which stage are we on" or before appending a stage — the next
+    continue-mode submission inherits the latest completed stage's
+    per-replica posteriors as priors (the JAM multi-step strategy)."""
+    raw = _call_mcpo("/fitpack/get_fitting_chain", {"chat_id": _scope(chat_id)})
+    return raw if isinstance(raw, dict) else {"result": raw}
 
 
 @mcp.tool(

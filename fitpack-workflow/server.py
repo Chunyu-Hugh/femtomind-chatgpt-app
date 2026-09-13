@@ -3011,6 +3011,40 @@ def get_analysis_roadmap(chat_id: str = "") -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
+@mcp.tool()
+def get_fitting_chain(chat_id: str) -> Dict[str, Any]:
+    """Return the current staged-fit ladder state for this chat: which step
+    the chain is on, the active batch, and the history of completed stages
+    (each with its step number, observable track, batch id and label). Use it
+    before appending a stage or to narrate where a ladder stands; the next
+    run_fitting_job in continue mode inherits the latest completed batch's
+    per-replica posteriors as priors.
+    """
+    _init_db()
+    state = _get_chain_state(chat_id)
+    history = []
+    for past in (state.get("history") or []):
+        if not isinstance(past, dict):
+            continue
+        batch_id = past.get("batch_id", "")
+        history.append({
+            "step": past.get("step"),
+            "track": past.get("track"),
+            "observable": past.get("observable", ""),
+            "batch_id": batch_id,
+            "batch_label": past.get("batch_label", ""),
+            "completed": bool(batch_id and _is_batch_completed(batch_id)),
+        })
+    return {
+        "status": "ok",
+        "current_step": state.get("current_step", 0),
+        "active_batch_id": state.get("active_batch_id", ""),
+        "active_observable": state.get("active_observable", ""),
+        "history": history,
+        "note": "Appending a stage (continue mode) inherits the latest COMPLETED batch's per-replica posteriors as priors; datasets accumulate, so pass the full cumulative selection.",
+    }
+
+
 def reset_fitting_chain(chat_id: str) -> Dict[str, Any]:
     """
     Reset the fitting chain for this chat. Next run_fitting_job will start fresh

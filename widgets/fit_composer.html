@@ -195,6 +195,10 @@
   <!-- 6. Review -->
   <div class="panel" data-step="review">
     <div class="panelTitle">Please review the settings summary</div>
+    <div class="field" style="margin-bottom:10px">
+      <label class="inline"><input type="checkbox" class="chk" id="revAppend" /> Append stage — continue the ladder (inherit the previous campaign's posterior)</label>
+      <div class="hint">Staged fit: keep the full cumulative dataset list (everything fitted so far plus the new datasets) — this submission refits starting from the previous stage's per-replica posteriors.</div>
+    </div>
     <div class="guide"><b>One last check.</b> These are the fit-defining values — a
       misconfigured fit runs to completion and returns numbers shaped exactly like a correct
       one. Verify the datasets and physics settings below, then submit to HPC.</div>
@@ -473,6 +477,7 @@
       pion_parameters: blocks.pion_parameters,
       kaon_parameters: blocks.kaon_parameters,
       quality_thresholds: { chi2_ok: numOrNull($("qtChi2ok")), chi2_warn: numOrNull($("qtChi2warn")), good_fraction: numOrNull($("qtGood")) },
+      continue_chain: $("revAppend").checked,
     };
   }
 
@@ -484,6 +489,7 @@
     const qtTxt = ["chi2_ok", "chi2_warn", "good_fraction"].map((k) => k + "=" + (qt[k] == null ? "—" : qt[k])).join(", ");
     const nParamOver = Object.keys(card.parameters).length + Object.keys(card.pion_parameters).length + Object.keys(card.kaon_parameters).length;
     const rows = [
+      ["Mode", card.continue_chain ? "Append stage (inherit posterior)" : "Fresh fit"],
       ["Object", card.object.label],
       ["Datasets", famTxt || "(none selected)"],
       ["Parameters overridden", String(nParamOver)],
@@ -527,6 +533,7 @@
         count: card.job.replicas,
         job_number: "001",
         batch_label: card.job.campaignName,
+        continue_chain: card.continue_chain,
         extra_observables: card.extra_observables.length ? card.extra_observables : undefined,
         advanced: { qcd: card.qcd, job: card.job, object: card.object,
                     parameters: card.parameters, pion_parameters: card.pion_parameters,
@@ -558,7 +565,7 @@
     if (STEPS[stepIdx].id === "review") { submit(); return; }
     stepIdx++; sync();
   };
-  ["qcdOrder","qcdQ20","qcdTmc","qcdDglap","qcdAs","qcdHT","qcdNuc","jobName","jobReplicas","jobMaxIter","jobTol","jobOpt","jobBootstrap","qtChi2ok","qtChi2warn","qtGood"]
+  ["qcdOrder","qcdQ20","qcdTmc","qcdDglap","qcdAs","qcdHT","qcdNuc","jobName","jobReplicas","jobMaxIter","jobTol","jobOpt","jobBootstrap","qtChi2ok","qtChi2warn","qtGood","revAppend"]
     .forEach((id) => { const el = $(id); if (el) el.addEventListener("change", persist); });
 
   function init(out) {
@@ -611,6 +618,7 @@
       if ($("qtChi2ok") && qt.chi2_ok != null) $("qtChi2ok").value = qt.chi2_ok;
       if ($("qtChi2warn") && qt.chi2_warn != null) $("qtChi2warn").value = qt.chi2_warn;
       if ($("qtGood") && qt.good_fraction != null) $("qtGood").value = qt.good_fraction;
+      if ($("revAppend")) $("revAppend").checked = !!st.continue_chain;
       if (st._submitted) submitted = true;
     } catch (e) {}
   }
