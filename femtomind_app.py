@@ -44,8 +44,16 @@ WIDGET_DIR = Path(__file__).parent / "widgets"
 # breaking HTML/JS change and update the tool _meta that references them.
 JOBS_CARD_URI = "ui://femtomind/jobs-card/v2.html"
 FIT_SUMMARY_URI = "ui://femtomind/fit-summary/v10.html"
-COMPOSER_URI = "ui://femtomind/fit-composer/v2.html"
+COMPOSER_URI = "ui://femtomind/fit-composer/v3.html"
 REPLICA_PLOT_URI = "ui://femtomind/replica-plot/v3.html"
+
+# Reaction families the composer exposes. Kept to the set whose data and theory
+# modules are verified in fitpack_legacy (JAM24 ladder + JAM25 pion/kaon).
+# Polarized (pidis/pjet) and pp-hadron families stay hidden until verified.
+_COMPOSER_FAMILIES = (
+    "idis", "dy", "dy-kaon", "lqcd_mom",
+    "jet", "wasym", "wzrv", "zrap", "wc", "sidis", "sia",
+)
 # v2: the host can populate window.openai.toolOutput after the widget script
 # runs; v1 painted once and stuck on "not connected". Bumping the version is
 # what forces ChatGPT to drop its cached copy of the HTML.
@@ -934,7 +942,7 @@ def get_dataset_catalog() -> dict[str, Any]:
     payload arrived without a catalog, so the Campaign tab is never left empty."""
     raw = _call_mcpo("/fitpack/search_datasets", {"observable": "", "experiment": "", "target": ""})
     full = raw.get("by_observable", {}) if isinstance(raw, dict) else {}
-    return {"catalog": _mark_unusable({k: v for k, v in full.items() if k in ("idis", "dy")})}
+    return {"catalog": _mark_unusable({k: v for k, v in full.items() if k in _COMPOSER_FAMILIES})}
 
 
 def _remote_base_for(username: str, chat_id: str = "") -> str:
@@ -1697,7 +1705,7 @@ def jam_analysis_panel(
     connection = _hpc_status(chat_id)
     raw = _call_mcpo("/fitpack/search_datasets", {"observable": "", "experiment": "", "target": ""})
     full = raw.get("by_observable", {}) if isinstance(raw, dict) else {}
-    catalog = _mark_unusable({k: v for k, v in full.items() if k in ("idis", "dy")})
+    catalog = _mark_unusable({k: v for k, v in full.items() if k in _COMPOSER_FAMILIES})
     valid_tabs = ("connect", "project", "campaign", "collections", "analysis")
     return {
         "tab": tab if tab in valid_tabs else "connect",
@@ -1779,8 +1787,52 @@ def _to_advanced_payload(adv: Optional[dict[str, Any]]) -> dict[str, Any]:
         qc["dglapMode"] = qcd["dglapMode"]
     if qcd.get("asMode"):
         qc["alphaSmode"] = qcd["asMode"]
+    if qcd.get("nuc") is not None:
+        qc["nuc"] = bool(qcd["nuc"])
     if qc:
         out["qcd_config"] = qc
+
+    # PDF parameter overrides (nucleon) — the backend schema accepts
+    # pdf_params keyed by param name (existing entries only, e.g. "g1 a").
+    params = adv.get("parameters") or {}
+    if isinstance(params, dict) and params:
+        pdf_params = {}
+        for name, ov in params.items():
+            if not isinstance(ov, dict):
+                continue
+            entry = {k: ov[k] for k in ("value", "min", "max", "fixed") if k in ov and ov[k] is not None}
+            if entry:
+                pdf_params[str(name)] = entry
+        if pdf_params:
+            out["pdf_params"] = pdf_params
+
+    # Meson parameter overrides (pion / kaon) — the backend creates or updates
+    # conf.params["pdf-pion"] / ["pdf-kaon"] entries from these blocks.
+    for adv_key, out_key in (("pion_parameters", "pdf_pion_params"),
+                             ("kaon_parameters", "pdf_kaon_params")):
+        block = adv.get(adv_key) or {}
+        if not isinstance(block, dict) or not block:
+            continue
+        clean = {}
+        for name, ov in block.items():
+            if not isinstance(ov, dict):
+                continue
+            entry = {k: ov[k] for k in ("value", "min", "max", "fixed") if k in ov and ov[k] is not None}
+            if entry:
+                clean[str(name)] = entry
+        if clean:
+            out[out_key] = clean
+
+    # Quality thresholds — accepted by the backend schema (chi2_ok / chi2_warn /
+    # good_fraction), recorded for the ladder acceptance logic.
+    qt = adv.get("quality_thresholds") or {}
+    if isinstance(qt, dict):
+        for key in ("chi2_ok", "chi2_warn", "good_fraction"):
+            if qt.get(key) is not None:
+                try:
+                    out[key] = float(qt[key])
+                except (TypeError, ValueError):
+                    pass
 
     # `parameters.initialization` and `object.type` have no backend counterpart:
     # replicas are randomised during task generation, and the object is implied
@@ -1818,6 +1870,23 @@ def get_resource_context(
 
 
 @mcp.tool(annotations=WRITE_SAFE, meta=CALLABLE_META, structured_output=True)
+@mcp.tool(
+    annotations=READ_ONLY,
+    structured_output=True,
+)
+def get_fit_parameters(chat_id: str = "chatgpt-composer") -> dict[str, Any]:
+    """Return the current PDF/FF parameter state that a submitted fit would
+    start from: parameter name, value, [min, max] bounds and the fixed flag,
+    grouped by distribution (nucleon PDF, pion PDF, kaon PDF, global
+    settings). The composer renders these in its "PDF Parameters" step.
+
+    Read-only: it never mutates the workspace or the cluster. Call it when
+    the user wants to inspect or edit the parameter table before submitting.
+    """
+    raw = _call_mcpo("/fitpack/get_current_parameters", {"chat_id": _scope(chat_id)})
+    return raw if isinstance(raw, dict) else {"result": raw}
+
+
 def submit_fitting_job(
     observable: str,
     selected_ids: list[str],

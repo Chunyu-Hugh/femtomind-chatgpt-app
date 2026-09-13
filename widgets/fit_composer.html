@@ -19,7 +19,7 @@
   * { box-sizing: border-box; }
   body { margin: 0; font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
          background: var(--bg); color: var(--fg); }
-  .wrap { max-width: 720px; margin: 0 auto; padding: 14px 16px 18px; }
+  .wrap { max-width: 780px; margin: 0 auto; padding: 14px 16px 18px; }
   h1 { font-size: 17px; margin: 0 0 2px; }
   .sub { color: var(--muted); font-size: 12px; margin: 0 0 12px; }
   .steps { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
@@ -29,6 +29,10 @@
   .step .num { opacity: .7; margin-right: 4px; }
   .panel { display: none; }
   .panel.active { display: block; }
+  .panelTitle { font-weight: 600; font-size: 14px; margin: 2px 0 8px; }
+  .guide { background: var(--chip); border-left: 3px solid var(--accent); border-radius: 6px;
+           padding: 8px 10px; font-size: 12px; color: var(--muted); margin-bottom: 12px; }
+  .guide b { color: var(--fg); }
   .field { margin-bottom: 12px; }
   .label { font-weight: 600; font-size: 12px; margin-bottom: 4px; }
   .hint { color: var(--muted); font-size: 11px; margin-top: 3px; }
@@ -36,17 +40,22 @@
     width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px;
     background: var(--bg); color: var(--fg); font-size: 13px; }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .opt { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border: 1px solid var(--line);
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+  .opt { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--line);
          border-radius: 8px; margin-bottom: 6px; background: var(--card); cursor: pointer; }
-  .opt.disabled { opacity: .55; cursor: not-allowed; }
-  .opt .badge { margin-left: auto; font-size: 10px; text-transform: uppercase; color: var(--warn);
-                border: 1px solid var(--warn); border-radius: 4px; padding: 1px 5px; }
-  .rgroup { margin-bottom: 10px; }
+  .opt .why { display: block; font-size: 11px; color: var(--muted); margin-top: 1px; }
+  .opt .cnt { margin-left: auto; font-size: 11px; color: var(--muted); white-space: nowrap; }
+  .rgroup { margin-bottom: 12px; }
   .rgroup h3 { font-size: 12px; margin: 0 0 6px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
-  .ds { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 7px; }
-  .ds:hover { background: var(--card); }
-  .ds .id { color: var(--muted); font-size: 11px; min-width: 46px; }
-  .ds.blueprint { opacity: .5; }
+  table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .tbl th { text-align: left; color: var(--muted); font-weight: 600; font-size: 11px;
+            padding: 4px 6px; border-bottom: 1px solid var(--line); }
+  .tbl td { padding: 4px 6px; border-bottom: 1px dashed var(--line); vertical-align: middle; }
+  .tbl td.id { color: var(--muted); font-size: 11px; }
+  .tbl td.cuts { color: var(--muted); font-size: 11px; }
+  .ptable .pname { color: var(--muted); font-size: 11px; min-width: 52px; }
+  .ptable input[type=number] { width: 78px; padding: 4px 6px; font-size: 12px; }
+  .ptable .fixedCell { text-align: center; }
   .rev { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
   .rev .row { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px dashed var(--line); font-size: 13px; }
   .rev .row:last-child { border-bottom: none; }
@@ -69,64 +78,126 @@
 
   <div class="steps" id="steps"></div>
 
-  <!-- 1. Non-perturbative object -->
-  <div class="panel" data-step="object">
-    <div class="field">
-      <div class="label">Non-perturbative object</div>
-      <div id="objectList"></div>
-      <div class="hint">Only Unpolarized PDF is enabled in this MVP; others are blueprints.</div>
-    </div>
-  </div>
-
-  <!-- 2. Reactions / datasets -->
+  <!-- 1. Select reactions -->
   <div class="panel" data-step="reactions">
+    <div class="panelTitle">Select reactions</div>
+    <div class="guide"><b>What this is.</b> A QCD global analysis is built in stages, adding
+      reactions and refitting at each step — each reaction constrains a different part of the
+      proton's parton structure. Tick the reactions this campaign should include; their
+      datasets appear in the next step.</div>
     <div class="field">
-      <div class="label">Experimental datasets</div>
       <div id="reactionList"></div>
-      <div class="hint">Tick the datasets to include. Blueprint entries are not yet fittable.</div>
     </div>
   </div>
 
-  <!-- 3. QCD settings -->
+  <!-- 2. Select data sets -->
+  <div class="panel" data-step="datasets">
+    <div class="panelTitle">Select data sets</div>
+    <div class="guide"><b>What this is.</b> Each experiment comes as a dataset of measured
+      points. The <b>cuts</b> column is the kinematic selection applied before fitting —
+      they drop the nucleon resonance region (W² &lt; 10 GeV²) and the low-Q² region where
+      higher-twist effects matter. These are the standard JAM cuts; change them only with a
+      reason.</div>
+    <div class="field">
+      <div id="datasetList"></div>
+    </div>
+  </div>
+
+  <!-- 3. PDF Parameters -->
+  <div class="panel" data-step="parameters">
+    <div class="panelTitle">PDF Parameters</div>
+    <div class="guide"><b>What this is.</b> Every parton flavor is modelled by the template
+      f(x) = N·x<sup>a</sup>(1−x)<sup>b</sup>(1 + c√x + dx). N is fixed by the valence and
+      momentum sum rules for u<sub>v</sub>, d<sub>v</sub> and the gluon; the sea starts
+      symmetric (S₁ = S₂, δ = 0) and is split flavor by flavor as the ladder adds
+      discriminating data. <b>Value</b> is the starting point, <b>[Min, Max]</b> the fit
+      bounds, <b>fixed</b> pins a parameter to its value.</div>
+    <div class="field">
+      <div id="paramList"></div>
+      <div class="hint">Editing a cell records an override sent with the submission — leave a cell untouched to keep the current value.</div>
+    </div>
+  </div>
+
+  <!-- 4. Job Settings -->
   <div class="panel" data-step="qcd">
-    <div class="grid2">
-      <div class="field"><div class="label">Order</div>
-        <select id="qcdOrder"><option>NLO</option><option>NNLO</option></select></div>
-      <div class="field"><div class="label">Q₀² (GeV²)</div>
-        <input type="number" id="qcdQ20" step="0.0001" value="1.6129" /></div>
-      <div class="field"><div class="label">TMC (target-mass corr.)</div>
-        <select id="qcdTmc"><option value="AOT">AOT</option><option value="off">off</option></select></div>
-      <div class="field"><div class="label">DGLAP mode</div>
-        <select id="qcdDglap"><option value="truncated">truncated</option><option value="iterated">iterated</option></select></div>
-      <div class="field"><div class="label">αS mode</div>
-        <select id="qcdAs"><option value="backward">backward</option><option value="forward">forward</option></select></div>
-      <div class="field" style="align-self:end">
-        <label class="inline"><input type="checkbox" class="chk" id="qcdHT" /> Higher Twist</label></div>
+    <div class="panelTitle">Job Settings</div>
+    <div class="guide"><b>What this is.</b> The perturbative framework the fit runs in.
+      The defaults reproduce the JAM global-analysis setup: NLO accuracy, truncated DGLAP
+      evolution in the zero-mass variable-flavor scheme, and the input scale
+      Q₀² = m<sub>c</sub>² = 1.28² GeV². Target-mass and higher-twist corrections are left
+      off — the kinematic cuts in the previous step handle the region where they matter.</div>
+    <div class="field">
+      <div class="label">QCD configuration</div>
+      <div class="grid2">
+        <div class="field"><div class="label">Order</div>
+          <select id="qcdOrder"><option>NLO</option><option>LO</option><option>NNLO</option></select></div>
+        <div class="field"><div class="label">Q₀² (GeV²) — input scale μ = m_c</div>
+          <input type="number" id="qcdQ20" step="0.0001" value="1.6384" />
+          <div class="hint">1.28² = 1.6384: PDFs are parameterized at the charm mass.</div></div>
+        <div class="field"><div class="label">TMC (target-mass corr.)</div>
+          <select id="qcdTmc"><option value="off">off</option><option value="AOT">AOT</option></select></div>
+        <div class="field"><div class="label">DGLAP mode</div>
+          <select id="qcdDglap"><option value="truncated">truncated</option><option value="iterated">iterated</option></select></div>
+        <div class="field"><div class="label">αS mode</div>
+          <select id="qcdAs"><option value="backward">backward</option><option value="forward">forward</option></select></div>
+        <div class="field" style="align-self:end">
+          <label class="inline"><input type="checkbox" class="chk" id="qcdHT" /> Higher Twist</label></div>
+        <div class="field" style="align-self:end">
+          <label class="inline"><input type="checkbox" class="chk" id="qcdNuc" checked /> Deuteron smearing</label>
+          <div class="hint">Smear the deuteron-target data for nuclear binding effects.</div></div>
+      </div>
     </div>
   </div>
 
-  <!-- 4. Job config -->
+  <!-- 5. Job configuration -->
   <div class="panel" data-step="job">
+    <div class="panelTitle">Job configuration</div>
+    <div class="guide"><b>What this is.</b> How the campaign runs on the cluster and how the
+      result is judged. The <b>stage plan</b> is the multi-step ladder: each stage adds one
+      reaction and refits, starting from the previous stage's posterior — this is how a fit
+      is calibrated before the final ensemble. <b>Quality thresholds</b> flag replicas whose
+      χ²/N is worse than the accept bound.</div>
     <div class="grid2">
       <div class="field"><div class="label">Campaign name</div>
         <input type="text" id="jobName" value="chatgpt-fit" /></div>
       <div class="field"><div class="label">Replicas</div>
-        <input type="number" id="jobReplicas" min="1" max="200" value="10" /></div>
+        <input type="number" id="jobReplicas" min="1" max="200" value="10" />
+        <div class="hint">Each replica is an independent fit with its own random starting point. Published JAM analyses use ~700 — this form caps at 200 per submission; add more later with “add replicas”.</div></div>
       <div class="field"><div class="label">Max iterations</div>
         <input type="number" id="jobMaxIter" min="1" value="500" /></div>
       <div class="field"><div class="label">Tolerance</div>
         <input type="text" id="jobTol" value="1e-6" /></div>
       <div class="field"><div class="label">Optimizer</div>
-        <select id="jobOpt"><option value="trf">trf</option></select></div>
+        <select id="jobOpt"><option value="trf">trf</option><option value="dogbox">dogbox</option></select></div>
     </div>
     <div class="field">
       <label class="inline"><input type="checkbox" class="chk" id="jobBootstrap" checked /> Inference: ensemble approach (bootstrap pseudo-data replicas)</label>
-      <div class="hint">Starting values are sampled randomly within each parameter's bounds — that is what makes every replica an independent fit.</div>
+    </div>
+    <div class="field">
+      <div class="label">Quality thresholds</div>
+      <div class="grid3">
+        <div class="field"><div class="label">accept χ²/N ≤</div>
+          <input type="number" id="qtChi2ok" step="0.1" min="0" placeholder="unset" /></div>
+        <div class="field"><div class="label">warn χ²/N ≥</div>
+          <input type="number" id="qtChi2warn" step="0.1" min="0" placeholder="unset" /></div>
+        <div class="field"><div class="label">good replica fraction</div>
+          <input type="number" id="qtGood" step="0.05" min="0" max="1" placeholder="unset" /></div>
+      </div>
+      <div class="hint">Leave empty to use the analysis defaults. Replicas worse than the accept bound are flagged before the ensemble is used for physics.</div>
+    </div>
+    <div class="field">
+      <div class="label">Stage plan</div>
+      <div class="rev" style="margin-bottom:0"><div id="stagePlan"></div></div>
+      <div class="hint">Derived from the reactions you selected, in the standard JAM ladder order. Each stage refits from the previous stage's posterior.</div>
     </div>
   </div>
 
-  <!-- 5. Review -->
+  <!-- 6. Review -->
   <div class="panel" data-step="review">
+    <div class="panelTitle">Please review the settings summary</div>
+    <div class="guide"><b>One last check.</b> These are the fit-defining values — a
+      misconfigured fit runs to completion and returns numbers shaped exactly like a correct
+      one. Verify the datasets and physics settings below, then submit to HPC.</div>
     <div class="rev" id="reviewBox"></div>
     <div class="err" id="reviewErr"></div>
     <div id="submittedNote" style="display:none;margin-top:10px;color:var(--warn);font-size:13px">
@@ -144,25 +215,58 @@
 <script>
 (function () {
   const STEPS = [
-    { id: "object", label: "Object" },
-    { id: "reactions", label: "Reactions" },
-    { id: "qcd", label: "QCD settings" },
-    { id: "job", label: "Job config" },
-    { id: "review", label: "Review" },
+    { id: "reactions",  label: "Select reactions" },
+    { id: "datasets",   label: "Select data sets" },
+    { id: "parameters", label: "PDF Parameters" },
+    { id: "qcd",        label: "Job Settings" },
+    { id: "job",        label: "Job configuration" },
+    { id: "review",     label: "Review" },
   ];
-  const OBJECTS = [
-    { value: "pdf", label: "Unpolarized PDF", enabled: true },
-    { value: "polarized_pdf", label: "Polarized PDF", enabled: false },
-    { value: "pion_ff", label: "Pion FF", enabled: false },
-    { value: "kaon_ff", label: "Kaon FF", enabled: false },
-    { value: "hadron_ff", label: "Hadron FF", enabled: false },
-  ];
+  const FAMILY_NAMES = {
+    idis: "DIS", dy: "Drell-Yan", "dy-kaon": "DY kaon ratio", lqcd_mom: "Lattice moments",
+    jet: "Inclusive jets", wasym: "W charge asymmetry", wzrv: "W lepton asymmetry",
+    zrap: "Z rapidity", wc: "W + charm", sidis: "SIDIS", sia: "SIA",
+    pidis: "Polarized DIS", pjet: "Polarized jets", "pp_hadron": "pp hadrons",
+  };
+  // what each reaction constrains (JAM paper Table 1)
+  const FAMILY_WHY = {
+    idis: "constrains the quark and gluon PDFs over a wide x range",
+    dy: "constrains the d̄/ū flavor ratio",
+    wasym: "constrains flavor separation via W± asymmetries",
+    wzrv: "constrains flavor separation via W± asymmetries",
+    zrap: "constrains light-quark flavors at intermediate x",
+    jet: "constrains the gluon PDF at large x",
+    wc: "constrains the strange quark PDF",
+    sidis: "constrains PDFs and fragmentation functions together",
+    sia: "constrains the fragmentation functions",
+    lqcd_mom: "lattice QCD moments — first-principles constraints",
+  };
+  // standard JAM cuts per family (shown in the data-set table)
+  const FAMILY_CUTS = {
+    idis: "Q²>1.69, W²>10 GeV²", dy: "—",
+    jet: "pT>8 GeV", wasym: "—", wzrv: "—", zrap: "—", wc: "—",
+    sidis: "Q²>1.6384, W²>7 GeV², 0.2<z<0.8",
+    sia: "0.02/0.15<z<0.9", lqcd_mom: "—",
+  };
+  // ladder order + what each stage frees (JAM paper Sec. IV.1)
+  const LADDER_ORDER = { idis: 1, dy: 2, wasym: 3, wzrv: 3, zrap: 3, jet: 4, sia: 5, sidis: 6, wc: 7 };
+  const LADDER_NOTE = {
+    idis: "sea symmetric (S₁=S₂, δ=0)",
+    dy: "free δū, δd̄",
+    wasym: "W/Z flavor separation", wzrv: "W/Z flavor separation", zrap: "W/Z flavor separation",
+    jet: "gluon at large x",
+    sia: "free S₂, δs, δs̄ + fragmentation functions",
+    sidis: "PDF×FF multiplicities",
+    wc: "strange sector",
+  };
 
   let stepIdx = 0;
-  let catalog = {};          // { idis: [ {id,label,experiment,enabled,blueprint}... ], dy: [...] }
-  let objectType = "pdf";
-  const selected = new Set(); // dataset ids
-  let submitted = false;      // once true, this widget instance is spent and cannot be reused
+  let catalog = {};            // { idis: [ {id,label,experiment,default_on,enabled}... ], ... }
+  const selected = new Set();  // "reaction:id"
+  const families = new Set();  // reactions chosen in step 1
+  const paramOverrides = {};   // "groupid|name" -> {value,min,max,fixed}
+  let paramGroups = [];
+  let submitted = false;
 
   const $ = (id) => document.getElementById(id);
 
@@ -183,49 +287,157 @@
     });
   }
 
-  function renderObjects() {
-    const c = $("objectList"); c.innerHTML = "";
-    OBJECTS.forEach((o) => {
-      const el = document.createElement("div");
-      el.className = "opt" + (o.enabled ? "" : " disabled");
-      el.innerHTML =
-        '<input type="radio" name="obj" class="chk" ' +
-        (o.value === objectType ? "checked " : "") + (o.enabled ? "" : "disabled ") +
-        'value="' + o.value + '"> <span>' + o.label + '</span>' +
-        (o.enabled ? "" : '<span class="badge">blueprint</span>');
-      if (o.enabled) el.onclick = () => { objectType = o.value; renderObjects(); persist(); };
-      c.appendChild(el);
-    });
-  }
-
+  // ---- Step 1 ------------------------------------------------------------
   function renderReactions() {
     const c = $("reactionList"); c.innerHTML = "";
     const keys = Object.keys(catalog);
     if (!keys.length) { c.innerHTML = '<div class="hint">No dataset catalog received.</div>'; return; }
     keys.forEach((rk) => {
+      const n = (catalog[rk] || []).length;
+      const el = document.createElement("div");
+      el.className = "opt";
+      el.innerHTML = '<input type="checkbox" class="chk" ' + (families.has(rk) ? "checked " : "") +
+        'value="' + rk + '"><span><span>' + (FAMILY_NAMES[rk] || rk.toUpperCase()) + '</span>' +
+        '<span class="why">' + (FAMILY_WHY[rk] || "") + '</span></span>' +
+        '<span class="cnt">' + n + ' datasets</span>';
+      const cb = el.querySelector("input");
+      cb.onchange = () => {
+        if (cb.checked) {
+          families.add(rk);
+          (catalog[rk] || []).forEach((d) => { if (d.default_on) selected.add(rk + ":" + d.id); });
+        } else {
+          families.delete(rk);
+          (catalog[rk] || []).forEach((d) => selected.delete(rk + ":" + d.id));
+        }
+        persist();
+      };
+      c.appendChild(el);
+    });
+  }
+
+  // ---- Step 2 ------------------------------------------------------------
+  function renderDatasets() {
+    const c = $("datasetList"); c.innerHTML = "";
+    const keys = Object.keys(catalog).filter((rk) => families.has(rk));
+    if (!keys.length) { c.innerHTML = '<div class="hint">No reactions selected. Go back and tick at least one.</div>'; return; }
+    keys.forEach((rk) => {
       const grp = document.createElement("div");
       grp.className = "rgroup";
-      grp.innerHTML = "<h3>" + rk.toUpperCase() + "</h3>";
+      let rows = '<h3>' + (FAMILY_NAMES[rk] || rk.toUpperCase()) + '</h3>' +
+        '<table class="tbl"><thead><tr><th style="width:22px"></th><th>id</th><th>experiment</th><th>dataset</th><th>cuts</th></tr></thead><tbody>';
       (catalog[rk] || []).forEach((d) => {
         const bp = d.blueprint || d.enabled === false;
-        const key = rk + ":" + d.id;   // idis and dy share numeric ids — never key on id alone
-        const row = document.createElement("label");
-        row.className = "ds" + (bp ? " blueprint" : "");
-        row.innerHTML =
-          '<input type="checkbox" class="chk" ' + (selected.has(key) ? "checked " : "") +
-          (bp ? "disabled " : "") + 'data-id="' + key + '">' +
-          '<span class="id">' + d.id + '</span><span>' + (d.label || d.experiment || d.id) + '</span>';
-        const cb = row.querySelector("input");
-        if (!bp) cb.onchange = () => { cb.checked ? selected.add(key) : selected.delete(key); persist(); };
-        grp.appendChild(row);
+        const key = rk + ":" + d.id;
+        rows += '<tr><td><input type="checkbox" class="chk" ' + (selected.has(key) ? "checked " : "") +
+          (bp ? "disabled " : "") + 'data-id="' + key + '"></td>' +
+          '<td class="id">' + d.id + '</td>' +
+          '<td>' + (d.experiment || "—") + '</td>' +
+          '<td>' + (d.label || d.id) + '</td>' +
+          '<td class="cuts">' + (d.cuts || FAMILY_CUTS[rk] || "—") + '</td></tr>';
+      });
+      rows += '</tbody></table>';
+      grp.innerHTML = rows;
+      grp.querySelectorAll("input[type=checkbox]").forEach((cb) => {
+        if (cb.disabled) return;
+        cb.onchange = () => { cb.checked ? selected.add(cb.dataset.id) : selected.delete(cb.dataset.id); persist(); };
       });
       c.appendChild(grp);
     });
   }
 
+  // ---- Step 3 ------------------------------------------------------------
+  async function loadParams() {
+    if (paramGroups.length) { renderParams(); return; }
+    $("paramList").innerHTML = '<div class="hint">Loading parameters…</div>';
+    try {
+      const res = await window.openai.callTool("get_fit_parameters", {});
+      const r = (res && res.structuredContent) || res || {};
+      paramGroups = Array.isArray(r.groups) ? r.groups : [];
+      if (!paramGroups.length) {
+        $("paramList").innerHTML = '<div class="hint">No parameter table available yet — parameters can also be staged in the conversation (ask the assistant).</div>';
+        return;
+      }
+      renderParams();
+    } catch (e) {
+      $("paramList").innerHTML = '<div class="hint">Could not load parameters (' + (e && e.message ? e.message : e) + '). Ask the assistant to stage values instead.</div>';
+    }
+  }
+
+  function renderParams() {
+    const c = $("paramList"); c.innerHTML = "";
+    paramGroups.forEach((g) => {
+      if (!g || !Array.isArray(g.items) || !g.items.length) return;
+      const gid = g.id || "pdf";
+      const grp = document.createElement("div");
+      grp.className = "rgroup";
+      let rows = '<h3>' + (g.label || gid) + '</h3>' +
+        '<table class="tbl ptable"><thead><tr><th>param</th><th>value</th><th>min</th><th>max</th><th style="text-align:center">fixed</th></tr></thead><tbody>';
+      g.items.forEach((it) => {
+        const key = gid + "|" + it.name;
+        const ov = paramOverrides[key] || it;
+        rows += '<tr>' +
+          '<td class="pname">' + it.name + '</td>' +
+          '<td><input type="number" step="any" data-k="' + key + '" data-f="value" value="' + (ov.value != null ? ov.value : "") + '"></td>' +
+          '<td><input type="number" step="any" data-k="' + key + '" data-f="min" value="' + (ov.min != null ? ov.min : "") + '"></td>' +
+          '<td><input type="number" step="any" data-k="' + key + '" data-f="max" value="' + (ov.max != null ? ov.max : "") + '"></td>' +
+          '<td class="fixedCell"><input type="checkbox" class="chk" data-k="' + key + '" data-f="fixed" ' + (ov.fixed ? "checked " : "") + '></td>' +
+          '</tr>';
+      });
+      rows += '</tbody></table>';
+      grp.innerHTML = rows;
+      grp.querySelectorAll("input").forEach((el) => {
+        el.onchange = () => {
+          const key = el.dataset.k, f = el.dataset.f;
+          let base = null;
+          paramGroups.some((gg) => {
+            if (gg.items) { base = gg.items.find((x) => (gg.id || "pdf") + "|" + x.name === key); }
+            return !!base;
+          });
+          base = base || {};
+          const ov = paramOverrides[key] || (paramOverrides[key] = {});
+          if (el.type === "checkbox") ov[f] = el.checked;
+          else { const s = el.value.trim(); ov[f] = s === "" ? null : parseFloat(s); }
+          const same = ["value", "min", "max", "fixed"].every((ff) => (ov[ff] == null ? base[ff] == null : ov[ff] === base[ff]));
+          if (same) delete paramOverrides[key];
+          persist();
+        };
+      });
+      c.appendChild(grp);
+    });
+  }
+
+  function paramBlocks() {
+    // split overrides by distribution: pdf -> parameters, pdf-pion / pdf-kaon -> meson blocks
+    const blocks = { parameters: {}, pion_parameters: {}, kaon_parameters: {} };
+    Object.keys(paramOverrides).forEach((key) => {
+      const idx = key.indexOf("|");
+      if (idx <= 0) return;
+      const gid = key.slice(0, idx), name = key.slice(idx + 1);
+      const target = gid === "pdf-pion" ? "pion_parameters" : (gid === "pdf-kaon" ? "kaon_parameters" : "parameters");
+      blocks[target][name] = paramOverrides[key];
+    });
+    return blocks;
+  }
+
+  // ---- Step 5: stage plan ------------------------------------------------
+  function renderStagePlan() {
+    const fams = Object.keys(catalog).filter((rk) => families.has(rk))
+      .sort((a, b) => (LADDER_ORDER[a] || 99) - (LADDER_ORDER[b] || 99));
+    const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const parts = [];
+    fams.forEach((rk, i) => {
+      parts.push('<div class="row"><span class="k">Stage ' + letters[i] + ' / Track ' + String.fromCharCode(97 + i) +
+        '</span><span class="v">' + (FAMILY_NAMES[rk] || rk) + ' (Unpolarized PDF) — accept · ' +
+        (LADDER_NOTE[rk] || "") + '</span></div>');
+    });
+    if (!parts.length) parts.push('<div class="row"><span class="k">Stage A / Track a</span><span class="v">select reactions first</span></div>');
+    $("stagePlan").innerHTML = parts.join("");
+  }
+
+  // ---- card building -----------------------------------------------------
   function selGroups() {
     const groups = {};
-    selected.forEach(k => {
+    selected.forEach((k) => {
       const idx = k.indexOf(":"), rk = idx > 0 ? k.slice(0, idx) : "idis", id = idx > 0 ? k.slice(idx + 1) : k;
       (groups[rk] = groups[rk] || []).push(id);
     });
@@ -234,12 +446,14 @@
 
   function buildCard() {
     const groups = selGroups();
-    const fams = []; Object.keys(catalog).forEach(rk => { if (groups[rk] && groups[rk].length) fams.push([rk, groups[rk]]); });
+    const fams = []; Object.keys(catalog).forEach((rk) => { if (groups[rk] && groups[rk].length) fams.push([rk, groups[rk]]); });
     if (!fams.length) fams.push(["idis", []]);
     const replicas = (() => { const n = parseInt($("jobReplicas").value, 10); return (isFinite(n) && n >= 1 && n <= 200) ? n : 10; })();
     const maxIterations = (() => { const n = parseInt($("jobMaxIter").value, 10); return (isFinite(n) && n >= 1) ? n : 500; })();
+    const numOrNull = (el) => { const s = el && el.value ? el.value.trim() : ""; if (!s) return null; const v = parseFloat(s); return isFinite(v) ? v : null; };
+    const blocks = paramBlocks();
     return {
-      object: { type: objectType, label: (OBJECTS.find(o => o.value === objectType) || {}).label || objectType },
+      object: { type: "pdf", label: "Unpolarized PDF" },
       observable: fams[0][0],
       selected_ids: fams[0][1],
       extra_observables: fams.slice(1).map(([rk, ids]) => ({ observable: rk, selected_ids: ids })),
@@ -247,15 +461,18 @@
         order: $("qcdOrder").value, Q20: parseFloat($("qcdQ20").value),
         tmc: $("qcdTmc").value, higherTwist: $("qcdHT").checked,
         dglapMode: $("qcdDglap").value, asMode: $("qcdAs").value,
+        nuc: $("qcdNuc").checked,
       },
       job: {
         campaignName: $("jobName").value.trim() || "chatgpt-fit",
-        replicas: replicas,
-        maxIterations: maxIterations,
+        replicas: replicas, maxIterations: maxIterations,
         tolerance: $("jobTol").value.trim() || "1e-6",
-        optimizer: $("jobOpt").value,
-        bootstrap: $("jobBootstrap").checked,
+        optimizer: $("jobOpt").value, bootstrap: $("jobBootstrap").checked,
       },
+      parameters: blocks.parameters,
+      pion_parameters: blocks.pion_parameters,
+      kaon_parameters: blocks.kaon_parameters,
+      quality_thresholds: { chi2_ok: numOrNull($("qtChi2ok")), chi2_warn: numOrNull($("qtChi2warn")), good_fraction: numOrNull($("qtGood")) },
     };
   }
 
@@ -263,14 +480,19 @@
     const card = buildCard();
     const famTxt = [[card.observable, card.selected_ids.length], ...card.extra_observables.map(e => [e.observable, e.selected_ids.length])]
       .map(([rk, n]) => rk + ": " + n).join("  +  ");
+    const qt = card.quality_thresholds;
+    const qtTxt = ["chi2_ok", "chi2_warn", "good_fraction"].map((k) => k + "=" + (qt[k] == null ? "—" : qt[k])).join(", ");
+    const nParamOver = Object.keys(card.parameters).length + Object.keys(card.pion_parameters).length + Object.keys(card.kaon_parameters).length;
     const rows = [
       ["Object", card.object.label],
       ["Datasets", famTxt || "(none selected)"],
+      ["Parameters overridden", String(nParamOver)],
       ["Order / Q₀²", card.qcd.order + "  /  " + card.qcd.Q20],
       ["TMC / DGLAP / αS", card.qcd.tmc + " / " + card.qcd.dglapMode + " / " + card.qcd.asMode +
-                            (card.qcd.higherTwist ? "  +HT" : "")],
+                            (card.qcd.higherTwist ? "  +HT" : "") + (card.qcd.nuc ? "  +nuc" : "")],
       ["Replicas", card.job.replicas],
       ["Max iter / tol", card.job.maxIterations + "  /  " + card.job.tolerance],
+      ["Quality thresholds", qtTxt],
       ["Campaign", card.job.campaignName],
     ];
     $("reviewBox").innerHTML = rows.map(r =>
@@ -279,19 +501,18 @@
   }
 
   function sync() {
-    // Once submitted, this widget instance is spent: freeze it on the read-only
-    // Review summary with every control disabled. It can never be reused — a new
-    // fit requires the assistant to open a brand-new composer.
     if (submitted) stepIdx = STEPS.length - 1;
     renderSteps();
     document.querySelectorAll(".panel").forEach((p) =>
       p.classList.toggle("active", p.dataset.step === STEPS[stepIdx].id));
-    const onReview = STEPS[stepIdx].id === "review";
-    if (onReview) renderReview();
+    const cur = STEPS[stepIdx].id;
+    if (cur === "review") renderReview();
+    if (cur === "job") renderStagePlan();
+    if (cur === "parameters") loadParams();
     $("backBtn").style.visibility = (stepIdx === 0 || submitted) ? "hidden" : "visible";
     $("backBtn").disabled = submitted;
     $("nextBtn").disabled = submitted;
-    $("nextBtn").textContent = submitted ? "Submitted ✓ — composer closed" : (onReview ? "Submit fitting job" : "Next");
+    $("nextBtn").textContent = submitted ? "Submitted ✓ — composer closed" : (cur === "review" ? "Submit to HPC" : "Next");
     $("submittedNote").style.display = submitted ? "block" : "none";
   }
 
@@ -307,15 +528,14 @@
         job_number: "001",
         batch_label: card.job.campaignName,
         extra_observables: card.extra_observables.length ? card.extra_observables : undefined,
-        advanced: { qcd: card.qcd, job: card.job, object: card.object },
+        advanced: { qcd: card.qcd, job: card.job, object: card.object,
+                    parameters: card.parameters, pion_parameters: card.pion_parameters,
+                    kaon_parameters: card.kaon_parameters, quality_thresholds: card.quality_thresholds },
       });
-      // The server rejects with {error:...} dicts, not thrown exceptions.
-      // Locking the composer on a rejection showed "Submitted ✓" while
-      // nothing ran on the cluster.
       const r = (res && res.structuredContent) || res;
       if (r && (r.error || r.status === "error")) {
         $("globalErr").textContent = String(r.error || r.message || "The submission was rejected.").slice(0, 400);
-        $("nextBtn").disabled = false; $("nextBtn").textContent = "Submit fitting job";
+        $("nextBtn").disabled = false; $("nextBtn").textContent = "Submit to HPC";
         return;
       }
       submitted = true;
@@ -323,12 +543,12 @@
       sync();
       if (window.openai.sendFollowUpMessage) {
         window.openai.sendFollowUpMessage({
-          prompt: "The fitting job was submitted from the composer. Briefly confirm and offer to check its status later.",
+          prompt: "The fitting job was submitted from the composer. Briefly confirm, and offer to summarize the fits once they converge (per-process chi2 table).",
         });
       }
     } catch (e) {
       $("globalErr").textContent = "Submit failed: " + (e && e.message ? e.message : e);
-      $("nextBtn").disabled = false; $("nextBtn").textContent = "Submit fitting job";
+      $("nextBtn").disabled = false; $("nextBtn").textContent = "Submit to HPC";
     }
   }
 
@@ -338,39 +558,48 @@
     if (STEPS[stepIdx].id === "review") { submit(); return; }
     stepIdx++; sync();
   };
-  ["qcdOrder","qcdQ20","qcdTmc","qcdDglap","qcdAs","qcdHT","jobName","jobReplicas","jobMaxIter","jobTol","jobOpt","jobBootstrap"]
+  ["qcdOrder","qcdQ20","qcdTmc","qcdDglap","qcdAs","qcdHT","qcdNuc","jobName","jobReplicas","jobMaxIter","jobTol","jobOpt","jobBootstrap","qtChi2ok","qtChi2warn","qtGood"]
     .forEach((id) => { const el = $(id); if (el) el.addEventListener("change", persist); });
 
   function init(out) {
     const cat = (out && out.catalog) || {};
-    // normalize: catalog may be { idis: {id: {...}} } or { idis: [ {...} ] }
     catalog = {};
     Object.keys(cat).forEach((rk) => {
       const v = cat[rk];
       catalog[rk] = Array.isArray(v) ? v : Object.keys(v || {}).map((id) => Object.assign({ id }, v[id]));
     });
-    // restore prior state if any. Full-card restore keeps the frozen Review
-    // summary faithful to what was actually submitted after a re-mount.
     const st = (window.openai && window.openai.widgetState) || null;
     if (st) restoreCard(st);
-    renderObjects(); renderReactions(); sync();
+    renderReactions(); renderDatasets(); sync();
   }
 
   function restoreCard(st) {
     try {
-      if (st.object && st.object.type) objectType = st.object.type;
       if (Array.isArray(st.selected_ids)) st.selected_ids.forEach((k) => {
-        // Legacy state stored bare ids (idis-only era); namespace them so
-        // they cannot collide with dy selections sharing the same id.
-        selected.add(k.includes(":") ? k : ("idis:" + k));
+        const key = k.includes(":") ? k : ("idis:" + k);
+        families.add(key.slice(0, key.indexOf(":")));
+        selected.add(key);
+      });
+      if (Array.isArray(st.extra_observables)) st.extra_observables.forEach((e) => {
+        if (!e || !Array.isArray(e.selected_ids)) return;
+        families.add(String(e.observable));
+        e.selected_ids.forEach((id) => selected.add(e.observable + ":" + id));
+      });
+      const blocks = { parameters: "pdf", pion_parameters: "pdf-pion", kaon_parameters: "pdf-kaon" };
+      Object.keys(blocks).forEach((bk) => {
+        const bl = st[bk];
+        if (bl && typeof bl === "object") Object.keys(bl).forEach((name) => {
+          paramOverrides[blocks[bk] + "|" + name] = bl[name];
+        });
       });
       const q = st.qcd || {};
       if ($("qcdOrder") && q.order) $("qcdOrder").value = q.order;
       if ($("qcdQ20") && q.Q20 != null) $("qcdQ20").value = q.Q20;
-      if ($("qcdTmc") && q.tmc) $("qcdTmc").value = q.tmc;
+      if ($("qcdTmc") && q.tmc != null) $("qcdTmc").value = q.tmc;
       if ($("qcdDglap") && q.dglapMode) $("qcdDglap").value = q.dglapMode;
       if ($("qcdAs") && q.asMode) $("qcdAs").value = q.asMode;
       if ($("qcdHT")) $("qcdHT").checked = !!q.higherTwist;
+      if ($("qcdNuc")) $("qcdNuc").checked = q.nuc !== false;
       const j = st.job || {};
       if ($("jobName") && j.campaignName != null) $("jobName").value = j.campaignName;
       if ($("jobReplicas") && j.replicas != null) $("jobReplicas").value = j.replicas;
@@ -378,6 +607,10 @@
       if ($("jobTol") && j.tolerance != null) $("jobTol").value = j.tolerance;
       if ($("jobOpt") && j.optimizer) $("jobOpt").value = j.optimizer;
       if ($("jobBootstrap")) $("jobBootstrap").checked = !!j.bootstrap;
+      const qt = st.quality_thresholds || {};
+      if ($("qtChi2ok") && qt.chi2_ok != null) $("qtChi2ok").value = qt.chi2_ok;
+      if ($("qtChi2warn") && qt.chi2_warn != null) $("qtChi2warn").value = qt.chi2_warn;
+      if ($("qtGood") && qt.good_fraction != null) $("qtGood").value = qt.good_fraction;
       if (st._submitted) submitted = true;
     } catch (e) {}
   }
