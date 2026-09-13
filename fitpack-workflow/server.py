@@ -1584,7 +1584,22 @@ def update_parameters(chat_id: str, parameters: Dict[str, Any]) -> str:
 # Tools: Fit config scratchpad (per-chat staging area for DatasetSelector)
 # ---------------------------------------------------------------------------
 
-_LOCAL_DEFAULT_YAML = _SERVER_DIR.parent / "inputs" / "default.yaml"
+_LOCAL_DEFAULT_YAML_CANDIDATES = [
+    _SERVER_DIR.parent / "inputs" / "default.yaml",
+    _SERVER_DIR.parent / "femtomind-chatgpt-app" / "fitpack_overlay" / "inputs" / "default.yaml",
+    _SERVER_DIR.parent / "fitpack_overlay" / "inputs" / "default.yaml",
+    _SERVER_DIR.parent.parent / "fitpack_overlay" / "inputs" / "default.yaml",
+]
+
+
+def _resolve_local_default_yaml() -> "Path":
+    for cand in _LOCAL_DEFAULT_YAML_CANDIDATES:
+        if cand.exists():
+            return cand
+    return _LOCAL_DEFAULT_YAML_CANDIDATES[0]
+
+
+_LOCAL_DEFAULT_YAML = _resolve_local_default_yaml()
 
 
 @mcp.tool()
@@ -1675,6 +1690,35 @@ def get_staged_fit_config(chat_id: str) -> Dict[str, Any]:
     Returns an empty dict if nothing is staged.
     """
     return {"status": "ok", "staged": _get_staged_config(chat_id)}
+
+
+@mcp.tool()
+def get_dataset_catalog(observable: str = "") -> Dict[str, Any]:
+    """Return the dataset catalog: for each reaction family the list of datasets
+    (id, xlsx path, label, target, observable, experiment, default_on, norm) and
+    the default kinematic FILTERS (cuts) applied to that family. Pass an
+    observable (e.g. "idis", "jet", "sia") for one family or leave empty for all.
+    Use this whenever the user asks what data is available or what cuts a family
+    carries — never invent dataset ids or cuts from memory."""
+    families = [observable] if observable else sorted(DATASET_CATALOG.keys())
+    out = {}
+    for fam in families:
+        if fam not in DATASET_CATALOG:
+            continue
+        items = []
+        for ds in DATASET_CATALOG[fam]:
+            items.append({
+                "id": ds["id"],
+                "xlsx": ds["xlsx"],
+                "label": ds["label"],
+                "target": ds.get("target", ""),
+                "obs": ds.get("obs", ""),
+                "experiment": ds.get("experiment", ""),
+                "default_on": ds.get("default_on", False),
+                "norm": ds.get("norm"),
+            })
+        out[fam] = {"items": items, "filters": DATASET_FILTERS.get(fam, [])}
+    return {"status": "ok", "catalog": out}
 
 
 @mcp.tool()
