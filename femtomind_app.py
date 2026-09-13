@@ -1872,7 +1872,8 @@ def get_resource_context(
     })
 
 
-@mcp.tool(annotations=WRITE_SAFE, meta=CALLABLE_META, structured_output=True)
+
+
 @mcp.tool(
     annotations=READ_ONLY,
     structured_output=True,
@@ -1890,6 +1891,7 @@ def get_fit_parameters(chat_id: str = "chatgpt-composer") -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {"result": raw}
 
 
+@mcp.tool(annotations=WRITE_SAFE, meta=CALLABLE_META, structured_output=True)
 def submit_fitting_job(
     observable: str,
     selected_ids: list[str],
