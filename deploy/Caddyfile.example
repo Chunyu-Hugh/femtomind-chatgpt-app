@@ -2,8 +2,7 @@ femtomind.duckdns.org {
 	tls you@example.edu
 
 	# The MCP endpoint plus the OAuth surface ChatGPT drives: discovery
-	# metadata, the consent screen, and the token exchange. Everything else
-	# stays unmapped so the host advertises nothing extra.
+	# metadata, the consent screen, and the token exchange.
 	handle /mcp* {
 		reverse_proxy localhost:8010
 	}
@@ -16,6 +15,13 @@ femtomind.duckdns.org {
 	handle /token* {
 		reverse_proxy localhost:8010
 	}
+
+	# Standalone web UI: the same widgets as plain pages for agents that
+	# cannot host HTML (Claude Code, arbitrary harnesses).
+	handle /app* {
+		reverse_proxy localhost:8010
+	}
+
 	handle {
 		respond "FemtoMind MCP server" 200
 	}
