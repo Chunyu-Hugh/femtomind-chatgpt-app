@@ -59,8 +59,28 @@ jobs:
 
       # The stack returns 200 while being wrong, so check the thing that
       # matters: the OAuth discovery doc is the client's first real read.
-      - name: Smoke test
+      - name: Smoke test (HTTP)
         run: |
           code=$(curl -fsS -o /dev/null -w '%{http_code}' https://femtomind.duckdns.org/.well-known/oauth-protected-resource)
           test "$code" = "200" || { echo "smoke test failed: HTTP $code"; exit 1; }
           echo "smoke test OK: HTTP 200"
+
+      # Tool-level smoke test on the host: exercises the MCP surface itself
+      # (pure-local tools + validation gate). HPC-backed tools need a live
+      # ControlMaster and are covered by tests/mcp_smoke.py run from a
+      # connected workstation.
+      - name: Smoke test (MCP tool surface)
+        run: |
+          ssh -o StrictHostKeyChecking=yes ec2-user@femtomind.duckdns.org '
+            set -e
+            BASE=http://127.0.0.1:8000/fitpack
+            curl -fsS -m 20 -X POST $BASE/search_datasets -H "Content-Type: application/json" \
+              -d "{\"observable\":\"dy\"}" | python3 -c "import json,sys; d=json.load(sys.stdin); assert \"10001\" in str(d)" \
+              && echo "search_datasets OK"
+            curl -fsS -m 20 -X POST $BASE/explain_fit_terms -H "Content-Type: application/json" \
+              -d "{\"term\":\"chi2/N\"}" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d.get(\"status\")==\"ok\"" \
+              && echo "explain_fit_terms OK"
+            curl -fsS -m 20 -X POST $BASE/validation_query -H "Content-Type: application/json" \
+              -d "{}" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d.get(\"ok\") is True" \
+              && echo "validation_query OK"
+          ' && echo "MCP tool-surface smoke OK"

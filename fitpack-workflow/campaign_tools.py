@@ -553,6 +553,7 @@ echo "CHAIN=$CHAIN DONE"
         LHAPDF grid comparison vs member-0, and effective beta exponents.
         msr: path to the step-4 msr (default: the app's latest chain2 result).
         """
+        logger.info("compare_with_paper START msr=%s username=%s", msr, username)
         if not msr:
             p = _shell(f"ls {L2}/chain2/step4/msr/*.msr 2>/dev/null | head -1", username)
             msr = (p["stdout"] or "").strip()
@@ -571,8 +572,13 @@ echo "CHAIN=$CHAIN DONE"
         }
         out = {}
         for name, cmd in cmds.items():
-            p = _shell(cmd, username, timeout=600)
-            out[name] = (p["stdout"] or "")[-3000:]
-        out["paper_targets"] = PAPER
+            try:
+                p = _shell(cmd, username, timeout=600)
+                out[name] = (p["stdout"] or "")[-3000:]
+                out[name + "_rc"] = p.get("returncode")
+            except Exception as e:
+                out[name] = ""
+                out[name + "_error"] = f"{type(e).__name__}: {e}"
+        out["paper_targets"] = {str(k): v for k, v in PAPER.items()}  # tuple keys -> str (JSON-safe)
         out["msr"] = msr
         return out

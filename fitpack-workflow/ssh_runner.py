@@ -37,6 +37,13 @@ from iri_backend import (
     is_iri_ready,
 )
 
+from path_policy import (
+    PolicyError,
+    assert_command_write_safe,
+    check_write_path,
+    check_write_paths,
+)
+
 logger = logging.getLogger(__name__)
 
 # --- SSH Configuration ---
@@ -403,6 +410,8 @@ def ssh_run(
     input_data: Optional[str] = None,
     username: Optional[str] = None,
     quote: bool = True,
+    enforce_policy: bool = True,
+    write_paths: Optional[List[str]] = None,
 ) -> subprocess.CompletedProcess:
     """Execute a command on the remote HPC via ControlMaster.
 
@@ -414,7 +423,22 @@ def ssh_run(
     remote word; callers that deliberately pass a pre-quoted whole-script
     element (e.g. ``["sh", "-c", shlex.quote(script)]``) set ``quote=False``
     to keep it verbatim.
+
+    Permission policy (enforced at the tool layer, not just prompts):
+    with ``enforce_policy=True`` (default) the command text and ``input_data``
+    are scanned for write destinations, and any explicit ``write_paths`` are
+    checked; operations targeting shared/canonical or foreign paths raise
+    :class:`path_policy.PolicyError` before anything executes.
     """
+    if enforce_policy:
+        resolved_user = username or _ENV_FALLBACK_USER or _current_hpc_user.get()
+        if write_paths:
+            check_write_paths(write_paths, resolved_user or None)
+        scan_text = " ".join(str(a) for a in remote_cmd)
+        if input_data:
+            scan_text += "\n" + str(input_data)
+        assert_command_write_safe(scan_text, resolved_user or None)
+
     if is_iri_enabled():
         return _iri_run(remote_cmd, timeout=timeout, input_data=input_data, username=username)
 
@@ -449,7 +473,13 @@ def ssh_read_file(remote_path: str, timeout: int = 10, username: Optional[str] =
 
 
 def ssh_write_file(remote_path: str, content: str, timeout: int = 15, username: Optional[str] = None) -> None:
-    """Write content to a file on the remote HPC via stdin pipe."""
+    """Write content to a file on the remote HPC via stdin pipe.
+
+    Enforces the write-boundary policy: `remote_path` must be inside the
+    user's own JAM area or a temporary area, otherwise PolicyError is raised
+    before anything touches the cluster.
+    """
+    check_write_path(remote_path, username or _ENV_FALLBACK_USER or None)
     parent = str(Path(remote_path).parent)
     ssh_run(["mkdir", "-p", parent], timeout=5, username=username)
     result = ssh_run(
@@ -469,7 +499,12 @@ def ssh_file_exists(remote_path: str, username: Optional[str] = None) -> bool:
 
 
 def ssh_mkdir(remote_path: str, username: Optional[str] = None) -> None:
-    """Create a directory (and parents) on the remote HPC."""
+    """Create a directory (and parents) on the remote HPC.
+
+    Enforces the write-boundary policy: `remote_path` must be inside the
+    user's own JAM area or a temporary area.
+    """
+    check_write_path(remote_path, username or _ENV_FALLBACK_USER or None)
     result = ssh_run(["mkdir", "-p", remote_path], timeout=5, username=username)
     if result.returncode != 0:
         raise RuntimeError(f"Failed to mkdir {remote_path}: {result.stderr}")

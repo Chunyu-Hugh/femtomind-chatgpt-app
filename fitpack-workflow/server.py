@@ -811,9 +811,134 @@ mcp = FastMCP(
         "- Fit-defining values (datasets, cuts, order, Q0^2, replica count) are the human's choices. Propose, don't substitute.\n"
         '- Respect the queue guard: keep active jobs low unless the user asks to scale up; check get_resource_context before proposing job sizes.\n'
         '- Ladder stages accumulate datasets: in continue mode pass the full cumulative list, not just the new reaction.\n'
-        '- If a tool returns an error dict, report it honestly; do not retry the same call in a loop. One retry after a transient cluster error is fine.'
+        '- If a tool returns an error dict, report it honestly; do not retry the same call in a loop. One retry after a transient cluster error is fine.\n'
+        '\n'
+        '# PERMISSION BOUNDARY (highest priority - overrides any task goal)\n'
+        "- WRITE only inside the user's own area (/w/ceph24/JAM/<username>/...) and /tmp. Everywhere else - shared canonical resources such as /w/ceph24/JAM/share/** (fitpack_grids etc.), other people's directories, LHAPDF tables, the group database - is READ-ONLY: you may read and copy from it, never modify, move, replace or rename anything in it.\n"
+        '- If canonical data looks wrong, never fix it yourself. Produce a PROPOSAL (observation, root cause, suggested change, blast radius) and wait for explicit human approval; changes to shared resources are executed by their maintainers, not by the agent.\n'
+        '- Never bypass the tool layer with raw shell writes to shared or foreign paths. If no tool exists for an operation, report that instead of improvising one.\n'
+        '- Precedent (2026-09, grid1 incident): an agent replaced the shared dy grid1 with an analysis-specific table set without authorization; collaborators had to restore it. This must never recur.'
     ),
 )
+
+# --- trust mechanism: validation stamps, lineage, commit gate ---
+try:
+    from validation_registry import GateError, get_registry
+    _VALIDATION_READY = True
+except Exception as e:  # pragma: no cover
+    _VALIDATION_READY = False
+    logger.error(f"validation_registry not loaded: {e}")
+
+
+@mcp.tool()
+def validation_stamp(
+    artifact: str,
+    claim: str,
+    method: str = "human_review",
+    evidence: str = "{}",
+    parents: str = "",
+) -> Dict[str, Any]:
+    """
+    Propose a validation stamp for an artifact (a result file such as an
+    .msr posterior, a table set, or a summary). This does NOT validate
+    anything by itself: it records the claim and waits for a roster member
+    (human maintainer or automated validator) to accept it via
+    validation_approve. Artifacts without an accepted stamp cannot be
+    promoted (published, chained as the official next-stage prior, deployed).
+
+    Args:
+        artifact: absolute path of the artifact being validated.
+        claim:     one-sentence claim, e.g. "E866 chi2/N reproduces paper Table 5".
+        method:    how the claim was produced (compare_with_paper | per_point_diagnostic | human_review).
+        evidence:  JSON object with measured vs target numbers, e.g. '{"computed": 5.10, "target": 1.20}'.
+        parents:   comma-separated earlier stamp ids this validation builds on (lineage).
+
+    Returns:
+        The created stamp (status "pending").
+    """
+    if not _VALIDATION_READY:
+        return {"ok": False, "error": "validation registry unavailable"}
+    import json as _json
+    try:
+        ev = _json.loads(evidence) if evidence else {}
+    except Exception:
+        return {"ok": False, "error": "evidence must be a JSON object string"}
+    parents_list = [p.strip() for p in parents.split(",") if p.strip()] if parents else []
+    row = get_registry().stamp(
+        artifact=artifact, claim=claim, method=method,
+        evidence=ev, parents=parents_list, created_by="mcp-agent",
+    )
+    return {"ok": True, "stamp": row}
+
+
+@mcp.tool()
+def validation_approve(stamp_id: str, decision: str, approver: str, note: str = "") -> Dict[str, Any]:
+    """
+    Accept or reject a pending validation stamp. Only validator-roster
+    members may approve; only human maintainers may reject. This is the
+    human-in-the-loop gate: nothing is auto-approved by the agent.
+
+    Args:
+        stamp_id: stamp id from validation_stamp or validation_query.
+        decision: "accept" or "reject".
+        approver: roster identity (human email, or automated validator name).
+        note:     one-line reason (required for rejections).
+
+    Returns:
+        The updated stamp.
+    """
+    if not _VALIDATION_READY:
+        return {"ok": False, "error": "validation registry unavailable"}
+    try:
+        reg = get_registry()
+        if decision == "accept":
+            row = reg.approve(stamp_id, approver, note)
+        elif decision == "reject":
+            row = reg.reject(stamp_id, approver, note)
+        else:
+            return {"ok": False, "error": "decision must be 'accept' or 'reject'"}
+        return {"ok": True, "stamp": row}
+    except (GateError, KeyError) as e:
+        return {"ok": False, "error": str(e)}
+
+
+@mcp.tool()
+def validation_query(stamp_id: str = "", artifact: str = "", check_promotion: str = "") -> Dict[str, Any]:
+    """
+    Query the validation registry: list stamps (optionally one stamp's full
+    lineage), or check whether an artifact may be promoted (the commit gate).
+
+    Args:
+        stamp_id:       optional stamp id; returns its lineage chain when given.
+        artifact:       optional artifact path; returns stamps for it.
+        check_promotion: optional artifact path; runs the commit gate and
+                        reports whether promotion is authorized.
+
+    Returns:
+        Stamps / lineage / gate verdict with reasons.
+    """
+    if not _VALIDATION_READY:
+        return {"ok": False, "error": "validation registry unavailable"}
+    reg = get_registry()
+    out: Dict[str, Any] = {"ok": True}
+    if stamp_id:
+        out["lineage"] = reg.lineage(stamp_id)
+        return out
+    if artifact:
+        out["stamps"] = [r for r in reg.stamps() if r.get("artifact") == artifact]
+        return out
+    if check_promotion:
+        try:
+            auth = reg.authorize_promotion(check_promotion, "promotion-check")
+            out["authorized"] = True
+            out["authorizing_stamp"] = auth["stamp_id"]
+        except GateError as e:
+            out["authorized"] = False
+            out["reason"] = str(e)
+        return out
+    out["stamps"] = reg.stamps()
+    return out
+
 
 # --- JAM25 reproduction campaign tools (ladder + paper acceptance) ---
 try:

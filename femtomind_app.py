@@ -2424,6 +2424,55 @@ if os.environ.get("FEMTOMIND_ENABLE_TEST_TOOL", "").lower() in ("1", "true", "ye
         return {"echo": text, "write_tools_work": True}
 
 
+# ─── validation gate (trust mechanism: stamp / approve / query) ─────────────
+# Thin facade over the mcpo /fitpack/validation_* tools so the ChatGPT surface
+# carries the same human-in-the-loop gate as the raw API. The agent may
+# PROPOSE stamps; only roster members (humans or named automated validators)
+# can accept them, so nothing self-approves.
+
+@mcp.tool(annotations=READ_ONLY, structured_output=True)
+def validation_stamp(
+    artifact: str, claim: str, method: str = "human_review",
+    evidence: str = "{}", parents: str = "",
+) -> dict[str, Any]:
+    """Propose a validation stamp for a fit result (e.g. an .msr posterior).
+
+    This records a claim and waits for a roster member to accept it via
+    validation_approve; it does NOT validate anything by itself. Artifacts
+    without an accepted stamp cannot be promoted (published, chained as the
+    official next-stage prior, deployed). Use validation_query to check.
+    """
+    return _call_mcpo("/fitpack/validation_stamp", {
+        "artifact": artifact, "claim": claim, "method": method,
+        "evidence": evidence, "parents": parents,
+    })
+
+
+@mcp.tool(annotations=WRITE_SAFE, structured_output=True)
+def validation_approve(
+    stamp_id: str, decision: str, approver: str, note: str = "",
+) -> dict[str, Any]:
+    """Accept or reject a pending validation stamp. Only validator-roster
+    members may accept; only human maintainers may reject. The agent never
+    approves its own stamps — this tool is the human-in-the-loop gate."""
+    return _call_mcpo("/fitpack/validation_approve", {
+        "stamp_id": stamp_id, "decision": decision,
+        "approver": approver, "note": note,
+    })
+
+
+@mcp.tool(annotations=READ_ONLY, structured_output=True)
+def validation_query(
+    stamp_id: str = "", artifact: str = "", check_promotion: str = "",
+) -> dict[str, Any]:
+    """Query the validation registry: list stamps, a stamp's lineage, or check
+    whether an artifact may be promoted (the commit gate)."""
+    return _call_mcpo("/fitpack/validation_query", {
+        "stamp_id": stamp_id, "artifact": artifact,
+        "check_promotion": check_promotion,
+    })
+
+
 # ─── entrypoint ─────────────────────────────────────────────────────────────
 
 app = mcp.streamable_http_app()

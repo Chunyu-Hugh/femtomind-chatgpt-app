@@ -188,6 +188,30 @@ there is no folder-level containment beyond the permissions of the user's own
 cluster account. Jobs run under that account and against its quota, and no tool
 in the surface executes arbitrary commands.
 
+**Write-boundary policy (tool layer, since 2026-09).** `path_policy.py`
+enforces the file-permission contract in `ssh_runner` before anything reaches
+the cluster: every remote command and script is scanned for write
+destinations, and paths classify as OWN (`/w/ceph24/JAM/<user>/...`),
+TMP (`/tmp`), or DENIED (`/w/ceph24/JAM/share/**`, other users' areas,
+anything else). `ssh_write_file`/`ssh_mkdir` hard-deny writes outside OWN/TMP.
+The 2026-09 grid1 incident (an agent replaced the shared canonical DY grid) is
+the regression case the scanner rejects. Shared resources remain readable and
+copyable FROM, never writable.
+
+**Validation binding (trust mechanism, since 2026-09).** `validation_registry.py`
+adds the human-in-the-loop gate: artifacts carry validation stamps
+(pending → accepted/rejected) with lineage chains, and
+`authorize_promotion` blocks publishing/chaining/deploying any artifact
+without an accepted stamp from the validator roster (human maintainers or
+named automated validators). Exposed as three MCP tools: `validation_stamp`,
+`validation_approve`, `validation_query`.
+
+**Deploy path.** `deploy/aws_deploy.sh` rsyncs `fitpack-workflow/`
+(includes `path_policy.py`, `validation_registry.py` and their tests),
+`femtomind_app.py`, `agent_brief.md` and `docs/` to the AWS host, restarts
+`femtomind-mcpo` and `femtomind-app`, and smoke-checks the OpenAPI tool list.
+Requires a working `AWS_KEY` pem; `DRY_RUN=1` previews the sync.
+
 ## Known constraints
 
 - **One facility.** The backend hardcodes `ifarm.jlab.org`, as above.
@@ -200,3 +224,20 @@ in the surface executes arbitrary commands.
 - **Private upstream.** Creating a workspace clones a private repository, so
   each collaborator supplies a GitHub token for that one clone. It is used
   once and never stored.
+
+## Verifying the MCP surface (smoke tests)
+
+`fitpack-workflow/tests/mcp_smoke.py` drives the real tool chain exactly the
+way an LLM agent does (HTTP POSTs to the mcpo gateway):
+
+    python3 tests/mcp_smoke.py local      # against 127.0.0.1:8000
+    python3 tests/mcp_smoke.py aws        # through ssh to the production host
+
+Covered: dataset search -> ladder status -> cluster context -> validation
+stamp/gate/approve/lineage -> compare_with_paper -> glossary. 10/10 passed on
+both gateways on 2026-09-20. HPC-backed tools require a live ControlMaster
+(connect_jlab flow); CI runs the pure-local subset (search_datasets,
+explain_fit_terms, validation_query) on the host after every deploy.
+
+CI (`deploy.yml`) requires the repo secrets `AWS_SSH_KEY` (deploy key for
+`ec2-user@femtomind.duckdns.org`). The host key is pinned in the workflow.

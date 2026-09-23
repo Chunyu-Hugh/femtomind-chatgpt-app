@@ -24,6 +24,10 @@ container image, and even the Analysis-tab curves are computed on the cluster.
 | `chi2_bootstrap_false.py`, `remote_worker/` | chi-square summary workers |
 | `result_manager.py`, `task_cancellation.py`, `slurm_tools.py` | run history, cancellation, SLURM helpers |
 | `schema.py`, `advanced_schema.py`, `workflows.yaml` | tool schemas and the fit form |
+| `campaign_tools.py` | JAM25/JAM24 ladder state machine + paper acceptance (compare_with_paper) |
+| `path_policy.py` | write-boundary policy: path tiers + conservative command scan (tool-layer permission enforcement) |
+| `validation_registry.py` | trust mechanism: validation stamps, lineage, commit-authorization gate, validator roster |
+| `tests/` | unit tests (`path_policy_test.py`, `validation_registry_test.py`) + end-to-end MCP smoke (`mcp_smoke.py`) |
 
 ## Two things that bite
 
@@ -58,4 +62,19 @@ gateway in front of it. Two rules, in order:
    `get_summary_bf_result`) verify batch ownership against the ledger
    (`_batch_owned_by`). Any new tool that acts on a `batch_id`/`task_path`
    should do the same rather than trusting the argument.
+3. **Write boundary** (`path_policy.py`, enforced in `ssh_runner`): every
+   remote command is scanned for write destinations; only the user's own
+   `/w/ceph24/JAM/<user>/...` area and `/tmp` are writable. Shared/canonical
+   resources (`/w/ceph24/JAM/share/**`) are read-only by construction. The
+   2026-09 grid1 incident is the regression case the tests pin.
+4. **Validation binding** (`validation_registry.py`): promoting an artifact
+   (publish, chain as prior, deploy) requires an accepted validation stamp
+   from the roster; the agent proposes stamps, only roster members approve.
+
+## Tests
+
+    python3 path_policy_test.py            # permission policy (incl. grid1 incident case)
+    python3 validation_registry_test.py    # stamps / lineage / commit gate / roster
+    python3 tests/mcp_smoke.py local       # end-to-end tool chain via the local gateway
+    python3 tests/mcp_smoke.py aws         # ... via ssh to the production host
 
