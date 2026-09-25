@@ -104,10 +104,13 @@ def init_db() -> None:
 # FEMTOMIND_EXTRA_REDIRECTS (comma-separated) for other MCP clients.
 # NOTE: no trailing slash on the ChatGPT prefixes — newer connectors send the
 # bare "/connector/oauth" path, and the prefix must match both forms.
+# Claude Code's OAuth callback is https://claude.ai/api/mcp/auth_callback
+# (observed in server logs 2026-09-25).
 _REDIRECT_PREFIXES = tuple(
     p for p in (
         "https://chatgpt.com/connector/oauth",
         "https://chat.openai.com/connector/oauth",
+        "https://claude.ai/api/mcp/auth_callback",
         *[x.strip() for x in os.environ.get("FEMTOMIND_EXTRA_REDIRECTS", "").split(",") if x.strip()],
     )
 )
