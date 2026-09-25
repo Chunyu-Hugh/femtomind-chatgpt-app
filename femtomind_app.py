@@ -2658,6 +2658,21 @@ class AuthMiddleware(BaseHTTPMiddleware):
                             if k.lower() not in ("authorization", "cookie")})
         if not path.startswith("/mcp") or request.method == "OPTIONS" or not REQUIRE_AUTH:
             return await call_next(request)
+        # ChatGPT's connector validates a new connection by completing the MCP
+        # handshake BEFORE any OAuth runs (its linking UI is triggered later,
+        # at tool-call time). Allow the metadata-level methods through
+        # unauthenticated; every actual tool call stays token-protected.
+        method = ""
+        try:
+            _body = await request.body()
+            if _body:
+                method = json.loads(_body).get("method", "") or ""
+        except Exception:
+            method = ""
+        if method in ("initialize", "tools/list", "ping",
+                      "notifications/initialized", "notifications/cancelled"):
+            # tools/call/* is NOT in this list — tool execution requires a token.
+            return await call_next(request)
         who = auth.identify(request.headers.get("authorization"))
         if not who:
             return _JSON(
