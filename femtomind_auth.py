@@ -214,6 +214,22 @@ def authorization_server_metadata(_: Request) -> JSONResponse:
     })
 
 
+def openid_configuration(_: Request) -> JSONResponse:
+    """OIDC-shaped discovery. ChatGPT's connector probes
+    /.well-known/openid-configuration in addition to RFC 8414; without it the
+    plugin creation fails with a generic 'Couldn't create MCP app'."""
+    return JSONResponse({
+        "issuer": ISSUER,
+        "authorization_endpoint": f"{ISSUER}/authorize",
+        "token_endpoint": f"{ISSUER}/token",
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code"],
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["none"],
+        "scopes_supported": [],
+    })
+
+
 _PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>FemtoMind access</title>
 <style>

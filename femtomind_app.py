@@ -2706,6 +2706,7 @@ app.router.routes.extend([
     Route("/.well-known/oauth-protected-resource", auth.protected_resource_metadata),
     Route("/.well-known/oauth-protected-resource/mcp", auth.protected_resource_metadata),
     Route("/.well-known/oauth-authorization-server", auth.authorization_server_metadata),
+    Route("/.well-known/openid-configuration", auth.openid_configuration),
     Route("/authorize", auth.authorize, methods=["GET", "POST"]),
     Route("/token", auth.token, methods=["POST"]),
 ])
