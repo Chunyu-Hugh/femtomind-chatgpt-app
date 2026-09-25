@@ -314,9 +314,9 @@ mcp = FastMCP(
         "refusing or reaching for a shell.\n\n"
         "CLIENTS WITHOUT THE CHATGPT PANEL (Claude Code, other MCP harnesses): "
         "the panel widget cannot render there. Replace it as follows — for "
-        "CONNECT, point the user at the standalone web panel "
-        "https://femtomind.duckdns.org/app/panel (credentials never go in chat "
-        "or in agent forms); for CAMPAIGN SETUP, call `jam_campaign_form` "
+        "CONNECT, call `open_connect_panel` (a native popup links the user to "
+        "the web panel where they sign in; credentials never go in chat or in "
+        "agent forms); for CAMPAIGN SETUP, call `jam_campaign_form` "
         "(native interactive form) instead of the panel; for RESULTS, use the "
         "read-only tools (list_campaigns, get_fit_summary, get_pdf_plots). In "
         "these clients you MAY collect non-secret physics choices (datasets, "
@@ -1839,6 +1839,43 @@ async def jam_campaign_form(ctx: Context, chat_id: str = "claude-form") -> dict[
         batch_label=data.batch_label or "form-campaign",
         chat_id=chat_id,
     )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def open_connect_panel(ctx: Context, chat_id: str = "claude-form") -> dict[str, Any]:
+    """Pop a native link card for HPC sign-in (widget-less clients).
+
+    Credentials (scilogin PIN + one-time code, ifarm password) must never pass
+    through the agent or a form — both end up in the conversation transcript.
+    This tool uses URL-mode elicitation: the client pops a card with an Open
+    button, the user signs in inside the FemtoMind web panel, out-of-band from
+    this conversation. After they come back, poll check_hpc_connection.
+
+    In ChatGPT never call this — the panel's Connect tab does the same job."""
+    panel_url = f"{auth.ISSUER}/app/panel?tab=connect"
+    try:
+        res = await ctx.elicit_url(
+            message=(
+                "Sign in to the Jefferson Lab cluster in the FemtoMind web "
+                "panel: scilogin PIN + one-time code, then the ifarm "
+                "password. These credentials never enter this conversation."
+            ),
+            url=panel_url,
+            elicitation_id=f"connect-{chat_id}-{int(time.time())}",
+        )
+    except Exception as e:  # client has no URL-elicitation capability
+        return {"status": "url_popup_unsupported",
+                "panel_url": panel_url,
+                "message": "Open this URL in your browser to sign in.",
+                "detail": str(e)[:200]}
+    if res.action != "accept":
+        return {"status": res.action,
+                "message": "Sign-in flow was not started.",
+                "panel_url": panel_url}
+    return {"status": "panel_opened",
+            "panel_url": panel_url,
+            "connection": _hpc_status(chat_id),
+            "next": "After signing in, say 'done' and I will verify the connection."}
 
 
 # idis tables whose expdata sheet has no `col` column. fitpack's report writer
