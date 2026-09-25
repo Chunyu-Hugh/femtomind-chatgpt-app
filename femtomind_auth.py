@@ -102,10 +102,12 @@ def init_db() -> None:
 # ChatGPT issues a distinct callback path per connector, so the allowlist is a
 # set of prefixes rather than exact URLs. Extra entries can be added via
 # FEMTOMIND_EXTRA_REDIRECTS (comma-separated) for other MCP clients.
+# NOTE: no trailing slash on the ChatGPT prefixes — newer connectors send the
+# bare "/connector/oauth" path, and the prefix must match both forms.
 _REDIRECT_PREFIXES = tuple(
     p for p in (
-        "https://chatgpt.com/connector/oauth/",
-        "https://chat.openai.com/connector/oauth/",
+        "https://chatgpt.com/connector/oauth",
+        "https://chat.openai.com/connector/oauth",
         *[x.strip() for x in os.environ.get("FEMTOMIND_EXTRA_REDIRECTS", "").split(",") if x.strip()],
     )
 )
