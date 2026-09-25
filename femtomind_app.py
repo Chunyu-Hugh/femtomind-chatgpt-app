@@ -32,9 +32,10 @@ from pathlib import Path
 from typing import Any, Optional
 
 import httpx
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
+from pydantic import BaseModel, Field
 
 MCPO_BASE = os.environ.get("FEMTOMIND_MCPO_BASE", "http://localhost:8000")
 PORT = int(os.environ.get("FEMTOMIND_APP_PORT", "8010"))
@@ -311,6 +312,17 @@ mcp = FastMCP(
         "campaigns do I have?'): answer it with the matching read-only tool "
         "(check_hpc_connection, list_campaigns, list_slurm_jobs) rather than "
         "refusing or reaching for a shell.\n\n"
+        "CLIENTS WITHOUT THE CHATGPT PANEL (Claude Code, other MCP harnesses): "
+        "the panel widget cannot render there. Replace it as follows — for "
+        "CONNECT, point the user at the standalone web panel "
+        "https://femtomind.duckdns.org/app/panel (credentials never go in chat "
+        "or in agent forms); for CAMPAIGN SETUP, call `jam_campaign_form` "
+        "(native interactive form) instead of the panel; for RESULTS, use the "
+        "read-only tools (list_campaigns, get_fit_summary, get_pdf_plots). In "
+        "these clients you MAY collect non-secret physics choices (datasets, "
+        "replicas, parameters) in the conversation and pass them to the write "
+        "tools yourself — but still never ask for a PIN, one-time code or "
+        "password.\n\n"
         "NEVER ask the user for their cluster password or one-time code in chat, "
         "and never call `connect_hpc` yourself. JLab sign-in is two hops (a PIN + "
         "one-time code for the scilogin gateway, then the ifarm account password) "
@@ -1744,6 +1756,89 @@ def jam_analysis_panel(
         "catalog": catalog,
         "suggested_observable": observable if observable in catalog else "idis",
     }
+
+
+# Elicitation schemas may only contain primitives and list[str] — no Literal,
+# no nested models — so choices are plain strings with descriptive Fields.
+class _CampaignForm(BaseModel):
+    observable: str = Field(
+        description="Reaction family to fit: 'idis' (inclusive DIS) or 'dy' (Drell-Yan)")
+    dataset_ids: list[str] = Field(
+        default_factory=list,
+        description="Specific dataset ids from the live catalog, e.g. ['10001','10002']. Leave empty when use_all is true.")
+    use_all: bool = Field(
+        default=True,
+        description="Run every usable dataset of the chosen observable (overrides dataset_ids).")
+    replicas: int = Field(
+        default=20, ge=1, le=150,
+        description="Number of replicas (1-150).")
+    batch_label: str = Field(
+        default="form-campaign",
+        description="Short campaign name: letters, digits, dots, dashes or underscores (max 64).")
+
+
+@mcp.tool(annotations=WRITE_SAFE)
+async def jam_campaign_form(ctx: Context, chat_id: str = "claude-form") -> dict[str, Any]:
+    """Set up and submit a JAM fit campaign through a NATIVE interactive form.
+
+    For clients that support form elicitation (Claude Code and other MCP
+    clients with form capability) this pops one structured form: reaction
+    family, dataset selection, replica count and campaign name — the
+    researcher fills every physics choice themselves, exactly as in the
+    ChatGPT composer. On accept, every dataset id is validated against the
+    live catalog and the campaign is submitted to the cluster.
+
+    Clients without form support receive a fallback pointing at the web panel.
+    Never call this in ChatGPT — the composer widget covers the same ground."""
+    panel = jam_analysis_panel(tab="campaign", chat_id=chat_id)
+    catalog = panel.get("catalog", {}) or {}
+    try:
+        res = await ctx.elicit(
+            message=(
+                "Set up a JAM fitting campaign. Pick the reaction family "
+                "(idis = inclusive DIS, dy = Drell-Yan), the datasets to run, "
+                "and the replica count. Only ids in the live catalog are "
+                "accepted; empty dataset_ids with use_all=true runs every "
+                "usable dataset of that family."
+            ),
+            schema=_CampaignForm,
+        )
+    except Exception as e:  # client has no elicitation capability
+        return {
+            "status": "form_unsupported",
+            "message": "This client cannot render interactive forms. Use the "
+                       "standalone web panel instead.",
+            "panel_url": f"{auth.ISSUER}/app/panel",
+            "detail": str(e)[:300],
+        }
+    if res.action != "accept":
+        return {"status": res.action,
+                "message": "The form was not accepted; nothing was submitted."}
+    data = res.data
+    if data.observable not in catalog:
+        return {"status": "error",
+                "message": f"observable {data.observable!r} is not in the composer "
+                           f"catalog; choices: {sorted(catalog)}"}
+    valid_ids = set(catalog[data.observable])
+    if data.use_all:
+        selected = sorted(valid_ids)
+    else:
+        selected = list(data.dataset_ids)
+        bad = [i for i in selected if i not in valid_ids]
+        if bad:
+            return {"status": "error",
+                    "message": f"unknown dataset ids for {data.observable}: {bad[:10]}; "
+                               f"valid ids include: {sorted(valid_ids)[:10]}…",
+                    "hint": "call get_dataset_catalog for the full list"}
+    if not selected:
+        return {"status": "error", "message": "no datasets selected"}
+    return submit_fitting_job(
+        observable=data.observable,
+        selected_ids=selected,
+        count=data.replicas,
+        batch_label=data.batch_label or "form-campaign",
+        chat_id=chat_id,
+    )
 
 
 # idis tables whose expdata sheet has no `col` column. fitpack's report writer
