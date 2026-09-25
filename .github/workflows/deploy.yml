@@ -61,8 +61,17 @@ jobs:
       # matters: the OAuth discovery doc is the client's first real read.
       - name: Smoke test (HTTP)
         run: |
-          code=$(curl -fsS -o /dev/null -w '%{http_code}' https://femtomind.duckdns.org/.well-known/oauth-protected-resource)
-          test "$code" = "200" || { echo "smoke test failed: HTTP $code"; exit 1; }
+          # systemd restart returns as soon as the new process spawns, but
+          # uvicorn needs 1-2s more to bind; a curl without retry hits that
+          # window with a 502 (observed 2026-09-24). Poll until real 200s.
+          code=""
+          for i in $(seq 1 20); do
+            code=$(curl -fsS -o /dev/null -w '%{http_code}' --max-time 10 \
+              https://femtomind.duckdns.org/.well-known/oauth-protected-resource 2>/dev/null || true)
+            [ "$code" = "200" ] && break
+            sleep 3
+          done
+          test "$code" = "200" || { echo "smoke test failed: HTTP ${code:-no response}"; exit 1; }
           echo "smoke test OK: HTTP 200"
 
       # Tool-level smoke test on the host: exercises the MCP surface itself
@@ -74,6 +83,13 @@ jobs:
           ssh -o StrictHostKeyChecking=yes ec2-user@femtomind.duckdns.org '
             set -e
             BASE=http://127.0.0.1:8000/fitpack
+            # mcpo restarts in the same window as the app; wait until it
+            # actually answers before exercising the tool surface.
+            for i in $(seq 1 10); do
+              curl -fsS -m 5 -X POST $BASE/validation_query \
+                -H "Content-Type: application/json" -d "{}" >/dev/null && break
+              sleep 3
+            done
             curl -fsS -m 20 -X POST $BASE/search_datasets -H "Content-Type: application/json" \
               -d "{\"observable\":\"dy\"}" | python3 -c "import json,sys; d=json.load(sys.stdin); assert \"10001\" in str(d)" \
               && echo "search_datasets OK"
