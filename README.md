@@ -26,7 +26,10 @@ ChatGPT
    │  MCP over HTTPS  (OAuth 2.1, PKCE, per-user bearer token)
    ▼
 femtomind_app.py            :8010/mcp
-   │  22 tools + 5 ui:// widgets
+   │  37 tools + 5 ui:// widgets  (incl. 7 jam_* bridges to the LQCDMCP
+   │                             jam-gateway: status / submit / read_chi2 /
+   │                             evaluate / get_result / analysis panel /
+   │                             campaign form)
    │  identity → SSH connection → workspace → history, per collaborator
    │
    ├── plain HTTP ──▶ mcpo gateway :8000

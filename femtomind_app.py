@@ -41,6 +41,17 @@ MCPO_BASE = os.environ.get("FEMTOMIND_MCPO_BASE", "http://localhost:8000")
 PORT = int(os.environ.get("FEMTOMIND_APP_PORT", "8010"))
 WIDGET_DIR = Path(__file__).parent / "widgets"
 
+# LQCDMCP jam-gateway: the MCP server running on the LQCD cluster node
+# (qcd24s100) through Jie Chen's platform. It owns the two-hop chain
+# node->scilogin->ifarm and the real JAM fit submission/monitoring tools.
+# ChatGPT cannot connect there directly (that route has no MCP OAuth), so
+# this app bridges: tools below POST JSON-RPC to it and the panel's Connect
+# tab opens its chain with the same credentials the user already typed.
+JAM_GW_URL = os.environ.get(
+    "FEMTOMIND_JAMGW_URL",
+    "https://lqcdmcp.jlab.org:8000/cloud/jam-gateway/mcp",
+)
+
 # Widget resource URIs are cache keys: bump the version segment on any
 # breaking HTML/JS change and update the tool _meta that references them.
 JOBS_CARD_URI = "ui://femtomind/jobs-card/v2.html"
@@ -156,6 +167,37 @@ def _call_mcpo(path: str, payload: dict) -> Any:
         except OSError:
             pass
     return result
+
+
+def _call_jam_gw(tool: str, args: dict, timeout: float = 240.0) -> Any:
+    """POST a tools/call JSON-RPC to the LQCDMCP jam-gateway and return the
+    parsed tool result (dict) or an error dict. Same shape discipline as
+    _call_mcpo so every wrapper tool can return it verbatim."""
+    body = {
+        "jsonrpc": "2.0",
+        "id": int(time.time() * 1000) % 100000,
+        "method": "tools/call",
+        "params": {"name": tool, "arguments": args},
+    }
+    try:
+        r = httpx.post(
+            JAM_GW_URL,
+            json=body,
+            timeout=timeout,
+            headers={"Accept": "application/json, text/event-stream"},
+        )
+        r.raise_for_status()
+        d = r.json()
+    except httpx.HTTPStatusError as e:
+        return {"error": f"jam-gateway {e.response.status_code}: {e.response.text[:300]}"}
+    except Exception as e:
+        return {"error": f"jam-gateway unreachable: {type(e).__name__}: {e}"}
+    content = (d.get("result") or {}).get("content") or []
+    text = "".join(c.get("text", "") for c in content if c.get("type") == "text")
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return {"raw": text[:2000], "error": d.get("error")} if d.get("error") else {"raw": text[:2000]}
 
 
 def _hpc_status(chat_id: str = "chatgpt-composer") -> dict[str, Any]:
@@ -915,11 +957,97 @@ def connect_hpc(
     status = _hpc_status(chat_id)
     status["gateway_open"] = True
     status["gateway_reused"] = gateway_reused
+    # Also open the LQCDMCP jam-gateway chain with the same credentials the
+    # panel collected (one Connect action, both chains). Best-effort: the
+    # gateway is a separate Slurm job on the LQCD node; if its job is not
+    # RUNNING this reports "unavailable" but never fails the sign-in.
+    try:
+        gw = _call_jam_gw(
+            "connect_hpc",
+            {"pin_otp": gateway_code, "password": ifarm_password},
+            timeout=180.0,
+        )
+        status["lqcdmcp_gateway"] = gw.get("status") if isinstance(gw, dict) else "unknown"
+    except Exception as e:
+        status["lqcdmcp_gateway"] = f"unavailable ({type(e).__name__})"
     # Check the workspace right here rather than waiting for the user to go
     # looking: signing in is exactly the moment to learn that something is
     # missing, and what to do about it.
     status["workspace"] = _workspace_report(username)
     return status
+
+
+@mcp.tool(annotations=READ_ONLY, meta=CALLABLE_META, structured_output=True)
+def jam_gateway_status(chat_id: str = "chatgpt-composer") -> dict[str, Any]:
+    """Status of the LQCDMCP jam-gateway — the agent-run JAM fit path through
+    Jie's LQCDMCP platform (LQCD node -> scilogin -> ifarm). Reports ping,
+    the two-hop chain state, the ifarm queue, and the newest JAM run dirs.
+    The Connect tab opens this chain together with the main one; if it says
+    disconnected, open the panel and sign in again."""
+    ping = _call_jam_gw("ping", {})
+    check = _call_jam_gw("check_hpc", {})
+    runs = _call_jam_gw("list_jam_runs", {}, timeout=120.0)
+    return {
+        "gateway": JAM_GW_URL,
+        "ping": ping if isinstance(ping, str) else ping,
+        "chain": check,
+        "runs": runs,
+    }
+
+
+@mcp.tool(annotations=READ_ONLY, meta=CALLABLE_META, structured_output=True)
+def jam_read_chi2(outdir: str = "", chat_id: str = "chatgpt-composer") -> dict[str, Any]:
+    """Read the chi2/N series and per-dataset chi2/N of a running or finished
+    agent-submitted JAM fit (progress.json on ifarm). outdir is relative to
+    smoke4 (e.g. 001/step7_agent) or an absolute path."""
+    return _call_jam_gw("read_chi2", {"outdir": outdir}, timeout=180.0)
+
+
+@mcp.tool(annotations=READ_ONLY, meta=CALLABLE_META, structured_output=True)
+def jam_evaluate_fit(outdir: str = "", chat_id: str = "chatgpt-composer") -> dict[str, Any]:
+    """Evaluate a finished JAM fit's .msr files against the JAM24 paper band
+    (arXiv:2501.00665 step16a, chi2/N mean 2.566, band [2.190, 2.819]).
+    Runs in apptainer on ifarm."""
+    return _call_jam_gw("evaluate_fit", {"outdir": outdir}, timeout=300.0)
+
+
+@mcp.tool(annotations=READ_ONLY, meta=CALLABLE_META, structured_output=True)
+def jam_get_result(outdir: str = "", chat_id: str = "chatgpt-composer") -> dict[str, Any]:
+    """Poll the latest agent-submitted JAM fit: ifarm queue, submit log,
+    progress.json tail and the msr listing."""
+    return _call_jam_gw("get_jam_result", {"outdir": outdir}, timeout=180.0)
+
+
+@mcp.tool(annotations=WRITE_SAFE, meta=CALLABLE_META, structured_output=True)
+def jam_submit_fit(
+    card: str,
+    outdir: str,
+    prior_msr: str = "",
+    cores: int = 4,
+    seed: int = 160300,
+    hours: int = 2,
+    partition: str = "jupyter",
+    chat_id: str = "chatgpt-composer",
+) -> dict[str, Any]:
+    """Submit a REAL JAM fit on ifarm through the LQCDMCP gateway
+    (apptainer maxlike_jam). card is a card name in fitpack/inputs/jam24
+    (e.g. input_jam24_s7_warm.py); outdir is relative to smoke4 or absolute;
+    prior_msr is the prior .msr file (empty = cold start). Fire-and-forget:
+    poll with jam_get_result / jam_read_chi2 afterwards. Verify the numbers
+    with the researcher before a long run."""
+    return _call_jam_gw(
+        "submit_jam_fit",
+        {
+            "card": card,
+            "outdir": outdir,
+            "prior_msr": prior_msr,
+            "cores": int(cores),
+            "seed": int(seed),
+            "hours": int(hours),
+            "partition": partition,
+        },
+        timeout=180.0,
+    )
 
 
 @mcp.tool(annotations=READ_ONLY, meta=CALLABLE_META, structured_output=True)
