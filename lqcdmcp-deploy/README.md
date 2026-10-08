@@ -1,113 +1,74 @@
-# JAM Gateway on LQCDMCP — deployment notes (2026-10-05)
+# JAM gateway on LQCDMCP
 
-Two-hop MCP gateway proving the FemtoMind/JAM agent path onto the JLab
-cluster through Jie Chen's LQCDMCP platform.
+Each JAM collaborator runs **their own** MCP gateway on the JLab LQCD cluster,
+launched through Jie Chen's LQCDMCP platform. It runs JAM fits on ifarm as the
+collaborator, from an AI client (Claude Code, VS Code, Claude Desktop, …) or
+from a browser panel that mirrors the FemtoMind JAM app.
 
-## Status: v2 LIVE — REAL JAM FITS SUBMITTED THROUGH THE GATEWAY
+**Collaborators: start with [COLLABORATOR_GUIDE.md](COLLABORATOR_GUIDE.md).**
 
-- `jam-gateway` job runs on `qcd24s100` (reservation `chen_mcp_daily`,
-  partition `24s`, TimeLimit 6h), port 8080, registered with the proxy as
-  `jam-gateway` → `https://lqcdmcp.jlab.org:8000/cloud/jam-gateway/mcp`.
-- Chain: **LQCD node → scilogin.jlab.org (PIN+OTP) → ifarm (password)**.
-- 2026-10-05 real-science test: `submit_jam_fit(card=input_jam24_s7_warm.py,
-  prior=001/step6_v2/msr/...)` fired **ifarm job 12367088** (jupyter, 4 cores)
-  — the full step-7 warm JAM fit, polled via `get_jam_result`
-  (progress.json χ² + msr listing).
+## Files
 
-## Tools
-
-| tool | purpose |
+| File | What it is |
 |---|---|
-| `ping` | liveness |
-| `connect_hpc(pin_otp, password)` | build/reuse the two-hop ControlMasters |
-| `check_hpc` | chain check + queue + `/w/ceph24/JAM/chunyu` listing |
-| `node_diag(cmd)` | shell on the gateway node (diagnostics / hot-redeploy) |
-| `remote_exec(cmd, timeout)` | shell on ifarm through the chain |
-| `list_jam_runs` | JAM24 cards + smoke4 run dirs + newest msr files |
-| `submit_jam_fit(card, outdir, prior_msr, cores, seed, hours, partition)` | real apptainer `maxlike_jam` fit (fire-and-forget) |
-| `get_jam_result(outdir)` | queue + submit log + progress.json tail + msr |
-| `read_chi2(outdir)` | parsed χ²/N series + per-dataset χ²/N from progress.json |
-| `evaluate_fit(outdir, msr_file)` | finished .msr vs paper band (runs in apptainer; needs numpy) |
-| `submit_test_fit` / `get_submit_result` | trivial chain test (v1) |
+| `jam_gateway.py` | The gateway: MCP tools, access check, cluster chain, campaigns, HTTP server. Runs on the cluster node. |
+| `jam_panel.html` | The browser panel (Connect / Project / Campaign / Collections / Analysis), served by the gateway. |
+| `jamai/` | Turns a campaign into a FitPack input card and runs one replica (`run_replica.py`); copied into the workspace at submit time. |
+| `workspace_files/` | Files a fresh FitPack clone lacks for single fits (`maxlike_jam.py`, `tools/env.py`). |
+| `deploy_and_verify.py` | Launch your gateway and check it end to end. |
+| `redeploy_jam.py` | `launch` / `cancel` / `status` through the dashboard API; `script` writes the job script for the dashboard page. |
+| `hot_redeploy.py` | Update a running gateway's code without restarting its job. |
+| `check_dashboard_token.py` | Show what the dashboard answers for your token. |
+| `gw_auth.py` | Gateway URL and token for the scripts (`JAM_GW_USER`, `LQCDMCP_TOKEN`). |
 
-## Science produced through the gateway (2026-10-05)
+## Deploy
 
-**Agent-run fit (submitted, monitored, evaluated end-to-end):**
-
-- `submit_jam_fit(card=input_jam24_s7_warm.py, prior=001/step6_v2/msr/...)`
-  → ifarm job **12367088**, converged in ~40 min (4 cores, jupyter).
-- Final .msr evaluated: **χ²/N = 1.452** — identical to the human-run
-  ladder (step7_v2 = step7_v3 = 1.452). Bit-reproducible result.
-
-Whole-ladder χ²/N evaluation (agent-run, apptainer on ifarm):
-
-```
-step           chi2/N
-step1          1.228
-step2_v10      1.207
-step3          1.505
-step3_v2       1.300
-step4          1.482
-step4_v2       1.296
-step5          1.572
-step6_v2       1.452
-step7_v2       1.452
-step7_v3       1.452
-step7_agent    1.452   <- today's agent-run fit
-PAPER band (arXiv:2501.00665 step16a): mean=2.566 [2.190, 2.819]
+```bash
+export LQCDMCP_TOKEN='...'    # dashboard token (Globus login)
+export JAM_GW_USER=<you>
+python3 deploy_and_verify.py   # launch, wait, verify
 ```
 
-Converged ladder sits at χ²/N ≈ 1.2–1.6, systematically **below** the paper
-band — flagged for the reproduction report. Unfinished runs excluded
-(step2=457846 blowup, step2_v3=48.6, step5_v2=6.65).
+The gateway is then at `https://lqcdmcp.jlab.org:8000/cloud/jam-gateway-<you>/mcp`
+(panel: append `?ui=panel`). It runs on the daily reservation `chen_mcp_daily`
+(about 10:00–16:00 ET), **one gateway job at a time**: stop yours with
+`python3 redeploy_jam.py cancel` so a colleague's can start.
 
+## How it works
 
-## Hot redeploy (no OTP, no job kill)
+- **Access.** The only credential is the owner's dashboard token. The gateway
+  asks the dashboard (`get_my_mcp_servers`) which servers the token's user
+  launched and accepts it when this gateway is listed (cached 10 min). The
+  proxy forwards `/cloud/<name>/mcp` without checking anyone, so this check is
+  what keeps an open cluster session private.
+- **Cluster.** A two-hop SSH chain per user: `scilogin.jlab.org` (PIN +
+  one-time code) → `ifarm.jlab.org` (password), opened on the panel's Connect
+  tab and kept for the window. Site details (hosts, `/w/ceph24/JAM/<user>`,
+  container image, partitions, shared grids) are in `SITE_IFARM` in
+  `jam_gateway.py`; `~/.jam_gateway/site.json` on the node overrides them.
+- **Workspace.** A clone of `QCDHUB/fitpack_legacy`, branch `ai` (it has
+  `fitlib/ai.py`), with links to the shared `share/fitpack_grids`.
+- **Campaigns.** Same steps as the FemtoMind JAM app: object and its
+  parameter table, reactions and datasets (by experiment) and cuts, QCD
+  settings, job config with Slurm resources, review. `jamai` copies the
+  repository's `examples/input02.py` and appends the choices; a Slurm array
+  runs one replica per task. Then postprocess, fit summary, PDF plots, χ² and
+  data vs theory by experiment, more replicas (confirmation phrase).
+  Relative to the app, these now actually reach the fit: parameter-table
+  edits, cuts, datasets missing from the template, max iterations, optimizer,
+  TMC "off".
+- **Other Slurm jobs.** The AI drafts a script with you (`draft_slurm_job`,
+  checked with `sbatch --test-only`) and submits it once you confirm.
+- **Partition.** Auto: `priority` for jobs up to 4 h, `production` beyond.
 
-`python3 hot_redeploy.py <file>` uploads new code via `node_diag`, compiles
-on the node, swaps `/tmp/jam_gateway.py` and lets the supervisor restart the
-server **inside the same job boot**. The setsid'd ControlMasters in
-`~/fm-cm` survive, so the chain is never re-authenticated.
+## Verified
 
-## Agent client (paper demo)
+2026-10-08 on the platform: gateway launched as `jam-gateway-chunyu`,
+reachable through the proxy, dashboard token accepted and no-token refused,
+cluster chain open, workspace and campaigns read back. On ifarm through the
+same code: campaigns submitted, run, postprocessed and plotted; replicas
+appended with confirmation; a Slurm job drafted and submitted; a Claude Code
+session walked the whole composer in chat and the generated card matched
+every answer.
 
-`python3 agent_demo.py [--submit] [--outdir ...] [--card ...] [--prior ...]`
-is a pure JSON-RPC MCP client walking the distilled expert loop:
-connect (reuse) → inventory → submit warm fit → poll χ²/N → evaluate vs the
-JAM24 paper band. Verified 2026-10-05: chain `reused` with zero OTP, 12 tools
-listed, inventory rc=0.
-
-## Key fixes (this session)
-
-1. **Reuse-check ordering** (`connect_hpc`): check `_master_alive` BEFORE
-   unlinking sockets. The old code unlinked the socket files first, which
-   destroyed the reuse path every time.
-2. **base64 transport** (`submit_*`): scripts shipped as base64 and
-   `sbatch` fired with `nohup ... </dev/null &` — fixes the SSH heredoc hang
-   through the two-hop chain.
-3. **Supervisor loop** in the Slurm script: the JOB stays alive for the
-   whole 6h window; the gateway server may crash/redeploy inside it.
-4. `node_diag` tool: read-only shell on the gateway node (debugging).
-
-## setsid persistence: what works, what doesn't
-
-- **Works**: ControlMasters are created with `setsid` so they detach from
-  the server process; sockets live in shared `~/fm-cm`. Any gateway server
-  restart within the same Slurm job boot reuses them with zero OTP.
-- **Does NOT survive `scancel`**: the node runs **cgroup2 +
-  `ProctrackType=proctrack/cgroup`** (`/system.slice/slurmstepd.scope/
-  job_<id>/...`). scancel kills the entire job cgroup; setsid cannot escape
-  a cgroup kill. Also: no user systemd/linger on compute nodes, no user
-  cron/at. **One OTP per 6h job boot is the platform floor** until Jie adds
-  a persistent-server mode or a keeper-job slot.
-
-## Ops
-
-- Full redeploy (new boot, needs fresh OTP): `python3 redeploy_jam.py
-  cancel` then `launch` (valid dashboard Bearer token; `validate_user`
-  first).
-- Hot redeploy (same boot, no OTP): `python3 hot_redeploy.py`.
-- Credentials are passed as tool args in v1/v2 (demo only). Production
-  path: browser-side panel + one-OTP-per-boot flow.
-- One job at a time on the reservation (verified: a second job stays
-  PENDING `(Resources)`).
+Earlier versions (v2–v7, the shared gateway and its tokens) are in git history.

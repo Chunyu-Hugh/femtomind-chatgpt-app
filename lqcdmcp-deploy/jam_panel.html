@@ -1,0 +1,1431 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FemtoMind · JAM gateway</title>
+<!-- Operations panel for the JAM gateway on LQCDMCP. Styles are the AWS
+     ChatGPT-app panel's (widgets/femtomind_ops.html), unchanged. -->
+<style>
+  :root {
+    --bg:#f5f7fb; --surface:#ffffff; --surface-2:#eef2f8; --fg:#121722; --muted:#5a6474;
+    --line:#d6dce7; --accent:#2560c9; --accent-wash:#e7f0fd; --rep:rgba(37,96,201,.26);
+    --mean:#0b3aa3; --green:#1c7a52; --green-wash:#e3f4ec; --warn:#b0560a; --warn-wash:#fbeee1;
+    --chip:#eef2f8; --chip-on:#d8efde;
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme:dark){ :root:not([data-theme="light"]){
+    --bg:#0c0f15; --surface:#141b25; --surface-2:#1a2230; --fg:#e7ebf3; --muted:#93a0b4;
+    --line:#26303f; --accent:#74a0ff; --accent-wash:#15233c; --rep:rgba(116,160,255,.30);
+    --mean:#a9c4ff; --green:#4dc08c; --green-wash:#12251c; --warn:#dca24a; --warn-wash:#2b2413;
+    --chip:#1f2836; --chip-on:#16351f;
+  }}
+  :root[data-theme="dark"]{
+    --bg:#0c0f15; --surface:#141b25; --surface-2:#1a2230; --fg:#e7ebf3; --muted:#93a0b4;
+    --line:#26303f; --accent:#74a0ff; --accent-wash:#15233c; --rep:rgba(116,160,255,.30);
+    --mean:#a9c4ff; --green:#4dc08c; --green-wash:#12251c; --warn:#dca24a; --warn-wash:#2b2413;
+    --chip:#1f2836; --chip-on:#16351f;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font);font-size:14px;line-height:1.5;}
+  .app{max-width:900px;margin:0 auto;padding:14px 16px 20px;}
+  header{display:flex;align-items:center;gap:12px;margin-bottom:12px;}
+  .brand{font-weight:680;font-size:16px;letter-spacing:-.01em;}
+  .brand .sub{font-family:var(--mono);font-size:10.5px;color:var(--muted);font-weight:400;margin-left:8px;letter-spacing:.04em;}
+  .pill{margin-left:auto;display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:11.5px;
+        padding:5px 11px;border-radius:999px;border:1px solid var(--line);background:var(--surface);white-space:nowrap;}
+  .pill .dot{width:8px;height:8px;border-radius:50%;background:var(--muted);}
+  .pill.ok .dot{background:var(--green);} .pill.ok{color:var(--green);border-color:color-mix(in srgb,var(--green) 40%,var(--line));}
+  .pill.no .dot{background:var(--warn);} .pill.no{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 40%,var(--line));}
+
+  nav.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:16px;overflow-x:auto;}
+  nav.tabs button{font:inherit;border:none;background:none;color:var(--muted);cursor:pointer;padding:9px 13px;
+        border-bottom:2px solid transparent;white-space:nowrap;display:flex;align-items:center;gap:7px;}
+  nav.tabs button .n{font-family:var(--mono);font-size:10.5px;opacity:.7;}
+  nav.tabs button:hover{color:var(--fg);}
+  nav.tabs button.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:600;}
+
+  .tab{display:none;} .tab.active{display:block;}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:14px;}
+  h3{margin:0 0 4px;font-size:15px;font-weight:640;}
+  .muted{color:var(--muted);} .mono{font-family:var(--mono);}
+  .sub{color:var(--muted);font-size:12.5px;margin:0 0 14px;}
+  .row{display:flex;justify-content:space-between;gap:14px;padding:8px 0;border-top:1px solid var(--line);font-size:13.5px;}
+  .row:first-child{border-top:none;} .row .k{color:var(--muted);} .row .v{text-align:right;font-family:var(--mono);font-size:12.5px;}
+  .status-head{display:flex;align-items:center;gap:12px;margin-bottom:12px;}
+  .status-ic{width:40px;height:40px;border-radius:10px;display:grid;place-items:center;font-size:20px;flex:none;}
+  .st-ok{background:var(--green-wash);} .st-no{background:var(--warn-wash);}
+  .note{font-size:12.5px;color:var(--muted);background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:12px;}
+  .note.warn{color:var(--warn);background:var(--warn-wash);border-color:color-mix(in srgb,var(--warn) 35%,var(--line));}
+  code{font-family:var(--mono);font-size:.86em;background:var(--surface-2);border:1px solid var(--line);border-radius:5px;padding:.05em .34em;}
+
+  button.btn{font:inherit;border:1px solid var(--line);background:var(--surface);color:var(--fg);border-radius:8px;padding:8px 15px;cursor:pointer;}
+  button.btn:hover{border-color:var(--accent);}
+  button.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600;}
+  button.btn.primary:hover{opacity:.92;}
+  button.btn:disabled{opacity:.5;cursor:not-allowed;}
+  .actions{display:flex;gap:10px;margin-top:12px;flex-wrap:wrap;}
+
+  /* checklist (project) */
+  .chk{display:flex;align-items:flex-start;gap:11px;padding:10px 0;border-top:1px solid var(--line);}
+  .chk:first-child{border-top:none;}
+  .chk .mk{width:20px;height:20px;border-radius:6px;display:grid;place-items:center;font-size:12px;flex:none;margin-top:1px;}
+  .mk.ok{background:var(--green-wash);color:var(--green);} .mk.no{background:var(--warn-wash);color:var(--warn);} .mk.un{background:var(--surface-2);color:var(--muted);}
+  .chk .lb{font-weight:560;} .chk .dt{color:var(--muted);font-size:12.5px;font-family:var(--mono);}
+
+  /* composer */
+  .steps{display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap;}
+  .step{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted);cursor:pointer;padding:5px 10px;border-radius:7px;}
+  .step.active{color:var(--accent);background:var(--accent-wash);font-weight:600;}
+  .step .num{width:19px;height:19px;border-radius:50%;background:var(--surface-2);display:grid;place-items:center;font-size:11px;font-family:var(--mono);}
+  .step.active .num{background:var(--accent);color:#fff;}
+  .panel{display:none;} .panel.active{display:block;}
+  .field{margin-bottom:14px;} .label{font-weight:600;font-size:13px;margin-bottom:6px;}
+  .opt{display:flex;align-items:center;gap:9px;padding:9px 11px;border:1px solid var(--line);border-radius:8px;margin-bottom:7px;cursor:pointer;}
+  .opt.disabled{opacity:.5;cursor:not-allowed;}
+  .ds{display:flex;align-items:center;gap:9px;padding:7px 10px;border:1px solid var(--line);border-radius:7px;margin-bottom:6px;font-size:13px;}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  @media (max-width:560px){.grid2{grid-template-columns:1fr;}}
+  select,input[type=text],input[type=number],input[type=password]{font:inherit;width:100%;padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:var(--surface);color:var(--fg);}
+  .inline{display:flex;align-items:center;gap:8px;font-size:13px;}
+  .rev .row .v{font-family:var(--mono);}
+  .err{color:var(--warn);font-size:12.5px;margin-top:8px;}
+
+  /* collections table */
+  .tbl{width:100%;border-collapse:collapse;font-size:13px;}
+  .tbl th{text-align:left;font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);padding:8px 10px;border-bottom:1px solid var(--line);}
+  .tbl td{padding:9px 10px;border-bottom:1px solid var(--line);}
+  .tag{font-family:var(--mono);font-size:10.5px;padding:2px 8px;border-radius:999px;}
+  .tag.active{background:var(--accent-wash);color:var(--accent);} .tag.done{background:var(--green-wash);color:var(--green);} .tag.other{background:var(--surface-2);color:var(--muted);}
+  .tag.bad{background:var(--warn-wash);color:var(--warn);}
+
+  /* analysis plot */
+  .plot-controls{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px;}
+  .pc{display:flex;flex-direction:column;gap:5px;} .pc .label{margin:0;font-size:11.5px;}
+  .flavs{display:flex;gap:6px;flex-wrap:wrap;}
+  .fl{font-family:var(--mono);font-size:12px;padding:5px 10px;border:1px solid var(--line);border-radius:7px;cursor:pointer;background:var(--chip);}
+  .fl.on{background:var(--chip-on);border-color:var(--green);color:var(--green);}
+  .pgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:14px;}
+  .pcard{background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:8px;}
+  .pcard .t{font-size:12px;font-weight:600;margin:2px 4px 4px;}
+  svg.plot{width:100%;height:auto;display:block;}
+  .empty{color:var(--muted);font-size:13px;text-align:center;padding:28px 12px;}
+  .spin{color:var(--muted);font-size:13px;padding:14px 0;}
+</style>
+<style>
+  /* Gateway additions. The stylesheet above is the AWS operations panel's,
+     unchanged, so both deployments look the same. */
+  .hdr-actions{display:flex;align-items:center;gap:8px;margin-left:auto;}
+  .hdr-actions .pill{margin-left:0;}
+  button.btn.sm{padding:3px 10px;font-size:12px;}
+  .fam{margin:16px 0 6px;display:flex;align-items:center;gap:8px;}
+  .fam .label{margin:0;}
+  .fam .cnt{font-family:var(--mono);font-size:11px;color:var(--muted);}
+  .fam .sp{flex:1;}
+  .dsgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:6px;}
+  .dsgrid .ds{margin:0;}
+  .hint{color:var(--muted);font-size:11.5px;margin-top:5px;}
+  pre.out{font-family:var(--mono);font-size:11.5px;white-space:pre-wrap;background:var(--surface-2);border:1px solid var(--line);
+          border-radius:8px;padding:10px 12px;margin:8px 0 0;max-height:340px;overflow:auto;}
+  .chart{width:100%;height:auto;display:block;margin-top:10px;}
+  .chart .ax{stroke:var(--line);}
+  .chart .gr{stroke:var(--line);stroke-dasharray:2 3;}
+  .chart .tk{fill:var(--muted);font-family:var(--mono);font-size:10.5px;}
+  .chart .ln{fill:none;stroke:var(--accent);stroke-width:1.8;}
+  .chart .pt{fill:var(--accent);}
+  .bar{height:6px;border-radius:3px;background:var(--accent);opacity:.55;}
+  .kv{display:flex;gap:18px;flex-wrap:wrap;font-size:12.5px;color:var(--muted);margin-top:4px;}
+  .kv b{color:var(--fg);font-family:var(--mono);font-weight:560;}
+  .radio{display:flex;align-items:flex-start;gap:9px;padding:9px 11px;border:1px solid var(--line);border-radius:8px;
+         margin-bottom:7px;cursor:pointer;font-size:13px;}
+  .radio .why{display:block;color:var(--muted);font-size:12px;}
+  .warnline{color:var(--warn);font-size:12px;margin-top:6px;}
+  a{color:var(--accent);}
+  /* campaign composer (JAM app parity) */
+  .card.inner{background:var(--surface-2);margin-top:12px;}
+  .objgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+  @media (max-width:560px){.objgrid{grid-template-columns:1fr;}}
+  .objgrid .opt{margin:0;justify-content:space-between;}
+  .bp{font-family:var(--mono);font-size:10px;letter-spacing:.06em;color:var(--muted);border:1px solid var(--line);border-radius:5px;padding:1px 6px;}
+  .pgrid2{display:grid;grid-template-columns:220px 1fr;gap:16px;}
+  @media (max-width:700px){.pgrid2{grid-template-columns:1fr;}}
+  .pinfo{font-size:12px;color:var(--muted);} .pinfo b{display:block;color:var(--fg);font-size:11px;letter-spacing:.05em;text-transform:uppercase;margin:8px 0 2px;}
+  .tblwrap{max-height:340px;overflow:auto;border:1px solid var(--line);border-radius:8px;margin-top:6px;}
+  .ptbl td{padding:4px 8px;} .ptbl th{position:sticky;top:0;background:var(--surface);}
+  .ptbl input{padding:3px 6px;font-family:var(--mono);font-size:12px;width:96px;}
+  .st{font-family:var(--mono);font-size:10.5px;padding:2px 8px;border-radius:999px;cursor:pointer;border:none;}
+  .st.free{background:var(--green-wash);color:var(--green);} .st.fixed{background:var(--surface-2);color:var(--muted);border:1px solid var(--line);}
+  .rx{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px;}
+  .rx.off{opacity:.55;} .rxhead{display:flex;align-items:center;gap:10px;}
+  .rxhead .sp{flex:1;} .subtabs{display:flex;gap:6px;margin:10px 0;}
+  .subtabs button{font:inherit;font-size:12px;border:1px solid var(--line);background:var(--surface);color:var(--muted);border-radius:7px;padding:4px 12px;cursor:pointer;}
+  .subtabs button.on{background:var(--accent);border-color:var(--accent);color:#fff;}
+  .exp{font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:10px 0 4px;}
+  .dslist .ds{margin-bottom:4px;} .dslist .ds .id{font-family:var(--mono);font-size:11px;color:var(--muted);margin-left:auto;}
+  .cutrow{display:grid;grid-template-columns:auto 1fr 70px 1fr auto;gap:8px;align-items:center;margin-bottom:6px;}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}
+  @media (max-width:560px){.grid3{grid-template-columns:1fr;}}
+  .label.sm{font-size:12px;font-weight:560;}
+  .subbox{border:1px dashed var(--line);border-radius:10px;padding:10px 12px;margin-top:12px;}
+  .imgs{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;margin-top:12px;}
+  .imgs figure{margin:0;background:#fff;border:1px solid var(--line);border-radius:10px;padding:6px;}
+  .imgs img{width:100%;height:auto;display:block;} .imgs figcaption{font-size:11.5px;color:#5a6474;padding:4px 4px 0;}
+  .phrase{font-family:var(--mono);font-weight:600;}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand">FemtoMind<span class="sub">JAM · QCD global analysis</span></div>
+    <div class="hdr-actions">
+      <button class="btn sm" id="tokenBtn" style="display:none">Token</button>
+      <div class="pill" id="connPill"><span class="dot"></span><span id="connPillTxt">checking…</span></div>
+    </div>
+  </header>
+
+  <!-- Gateway token: only on the gateway's own page. Inside a chat client the
+       client sends the token itself. -->
+  <div class="card" id="tokenGate" style="display:none">
+    <h3>Gateway token</h3>
+    <p class="sub">This page acts as you on the cluster, so it needs your LQCDMCP dashboard token: the one
+      from the dashboard login you launched this gateway with. It is kept in this browser only; when the
+      dashboard login expires, log in again and paste the new one.</p>
+    <input type="password" id="tokenIn" placeholder="dashboard token" autocomplete="off" spellcheck="false">
+    <div class="actions">
+      <button class="btn primary" id="tokenSave">Use this token</button>
+      <button class="btn" id="tokenForget">Forget token</button>
+    </div>
+    <div class="err" id="tokenErr"></div>
+  </div>
+
+  <nav class="tabs" id="tabs"></nav>
+
+  <!-- CONNECT -->
+  <section class="tab" data-tab="connect">
+    <div class="card">
+      <div class="status-head">
+        <div class="status-ic st-no" id="connIc">○</div>
+        <div><h3 id="connTitle">HPC connection</h3><div class="sub" id="connLine" style="margin:0">…</div></div>
+        <button class="btn" id="recheckBtn" style="margin-left:auto">Re-check</button>
+      </div>
+      <div id="connRows"></div>
+      <div class="note" id="connNote"></div>
+
+      <div id="connectForm" style="display:none;margin-top:14px;border-top:1px solid var(--line);padding-top:14px">
+        <div class="label" style="margin-bottom:8px">Sign in</div>
+        <div class="field" style="margin-bottom:12px">
+          <div class="label" style="font-weight:500;font-size:11.5px">Cluster username</div>
+          <input type="text" id="connUser" value="" readonly>
+          <div class="hint">Set by your gateway token.</div>
+        </div>
+        <div class="grid2">
+          <div class="field" style="margin:0">
+            <div class="label" style="font-weight:500;font-size:11.5px" id="hop1Lbl">1 · login host — PIN + one-time code</div>
+            <input type="password" id="connGw" autocomplete="off" placeholder="PIN followed by the code">
+          </div>
+          <div class="field" style="margin:0">
+            <div class="label" style="font-weight:500;font-size:11.5px" id="hop2Lbl">2 · compute host — account password</div>
+            <input type="password" id="connPw" autocomplete="off">
+          </div>
+        </div>
+        <div class="actions"><button class="btn primary" id="connectBtn">Connect</button></div>
+        <div class="note" style="margin-top:10px;font-size:11.5px">Both hops open on the gateway node and
+          stay open until the gateway's daily window closes (about 16:00 US Eastern), so the one-time code is
+          needed once per window. Neither value is stored or logged.</div>
+        <div class="err" id="connectErr"></div>
+      </div>
+
+      <div id="signinElsewhere" style="display:none;margin-top:14px;border-top:1px solid var(--line);padding-top:14px">
+        <div class="label" style="margin-bottom:6px">Sign in</div>
+        <p class="sub" style="margin-bottom:0">Cluster credentials are typed only on the gateway's own page,
+          never inside a chat.</p>
+        <div class="actions"><button class="btn primary" id="openSigninBtn">Open the sign-in page</button></div>
+        <div class="err" id="openSigninErr"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- PROJECT -->
+  <section class="tab" data-tab="project">
+    <div class="card">
+      <h3>Project &amp; environment</h3>
+      <p class="sub">Verify the JAM code and grids are in place in your HPC workspace before running a fit.</p>
+      <div id="projBody"><div class="spin">Open this tab to check…</div></div>
+      <div class="actions"><button class="btn" id="projBtn">Re-check</button>
+        <button class="btn" id="setupToggle">Set up a new workspace…</button></div>
+
+      <div id="setupBox" style="display:none;margin-top:14px;border-top:1px solid var(--line);padding-top:14px">
+        <div class="label" style="margin-bottom:6px">Create a workspace</div>
+        <p class="sub" style="margin-bottom:10px">A folder is created in <span class="mono" id="setupParent">your own JAM area</span>
+          and fitpack_legacy is cloned into it. Nothing outside that folder is touched.</p>
+        <div class="field" style="margin:0 0 12px">
+          <div class="label" style="font-weight:500;font-size:11.5px">JAM code</div>
+          <div class="mono" style="font-size:12px;padding:9px 11px;border:1px solid var(--line);
+               border-radius:7px;background:var(--surface-2);color:var(--muted)">github.com/QCDHUB/fitpack_legacy.git</div>
+          <div class="hint">Fixed, so everyone runs the same validated code.</div>
+        </div>
+        <div class="grid2">
+          <div class="field" style="margin:0">
+            <div class="label" style="font-weight:500;font-size:11.5px">Folder name</div>
+            <input type="text" id="setupName" value="fitpack_legacy" spellcheck="false">
+          </div>
+          <div class="field" style="margin:0">
+            <div class="label" style="font-weight:500;font-size:11.5px">Branch <span class="muted">(optional)</span></div>
+            <input type="text" id="setupBranch" placeholder="ai (the campaign branch)" spellcheck="false">
+          </div>
+        </div>
+        <div class="field" style="margin:12px 0 0">
+          <div class="label" style="font-weight:500;font-size:11.5px">GitHub token <span class="muted">(only if the repository is private)</span></div>
+          <input type="password" id="setupToken" autocomplete="off" placeholder="leave empty first — you'll be told if it's needed">
+          <div class="hint">Used for this clone only and removed from the checkout afterwards.</div>
+        </div>
+        <div class="actions"><button class="btn primary" id="setupBtn">Create and clone</button></div>
+        <div id="setupResult"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CAMPAIGN: the JAM app's Visual Input Card Composer -->
+  <section class="tab" data-tab="campaign">
+    <div class="card">
+      <h3>Fitting Campaign</h3>
+      <p class="sub">Build a validated input card, submit the campaign to HPC as a Slurm job array, and follow it in
+        Collections. Every setting starts at the library value; you keep or change it.</p>
+      <div class="steps" id="cSteps"></div>
+
+      <div class="panel" data-step="object">
+        <div class="label">Non-perturbative object</div>
+        <div class="objgrid" id="objectList"></div>
+        <div class="card inner" id="paramCard">
+          <div class="label">Unpolarized PDF parameter details</div>
+          <div class="pgrid2">
+            <div class="pinfo" id="paramInfo"></div>
+            <div>
+              <div class="kv" id="paramCounts"></div>
+              <div class="tblwrap"><table class="tbl ptbl"><thead><tr><th>Block</th><th>Parameter</th><th>Status</th>
+                <th>Value</th><th>Min</th><th>Max</th></tr></thead><tbody id="paramRows"></tbody></table></div>
+              <div class="hint">Click a status to switch FREE ↔ FIXED. Values and ranges start at the library's
+                (examples/input02.py); edits go into the generated card.</div>
+              <div class="actions"><button class="btn sm" id="paramReset">Reset to library values</button></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" data-step="reactions">
+        <div class="label">Reactions</div>
+        <p class="sub" style="margin-bottom:8px">Tick a reaction, then pick its datasets and check its cuts. Nothing is preselected.</p>
+        <div id="rxList"><div class="spin">Loading…</div></div>
+      </div>
+
+      <div class="panel" data-step="qcd">
+        <div class="label">QCD settings</div>
+        <div class="grid3">
+          <div class="field"><div class="label sm">Order</div><select id="qOrder"></select></div>
+          <div class="field"><div class="label sm">Q₀² (GeV²)</div><input type="number" step="any" id="qQ20"></div>
+          <div class="field"><div class="label sm">TMC</div><select id="qTmc"></select></div>
+          <div class="field"><div class="label sm">DGLAP mode</div><select id="qDglap"></select></div>
+          <div class="field"><div class="label sm">αS mode</div><select id="qAs"></select></div>
+          <div class="field"><label class="inline" style="margin-top:26px"><input type="checkbox" id="qHT"> Higher twist</label></div>
+        </div>
+      </div>
+
+      <div class="panel" data-step="job">
+        <div class="label">General setup</div>
+        <div class="grid2">
+          <div class="field"><div class="label sm">Campaign name</div><input type="text" id="jName" spellcheck="false" placeholder="e.g. dis_proton_test"></div>
+          <div class="field"><div class="label sm">Replicas</div><input type="number" min="1" max="2000" id="jReplicas"></div>
+        </div>
+        <div class="label">Parameter initialization</div>
+        <label class="radio"><input type="radio" name="pinit" value="default"><span>Use default JAM/FitPack starting values
+          <span class="why">Keep the starting values in the parameter table.</span></span></label>
+        <label class="radio"><input type="radio" name="pinit" value="random_within_bounds"><span>Randomize starting values within parameter bounds
+          <span class="why">Draw each free starting value uniformly inside its min/max before the fit begins.</span></span></label>
+        <div class="grid2" id="seedBox" style="display:none">
+          <div class="field"><div class="label sm">Random seed</div><input type="number" id="pSeed" placeholder="auto"></div>
+          <div class="field"><label class="inline" style="margin-top:26px"><input type="checkbox" id="pPerRep"> Different seed per replica</label></div>
+        </div>
+        <div class="label">Inference mode</div>
+        <label class="radio"><input type="radio" name="infer" value="ensemble"><span>Ensemble approach
+          <span class="why">Pseudo-data replicas resample the experimental data to propagate its uncertainties across the fitted ensemble.</span></span></label>
+        <label class="radio"><input type="radio" name="infer" value="central"><span>Keep original central values of data
+          <span class="why">Fit the published central values directly, without resampling.</span></span></label>
+        <div class="label">Optimization setup</div>
+        <div class="grid3">
+          <div class="field"><div class="label sm">Tolerance</div><input type="text" id="jTol"></div>
+          <div class="field"><div class="label sm">Max iterations</div><input type="number" min="1" id="jIter"></div>
+          <div class="field"><div class="label sm">Optimizer</div><select id="jOpt"></select></div>
+        </div>
+        <div class="label">Slurm resources (per replica)</div>
+        <div class="grid3">
+          <div class="field"><div class="label sm">Wall clock</div><input type="text" id="sTime" placeholder="HH:MM:SS"></div>
+          <div class="field"><div class="label sm">Memory</div><input type="text" id="sMem" placeholder="4G"></div>
+          <div class="field"><div class="label sm">CPUs</div><input type="number" min="1" max="64" id="sCpus"></div>
+        </div>
+        <div class="field"><div class="label sm">Partition</div><select id="sPart"><option value="">Auto</option></select>
+          <div class="hint" id="sPartHint"></div></div>
+      </div>
+
+      <div class="panel" data-step="review">
+        <div class="actions" style="margin-top:0">
+          <button class="btn" id="createCard">Create Input Card</button>
+          <button class="btn primary" id="submitJobs" disabled>Submit Jobs</button>
+        </div>
+        <div class="kv" id="cStatus"></div>
+        <div class="err" id="reviewErr"></div>
+        <div class="rev" id="reviewBox"></div>
+        <details id="scriptBox" style="display:none"><summary class="muted" style="cursor:pointer;margin-top:10px">Slurm job array script</summary>
+          <pre class="out" id="scriptText"></pre></details>
+        <div class="note" id="cSubmittedNote" style="display:none"></div>
+      </div>
+
+      <div class="actions">
+        <button class="btn" id="cBack" style="visibility:hidden">Back</button>
+        <button class="btn" id="cNext">Next</button>
+        <button class="btn" id="cNew" style="display:none">New campaign</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- COLLECTIONS -->
+  <section class="tab" data-tab="collections">
+    <div class="card">
+      <h3>Collections</h3>
+      <p class="sub">Campaigns in this workspace, newest first, with how many replicas have finished.</p>
+      <div id="collBody"><div class="spin">Open this tab to load…</div></div>
+      <div class="actions"><button class="btn" id="collBtn">Refresh</button></div>
+    </div>
+    <div class="card">
+      <h3>Single runs</h3>
+      <p class="sub">Individual fits (submit_jam_fit) and your Slurm queue.</p>
+      <div id="runsBody"><div class="spin">Open this tab to load…</div></div>
+    </div>
+  </section>
+
+  <!-- ANALYSIS -->
+  <section class="tab" data-tab="analysis">
+    <div class="card">
+      <h3>Analysis</h3>
+      <p class="sub">Inspect submitted campaigns and prepare the analysis products.</p>
+      <div class="field"><div class="label sm">Campaign</div><select id="caSel"><option value="">loading…</option></select></div>
+      <div id="caHead"></div>
+      <div class="actions">
+        <button class="btn" id="caPost">Postprocess</button>
+        <button class="btn" id="caMore">Generate More Replicas</button>
+        <button class="btn" id="caSum">Load Fit Summary</button>
+        <button class="btn" id="caPdf">View PDF Plots</button>
+        <button class="btn" id="caExp">By experiment</button>
+      </div>
+      <div id="caMoreBox" class="subbox" style="display:none">
+        <div class="grid2"><div class="field"><div class="label sm">Additional replicas</div><input type="number" min="1" max="2000" id="caMoreN" value="10"></div>
+          <div class="field"><button class="btn" id="caMorePlan" style="margin-top:22px">Plan</button></div></div>
+        <div id="caMoreOut"></div>
+      </div>
+      <div id="caPdfBox" class="subbox" style="display:none">
+        <div class="plot-controls">
+          <div class="pc"><span class="label">Flavors</span><div class="flavs" id="caFlavs"></div></div>
+          <div class="pc"><span class="label">Q² (GeV²)</span><input type="number" step="any" id="caQ2" value="10" style="width:110px"></div>
+          <div class="pc"><label class="inline"><input type="checkbox" id="caMean" checked> Mean and 68% band</label></div>
+          <button class="btn primary" id="caPdfGo">Draw</button>
+        </div>
+      </div>
+      <div id="caExpBox" class="subbox" style="display:none">
+        <div class="plot-controls">
+          <div class="pc" style="flex:1"><span class="label">Experiments to plot (comma list, empty = all)</span>
+            <input type="text" id="caExpList" placeholder="e.g. SLAC, BCDMS"></div>
+          <button class="btn primary" id="caExpGo">Analyze</button>
+        </div>
+      </div>
+      <div id="caOut"><div class="empty">Pick a campaign, then Postprocess once replicas have finished.</div></div>
+    </div>
+
+    <div class="card">
+      <h3>Single-run fit quality</h3>
+      <p class="sub">χ²/N as a single fit iterates, and the worst datasets in its latest iteration.</p>
+      <div class="plot-controls">
+        <div class="pc"><span class="label">Run</span>
+          <select id="anRun" style="min-width:260px"><option value="">loading…</option></select></div>
+        <button class="btn" id="anChi2">χ² history</button>
+        <button class="btn" id="anEval">Compare with the paper</button>
+        <button class="btn" id="anStatus">Job status</button>
+      </div>
+      <div id="anHead"></div>
+      <div id="anChart"></div>
+      <div id="anTable"></div>
+      <div id="anOut"></div>
+      <div class="empty" id="anEmpty">Pick a run and press “χ² history”.</div>
+    </div>
+  </section>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  const $ = (id)=>document.getElementById(id);
+  // Every backend or user string that lands in innerHTML goes through esc():
+  // cluster log tails, git stderr and names the user typed can all carry markup.
+  const esc = (s)=>String(s===undefined||s===null?"":s)
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+  const JAM_REPO = "https://github.com/QCDHUB/fitpack_legacy.git";
+
+  /* ---------- host adapter ----------
+   * The same page runs in three places, and everything below talks to its host
+   * only through `host`:
+   *   chatgpt  inside ChatGPT, through window.openai
+   *   mcp-app  inside any MCP Apps host (VS Code, Claude, ...), JSON-RPC over postMessage
+   *   page     the gateway's own page in a browser, straight to the gateway with the
+   *            user's token
+   * Only "page" may take cluster credentials: they are typed on the gateway's own
+   * origin and never pass through a chat host. */
+  const host = makeHost();
+  function makeHost(){
+    const oai = window.openai;
+    if (oai && typeof oai.callTool === "function") return chatgptHost(oai);
+    if (window.parent && window.parent !== window) return mcpAppsHost();
+    return pageHost();
+  }
+
+  function chatgptHost(oai){
+    return {
+      kind: "chatgpt", ready: Promise.resolve(),
+      get toolOutput(){ return oai.toolOutput || {}; },
+      get widgetState(){ return oai.widgetState || {}; },
+      setWidgetState(s){ try{ oai.setWidgetState && oai.setWidgetState(s); }catch(e){} },
+      callTool(name, args){ return oai.callTool(name, args||{}); },
+      openLink(url){ try{ if(oai.openExternal){ oai.openExternal({href:url}); return; } }catch(e){}
+                     window.open(url, "_blank", "noopener"); },
+      onToolOutput(fn){ window.addEventListener("message",(m)=>{
+        if(m && m.data && m.data.type==="openai:set_globals" && oai.toolOutput) fn(oai.toolOutput); }); },
+    };
+  }
+
+  function mcpAppsHost(){
+    let nextId = 1, toolOutput = {}, state = {};
+    const pending = new Map(), listeners = [];
+    try { state = JSON.parse(sessionStorage.getItem("jam_panel_state") || "{}"); } catch(e){}
+    window.addEventListener("message", (ev)=>{
+      if (ev.source !== window.parent) return;
+      const m = ev.data;
+      if (!m || m.jsonrpc !== "2.0") return;
+      if (m.id !== undefined && pending.has(m.id) && (m.result !== undefined || m.error !== undefined)){
+        const p = pending.get(m.id); pending.delete(m.id);
+        if (m.error) p.reject(new Error(m.error.message || "host error")); else p.resolve(m.result);
+        return;
+      }
+      if (m.method === "ui/notifications/tool-result"){
+        toolOutput = m.params || {};
+        listeners.forEach(fn=>{ try{ fn(toolOutput); }catch(e){} });
+      }
+    });
+    function request(method, params, ms){
+      const id = nextId++;
+      return new Promise((resolve, reject)=>{
+        pending.set(id, {resolve, reject});
+        window.parent.postMessage({jsonrpc:"2.0", id, method, params: params||{}}, "*");
+        setTimeout(()=>{ if(pending.has(id)){ pending.delete(id); reject(new Error(method+" timed out")); } }, ms||15000);
+      });
+    }
+    function notify(method, params){ window.parent.postMessage({jsonrpc:"2.0", method, params: params||{}}, "*"); }
+    const ready = request("ui/initialize", {protocolVersion: "2026-01-26",
+                                           appInfo: {name: "jam-panel", version: "1"}, appCapabilities: {}})
+      .then(()=>notify("ui/notifications/initialized", {}))
+      .catch(()=>{});
+    const sendSize = ()=>notify("ui/notifications/size-changed",
+      {width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight});
+    if (window.ResizeObserver) new ResizeObserver(sendSize).observe(document.documentElement);
+    return {
+      kind: "mcp-app", ready,
+      get toolOutput(){ return toolOutput; },
+      get widgetState(){ return state; },
+      setWidgetState(s){ state = s || {}; try{ sessionStorage.setItem("jam_panel_state", JSON.stringify(state)); }catch(e){} },
+      callTool(name, args){ return ready.then(()=>request("tools/call", {name, arguments: args||{}}, 600000)); },
+      openLink(url){ request("ui/open-link", {url}).catch(()=>window.open(url, "_blank", "noopener")); },
+      onToolOutput(fn){ listeners.push(fn); },
+    };
+  }
+
+  function pageHost(){
+    const KEY = "jam_gateway_token";
+    let token = "", sid = "", state = {};
+    // A token handed over in the link's #fragment never reaches a server or a log.
+    const m = /(?:^|[#&])token=([^&]+)/.exec(location.hash || "");
+    if (m){
+      token = decodeURIComponent(m[1]);
+      try{ localStorage.setItem(KEY, token); }catch(e){}
+      history.replaceState(null, "", location.pathname + location.search);
+    }
+    if (!token){ try{ token = localStorage.getItem(KEY) || ""; }catch(e){} }
+    try{ state = JSON.parse(localStorage.getItem("jam_panel_state") || "{}"); }catch(e){}
+    const q = new URLSearchParams(location.search);
+    const tab = q.get("tab") || (q.get("ui") === "composer" ? "campaign" : "");
+    return {
+      kind: "page", ready: Promise.resolve(),
+      get toolOutput(){ return tab ? {tab} : {}; },
+      get widgetState(){ return state; },
+      setWidgetState(s){ state = s || {}; try{ localStorage.setItem("jam_panel_state", JSON.stringify(state)); }catch(e){} },
+      hasToken(){ return !!token; },
+      setToken(t){ token = (t||"").trim();
+        try{ if (token) localStorage.setItem(KEY, token); else localStorage.removeItem(KEY); }catch(e){} },
+      async callTool(name, args){
+        if (!token) throw authError();
+        const hdrs = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream",
+                      "Authorization": "Bearer " + token, "X-Jam-Gateway-Token": token};
+        if (sid) hdrs["Mcp-Session-Id"] = sid;
+        const r = await fetch(location.pathname, {method: "POST", headers: hdrs,
+          body: JSON.stringify({jsonrpc: "2.0", id: Date.now() % 1e9, method: "tools/call",
+                                params: {name, arguments: args||{}}})});
+        const h = r.headers.get("Mcp-Session-Id"); if (h) sid = h;
+        const d = await r.json();
+        if (d.error) throw new Error(d.error.message || "request failed");
+        const res = d.result || {};
+        if (res.structuredContent && res.structuredContent.status === "unauthorized") throw authError();
+        return res;
+      },
+      openLink(url){ window.open(url, "_blank", "noopener"); },
+      onToolOutput(){},
+    };
+  }
+  function authError(){ const e = new Error("A gateway token is needed."); e.auth = true; return e; }
+
+  // Hosts differ in what a tool call resolves to: the bare structured result,
+  // or a CallToolResult wrapper ({structuredContent}, {content:[{text}]},
+  // sometimes nested under .result). Unwrap all of them.
+  function unwrap(res){
+    let v = res;
+    for (let i = 0; i < 4 && v && typeof v === "object"; i++){
+      if (v.status !== undefined || v.connected !== undefined || v.tab !== undefined) return v;
+      if (v.structuredContent){ v = v.structuredContent; continue; }
+      if (v.result){ v = v.result; continue; }
+      if (Array.isArray(v.content)){
+        const t = v.content.find(c => c && typeof c.text === "string");
+        if (t){ try { v = JSON.parse(t.text); continue; } catch(e){} }
+      }
+      break;
+    }
+    return v || {};
+  }
+  async function call(name, args){
+    try { return unwrap(await host.callTool(name, args||{})); }
+    catch(e){ if (e && e.auth) showTokenGate(); throw e; }
+  }
+  const ws = ()=>host.widgetState || {};
+  function persist(extra){
+    host.setWidgetState(Object.assign({}, ws(), {tab: active, campaign2: campaignState(),
+                                                 analysisRun: analysisRun, analysisCampaign: analysisCampaign}, extra||{}));
+  }
+
+  /* ---------- token gate (gateway page only) ---------- */
+  function showTokenGate(){
+    if (host.kind !== "page") return;
+    $("tokenGate").style.display = "block";
+    $("tokenForget").style.display = host.hasToken() ? "" : "none";
+    $("connPill").className = "pill no"; $("connPillTxt").textContent = "token needed";
+  }
+  if (host.kind === "page"){
+    $("tokenBtn").style.display = "";
+    $("tokenBtn").onclick = ()=>{ showTokenGate(); $("tokenIn").focus(); };
+    $("tokenSave").onclick = async ()=>{
+      const t = $("tokenIn").value.trim();
+      if (!t){ $("tokenErr").textContent = "Paste the token first."; return; }
+      host.setToken(t); $("tokenIn").value = ""; $("tokenErr").textContent = "";
+      const c = await recheck();
+      if (!c || c.status === "unauthorized"){
+        host.setToken("");
+        showTokenGate();
+        $("tokenErr").textContent = "The gateway did not accept this token.";
+        return;
+      }
+      $("tokenGate").style.display = "none";
+      onEnter(active, true);
+    };
+    $("tokenIn").addEventListener("keydown", (e)=>{ if (e.key === "Enter") $("tokenSave").click(); });
+    $("tokenForget").onclick = ()=>{
+      host.setToken(""); $("tokenForget").style.display = "none";
+      $("tokenErr").textContent = "Token removed from this browser.";
+    };
+  }
+
+  /* ---------- tab shell ---------- */
+  const TABS = [["connect","Connect"],["project","Project"],["campaign","Campaign"],["collections","Collections"],["analysis","Analysis"]];
+  const bootOut = unwrap(host.toolOutput) || {};
+  let active = bootOut.tab || ws().tab || "connect";
+  if (!TABS.some(t=>t[0] === active)) active = "connect";
+  let analysisRun = ws().analysisRun || "";
+  function renderTabs(){
+    const n = $("tabs"); n.innerHTML = "";
+    TABS.forEach(([id,label],i)=>{
+      const b = document.createElement("button");
+      b.className = id === active ? "active" : "";
+      b.innerHTML = '<span class="n">'+(i+1)+'</span>'+label;
+      b.onclick = ()=>{ active = id; syncTabs(); persist(); onEnter(id); };
+      n.appendChild(b);
+    });
+  }
+  function syncTabs(){
+    document.querySelectorAll("nav.tabs button").forEach((b,i)=>b.classList.toggle("active", TABS[i][0] === active));
+    document.querySelectorAll("section.tab").forEach(s=>s.classList.toggle("active", s.dataset.tab === active));
+  }
+  const entered = {};
+  function onEnter(id, force){
+    if (id === "project" && (force || !entered.project)){ entered.project = true; loadProject(); }
+    if (id === "campaign" && (force || !entered.campaign)){ entered.campaign = true; loadCampaignSources(); }
+    // Collections and Analysis reload on every visit: a run submitted since the
+    // panel opened has to show up without a refresh.
+    if (id === "collections") loadCollections();
+    if (id === "analysis"){ loadAnalysisCampaigns(); loadAnalysisRuns(); }
+  }
+
+  /* ---------- connection ---------- */
+  function paintConnection(c){
+    c = c || {};
+    const ok = !!c.connected;
+    const acct = c.account || {};
+    const user = acct.username || "—";
+    $("connPill").className = "pill "+(ok ? "ok" : "no");
+    $("connPillTxt").textContent = ok ? "HPC connected" : (c.status === "unauthorized" ? "token needed" : "HPC not connected");
+    $("connIc").className = "status-ic "+(ok ? "st-ok" : "st-no"); $("connIc").textContent = ok ? "✓" : "○";
+    const site = c.site || {};
+    const hops = site.hops || [];
+    if (hops.length === 2){
+      $("hop1Lbl").textContent = "1 · "+hops[0].host+" — "+hops[0].secret;
+      $("hop2Lbl").textContent = "2 · "+hops[1].host+" — "+hops[1].secret;
+      secretNames = [hops[0].secret, hops[1].secret];
+    }
+    $("connTitle").textContent = ok ? ("Connected to "+(site.label || "the cluster")) : "Not connected";
+    $("connLine").textContent = ok ? ("as "+user+" · cluster reachable")
+      : (acct.username ? ("as "+user+" · the cluster chain is not open") : "no gateway identity yet");
+    const rows = [["Cluster reachable", c.cluster_reachable ? "yes" : "no"], ["Account", user],
+                  ["Workspace", acct.workspace || "set up in the Project tab"]];
+    $("connRows").innerHTML = rows.map(r=>'<div class="row"><span class="k">'+esc(r[0])+'</span><span class="v">'+esc(r[1])+'</span></div>').join("");
+    const note = $("connNote");
+    note.className = ok ? "note" : "note warn";
+    note.textContent = c.note || (ok ? "Ready to run fits." : "The cluster chain is not open.");
+    const page = host.kind === "page";
+    $("connectForm").style.display = (!ok && page && acct.username) ? "block" : "none";
+    $("signinElsewhere").style.display = (!ok && !page && acct.username) ? "block" : "none";
+    $("connUser").value = acct.username || "";
+    if (acct.area) $("setupParent").textContent = acct.area+"/";
+  }
+  async function recheck(){
+    $("recheckBtn").disabled = true; $("connPillTxt").textContent = "checking…";
+    let c = null;
+    try { c = await call("check_hpc_connection", {}); paintConnection(c); }
+    catch(e){
+      if (e && e.auth) c = {status: "unauthorized"};
+      else paintConnection({connected: false, note: "Re-check failed: "+(e && e.message || e)});
+    }
+    $("recheckBtn").disabled = false;
+    return c;
+  }
+  $("recheckBtn").onclick = recheck;
+
+  let secretNames = ["PIN followed by the one-time code", "account password"];
+  async function doConnect(){
+    if (host.kind !== "page") return;          // credentials never travel through a chat host
+    const gw = $("connGw").value, pw = $("connPw").value;
+    if (!gw){ $("connectErr").textContent = "Enter your "+secretNames[0]+"."; return; }
+    if (!pw){ $("connectErr").textContent = "Enter your "+secretNames[1]+"."; return; }
+    $("connectErr").textContent = ""; $("connectBtn").disabled = true; $("connectBtn").textContent = "Connecting…";
+    $("connPillTxt").textContent = "connecting…";
+    const clear = ()=>{ $("connGw").value = ""; $("connPw").value = ""; };   // never leave secrets in the DOM
+    try{
+      const r = await call("connect_hpc", {gateway_code: gw, ifarm_password: pw});
+      clear();
+      if (r && r.connected){
+        const c = await recheck();
+        if (c && c.connected){ active = "project"; syncTabs(); persist(); onEnter("project", true); }
+      } else {
+        $("connectErr").textContent = (r && (r.message || r.error)) || "Connection failed.";
+        $("connPillTxt").textContent = "HPC not connected";
+      }
+    } catch(e){
+      clear();
+      $("connectErr").textContent = "Connect failed: "+(e && e.message || e);
+      $("connPillTxt").textContent = "HPC not connected";
+    }
+    $("connectBtn").disabled = false; $("connectBtn").textContent = "Connect";
+  }
+  $("connectBtn").onclick = doConnect;
+  $("connPw").addEventListener("keydown", (e)=>{ if (e.key === "Enter") doConnect(); });
+  $("connGw").addEventListener("keydown", (e)=>{ if (e.key === "Enter") $("connPw").focus(); });
+  $("openSigninBtn").onclick = async ()=>{
+    $("openSigninErr").textContent = "";
+    try{
+      const d = await call("get_console", {tab: "connect"});
+      const urls = (d && d.panel_urls) || [];
+      if (!urls.length) throw new Error("no URL returned");
+      host.openLink(urls[0].url);
+    } catch(e){ $("openSigninErr").textContent = "Could not get the sign-in page: "+(e && e.message || e); }
+  };
+
+  /* ---------- project ---------- */
+  function wsPickerHtml(cands, heading){
+    if (!Array.isArray(cands) || !cands.length) return "";
+    return '<div class="label" style="margin:16px 0 6px">'+esc(heading)+'</div>'
+      + cands.map(c=>'<label class="ds" style="cursor:pointer">'
+          + '<input type="radio" name="wsPick" value="'+esc(c.path)+'"'+(c.active ? " checked" : "")+'>'
+          + '<span class="mono" style="font-size:12px">'+esc(c.path)+'</span>'
+          + (c.active ? ' <span class="muted">· in use</span>' : '')+'</label>').join("")
+      + '<div class="actions"><button class="btn" id="useWsBtn">Use selected</button></div>';
+  }
+  function wireWsPicker(){
+    const useBtn = $("useWsBtn");
+    if (!useBtn) return;
+    useBtn.onclick = async ()=>{
+      const sel = document.querySelector('input[name=wsPick]:checked');
+      if (!sel) return;
+      useBtn.disabled = true; useBtn.textContent = "Switching…";
+      try{
+        const r = await call("use_workspace", {path: sel.value});
+        if (r && r.ok && r.report){ paintProject(r.report); recheck(); }
+        else {
+          useBtn.disabled = false; useBtn.textContent = "Use selected";
+          $("projBody").insertAdjacentHTML("beforeend", '<div class="note warn">'+esc((r && r.message) || "Could not switch.")+'</div>');
+        }
+      } catch(e){
+        useBtn.disabled = false; useBtn.textContent = "Use selected";
+        $("projBody").insertAdjacentHTML("beforeend", '<div class="note warn">Switch failed: '+esc(e && e.message || e)+'</div>');
+      }
+    };
+  }
+  function paintProject(p){
+    p = p || {};
+    if (p.status === "disconnected" || p.status === "unauthorized"){
+      $("projBody").innerHTML = '<div class="note warn">'+esc(p.message || "Sign in on the Connect tab first.")+'</div>';
+      return;
+    }
+    // Nothing chosen yet: say so and show the choice, rather than reporting on a
+    // folder nobody picked.
+    if (p.configured === false){
+      const cands = p.candidates || [];
+      $("projBody").innerHTML = '<div class="note warn">'+esc(p.note || "No workspace chosen yet.")+'</div>'
+        + wsPickerHtml(cands, "Existing checkouts in your cluster area")
+        + '<div class="hint" style="margin-top:12px">'+(cands.length ? "Or create a new one below." : "Create one below to get started.")+'</div>';
+      wireWsPicker();
+      return;
+    }
+    if (Array.isArray(p.items)){
+      const rows = p.items.map(it=>{
+        const mk = it.ok ? '<span class="mk ok">✓</span>' : '<span class="mk no">✕</span>';
+        const act = (!it.ok && it.action) ? '<div class="dt" style="color:var(--warn)">'+esc(it.action)+'</div>' : "";
+        return '<div class="chk">'+mk+'<div><div class="lb">'+esc(it.name)+'</div><div class="dt">'+esc(it.detail || "")+'</div>'+act+'</div></div>';
+      }).join("");
+      const note = p.note ? '<div class="note'+(p.ok ? '' : ' warn')+'">'+esc(p.note)+'</div>' : "";
+      const pick = (Array.isArray(p.candidates) && p.candidates.length > 1) ? wsPickerHtml(p.candidates, "Which workspace to use") : "";
+      $("projBody").innerHTML = rows + note + pick;
+      wireWsPicker();
+      return;
+    }
+    $("projBody").innerHTML = '<div class="note warn">'+esc(p.message || "No workspace report returned.")+'</div>';
+  }
+  async function loadProject(){
+    $("projBody").innerHTML = '<div class="spin">Checking workspace…</div>'; $("projBtn").disabled = true;
+    try { paintProject(await call("check_project", {})); }
+    catch(e){ $("projBody").innerHTML = '<div class="note warn">Check failed: '+esc(e && e.message || e)+'</div>'; }
+    $("projBtn").disabled = false;
+  }
+  $("projBtn").onclick = ()=>{ entered.project = true; loadProject(); };
+  $("setupToggle").onclick = ()=>{ const b = $("setupBox"); b.style.display = b.style.display === "none" ? "block" : "none"; };
+  async function doSetup(){
+    const name = $("setupName").value.trim(), branch = $("setupBranch").value.trim(), token = $("setupToken").value;
+    const out = $("setupResult");
+    if (!/^[A-Za-z0-9._-]{1,64}$/.test(name)){ out.innerHTML = '<div class="note warn">Folder name may use letters, numbers, ".", "_" and "-" only.</div>'; return; }
+    $("setupBtn").disabled = true; $("setupBtn").textContent = "Cloning… (can take a few minutes)";
+    out.innerHTML = '<div class="spin">Creating '+esc(name)+' and cloning fitpack_legacy'+(branch ? " @ "+esc(branch) : "")+'…</div>';
+    try{
+      const r = await call("setup_workspace", {repo_url: JAM_REPO, folder_name: name, branch: branch, github_token: token});
+      $("setupToken").value = "";                       // never leave a token in the DOM
+      if (r && r.ok){
+        out.innerHTML = '<div class="note">✓ '+esc(r.message || "Workspace created.")+'</div>';
+        if (r.report) paintProject(r.report);
+        $("setupBox").style.display = "none";
+        recheck();
+      } else {
+        const det = r && r.detail ? '<pre class="out" style="max-height:140px">'+esc(r.detail)+'</pre>' : "";
+        out.innerHTML = '<div class="note warn">'+esc((r && r.message) || "Setup failed.")+det+'</div>';
+        if (r && r.reason === "auth"){ $("setupToken").focus(); $("setupToken").placeholder = "paste a GitHub token"; }
+      }
+    } catch(e){ out.innerHTML = '<div class="note warn">Setup failed: '+esc(e && e.message || e)+'</div>'; }
+    $("setupBtn").disabled = false; $("setupBtn").textContent = "Create and clone";
+  }
+  $("setupBtn").onclick = doSetup;
+
+  /* ---------- campaign: the JAM app composer ---------- */
+  const STEPS = [["object","Non-perturbative object"],["reactions","Reactions"],["qcd","QCD settings"],["job","Job config"],["review","Review"]];
+  let cStep = 0, opts = null, card = null, validated = null, submitted = null;
+  const dsCache = {};                 // reaction -> campaign_datasets result
+  const rxView = {};                  // reaction -> {open, tab, search}
+
+  function freshCard(){
+    const d = opts.defaults;
+    return {object: {type: "", parameters: {}}, reactions: [], datasets: {},
+            cuts: JSON.parse(JSON.stringify(d.cuts)), qcd: {...d.qcd}, parameters: {...d.parameters},
+            job: {...d.job}, slurm: {...d.slurm}};
+  }
+  function saveCard(){ validated = null; paintValidation(); persist(); }
+  function paramRows(){
+    const rows = opts.parameters.pdf.rows;
+    return rows.map(r=>({...r, ...(card.object.parameters[r.name] || {})}));
+  }
+  function setParam(name, patch){
+    const base = opts.parameters.pdf.rows.find(r=>r.name === name);
+    const cur = {...(card.object.parameters[name] || {}), ...patch};
+    // keep only what differs from the library value
+    Object.keys(cur).forEach(k=>{ if (cur[k] === base[k]) delete cur[k]; });
+    if (Object.keys(cur).length) card.object.parameters[name] = cur; else delete card.object.parameters[name];
+    saveCard();
+  }
+  function renderCSteps(){
+    const c = $("cSteps"); c.innerHTML = "";
+    STEPS.forEach(([id,label],i)=>{
+      const el = document.createElement("div");
+      el.className = "step"+(i === cStep ? " active" : "");
+      el.innerHTML = '<span class="num">'+(i+1)+'</span>'+esc(label);
+      el.onclick = ()=>{ cStep = i; cSync(); };
+      c.appendChild(el);
+    });
+  }
+  function renderObjects(){
+    const c = $("objectList"); c.innerHTML = "";
+    opts.objects.forEach(o=>{
+      const el = document.createElement("label");
+      el.className = "opt"+(o.enabled ? "" : " disabled");
+      el.innerHTML = '<span class="inline"><input type="checkbox" '+(o.value === card.object.type ? "checked " : "")+(o.enabled ? "" : "disabled")+'> '
+        + esc(o.label)+'</span>'+(o.enabled ? "" : '<span class="bp">BLUEPRINT</span>');
+      // nothing is preselected: the user ticks the object (one at a time)
+      if (o.enabled) el.querySelector("input").onchange = (e)=>{
+        card.object.type = e.target.checked ? o.value : "";
+        saveCard(); renderObjects(); renderParams();
+      };
+      c.appendChild(el);
+    });
+  }
+  function renderParams(){
+    $("paramCard").style.display = card.object.type === "pdf" ? "" : "none";
+    const p = opts.parameters.pdf;
+    $("paramInfo").innerHTML = '<b>Fit basis parameter blocks</b>'+esc(p.fit_basis_blocks.join(", "))
+      + '<b>Auxiliary / inactive blocks</b>'+esc(p.auxiliary_blocks.join(", "))
+      + '<b>Parametrization form</b>'+esc(p.parametrization)+'<b>Construction note</b>'+esc(p.note);
+    const rows = paramRows();
+    const free = rows.filter(r=>!r.fixed).length;
+    $("paramCounts").innerHTML = '<span>Free <b>'+free+'</b></span><span>Fixed <b>'+(rows.length - free)+'</b></span>'
+      + '<span>Changed from the library <b>'+Object.keys(card.object.parameters).length+'</b></span>';
+    const num = v=>v == null ? "" : String(v);
+    $("paramRows").innerHTML = rows.map(r=>'<tr data-n="'+esc(r.name)+'"><td class="mono">'+esc(r.block)+'</td><td class="mono">'+esc(r.parameter)+'</td>'
+      + '<td><button class="st '+(r.fixed ? "fixed" : "free")+'" data-k="fixed">'+(r.fixed ? "FIXED" : "FREE")+'</button></td>'
+      + '<td><input data-k="value" value="'+esc(num(r.value))+'"></td>'
+      + '<td><input data-k="min" value="'+esc(num(r.min))+'"'+(r.fixed ? " disabled" : "")+'></td>'
+      + '<td><input data-k="max" value="'+esc(num(r.max))+'"'+(r.fixed ? " disabled" : "")+'></td></tr>').join("");
+    $("paramRows").querySelectorAll("tr").forEach(tr=>{
+      const name = tr.dataset.n;
+      tr.querySelector("button").onclick = ()=>{ const r = paramRows().find(x=>x.name === name);
+        const patch = {fixed: !r.fixed};
+        if (r.fixed && r.min == null){ patch.min = -10; patch.max = 10; }   // a freed parameter needs a range
+        setParam(name, patch); renderParams(); };
+      tr.querySelectorAll("input").forEach(inp=>inp.onchange = ()=>{
+        const v = inp.value.trim() === "" ? null : Number(inp.value);
+        if (inp.value.trim() !== "" && !isFinite(v)){ inp.style.borderColor = "var(--warn)"; return; }
+        inp.style.borderColor = ""; setParam(name, {[inp.dataset.k]: v}); renderParams(); });
+    });
+  }
+  $("paramReset").onclick = ()=>{ card.object.parameters = {}; saveCard(); renderParams(); };
+
+  async function loadDatasets(rk){
+    if (dsCache[rk]) return dsCache[rk];
+    const d = await call("campaign_datasets", {reaction: rk});
+    if (d && d.status === "ok") dsCache[rk] = d;
+    return d;
+  }
+  function renderReactions(){
+    const c = $("rxList"); c.innerHTML = "";
+    opts.reactions.forEach(r=>{
+      const rk = r.key, on = card.reactions.includes(rk);
+      const v = rxView[rk] = rxView[rk] || {open: on, tab: "datasets", search: ""};
+      const box = document.createElement("div"); box.className = "rx"+(r.enabled ? "" : " off");
+      const nsel = (card.datasets[rk] || []).length;
+      box.innerHTML = '<div class="rxhead"><label class="inline"><input type="checkbox" class="rxon"'+(on ? " checked" : "")+(r.enabled ? "" : " disabled")+'> '
+        + '<b>'+esc(r.label)+'</b></label><span class="muted mono" style="font-size:11px">'+esc(rk)+'</span><span class="sp"></span>'
+        + (r.enabled ? (on ? '<span class="muted" style="font-size:12px">'+nsel+' selected</span> <button class="btn sm rxopen">'+(v.open ? "Hide" : "Show")+'</button>' : '')
+                     : '<span class="bp">BLUEPRINT</span>')+'</div><div class="rxbody"></div>';
+      const cb = box.querySelector(".rxon");
+      if (r.enabled) cb.onchange = ()=>{
+        if (cb.checked){ card.reactions.push(rk); v.open = true; if (!card.cuts[rk]) card.cuts[rk] = JSON.parse(JSON.stringify(opts.defaults.cuts[rk] || [])); }
+        else { card.reactions = card.reactions.filter(x=>x !== rk); delete card.datasets[rk]; }
+        saveCard(); renderReactions();
+      };
+      const ob = box.querySelector(".rxopen"); if (ob) ob.onclick = ()=>{ v.open = !v.open; renderReactions(); };
+      c.appendChild(box);
+      if (on && v.open) renderReactionBody(rk, box.querySelector(".rxbody"));
+    });
+  }
+  async function renderReactionBody(rk, el){
+    const v = rxView[rk];
+    el.innerHTML = '<div class="subtabs"><button data-t="datasets"'+(v.tab === "datasets" ? ' class="on"' : '')+'>Datasets</button>'
+      + '<button data-t="cuts"'+(v.tab === "cuts" ? ' class="on"' : '')+'>Cuts</button></div><div class="rxpane"></div>';
+    el.querySelectorAll(".subtabs button").forEach(b=>b.onclick = ()=>{ v.tab = b.dataset.t; renderReactionBody(rk, el); });
+    const pane = el.querySelector(".rxpane");
+    if (v.tab === "cuts"){ renderCuts(rk, pane); return; }
+    pane.innerHTML = '<div class="spin">Loading the '+esc(rk)+' datasets…</div>';
+    let d;
+    try { d = await loadDatasets(rk); } catch(e){ pane.innerHTML = '<div class="note warn">'+esc(e && e.message || e)+'</div>'; return; }
+    if (!d || d.status !== "ok"){ pane.innerHTML = '<div class="note warn">'+esc((d && d.message) || "Could not load datasets.")+'</div>'; return; }
+    const sel = new Set(card.datasets[rk] || []);
+    const q = v.search.toLowerCase();
+    const all = [];
+    let html = '<div class="plot-controls" style="margin-bottom:6px"><div class="pc" style="flex:1"><input type="text" class="dsq" placeholder="Search '+esc(rk)+' datasets" value="'+esc(v.search)+'"></div>'
+      + '<button class="btn sm" data-a="all">Select all</button><button class="btn sm" data-a="none">Clear all</button></div><div class="dslist">';
+    d.experiments.forEach(g=>{
+      const items = g.datasets.filter(x=>!q || (x.id+" "+x.label).toLowerCase().includes(q));
+      if (!items.length) return;
+      html += '<div class="exp">'+esc(g.experiment)+'</div>';
+      items.forEach(x=>{
+        const usable = x.enabled !== false;
+        if (usable) all.push(x.id);
+        html += '<label class="ds'+(usable ? "" : " disabled")+'"><input type="checkbox" data-id="'+esc(x.id)+'"'+(sel.has(x.id) ? " checked" : "")+(usable ? "" : " disabled")+'> '
+          + esc(x.label)+(usable ? "" : ' <span class="bp">'+(x.blueprint ? "BLUEPRINT" : "NO DATA FILE")+'</span>')+'<span class="id">'+esc(x.id)+'</span></label>';
+      });
+    });
+    pane.innerHTML = html + '</div>';
+    const inp = pane.querySelector(".dsq");
+    inp.oninput = ()=>{ v.search = inp.value; clearTimeout(inp._t); inp._t = setTimeout(()=>renderReactionBody(rk, el).then(()=>{ const n = el.querySelector(".dsq"); if (n){ n.focus(); n.setSelectionRange(n.value.length, n.value.length); } }), 250); };
+    const apply = ()=>{ card.datasets[rk] = Array.from(sel); saveCard();
+      const head = el.parentElement.querySelector(".rxhead .muted + span, .rxhead span.muted:not(.mono)"); renderReactionsCountOnly(); };
+    pane.querySelectorAll("input[data-id]").forEach(cb=>cb.onchange = ()=>{ if (cb.checked) sel.add(cb.dataset.id); else sel.delete(cb.dataset.id); apply(); });
+    pane.querySelectorAll("button[data-a]").forEach(b=>b.onclick = ()=>{
+      if (b.dataset.a === "all") all.forEach(x=>sel.add(x)); else all.forEach(x=>sel.delete(x));
+      apply(); renderReactionBody(rk, el); });
+  }
+  function renderReactionsCountOnly(){
+    document.querySelectorAll("#rxList .rx").forEach((box, i)=>{
+      const rk = opts.reactions[i].key, span = box.querySelector(".rxhead span.muted:not(.mono)");
+      if (span) span.textContent = (card.datasets[rk] || []).length+" selected";
+    });
+  }
+  function renderCuts(rk, pane){
+    const cuts = card.cuts[rk] = card.cuts[rk] || [];
+    pane.innerHTML = cuts.map((c,i)=>'<div class="cutrow" data-i="'+i+'"><input type="checkbox" data-k="enabled"'+(c.enabled ? " checked" : "")+'>'
+      + '<input type="text" data-k="variable" value="'+esc(c.variable)+'"><select data-k="op">'+[">", ">=", "<", "<="].map(o=>'<option'+(o === c.op ? " selected" : "")+'>'+esc(o)+'</option>').join("")+'</select>'
+      + '<input type="number" step="any" data-k="value" value="'+esc(c.value)+'"><button class="btn sm" data-del="1">Remove</button></div>').join("")
+      + '<div class="actions"><button class="btn sm" data-add="1">Add cut</button></div>'
+      + '<div class="hint">Kinematic filters written into the card for '+esc(rk)+', e.g. Q2 &gt; 1.69 and W2 &gt; 10. At least one must be enabled.</div>';
+    pane.querySelectorAll(".cutrow").forEach(row=>{
+      const c = cuts[+row.dataset.i];
+      row.querySelectorAll("[data-k]").forEach(inp=>inp.onchange = ()=>{
+        const k = inp.dataset.k; c[k] = k === "enabled" ? inp.checked : (k === "value" ? Number(inp.value) : inp.value.trim()); saveCard(); });
+      row.querySelector("[data-del]").onclick = ()=>{ cuts.splice(+row.dataset.i, 1); saveCard(); renderCuts(rk, pane); };
+    });
+    pane.querySelector("[data-add]").onclick = ()=>{ cuts.push({variable: "Q2", op: ">", value: 1, enabled: true}); saveCard(); renderCuts(rk, pane); };
+  }
+  function fillSelect(id, values, current){
+    $(id).innerHTML = values.map(v=>'<option value="'+esc(v)+'"'+(String(v) === String(current) ? " selected" : "")+'>'+esc(v)+'</option>').join("");
+  }
+  function renderQcd(){
+    const q = card.qcd, ch = opts.choices;
+    fillSelect("qOrder", ch.order, q.order); fillSelect("qTmc", ch.tmc, q.tmc === "AOT" ? "AOT" : "off");
+    fillSelect("qDglap", ch.dglapMode, q.dglapMode); fillSelect("qAs", ch.asMode, q.asMode);
+    $("qQ20").value = q.Q20; $("qHT").checked = !!q.higherTwist;
+  }
+  [["qOrder","order"],["qTmc","tmc"],["qDglap","dglapMode"],["qAs","asMode"]].forEach(([id,k])=>$(id).onchange = ()=>{ card.qcd[k] = $(id).value; saveCard(); });
+  $("qQ20").onchange = ()=>{ card.qcd.Q20 = Number($("qQ20").value); saveCard(); };
+  $("qHT").onchange = ()=>{ card.qcd.higherTwist = $("qHT").checked; saveCard(); };
+  function renderJob(){
+    const j = card.job, p = card.parameters, s = card.slurm;
+    $("jName").value = j.campaignName || ""; $("jReplicas").value = j.replicas;
+    document.querySelectorAll("input[name=pinit]").forEach(r=>r.checked = r.value === p.initialization);
+    $("seedBox").style.display = p.initialization === "random_within_bounds" ? "" : "none";
+    $("pSeed").value = p.randomSeed == null ? "" : p.randomSeed; $("pPerRep").checked = !!p.perReplicaSeed;
+    document.querySelectorAll("input[name=infer]").forEach(r=>r.checked = (r.value === "ensemble") === !!j.bootstrap);
+    $("jTol").value = j.tolerance; $("jIter").value = j.maxIterations; fillSelect("jOpt", opts.choices.optimizer, j.optimizer);
+    $("sTime").value = s.time; $("sMem").value = s.mem; $("sCpus").value = s.cpus;
+    $("sPart").innerHTML = '<option value="">Auto</option>' + (opts.partitions || []).map(n=>'<option'+(n === s.partition ? " selected" : "")+'>'+esc(n)+'</option>').join("");
+    const pa = opts.partition_auto || {};
+    $("sPartHint").textContent = "Auto: "+pa.short+" for jobs up to "+pa.short_hours+" h per replica, "+pa.long+" otherwise.";
+  }
+  $("jName").oninput = ()=>{ card.job.campaignName = $("jName").value; saveCard(); };
+  $("jReplicas").onchange = ()=>{ card.job.replicas = Number($("jReplicas").value); saveCard(); };
+  document.querySelectorAll("input[name=pinit]").forEach(r=>r.onchange = ()=>{ card.parameters.initialization = r.value; saveCard(); renderJob(); });
+  $("pSeed").onchange = ()=>{ card.parameters.randomSeed = $("pSeed").value === "" ? null : Number($("pSeed").value); saveCard(); };
+  $("pPerRep").onchange = ()=>{ card.parameters.perReplicaSeed = $("pPerRep").checked; saveCard(); };
+  document.querySelectorAll("input[name=infer]").forEach(r=>r.onchange = ()=>{ card.job.bootstrap = r.value === "ensemble"; saveCard(); });
+  $("jTol").onchange = ()=>{ card.job.tolerance = $("jTol").value.trim(); saveCard(); };
+  $("jIter").onchange = ()=>{ card.job.maxIterations = Number($("jIter").value); saveCard(); };
+  $("jOpt").onchange = ()=>{ card.job.optimizer = $("jOpt").value; saveCard(); };
+  $("sTime").onchange = ()=>{ card.slurm.time = $("sTime").value.trim(); saveCard(); };
+  $("sMem").onchange = ()=>{ card.slurm.mem = $("sMem").value.trim(); saveCard(); };
+  $("sCpus").onchange = ()=>{ card.slurm.cpus = Number($("sCpus").value); saveCard(); };
+  $("sPart").onchange = ()=>{ card.slurm.partition = $("sPart").value; saveCard(); };
+
+  function paintValidation(){
+    const ok = validated && validated.valid;
+    $("submitJobs").disabled = !ok || !!submitted;
+    $("cStatus").innerHTML = '<span>Status <b>'+(submitted ? "submitted" : ok ? "validated input card ready" : validated ? "validation failed" : "draft input card in progress")+'</b></span>';
+    if (!validated){ $("reviewBox").innerHTML = ""; $("reviewErr").textContent = ""; $("scriptBox").style.display = "none"; return; }
+    if (!validated.valid){ $("reviewErr").innerHTML = (validated.errors || []).map(esc).join("<br>"); $("reviewBox").innerHTML = ""; $("scriptBox").style.display = "none"; return; }
+    $("reviewErr").textContent = "";
+    const s = validated.summary;
+    const rows = [["Non-perturbative object", s.object], ["Parameters", s.free_parameters+" free · "+s.fixed_parameters+" fixed ("+s.fixed.join(", ")+")"],
+      ["Reactions", s.reactions.join(", ")], ["Datasets", Object.entries(s.datasets).map(([r,n])=>r+": "+n).join(" · ")],
+      ["Cuts", Object.entries(s.cuts).map(([r,c])=>r+": "+c.join(", ")).join(" · ")],
+      ["QCD", s.qcd.order+" · Q₀² "+s.qcd.Q20+" · TMC "+s.qcd.tmc+" · HT "+(s.qcd.higherTwist ? "on" : "off")+" · DGLAP "+s.qcd.dglapMode+" · αS "+s.qcd.asMode],
+      ["Initialization", s.initialization], ["Inference mode", s.inference],
+      ["Replicas · max iterations · tolerance · optimizer", s.replicas+" · "+s.max_iterations+" · "+s.tolerance+" · "+s.optimizer],
+      ["Slurm (per replica)", s.slurm.partition_effective+" · "+s.slurm.time+" · "+s.slurm.mem+" · "+s.slurm.cpus+" cpu"]];
+    $("reviewBox").innerHTML = rows.map(r=>'<div class="row"><span class="k">'+esc(r[0])+'</span><span class="v">'+esc(r[1])+'</span></div>').join("");
+    $("scriptBox").style.display = ""; $("scriptText").textContent = validated.slurm_script || "";
+  }
+  $("createCard").onclick = async ()=>{
+    $("createCard").disabled = true; $("cStatus").innerHTML = '<span class="spin" style="padding:0">Validating on the cluster…</span>';
+    try { validated = await call("validate_campaign", {card}); }
+    catch(e){ validated = {valid: false, errors: ["Validation failed: "+(e && e.message || e)]}; }
+    $("createCard").disabled = false; paintValidation();
+  };
+  $("submitJobs").onclick = async ()=>{
+    if (!validated || !validated.valid) return;
+    // The click is the user's confirmation; the phrase ties it to exactly this card.
+    $("submitJobs").disabled = true; $("cStatus").innerHTML = '<span class="spin" style="padding:0">Submitting…</span>';
+    try{
+      const r = await call("submit_campaign", {card, confirm: validated.confirmation_phrase});
+      if (r && r.status === "submitted"){
+        submitted = {collection_id: r.collection_id, job_id: r.job_id, replicas: r.replicas, partition: r.partition};
+        persist(); paintValidation(); cSync();
+      } else { $("reviewErr").textContent = (r && (r.message || (r.errors || []).join(" ") || r.detail)) || "Not submitted."; paintValidation(); }
+    } catch(e){ $("reviewErr").textContent = "Submit failed: "+(e && e.message || e); paintValidation(); }
+  };
+  function cSync(){
+    renderCSteps();
+    document.querySelectorAll('.tab[data-tab=campaign] .panel').forEach(p=>p.classList.toggle("active", p.dataset.step === STEPS[cStep][0]));
+    $("cBack").style.visibility = cStep === 0 ? "hidden" : "visible";
+    $("cNext").style.visibility = cStep === STEPS.length - 1 ? "hidden" : "visible";
+    $("cNew").style.display = submitted ? "" : "none";
+    const note = $("cSubmittedNote");
+    if (submitted){
+      note.style.display = "block";
+      note.innerHTML = 'Fitting campaign submitted. Collection <span class="mono">'+esc(submitted.collection_id)+'</span>, job <span class="mono">'
+        + esc(submitted.job_id)+'</span>, '+esc(submitted.replicas)+' replicas on '+esc(submitted.partition)+'. <a href="#" id="toColl">Open Collections</a>';
+      $("toColl").onclick = (e)=>{ e.preventDefault(); active = "collections"; syncTabs(); persist(); onEnter("collections"); };
+    } else note.style.display = "none";
+  }
+  $("cBack").onclick = ()=>{ if (cStep > 0){ cStep--; cSync(); } };
+  $("cNext").onclick = ()=>{ if (cStep < STEPS.length - 1){ cStep++; cSync(); } };
+  $("cNew").onclick = ()=>{ submitted = null; validated = null; card = freshCard(); cStep = 0; persist(); renderComposer(); };
+  function renderComposer(){ renderObjects(); renderParams(); renderReactions(); renderQcd(); renderJob(); paintValidation(); cSync(); }
+  async function loadCampaignSources(){
+    try{
+      opts = await call("campaign_options", {});
+      const saved = ws().campaign2;
+      card = saved && saved.card ? {...freshCard(), ...saved.card} : freshCard();
+      submitted = saved && saved.submitted || null;
+      renderComposer();
+    } catch(e){ $("rxList").innerHTML = '<div class="note warn">Could not load the composer: '+esc(e && e.message || e)+'</div>'; }
+  }
+  function campaignState(){ return card ? {card, submitted} : (ws().campaign2 || null); }
+
+  /* ---------- collections ---------- */
+  // Times are shown in US Eastern, where the cluster and the gateway window live.
+  function fmtET(sec){
+    if (!sec) return "—";
+    try { return new Date(sec*1000).toLocaleString("en-US", {timeZone: "America/New_York", month: "2-digit",
+            day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false})+" ET"; }
+    catch(e){ return new Date(sec*1000).toISOString().slice(5, 16).replace("T", " ")+" UTC"; }
+  }
+  const isoSec = s=>s ? Date.parse(s)/1000 : 0;
+  let campaignsCache = null, runsCache = null;
+  async function loadRuns(){
+    const d = await call("list_runs", {});
+    if (d && Array.isArray(d.runs)) runsCache = d;
+    return d;
+  }
+  async function loadCampaigns(){
+    const d = await call("list_campaigns", {});
+    if (d && Array.isArray(d.campaigns)) campaignsCache = d.campaigns;
+    return d;
+  }
+  async function loadCollections(){
+    $("collBody").innerHTML = '<div class="spin">Loading campaigns…</div>'; $("collBtn").disabled = true;
+    try { paintCampaigns(await loadCampaigns()); }
+    catch(e){ $("collBody").innerHTML = '<div class="note warn">Could not load campaigns: '+esc(e && e.message || e)+'</div>'; }
+    try { paintRuns(await loadRuns()); }
+    catch(e){ $("runsBody").innerHTML = '<div class="note warn">Could not load runs: '+esc(e && e.message || e)+'</div>'; }
+    $("collBtn").disabled = false;
+  }
+  $("collBtn").onclick = loadCollections;
+  function stateTag(s){ return '<span class="tag '+({running: "active", submitted: "active", completed: "done", postprocessed: "done"}[s] || "other")+'">'+esc(s)+'</span>'; }
+  function paintCampaigns(d){
+    if (!d || !Array.isArray(d.campaigns)){ $("collBody").innerHTML = '<div class="note warn">'+esc((d && d.message) || "Sign in on the Connect tab first.")+'</div>'; return; }
+    if (!d.campaigns.length){ $("collBody").innerHTML = '<div class="empty">No campaigns yet. Build one on the Campaign tab.</div>'; return; }
+    $("collBody").innerHTML = '<table class="tbl"><thead><tr><th>Campaign</th><th>Created</th><th>Replicas</th><th>Status</th><th>Jobs</th><th></th></tr></thead><tbody>'
+      + d.campaigns.map((c,i)=>'<tr><td><b>'+esc(c.campaign_name)+'</b><div class="mono muted" style="font-size:11px">'+esc(c.collection_id)+'</div>'
+        + '<div class="muted" style="font-size:11.5px">'+esc(Object.entries(c.datasets || {}).map(([r,v])=>r+" "+v.length).join(" · "))+'</div></td>'
+        + '<td class="mono" style="font-size:11.5px">'+esc(fmtET(isoSec(c.created_at)))+'</td>'
+        + '<td class="mono">'+esc(c.succeeded == null ? "?" : c.succeeded)+' / '+esc(c.replicas)+' done'+(c.finished > c.succeeded ? '<div class="muted" style="font-size:11px">'+(c.finished - c.succeeded)+' failed</div>' : '')+'</td>'
+        + '<td>'+stateTag(c.status)+'</td><td class="mono" style="font-size:11.5px">'+esc((c.job_ids || []).join(", "))+'</td>'
+        + '<td><button class="btn sm" data-i="'+i+'">Analyze</button></td></tr>').join("") + '</tbody></table>';
+    $("collBody").querySelectorAll("button[data-i]").forEach(b=>b.onclick = ()=>{
+      analysisCampaign = d.campaigns[+b.dataset.i].collection_id;
+      active = "analysis"; syncTabs(); persist(); onEnter("analysis");
+    });
+  }
+  function paintRuns(d){
+    if (!d || !Array.isArray(d.runs)){ $("runsBody").innerHTML = '<div class="note warn">'+esc((d && d.message) || "Sign in on the Connect tab first.")+'</div>'; return; }
+    let html = "";
+    const q = d.queue || [];
+    if (q.length){
+      const cls = (s)=>/RUN/.test(s) ? "active" : (/PEND/.test(s) ? "other" : "bad");
+      html += '<div class="label" style="margin-bottom:6px">In the queue</div><table class="tbl"><thead><tr><th>Job</th><th>Name</th>'
+        + '<th>State</th><th>Elapsed</th><th>Partition</th></tr></thead><tbody>'
+        + q.map(j=>'<tr><td class="mono">'+esc(j.job_id)+'</td><td>'+esc(j.name)+'</td><td><span class="tag '+cls(j.state)+'">'
+          + esc(String(j.state).toLowerCase())+'</span></td><td class="mono">'+esc(j.elapsed)+'</td><td class="mono">'+esc(j.partition)+'</td></tr>').join("")
+        + '</tbody></table><div style="height:16px"></div>';
+    }
+    const runs = d.runs;
+    if (!runs.length){ $("runsBody").innerHTML = html + '<div class="empty">No single runs with output.</div>'; return; }
+    html += '<table class="tbl"><thead><tr><th>Run</th><th>Results</th><th>Progress</th><th>Last change</th><th></th></tr></thead><tbody>'
+      + runs.map((r,i)=>'<tr><td class="mono">'+esc(r.name)+'</td><td>'
+        + (r.msr_count ? '<span class="tag done">'+esc(r.msr_count)+' msr</span>' : '<span class="tag other">none yet</span>')+'</td>'
+        + '<td>'+(r.has_progress ? "yes" : "—")+'</td><td class="mono" style="font-size:11.5px">'+esc(fmtET(r.modified))+'</td>'
+        + '<td><button class="btn sm" data-i="'+i+'">χ²</button></td></tr>').join("")
+      + '</tbody></table>';
+    $("runsBody").innerHTML = html;
+    $("runsBody").querySelectorAll("button[data-i]").forEach(b=>b.onclick = async ()=>{
+      analysisRun = runs[+b.dataset.i].name;
+      active = "analysis"; syncTabs(); persist();
+      await loadAnalysisRuns(); loadChi2();
+    });
+  }
+
+  /* ---------- analysis: campaigns ---------- */
+  let analysisCampaign = ws().analysisCampaign || "";
+  const FLAVORS = ["u","d","g","s","ub","db","sb"];
+  const pdfOn = new Set(["u","d","g","s"]);
+  async function loadAnalysisCampaigns(){
+    const sel = $("caSel");
+    try{
+      const d = await loadCampaigns();
+      const cs = (d && d.campaigns) || [];
+      if (!cs.length){ sel.innerHTML = '<option value="">no campaigns yet</option>'; $("caHead").innerHTML = ""; return; }
+      if (!analysisCampaign || !cs.some(c=>c.collection_id === analysisCampaign)) analysisCampaign = cs[0].collection_id;
+      sel.innerHTML = cs.map(c=>'<option value="'+esc(c.collection_id)+'"'+(c.collection_id === analysisCampaign ? " selected" : "")+'>'
+        + esc(c.campaign_name+"  ·  "+c.collection_id)+'</option>').join("");
+      paintCaHead();
+    } catch(e){ sel.innerHTML = '<option value="">could not load campaigns</option>'; }
+  }
+  function paintCaHead(){
+    const c = (campaignsCache || []).find(x=>x.collection_id === analysisCampaign);
+    if (!c){ $("caHead").innerHTML = ""; return; }
+    $("caHead").innerHTML = '<div class="kv"><span>Collection ID <b>'+esc(c.collection_id)+'</b></span><span>Status '+stateTag(c.status)+'</span>'
+      + '<span>Replicas <b>'+esc(c.replicas)+'</b></span><span>Finished <b>'+esc(c.succeeded == null ? "?" : c.succeeded)+'</b></span>'
+      + '<span>Job ID <b>'+esc((c.job_ids || []).join(", "))+'</b></span></div>';
+  }
+  $("caSel").onchange = ()=>{ analysisCampaign = $("caSel").value; persist(); paintCaHead(); $("caOut").innerHTML = ""; };
+  function caBusy(t){ $("caOut").innerHTML = '<div class="spin">'+esc(t)+'</div>'; }
+  function caWarn(t){ $("caOut").innerHTML = '<div class="note warn">'+esc(t)+'</div>'; }
+  function showBox(id){ ["caMoreBox","caPdfBox","caExpBox"].forEach(b=>$(b).style.display = b === id && $(b).style.display === "none" ? "" : "none"); }
+  function summaryHtml(s){
+    if (!s) return "";
+    const f = v=>v == null ? "—" : (typeof v === "number" ? (Number.isInteger(v) ? String(v) : fmtNum(v)) : String(v));
+    return '<div class="rev">'+[["Status", s.status], ["Completed / failed / missing", f(s.completed_replicas)+" / "+f(s.failed_replicas)+" / "+f(s.missing_replicas)],
+      ["Good fraction", s.good_fraction == null ? "—" : (100*s.good_fraction).toFixed(0)+"%"],
+      ["χ² mean / median", f(s.mean_total_chi2)+" / "+f(s.median_total_chi2)], ["χ² min / max", f(s.min_total_chi2)+" / "+f(s.max_total_chi2)],
+      ["Central-value χ²/N (mean)", f(s.mean_central_value_chi2_per_point)],
+      ["Best replica", s.best_replica ? ("#"+s.best_replica.replica+"  χ² "+f(s.best_replica.chi2_total)) : "—"]]
+      .map(r=>'<div class="row"><span class="k">'+esc(r[0])+'</span><span class="v">'+esc(r[1])+'</span></div>').join("")+'</div>';
+  }
+  $("caPost").onclick = async ()=>{
+    if (!analysisCampaign) return; caBusy("Aggregating the replicas…");
+    try{ const r = await call("postprocess_campaign", {collection_id: analysisCampaign});
+      if (!r || r.status !== "ok"){ caWarn((r && (r.message || r.detail)) || "Postprocess failed."); return; }
+      $("caOut").innerHTML = '<div class="note">'+esc(r.message)+'</div>'+summaryHtml(r.summary); loadAnalysisCampaigns();
+    } catch(e){ caWarn("Postprocess failed: "+(e && e.message || e)); }
+  };
+  $("caSum").onclick = async ()=>{
+    if (!analysisCampaign) return; caBusy("Loading the fit summary…");
+    try{ const r = await call("campaign_summary", {collection_id: analysisCampaign});
+      if (!r || !r.summary){ caWarn((r && r.message) || "No fit summary yet."); return; }
+      const rows = r.datasets || [], mx = Math.max(...rows.map(x=>x.chi2_per_npt || 0), 1e-9);
+      $("caOut").innerHTML = (r.stale ? '<div class="note warn">'+esc(r.note)+'</div>' : "") + summaryHtml(r.summary) + (rows.length ? '<div class="label" style="margin:16px 0 6px">χ² per dataset, fitted pseudo-data (mean over replicas)</div>'
+        + '<table class="tbl"><thead><tr><th>Dataset</th><th style="text-transform:none">χ²/N</th><th style="text-transform:none">χ²</th><th>Points</th><th style="width:30%"></th></tr></thead><tbody>'
+        + rows.map(x=>'<tr><td class="mono">'+esc(x.reaction+":"+x.dataset_id)+'</td><td class="mono">'+esc(x.chi2_per_npt == null ? "—" : fmtNum(x.chi2_per_npt))+'</td>'
+          + '<td class="mono">'+esc(x.chi2 == null ? "—" : fmtNum(x.chi2))+'</td><td class="mono">'+esc(x.npts == null ? "—" : x.npts)+'</td>'
+          + '<td><div class="bar" style="width:'+Math.max(2, Math.round(100*(x.chi2_per_npt || 0)/mx))+'%"></div></td></tr>').join("")+'</tbody></table>' : "");
+    } catch(e){ caWarn("Could not load the summary: "+(e && e.message || e)); }
+  };
+  function imagesHtml(plots, cap){
+    return '<div class="imgs">'+(plots || []).map(p=>'<figure><img alt="'+esc(cap(p))+'" src="'+esc(p.data_url)+'"><figcaption>'+esc(cap(p))+'</figcaption></figure>').join("")+'</div>';
+  }
+  function renderFlavs(){
+    $("caFlavs").innerHTML = FLAVORS.map(f=>'<span class="fl'+(pdfOn.has(f) ? " on" : "")+'" data-f="'+f+'">'+esc(f)+'</span>').join("");
+    $("caFlavs").querySelectorAll(".fl").forEach(el=>el.onclick = ()=>{ const f = el.dataset.f; if (pdfOn.has(f)) pdfOn.delete(f); else pdfOn.add(f); renderFlavs(); });
+  }
+  $("caPdf").onclick = ()=>{ renderFlavs(); showBox("caPdfBox"); };
+  $("caPdfGo").onclick = async ()=>{
+    if (!analysisCampaign || !pdfOn.size) return; caBusy("Evaluating every finished replica's PDFs on the cluster… this takes a minute.");
+    try{ const r = await call("campaign_pdf_plots", {collection_id: analysisCampaign, flavors: Array.from(pdfOn).join(","),
+                                                     q2: Number($("caQ2").value) || 10, mean_overlay: $("caMean").checked});
+      if (!r || r.status !== "ok"){ caWarn((r && (r.message || r.detail)) || "No plots."); return; }
+      $("caOut").innerHTML = imagesHtml(r._panel_plots, p=>p.flavor+" PDF · "+p.n_replicas+" replicas · Q² = "+r.q2+" GeV² · "+p.path);
+    } catch(e){ caWarn("Plotting failed: "+(e && e.message || e)); }
+  };
+  $("caExp").onclick = ()=>showBox("caExpBox");
+  $("caExpGo").onclick = async ()=>{
+    if (!analysisCampaign) return; caBusy("Evaluating the best replica against every dataset… this takes a minute.");
+    try{ const r = await call("analyze_by_experiment", {collection_id: analysisCampaign, experiments: $("caExpList").value, plot: true});
+      if (!r || r.status !== "ok"){ caWarn((r && (r.message || r.detail)) || "No analysis."); return; }
+      const ex = r.experiments || [];
+      $("caOut").innerHTML = '<div class="label" style="margin:4px 0 6px">χ²/N by experiment: best replica against the central data values</div>'
+        + '<table class="tbl"><thead><tr><th>Experiment</th><th>Datasets</th><th>Points</th><th style="text-transform:none">χ²/N</th></tr></thead><tbody>'
+        + ex.map(g=>'<tr><td><b>'+esc(g.experiment)+'</b></td><td class="mono" style="font-size:11.5px">'
+          + esc(g.datasets.map(d=>d.reaction+":"+d.dataset_id+" ("+(d.chi2_per_npt == null ? "—" : fmtNum(d.chi2_per_npt))+")").join(", "))+'</td>'
+          + '<td class="mono">'+esc(g.npts)+'</td><td class="mono">'+esc(g.chi2_per_npt == null ? "—" : fmtNum(g.chi2_per_npt))+'</td></tr>').join("")+'</tbody></table>'
+        + imagesHtml(r._panel_plots, p=>"Data vs theory · "+p.path);
+    } catch(e){ caWarn("Analysis failed: "+(e && e.message || e)); }
+  };
+  $("caMore").onclick = ()=>{ $("caMoreOut").innerHTML = ""; showBox("caMoreBox"); };
+  $("caMorePlan").onclick = async ()=>{
+    if (!analysisCampaign) return;
+    $("caMoreOut").innerHTML = '<div class="spin">Planning…</div>';
+    try{ const r = await call("append_replicas", {collection_id: analysisCampaign, count: Number($("caMoreN").value)});
+      if (!r || r.status !== "needs_confirmation"){ $("caMoreOut").innerHTML = '<div class="note warn">'+esc((r && r.message) || "Could not plan.")+'</div>'; return; }
+      const p = r.plan;
+      $("caMoreOut").innerHTML = '<div class="rev">'+[["Current replicas", p.current_replicas], ["Add", p.add], ["New total", p.new_total], ["Replica range", p.replica_range], ["Partition", p.partition]]
+        .map(x=>'<div class="row"><span class="k">'+esc(x[0])+'</span><span class="v">'+esc(x[1])+'</span></div>').join("")+'</div>'
+        + '<div class="note">Launch-ready. Type <span class="phrase">'+esc(r.confirmation_phrase)+'</span> to confirm.</div>'
+        + '<div class="grid2"><input type="text" id="caMorePhrase" placeholder="confirmation phrase"><button class="btn primary" id="caMoreGo">Launch</button></div>';
+      $("caMoreGo").onclick = async ()=>{
+        $("caMoreGo").disabled = true;
+        try{ const s = await call("append_replicas", {collection_id: analysisCampaign, count: p.add, confirm: $("caMorePhrase").value.trim()});
+          $("caMoreOut").innerHTML = s && s.status === "submitted"
+            ? '<div class="note">Queued '+esc(p.add)+' more replicas ('+esc(p.replica_range)+') as job '+esc(s.job_id)+'.</div>'
+            : '<div class="note warn">'+esc((s && (s.message || "The phrase did not match; nothing was queued.")) || "Not launched.")+'</div>';
+          loadAnalysisCampaigns();
+        } catch(e){ $("caMoreOut").innerHTML = '<div class="note warn">Launch failed: '+esc(e && e.message || e)+'</div>'; }
+      };
+    } catch(e){ $("caMoreOut").innerHTML = '<div class="note warn">'+esc(e && e.message || e)+'</div>'; }
+  };
+
+  /* ---------- analysis: single runs ---------- */
+  async function loadAnalysisRuns(){
+    const sel = $("anRun");
+    try{
+      const d = await loadRuns();
+      const runs = (d && d.runs) || [];
+      if (!runs.length){ sel.innerHTML = '<option value="">no runs yet</option>'; return; }
+      if (!analysisRun || !runs.some(r=>r.name === analysisRun))
+        analysisRun = (runs.find(r=>r.has_progress) || runs[0]).name;
+      sel.innerHTML = runs.map(r=>'<option value="'+esc(r.name)+'"'+(r.name === analysisRun ? " selected" : "")+'>'
+        + esc(r.name)+(r.msr_count ? "  ·  "+r.msr_count+" msr" : "")+'</option>').join("");
+    } catch(e){ sel.innerHTML = '<option value="">could not load runs</option>'; }
+  }
+  $("anRun").onchange = ()=>{ analysisRun = $("anRun").value; persist(); };
+  function anBusy(t){ $("anEmpty").style.display = "none"; $("anOut").innerHTML = '<div class="spin">'+esc(t)+'</div>'; }
+  function anMsg(t){ $("anEmpty").style.display = "none"; $("anOut").innerHTML = '<div class="note warn">'+esc(t)+'</div>'; }
+  function fmtNum(v){
+    if (!isFinite(v)) return String(v);
+    const a = Math.abs(v);
+    if (a >= 1e4 || (a > 0 && a < 1e-2)) return v.toExponential(1);
+    return a >= 100 ? v.toFixed(0) : (a >= 10 ? v.toFixed(1) : v.toFixed(3));
+  }
+  function niceTicks(lo, hi, n){
+    const span = (hi - lo) || Math.abs(hi) || 1;
+    const raw = span / n, mag = Math.pow(10, Math.floor(Math.log10(raw))), r = raw / mag;
+    const step = (r >= 7.5 ? 10 : r >= 3.5 ? 5 : r >= 1.5 ? 2 : 1) * mag;
+    const t = [];
+    for (let v = Math.ceil(lo / step) * step; v <= hi + step * 1e-9; v += step) t.push(+v.toPrecision(12));
+    return t;
+  }
+  async function loadChi2(){
+    const run = $("anRun").value || analysisRun;
+    if (!run) return;
+    anBusy("Reading progress.json for "+run+"…");
+    try{
+      const d = await call("read_chi2", {outdir: run, structured: true});
+      if (!d || d.status !== "ok"){ $("anChart").innerHTML = ""; $("anTable").innerHTML = ""; $("anHead").innerHTML = "";
+                                    anMsg((d && d.message) || "No χ² data for this run yet."); return; }
+      drawChi2(d, run);
+    } catch(e){ anMsg("Could not read χ²: "+(e && e.message || e)); }
+  }
+  function drawChi2(d, run){
+    const s = d.series || [];
+    $("anEmpty").style.display = "none"; $("anOut").innerHTML = "";
+    if (!s.length){ $("anChart").innerHTML = ""; $("anTable").innerHTML = ""; anMsg("progress.json has no complete iterations yet."); return; }
+    const W = 640, H = 260, L = 58, R = 18, T = 14, B = 36;
+    const xs = s.map(p=>p[0]), ys = s.map(p=>p[1]);
+    const x0 = Math.min(...xs), x1 = Math.max(...xs);
+    const ymin = Math.min(...ys), ymax = Math.max(...ys);
+    // Early iterations can sit orders of magnitude above the converged value; a
+    // linear axis would flatten the part that matters.
+    const logy = ymin > 0 && ymax / ymin > 20;
+    const fy = logy ? Math.log10 : (v=>v);
+    let lo = fy(ymin), hi = fy(ymax);
+    if (hi - lo < 1e-9){ lo -= 0.5; hi += 0.5; }
+    const pad = (hi - lo) * 0.06; lo -= pad; hi += pad;
+    // On a log axis, reach down to the decade below the lowest value so the
+    // converged level sits just above a labelled tick instead of between none.
+    if (logy) lo = Math.min(lo, Math.floor(fy(ymin)));
+    const X = v=>L + (W - L - R) * (x1 === x0 ? 0.5 : (v - x0) / (x1 - x0));
+    const Y = v=>T + (H - T - B) * (1 - (fy(v) - lo) / (hi - lo));
+    let g = "";
+    let yt;
+    if (logy){ yt = []; for (let e = Math.ceil(lo); e <= Math.floor(hi); e++) yt.push(Math.pow(10, e)); if (yt.length < 2) yt = [ymin, ymax]; }
+    else yt = niceTicks(lo, hi, 5);
+    yt.forEach(v=>{ const y = Y(v); if (y < T - 1 || y > H - B + 1) return;
+      const label = logy ? (v >= 1 ? String(Math.round(v)) : String(+v.toPrecision(1))) : fmtNum(v);
+      g += '<line class="gr" x1="'+L+'" x2="'+(W-R)+'" y1="'+y.toFixed(1)+'" y2="'+y.toFixed(1)+'"/>'
+         + '<text class="tk" x="'+(L-6)+'" y="'+(y+3.5).toFixed(1)+'" text-anchor="end">'+esc(label)+'</text>'; });
+    niceTicks(x0, x1, 6).forEach(v=>{ if (v < x0 || v > x1) return; const x = X(v);
+      g += '<line class="ax" x1="'+x.toFixed(1)+'" x2="'+x.toFixed(1)+'" y1="'+(H-B)+'" y2="'+(H-B+4)+'"/>'
+         + '<text class="tk" x="'+x.toFixed(1)+'" y="'+(H-B+16)+'" text-anchor="middle">'+esc(v)+'</text>'; });
+    g += '<line class="ax" x1="'+L+'" x2="'+(W-R)+'" y1="'+(H-B)+'" y2="'+(H-B)+'"/>'
+       + '<line class="ax" x1="'+L+'" x2="'+L+'" y1="'+T+'" y2="'+(H-B)+'"/>';
+    g += '<path class="ln" d="'+s.map((p,i)=>(i ? "L" : "M")+X(p[0]).toFixed(1)+","+Y(p[1]).toFixed(1)).join(" ")+'"/>';
+    const last = s[s.length - 1];
+    g += '<circle class="pt" cx="'+X(last[0]).toFixed(1)+'" cy="'+Y(last[1]).toFixed(1)+'" r="3.5"/>';
+    g += '<text class="tk" x="'+((L+W-R)/2)+'" y="'+(H-4)+'" text-anchor="middle">iteration</text>';
+    g += '<text class="tk" transform="translate(13,'+((T+H-B)/2)+') rotate(-90)" text-anchor="middle">χ²/N'+(logy ? " (log scale)" : "")+'</text>';
+    $("anChart").innerHTML = '<svg class="chart" viewBox="0 0 '+W+' '+H+'" role="img" aria-label="chi-squared per point at each iteration">'+g+'</svg>';
+    $("anHead").innerHTML = '<div class="kv"><span>Run <b>'+esc(run)+'</b></span><span>Iterations <b>'+esc(d.entries)+'</b></span>'
+      + '<span>Latest χ²/N <b>'+esc(fmtNum(last[1]))+'</b></span><span>Lowest <b>'+esc(fmtNum(ymin))+'</b></span></div>';
+    const rows = (d.datasets || []).slice(0, 15);
+    if (rows.length){
+      const mx = Math.max(...rows.map(r=>r[1]), 1e-9);
+      $("anTable").innerHTML = '<div class="label" style="margin:16px 0 6px">Worst datasets in the latest iteration</div>'
+        + '<table class="tbl"><thead><tr><th>Dataset</th><th style="text-transform:none">χ²/N</th><th>Points</th><th style="width:40%"></th></tr></thead><tbody>'
+        + rows.map(r=>'<tr><td class="mono">'+esc(r[0])+'</td><td class="mono">'+esc(fmtNum(r[1]))+'</td><td class="mono">'+esc(r[2])+'</td>'
+          + '<td><div class="bar" style="width:'+Math.max(2, Math.round(100 * r[1] / mx))+'%"></div></td></tr>').join("")
+        + '</tbody></table>';
+    } else $("anTable").innerHTML = "";
+  }
+  async function runText(tool, label){
+    const run = $("anRun").value || analysisRun;
+    if (!run) return;
+    anBusy(label+" for "+run+"… this runs on the cluster and can take a minute.");
+    try{
+      const d = await call(tool, {outdir: run});
+      let txt = (d && (d.out || d.message)) || JSON.stringify(d, null, 1);
+      if (d && d.rc && d.err) txt += "\n\n"+d.err;
+      $("anOut").innerHTML = '<div class="label" style="margin:16px 0 0">'+esc(label)+'</div><pre class="out">'+esc(txt)+'</pre>';
+    } catch(e){ anMsg(label+" failed: "+(e && e.message || e)); }
+  }
+  $("anChi2").onclick = loadChi2;
+  $("anEval").onclick = ()=>runText("evaluate_fit", "Comparison with the published analysis");
+  $("anStatus").onclick = ()=>runText("get_jam_result", "Job status and log");
+
+  /* ---------- init ---------- */
+  renderTabs(); syncTabs(); renderCSteps();
+  paintConnection(bootOut.connection || {connected: false, note: "Checking the cluster connection…"});
+  function applyBoot(raw){
+    const out = unwrap(raw);
+    if (!out) return;
+    if (out.connection) paintConnection(out.connection);
+    if (out.tab && out.tab !== active && TABS.some(t=>t[0] === out.tab)){ active = out.tab; syncTabs(); onEnter(active); }
+  }
+  host.onToolOutput(applyBoot);
+  host.ready.then(()=>{
+    if (host.kind === "page" && !host.hasToken()){ showTokenGate(); return; }
+    recheck().then(()=>onEnter(active));
+  });
+})();
+</script>
+</body>
+</html>
