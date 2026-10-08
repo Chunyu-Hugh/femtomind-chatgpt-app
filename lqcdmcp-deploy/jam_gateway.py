@@ -8,24 +8,28 @@ serves, at https://lqcdmcp.jlab.org:8000/cloud/jam-gateway-<user>/mcp:
     Collections / Analysis, as a browser page and as an MCP Apps resource.
 Stdlib only; plain JSON-RPC over HTTP.
 
-Access: every call needs the owner's LQCDMCP dashboard token (Bearer). The
-gateway asks the dashboard which MCP servers the token's user launched and
-accepts the token when this gateway is among them. The proxy itself checks
-nobody, so this is what keeps the owner's open cluster session private.
+Access: every tool call needs the owner's LQCDMCP dashboard token (Bearer).
+The gateway asks the dashboard who the token's user is and which MCP servers
+they launched, and accepts the token only when that user is its owner and
+this gateway is among them. The proxy itself checks nobody, so this is what
+keeps the owner's open cluster session private.
 
 Cluster: a two-hop SSH chain per user (login host with PIN + one-time code,
-then the compute host with the password), opened on the panel's Connect tab;
-credentials are never taken in chat. Everything site-specific is in SITE
+then the compute host with the password). Credentials are typed on the
+panel's Connect tab — connect_hpc also accepts them as arguments, but AI
+clients are told never to ask for them. Everything site-specific is in SITE
 (ifarm built in; ~/.jam_gateway/site.json overrides).
 
 Fits: a campaign is the JAM app's composer (object and parameter table,
-reactions, datasets and cuts, QCD settings, job config, review). jamai/
-generates the card from the repository's examples/input02.py plus the
-choices, and a Slurm array runs one replica per task through fitlib/ai.py
-(FitPack `ai` branch) inside the site's container. Analysis: postprocess,
-fit summary, PDF plots, chi2 and data vs theory by experiment, more replicas
-(with a confirmation phrase). Any other job: LLM-guided Slurm drafts checked
-with sbatch --test-only.
+reactions, datasets and cuts, QCD settings, job config, review). The
+parameter table is the workspace's own examples/input02.py (the library);
+jamai/ copies that file and appends the choices, with only the parameters
+the user changed, and a Slurm array runs one replica per task through
+fitlib/ai.py (FitPack `ai` branch) inside the site's container. Collections:
+stop or delete a campaign. Analysis: postprocess, fit summary, PDF plots,
+chi2 and data vs theory by experiment, more replicas (with a confirmation
+phrase). Any other job: LLM-guided Slurm drafts checked with
+sbatch --test-only.
 
 Sections, in order: constants and site · local and remote helpers · access ·
 cluster chain · tools · campaigns · tool registry · http · boot.
@@ -36,6 +40,7 @@ import getpass
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import secrets
@@ -61,19 +66,16 @@ FA_FWD_PORT_BASE = 2222                          # + crc32(user) % 400
 # the proxy route is the job name (jam-gateway-<user> from redeploy_jam.py).
 GATEWAY_OWNER = os.environ.get("JAM_GW_OWNER") or getpass.getuser()
 MCP_NAME = (os.environ.get("JAM_GW_NAME") or os.environ.get("SLURM_JOB_NAME")
-            or "jam-gateway")
+            or f"jam-gateway-{GATEWAY_OWNER}")
 # Several people's gateways can share a node, so 8080 is only a first choice.
 PORT = int(os.environ.get("JAM_GW_PORT") or 0)
 BIND = os.environ.get("JAM_GW_BIND", "0.0.0.0")   # 127.0.0.1 for a local test run
-# Optional second entry on port 443 (e.g. a cloudflared quick tunnel to the
-# proxy) for clients or networks that refuse port 8000.
-TUNNEL_URL = os.environ.get("JAM_GW_TUNNEL_URL", "").rstrip("/")
 # Where users reach this gateway's /mcp endpoint, for the panel links it hands
 # out. Defaults to its route on the LQCDMCP proxy; a gateway run elsewhere (a
 # local test) sets its own, e.g. http://host:8090/mcp.
 PUBLIC_URL = os.environ.get("JAM_GW_PUBLIC_URL", "").rstrip("/")
 
-# Where this instance keeps its tokens, log and site override (mode 700).
+# Where this instance keeps its log, site override and app folder (mode 700).
 ACCESS_DIR = os.path.expanduser(os.environ.get("JAM_GW_ACCESS_DIR", "~/.jam_gateway"))
 HTTPLOG = os.path.join(ACCESS_DIR, "http.log")
 
@@ -92,15 +94,14 @@ SITE_IFARM = {
     "login_secret": "PIN + one-time code",
     "compute_host": "ifarm.jlab.org",
     "compute_secret": "account password",
-    # The user's own area: workspaces, the marker file and the LHAPDF link.
+    # The user's own area: workspaces and the workspace marker.
     "area": "/w/ceph24/JAM/{user}",
     # fs_list / fs_read may look anywhere under these.
     "read_roots": ["/w/ceph24"],
     "container": {"image": "/u/scigroup/scicomp/jupyterhub/theory/theory-notebook.sif",
-                  "binds": ["/w/ceph24"],
-                  "pythonpath": "/usr/local/lib/python3.11/site-packages"},
-    # <area>/lhapdf_tables is linked here when missing, and these are searched after it.
-    "lhapdf_link": "/w/ceph24/JAM/chunyu/lhapdf_tables",
+                  "binds": ["/w/ceph24"]},
+    # Shared LHAPDF tables the replicas search (LHAPDF_DATA_PATH); never a
+    # person's own folder.
     "lhapdf_extra": ["/w/ceph24/JAM/apps/lhapdf_tables/more/more1"],
     # Interpolation grids a fresh clone lacks (the repository ships only
     # grids/lqcd_itd). Each is linked, never copied, at <ws>/grids/<name>
@@ -115,17 +116,8 @@ SITE_IFARM = {
     "short_partition": "priority",      # 4-hour limit
     "short_hours": 4,
     "partitions": ["production", "priority", "ifarm", "jupyter"],
-    "test_partition": "priority",
-    # Shown by cluster_status; measured on the JAM24 reproduction ladder.
-    "hints": ["warm start: ~40 min @ 4 cores (2 h budget -> priority)",
-              "cold start: budget 10h @ 4 cores (-> production)",
-              "reference: step7 warm converges to chi2/N ~ 1.452"],
     # Every card the gateway derives reads its grids from here.
     "grid_root": "/w/ceph24/JAM/share/fitpack_grids",
-    # The analysis template, as in RedstarJAM: the user picks reactions, then
-    # datasets, and the fit card is generated from this one, keeping only what
-    # was picked. It ships with the repository (unpolarized PDF setup).
-    "template_card": "examples/input02.py",
 }
 
 
@@ -152,11 +144,6 @@ SITE = _load_site()
 def _area(user):
     return SITE["area"].format(user=user)
 
-# Card dataset-line pattern: conf['datasets']['<reac>']['xlsx'][<id>] = ...
-# Reaction names can carry a hyphen (dy-pion, dy-kaon). v6 matched them with
-# \w+, so those datasets never reached the catalog and could not be dropped.
-DATASET_LINE_RE = r"conf\['datasets'\]\['([\w-]+)'\]\['xlsx'\]\[(\w+)\]\s*="
-
 # Access: the owner's LQCDMCP dashboard token is the only credential (see
 # "dashboard tokens" below). JAM_GW_TEST_TOKEN is for a test instance that runs
 # off the proxy and so is unknown to the dashboard; it is never set in a launch.
@@ -174,20 +161,12 @@ PANEL_MIME = "text/html;profile=mcp-app"
 # validated code.
 JAM_REPO_URL = "https://github.com/QCDHUB/fitpack_legacy.git"
 
-# Cards are named by their path relative to <workspace>/inputs, at most one
-# folder deep: "input_pdf_fit.py" or "jam24/input_jam24_s7_warm.py". A bare
-# file name is also found in any folder of inputs/, so older names keep working.
-CARD_RE = r"(?:[A-Za-z0-9._-]{1,64}/)?[A-Za-z0-9._-]{1,80}\.py"
-DERIVED_DIR = "derived"          # inputs/derived/ holds the cards the gateway writes
-# Files the JAM repository does not carry (fit driver, path bootstrap, the
-# JAM24 cards), laid out as in a workspace. setup_workspace and use_workspace
-# write each one that is missing; a file already there is never overwritten.
-WORKSPACE_FILES = os.environ.get("JAM_GW_WORKSPACE_FILES", os.path.join(HERE, "workspace_files"))
-
 # ── local helpers ───────────────────────────────────────────────────────────
 
-def _run(cmd, timeout=90, secret=None, cap=4000):
-    """Run a local command; optionally feed ONE secret via SSH_ASKPASS."""
+def _run(cmd, timeout=90, secret=None, cap=4000, stdin=None):
+    """Run a local command; optionally feed ONE secret via SSH_ASKPASS, and
+    text on its standard input (never on a command line, which any user of
+    the host can read)."""
     env = dict(os.environ)
     helper = None
     if secret is not None:
@@ -200,7 +179,7 @@ def _run(cmd, timeout=90, secret=None, cap=4000):
                    SSH_ASKPASS_REQUIRE="force", DISPLAY=":0")
     try:
         p = subprocess.run(cmd, capture_output=True, text=True,
-                           timeout=timeout, env=env)
+                           timeout=timeout, env=env, input=stdin)
     finally:
         if helper:
             try:
@@ -247,51 +226,6 @@ def _workspace(user):
     return _WS_CACHE[user]
 
 
-def _paths(user):
-    """(workspace root, runs root, logs dir) — cards live under ws/inputs,
-    runs live INSIDE the clone at ws/runs."""
-    ws = _workspace(user)
-    return ws, f"{ws}/runs", f"{ws}/runs/logs"
-
-
-# Prepended to every snippet that opens a card: card_path(name) finds a card
-# by its path under inputs/, or a bare file name in any folder of inputs/.
-_CARD_FIND = r'''
-import os as _os, glob as _glob
-_INPUTS = __INPUTS__
-def card_path(name):
-    # The repository's own example cards are named from the workspace root.
-    if name.startswith('examples/'):
-        p = _os.path.join(_os.path.dirname(_INPUTS), name)
-        if _os.path.isfile(p):
-            return p
-        raise SystemExit('CARD-NOT-FOUND ' + name)
-    p = _os.path.join(_INPUTS, name)
-    if _os.path.isfile(p):
-        return p
-    if '/' not in name:
-        hits = sorted(_glob.glob(_os.path.join(_INPUTS, '*', name)))
-        if hits:
-            return hits[0]
-    raise SystemExit('CARD-NOT-FOUND ' + name)
-def card_name(path):
-    return _os.path.relpath(path, _INPUTS)
-'''
-
-
-def _card_code(user):
-    return _CARD_FIND.replace("__INPUTS__", repr(f"{_paths(user)[0]}/inputs"))
-
-
-def _card_missing(r, card):
-    """A tool result for a card that is not in the workspace, or None."""
-    if "CARD-NOT-FOUND" in (r.get("err") or "") + (r.get("out") or ""):
-        return {"status": "error", "card": card,
-                "message": f"No card named {card} in the workspace's inputs/ folder. "
-                           "list_runs shows the cards that are there."}
-    return None
-
-
 def _container_exec(fp, extra_path="", env=None):
     """apptainer exec prefix that runs python3 inside the site's image with the
     workspace (and extra_path, if any) on the path."""
@@ -299,15 +233,16 @@ def _container_exec(fp, extra_path="", env=None):
     binds = " ".join(f"--bind {b}" for b in c.get("binds", []))
     pypath = fp + (f":{extra_path}" if extra_path else "")
     envs = "".join(f" --env {k}={_shq(str(v))}" for k, v in (env or {}).items())
-    return (f"apptainer exec {binds} --env PYTHONPATH={pypath} --env FITPACK={fp}{envs} "
+    return (f"apptainer exec {binds} --env PYTHONPATH={_shq(pypath)} --env FITPACK={_shq(fp)}{envs} "
             f"{c['image']} python3")
 
 
-def _remote(user, cmd, timeout=120, cap=4000):
-    """Run a shell command on the compute host through the user's chain."""
+def _remote(user, cmd, timeout=120, cap=4000, stdin=None):
+    """Run a shell command on the compute host through the user's chain;
+    stdin, if given, is what the command reads on its standard input."""
     _, fa = _socks(user)
     return _run(["ssh", "-S", fa, "-p", str(_fwd_port(user)), f"{user}@localhost",
-                 "bash -lc " + _shq(cmd)], timeout=timeout, cap=cap)
+                 "bash -lc " + _shq(cmd)], timeout=timeout, cap=cap, stdin=stdin)
 
 
 def _run_ifarm_py(user, code, apptainer=False, timeout=300, cap=4000, extra_path="", env=None):
@@ -316,27 +251,28 @@ def _run_ifarm_py(user, code, apptainer=False, timeout=300, cap=4000, extra_path
     (needed for fitpack/numpy imports)."""
     b64 = base64.b64encode(code.encode()).decode()
     if apptainer:
-        run = f"echo {b64} | base64 -d | {_container_exec(_paths(user)[0], extra_path, env)} -"
+        run = f"echo {b64} | base64 -d | {_container_exec(_workspace(user), extra_path, env)} -"
     else:
         run = f"echo {b64} | base64 -d | python3"
     return _remote(user, run, timeout=timeout, cap=cap)
 
 
-def _resolve_outdir(user, outdir):
-    if outdir.startswith("/"):
-        return outdir
-    return f"{_paths(user)[1]}/{outdir}"
+def _fill(template, **values):
+    """A python snippet: template with each __NAME__ replaced by repr(value),
+    in one pass, so a value that contains another placeholder (a campaign or
+    folder name, say) stays as it is."""
+    subs = {f"__{k}__": repr(v) for k, v in values.items()}
+    return re.sub("|".join(map(re.escape, subs)), lambda m: subs[m.group(0)], template)
 
 
 # ── access ──────────────────────────────────────────────────────────────────
 #
 # A request carries "Authorization: Bearer <dashboard token>". A token of the
 # owner resolves to the owner, and every tool acts as the owner and nobody
-# else. A username argument is still accepted when it matches, so clients that
-# pass one keep working; one that names somebody else is refused.
+# else. Tools take no username argument; the functions' username parameter
+# serves calls between them, and _resolve_user refuses any other name.
 
 _tls = threading.local()
-USERNAME_RE = r"[A-Za-z0-9._-]{1,32}"
 AUTH_HELP = ("This gateway needs your LQCDMCP dashboard token (the one from the dashboard "
              "login you launched the gateway with). Configure the MCP client to send the header "
              "'Authorization: Bearer <token>', or paste it into the panel page when it asks for "
@@ -358,28 +294,33 @@ def _ensure_access_dir():
 
 
 def _identify(auth_header):
-    """Resolve a bearer token to (username, role), or ('', '') if unusable."""
+    """Resolve a bearer token to the username it acts as, or '' if unusable."""
     if not auth_header or auth_header[:7].lower() != "bearer ":
-        return "", ""
+        return ""
     token = auth_header[7:].strip()
+    if token[:7].lower() == "bearer ":
+        # A client that was given "Bearer <token>" as the token sends it twice.
+        token = token[7:].strip()
     if not token:
-        return "", ""
+        return ""
     if TEST_TOKEN and hmac.compare_digest(token, TEST_TOKEN):
-        return GATEWAY_OWNER, "owner"
+        return GATEWAY_OWNER
     return _dashboard_identify(token, _sha(token))
 
 
 # ── dashboard tokens ─────────────────────────────────────────────────────────
 #
 # The LQCDMCP dashboard token (Globus login) opens this gateway: the
-# dashboard is asked which MCP servers the token's user launched, and the
-# token is the owner's when that list contains this gateway. The proxy itself
-# forwards /cloud/<name>/mcp without checking anyone, so this check is what
-# keeps other people off a gateway whose cluster chain is open.
+# dashboard is asked who the token's user is and which MCP servers they
+# launched, and the token is the owner's when that user is this gateway's
+# owner and the list holds this gateway (its name, owner and Slurm job). A
+# listing the gateway cannot read is a refusal. The proxy itself forwards
+# /cloud/<name>/mcp without checking anyone, so this check is what keeps
+# other people off a gateway whose cluster chain is open.
 
 DASHBOARD_URL = os.environ.get("JAM_GW_DASHBOARD_URL", f"{PROXY}/jlab/")
 DASHBOARD_AUTH = os.environ.get("JAM_GW_DASHBOARD_AUTH", "1") != "0"
-_DASH_CACHE = {}                    # token hash -> (identity tuple, expires at)
+_DASH_CACHE = {}                    # token hash -> (username or '', expires at)
 _DASH_LOCK = threading.Lock()
 
 
@@ -402,47 +343,89 @@ def _dashboard_call(token, method, params, sid=None, timeout=20):
     return {}, sid
 
 
-def _dashboard_text(resp):
+def _dashboard_json(resp):
+    """The JSON a dashboard tool result carries: each content text that parses
+    as JSON, and the structuredContent."""
     res = (resp or {}).get("result") or {}
-    parts = [c.get("text", "") for c in res.get("content") or [] if isinstance(c, dict)]
+    out = []
+    for c in res.get("content") or []:
+        if isinstance(c, dict) and isinstance(c.get("text"), str):
+            try:
+                out.append(json.loads(c["text"]))
+            except ValueError:
+                pass
     if res.get("structuredContent") is not None:
-        parts.append(json.dumps(res["structuredContent"]))
-    return " ".join(parts)
+        out.append(res["structuredContent"])
+    return out
+
+
+def _dicts_with(values, *keys):
+    """Every dict, at any depth of values, that has one of keys."""
+    found, todo = [], list(values)
+    while todo:
+        v = todo.pop()
+        if isinstance(v, dict):
+            if any(k in v for k in keys):
+                found.append(v)
+            todo.extend(v.values())
+        elif isinstance(v, list):
+            todo.extend(v)
+    return found
 
 
 def _dashboard_owns_gateway(token):
-    """True when the dashboard says this token's user launched this gateway."""
+    """True when the dashboard says this token's user is the owner and
+    launched this gateway."""
     _, sid = _dashboard_call(token, "initialize", {"protocolVersion": "2025-03-26", "capabilities": {},
                                                    "clientInfo": {"name": MCP_NAME, "version": "1"}})
     # The dashboard expects validate_user before other calls in a session.
-    _dashboard_call(token, "tools/call", {"name": "validate_user",
-                                          "arguments": {"username": GATEWAY_OWNER}}, sid)
+    resp, _ = _dashboard_call(token, "tools/call", {"name": "validate_user",
+                                                    "arguments": {"username": GATEWAY_OWNER}}, sid)
+    if (resp.get("result") or {}).get("isError"):
+        return False
+    for info in _dicts_with(_dashboard_json(resp), "allow_mcp", "user_account", "user_id"):
+        if info.get("allow_mcp") is False:
+            return False
+        names = [str(info[k]) for k in ("user_account", "user_id") if k in info]
+        if names and GATEWAY_OWNER not in names:
+            return False
     resp, _ = _dashboard_call(token, "tools/call", {"name": "get_my_mcp_servers",
                                                     "arguments": {"unused": ""}}, sid)
     if (resp.get("result") or {}).get("isError"):
         return False
-    return re.search(r"(?<![\w-])" + re.escape(MCP_NAME) + r"(?![\w-])", _dashboard_text(resp)) is not None
+    entries = _dicts_with(_dashboard_json(resp), "mcp_name")
+    if not entries:
+        _hlog("dashboard listing not recognised")
+        return False
+    job = os.environ.get("SLURM_JOB_ID", "")
+    for e in entries:
+        if e["mcp_name"] != MCP_NAME or ("owner" in e and e["owner"] != GATEWAY_OWNER):
+            continue
+        if job and e.get("slurm_job_id") not in (None, "") and str(e["slurm_job_id"]) != job:
+            continue
+        return True
+    return False
 
 
 def _dashboard_identify(token, h):
     if not DASHBOARD_AUTH or len(token) < 16:
-        return "", ""
+        return ""
     now = time.time()
     with _DASH_LOCK:
         hit = _DASH_CACHE.get(h)
         if hit and hit[1] > now:
             return hit[0]
     try:
-        ident = (GATEWAY_OWNER, "owner") if _dashboard_owns_gateway(token) else ("", "")
-        ttl = 600 if ident[0] else 60
+        user = GATEWAY_OWNER if _dashboard_owns_gateway(token) else ""
+        ttl = 600 if user else 60
     except Exception as e:
         _hlog(f"dashboard check failed: {type(e).__name__}")
-        ident, ttl = ("", ""), 15
+        user, ttl = "", 15
     with _DASH_LOCK:
         if len(_DASH_CACHE) > 256:
             _DASH_CACHE.clear()
-        _DASH_CACHE[h] = (ident, now + ttl)
-    return ident
+        _DASH_CACHE[h] = (user, now + ttl)
+    return user
 
 
 def _resolve_user(username):
@@ -457,10 +440,15 @@ def _resolve_user(username):
     return bound, None
 
 
-def _chain_alive(u):
+def _hops(u):
+    """(login hop open, whole chain open) for u's two-hop chain."""
     gw, fa = _socks(u)
-    return (_master_alive(gw, f"{u}@{SITE['login_host']}")
-            and _master_alive(fa, f"{u}@localhost", ["-p", str(_fwd_port(u))]))
+    login = _master_alive(gw, f"{u}@{SITE['login_host']}")
+    return login, login and _master_alive(fa, f"{u}@localhost", ["-p", str(_fwd_port(u))])
+
+
+def _chain_alive(u):
+    return _hops(u)[1]
 
 
 def _need_user(username):
@@ -476,6 +464,17 @@ def _need_user(username):
 
 # ── chain ───────────────────────────────────────────────────────────────────
 
+def _close_master(sock, dest, opts=None):
+    """Before a hop is rebuilt: close its master if it still answers, then
+    remove a stale socket file."""
+    if _master_alive(sock, dest, opts):
+        _run(["ssh", "-S", sock, "-O", "exit"] + (opts or []) + [dest], timeout=15)
+    try:
+        os.unlink(sock)
+    except OSError:
+        pass
+
+
 def connect_hpc(username="", pin_otp="", password=""):
     u, err = _resolve_user(username)
     if err:
@@ -484,31 +483,39 @@ def connect_hpc(username="", pin_otp="", password=""):
     gw, fa = _socks(u)
     gwd = f"{u}@{SITE['login_host']}"
     port = str(_fwd_port(u))
-    # reuse FIRST — never unlink a live socket
-    if _master_alive(gw, gwd) and _master_alive(fa, f"{u}@localhost", ["-p", port]):
+    login_open, alive = _hops(u)
+    # reuse FIRST — never touch a live chain
+    if alive:
         check = _remote(u, "hostname; whoami; date -u", timeout=30)
         return {"status": "reused", "connected": True, "username": u,
                 "note": "existing ControlMasters alive — no OTP needed",
                 "remote": check["out"][:200], "check": check["rc"]}
-    for s in (gw, fa):
-        if os.path.exists(s):
-            try:
-                os.unlink(s)
-            except OSError:
-                pass
-    if not pin_otp or not password:
-        return {"status": "error", "connected": False, "username": u,
-                "message": f"no live chain for {u}; need pin_otp (PIN+one-time code, "
-                           "no space) and password. Alternatively give the user the "
-                           "panel page to sign in interactively (see get_console)"}
+    # What is needed is decided before any socket is touched: a live login
+    # hop carries a new compute hop, so then only the password is asked for.
+    needs = ([] if login_open or pin_otp else ["pin_otp"]) + ([] if password else ["password"])
+    if needs:
+        what = (f"{SITE['login_host']} is still open, so only the {SITE['compute_secret']} for "
+                f"{SITE['compute_host']} (password) is needed" if login_open else
+                f"Signing in needs the {SITE['login_secret']} for {SITE['login_host']} (pin_otp, "
+                f"no space) and the {SITE['compute_secret']} for {SITE['compute_host']} (password)")
+        return {"status": "error", "connected": False, "username": u, "needs": needs,
+                "message": what + ". Credentials are typed on the panel's Connect tab "
+                                  "(get_console tab=connect), never in chat."}
     hop_opts = ["-o", "ControlPersist=8h", "-o", "StrictHostKeyChecking=accept-new",
                 "-o", "NumberOfPasswordPrompts=2", "-o", "PubkeyAuthentication=no",
                 "-o", "PreferredAuthentications=keyboard-interactive,password"]
-    r1 = _run(["setsid", "ssh", "-M", "-S", gw, *hop_opts, "-fN", gwd],
-              timeout=40, secret=pin_otp)
-    if not _master_alive(gw, gwd):
-        return {"status": "error", "connected": False, "step": "gateway", "username": u,
-                "message": f"{SITE['login_host']} failed: {r1['err'][-400:] or r1['out'][-200:]}"}
+    # The compute hop is always rebuilt: it is down, or it rode a login hop
+    # that is. The login hop is rebuilt only when it is down.
+    _close_master(fa, f"{u}@localhost", ["-p", port])
+    if not login_open:
+        _close_master(gw, gwd)
+        r1 = _run(["setsid", "ssh", "-M", "-S", gw, *hop_opts, "-fN", gwd],
+                  timeout=40, secret=pin_otp)
+        if not _master_alive(gw, gwd):
+            return {"status": "error", "connected": False, "step": "gateway", "username": u,
+                    "message": f"{SITE['login_host']} failed: {r1['err'][-400:] or r1['out'][-200:]}"}
+    # A forward the login hop already has is accepted as it is, so this also
+    # restores one that a live login hop lost.
     r2 = _run(["ssh", "-S", gw, "-O", "forward",
                "-L", f"127.0.0.1:{port}:{SITE['compute_host']}:22", gwd], timeout=20)
     if r2["rc"] != 0:
@@ -535,88 +542,27 @@ PANEL_TABS = ("connect", "project", "campaign", "collections", "analysis")
 
 
 def _panel_urls(tab="connect"):
-    q = "?ui=panel&tab=" + urllib.parse.quote(tab)
-    urls = [{"entry": "direct", "url": (PUBLIC_URL or f"{PROXY}/cloud/{MCP_NAME}/mcp") + q}]
-    if TUNNEL_URL:
-        urls.append({"entry": "port-443 tunnel (Claude Desktop / restricted networks)",
-                     "url": f"{TUNNEL_URL}/cloud/{MCP_NAME}/mcp" + q})
-    return urls
+    # Any browser GET of the gateway URL is answered with the panel.
+    q = "?tab=" + urllib.parse.quote(tab)
+    return [{"entry": "direct", "url": (PUBLIC_URL or f"{PROXY}/cloud/{MCP_NAME}/mcp") + q}]
 
 
 def get_console(tab="connect"):
     tab = tab if tab in PANEL_TABS else "connect"
     return {
         "panel_urls": _panel_urls(tab),
-        # Older agent prompts ask for these two keys; both now open the panel.
-        "console_urls": _panel_urls("connect"),
-        "composer_urls": _panel_urls("campaign"),
-        "guidance": "Give the user a panel_url to open in a browser. The panel has five "
-                    "tabs: Connect (sign in to the cluster), Project (check or create the "
-                    "workspace), Campaign (pick datasets and QCD settings, then submit), "
-                    "Collections (runs so far) and Analysis (chi2 history, comparison with "
-                    "the paper, job log). Cluster credentials are typed only on that page, "
-                    "never into chat. The page asks for the user's gateway token once."}
-
-
-def check_hpc(username=""):
-    u, err = _need_user(username)
-    if err:
-        return err
-    out = _remote(u, f"hostname; squeue -u {u} -o '%.10i %.9P %.12j %.2t' | head -8; "
-                  f"echo ---; ls {_area(u)} 2>&1 | head -10", timeout=90)
-    return {"status": "ok", "username": u, **out}
-
-
-def submit_test_fit(username=""):
-    """Trivial fire-and-forget chain smoke test (kept for first-time checks)."""
-    u, err = _need_user(username)
-    if err:
-        return err
-    script = (f"#!/bin/bash\n#SBATCH --partition={SITE['test_partition']}\n"
-              "#SBATCH --time=00:05:00\nhostname; date; sleep 30\n")
-    b64 = base64.b64encode(script.encode()).decode()
-    out = _remote(u, f"mkdir -p ~/.jam_gateway && echo {b64} | base64 -d > ~/.jam_gateway/chain_test.sh && "
-                  "nohup bash -c 'sbatch ~/.jam_gateway/chain_test.sh' "
-                  ">~/.jam_gateway/chain_test.log 2>&1 </dev/null & echo FIRED", timeout=15)
-    return {"status": "fired", "username": u, **out}
-
-
-def get_submit_result(username=""):
-    u, err = _need_user(username)
-    if err:
-        return err
-    out = _remote(u, "sleep 3; echo --- submit log ---; cat ~/.jam_gateway/chain_test.log 2>&1; "
-                  f"echo --- queue ---; squeue -u {u} -o '%.10i %.9P %.12j %.2t' | head -6",
-                  timeout=20)
-    return {"status": "ok", "username": u, **out}
+        "guidance": "Give the user a panel_url to open in a browser. Tabs: Connect (sign in to "
+                    "the cluster), Project (check or create the workspace), Campaign (build and "
+                    "submit a fit), Collections (campaigns, the Slurm queue, stop or delete a "
+                    "campaign) and Analysis (postprocess, fit summary, PDF plots, by experiment, "
+                    "more replicas). Cluster credentials are typed only on that page, never into "
+                    "chat. The page asks once for the user's LQCDMCP dashboard token."}
 
 
 def node_diag(cmd="id; hostname"):
     """Shell ON THE GATEWAY NODE (hot-redeploy + diagnostics)."""
     r = _run(["bash", "-lc", cmd], timeout=30)
     return {"rc": r["rc"], "out": r["out"], "err": r["err"]}
-
-
-def remote_exec(cmd="hostname", timeout=120, username=""):
-    u, err = _need_user(username)
-    if err:
-        return err
-    out = _remote(u, cmd, timeout=timeout)
-    return {"status": "ok", "username": u, **out}
-
-
-def list_jam_runs(username=""):
-    u, err = _need_user(username)
-    if err:
-        return err
-    fp, rr, _ = _paths(u)
-    out = _remote(u,
-        f"echo '--- cards ---'; cd {fp}/inputs 2>&1 && ls *.py */*.py 2>/dev/null | head -40; "
-        f"echo '--- run dirs ---'; ls {rr}/001 2>&1 | head -20; "
-        f"echo '--- msr files (newest 8) ---'; "
-        f"find {rr} -name '*.msr' -printf '%T@ %p\\n' 2>/dev/null | sort -rn | head -8 | cut -d' ' -f2-",
-        timeout=60)
-    return {"status": "ok", "username": u, **out}
 
 
 def _outside_read_roots(p):
@@ -651,31 +597,20 @@ def fs_read(path="", max_lines=200, username=""):
     return {"status": "ok", "username": u, "path": p, **out}
 
 
-def fs_write(path="", content="", username=""):
-    u, err = _need_user(username)
-    if err:
-        return err
-    p = os.path.normpath(path.strip())
-    root = _area(u)
-    if not p.startswith(root + "/"):
-        return {"status": "error", "username": u,
-                "message": f"write restricted to your own area under {root}"}
-    b64 = base64.b64encode((content or "").encode()).decode()
-    out = _remote(u, f"mkdir -p {_shq(os.path.dirname(p))} && "
-                  f"echo {b64} | base64 -d > {_shq(p)} && wc -c {_shq(p)}", timeout=60)
-    return {"status": "ok", "username": u, "path": p, **out}
+# A workspace path goes into shell commands and Slurm scripts on the cluster,
+# so it may hold only these characters.
+WORKSPACE_PATH_RE = r"/[A-Za-z0-9._/-]+"
 
 
-def setup_workspace(source="", repo_url="", github_token="",
-                     target_dir="", username="", folder_name="", branch=""):
-    """git clone the JAM code to target_dir (default <area>/fitpack_legacy),
-    record it as THE workspace, create <workspace>/runs and add the missing
-    cards — one folder holds code, cards AND runs.
+def setup_workspace(repo_url="", github_token="", target_dir="", username="",
+                    folder_name="", branch=""):
+    """git clone the JAM code (the FitPack `ai` branch) to target_dir (default
+    <area>/fitpack_legacy), record it as THE workspace and link the shared
+    interpolation grids. A folder that is already there is not cloned again.
 
-    repo_url defaults to the JAM repository. source=<username> copies that
-    user's recorded workspace instead of cloning. folder_name is the panel's
-    way of naming target_dir inside the user's own area; branch picks the
-    branch to clone."""
+    repo_url defaults to the JAM repository. folder_name is the panel's way of
+    naming target_dir inside the user's own area; branch picks the branch to
+    clone."""
     u, err = _need_user(username)
     if err:
         return dict(err, ok=False)
@@ -689,44 +624,50 @@ def setup_workspace(source="", repo_url="", github_token="",
     if not target.startswith(root + "/"):
         return {"status": "error", "ok": False,
                 "message": f"The workspace must be inside your own area ({root})."}
+    if not re.fullmatch(WORKSPACE_PATH_RE, target):
+        return {"status": "error", "ok": False,
+                "message": "The workspace path may use letters, numbers, '.', '_', '-' and '/' only."}
     # The FitPack `ai` branch carries fitlib/ai.py, which runs campaigns (as
     # the JAM app's "Clone / Sync FitPack" does); another branch on request.
     br = (branch or "").strip() or ("ai" if (repo_url or "").strip() in ("", JAM_REPO_URL) else "")
     if br and not re.fullmatch(r"[A-Za-z0-9._/-]{1,100}", br):
         return {"status": "error", "ok": False,
                 "message": "Branch name may use letters, numbers, '.', '_', '/' and '-' only."}
-    srcu = (source or "").strip()
-    if srcu and not re.fullmatch(USERNAME_RE, srcu):
-        return {"status": "error", "ok": False, "message": "invalid source username"}
     steps = []
     exists = _remote(u, f"test -d {_shq(target)} && echo YES || echo NO", timeout=30)
-    if "YES" in (exists.get("out") or ""):
+    present = "YES" in (exists.get("out") or "")
+    if present:
         steps.append("workspace already present — skipped clone")
-    elif srcu:
-        # Read the source user's workspace marker through the CALLER's own
-        # chain; the source user's chain is theirs, not ours to use.
-        src_area = _area(srcu)
-        mark = _remote(u, f"cat {src_area}/.jam_workspace 2>/dev/null", timeout=30)
-        src_ws = (mark.get("out") or "").strip() or f"{src_area}/fitpack_legacy"
-        out = _remote(u, f"set -o pipefail; mkdir -p {_shq(os.path.dirname(target))} && "
-                      f"cp -r {_shq(src_ws)} {_shq(target)} 2>&1 | tail -3",
-                      timeout=900)
-        steps.append(f"cp from {srcu}: rc={out['rc']} {out['err'][-200:]}")
-        if out["rc"] != 0:
-            return {"status": "error", "ok": False, "username": u, "steps": steps,
-                    "message": f"Copy from {srcu} failed.", "detail": out["err"][-300:]}
     else:
         url = repo_url.strip() or JAM_REPO_URL
         tok = (github_token or "").strip()
-        auth_url = url.replace("https://", f"https://{tok}@", 1) \
-            if tok and url.startswith("https://") else url
         bflag = f"-b {_shq(br)} " if br else ""
+        # The token never goes on a command line, where anyone on either host
+        # could read it: it comes in on ssh's standard input, and a credential
+        # helper for the repository's host alone hands it to git. The helpers
+        # the user has configured are switched off for this clone, so none
+        # stores it, and the clone's .git/config never sees it.
+        host = re.match(r"https://[^/]+", url) if tok else None
+        auth = read = ""
+        if host:
+            helper = ('!f() { test "$1" = get && echo username=x-access-token && '
+                      'echo "password=$JAM_GH_TOKEN"; }; f')
+            key = f"credential.{host.group(0)}.helper"
+            auth = f"-c credential.helper= -c {_shq(key + '=' + helper)} "
+            read = "IFS= read -r JAM_GH_TOKEN; export JAM_GH_TOKEN; "
         # pipefail: without it the exit status is tail's, and a failed clone
         # was reported as success. GIT_TERMINAL_PROMPT=0 makes a private repo
         # without a token fail at once instead of waiting out the timeout.
-        out = _remote(u, f"set -o pipefail; mkdir -p {_shq(os.path.dirname(target))} && "
-                      f"GIT_TERMINAL_PROMPT=0 git clone {bflag}{_shq(auth_url)} "
-                      f"{_shq(target)} 2>&1 | tail -3", timeout=900)
+        try:
+            out = _remote(u, f"set -o pipefail; {read}mkdir -p {_shq(os.path.dirname(target))} && "
+                          f"GIT_TERMINAL_PROMPT=0 git {auth}clone {bflag}{_shq(url)} "
+                          f"{_shq(target)} 2>&1 | tail -3", timeout=900,
+                          stdin=tok + "\n" if host else None)
+        except subprocess.TimeoutExpired:
+            return {"status": "error", "ok": False, "username": u, "reason": "timeout",
+                    "message": "git clone did not finish within 15 minutes and may still be running on "
+                               "the cluster. Wait a few minutes, then look at the workspace report "
+                               "(check_project, or the panel's Project tab) before trying again."}
         if tok:
             out["out"] = (out.get("out") or "").replace(tok, "***")
         steps.append(f"git clone: rc={out['rc']} {out['out'][-200:]}")
@@ -742,84 +683,39 @@ def setup_workspace(source="", repo_url="", github_token="",
                                 else "git clone failed; see the detail below."),
                     "panel_url": _panel_urls("project")[0]["url"],
                     "detail": text.replace(tok, "***")[-400:] if tok else text[-400:]}
-        if tok:
-            # The token was only for this clone; keep it out of .git/config.
-            _remote(u, f"git -C {_shq(target)} remote set-url origin {_shq(url)}", timeout=30)
-    out = _remote(u, f"mkdir -p {_shq(target)}/runs/logs {_shq(target)}/inputs && "
-                  f"printf '%s\n' {_shq(target)} > {root}/.jam_workspace && "
-                  f"{_lhapdf_link_cmd(root)}; echo DONE", timeout=60)
-    steps.append("runs tree + workspace marker: " + (out.get("out") or "").strip()[-60:])
+    out = _remote(u, f"printf '%s\\n' {_shq(target)} > {root}/.jam_workspace && echo DONE", timeout=60)
+    steps.append("workspace marker: " + (out.get("out") or "").strip()[-60:])
     steps.append(_link_grids(u, target))
-    steps.append(_install_workspace_files(u, target))
     _WS_CACHE.pop(u, None)
+    _forget_library(u)
+    message = (f"A folder named {os.path.relpath(target, root)} already exists in your area: it was "
+               "not cloned again and is now your workspace. The report shows anything it lacks."
+               if present else f"Workspace ready at {target}.")
     return {"status": "ok", "ok": True, "username": u, "workspace": target,
-            "steps": steps, "message": f"Workspace ready at {target}.",
-            "report": check_project(u)}
-
-
-def _lhapdf_link_cmd(root):
-    """Shell fragment: link <area>/lhapdf_tables to the site's shared tables
-    unless something is already there."""
-    src = SITE.get("lhapdf_link") or ""
-    if not src:
-        return "true"
-    return (f"{{ [ -e {root}/lhapdf_tables ] || "
-            f"ln -s {_shq(src)} {root}/lhapdf_tables; }}")
+            "steps": steps, "message": message, "report": check_project(u)}
 
 
 def _link_grids(u, ws):
-    """Link each of the site's grids into <ws>/grids/ unless something is
-    already there. Returns a one-line summary for the setup steps."""
+    """Link each of the site's grids into <ws>/grids/ unless it is already
+    there; a link whose target is gone is pointed at the site's grid again.
+    A real folder or file is never touched. Returns a one-line summary."""
     links = SITE.get("grid_links") or {}
     if not links:
         return "grids: no links configured for this site"
     parts = []
     for name, target in sorted(links.items()):
-        dest = _shq(f"{ws}/grids/{name}")
-        parts.append(f"if [ -e {dest} ] || [ -L {dest} ]; then echo KEPT; "
-                     f"elif [ -e {_shq(target)} ]; then mkdir -p $(dirname {dest}) && "
-                     f"ln -s {_shq(target)} {dest} && echo LINKED; else echo NOSRC {_shq(name)}; fi")
+        dest, src = _shq(f"{ws}/grids/{name}"), _shq(target)
+        # -e follows links, so only a missing entry or a dangling link gets past it.
+        parts.append(f"if [ -e {dest} ]; then echo KEPT; "
+                     f"elif [ ! -e {src} ]; then echo NOSRC {_shq(name)}; "
+                     f"elif [ -L {dest} ]; then ln -sfn {src} {dest} && echo LINKED; "
+                     f"else mkdir -p $(dirname {dest}) && ln -s {src} {dest} && echo LINKED; fi")
     r = _remote(u, "; ".join(parts), timeout=60)
     out = r.get("out") or ""
     msg = (f"grids: {out.count('LINKED')} linked, {out.count('KEPT')} already there")
     missing = re.findall(r"NOSRC (\S+)", out)
     if missing:
         msg += f", source missing for: {', '.join(missing)}"
-    return msg
-
-
-def _workspace_files():
-    """[(path relative to the workspace, local file)] shipped with the gateway."""
-    out = []
-    for dirpath, _, names in os.walk(WORKSPACE_FILES):
-        for n in names:
-            full = os.path.join(dirpath, n)
-            rel = os.path.relpath(full, WORKSPACE_FILES).replace(os.sep, "/")
-            if re.fullmatch(r"[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+){0,3}", rel) and not n.endswith(".md"):
-                out.append((rel, full))
-    return sorted(out)
-
-
-def _install_workspace_files(u, ws):
-    """Write each shipped file that <ws> does not have yet. One call per file:
-    a single shell argument is capped at 128 KiB."""
-    files = _workspace_files()
-    if not files:
-        return "workspace files: none shipped with this gateway"
-    added, kept, failed = [], [], []
-    for rel, full in files:
-        with open(full, "rb") as fh:
-            b64 = base64.b64encode(fh.read()).decode()
-        p = _shq(f"{ws}/{rel}")
-        r = _remote(u, f"if [ -e {p} ]; then echo KEPT; else mkdir -p $(dirname {p}) && "
-                       f"echo {b64} | base64 -d > {p} && echo ADDED; fi", timeout=60)
-        out = r.get("out") or ""
-        (added if "ADDED" in out else kept if "KEPT" in out else failed).append(rel)
-    msg = f"workspace files: {len(added)} added"
-    if kept:
-        msg += f", {len(kept)} already there (left as they are)"
-    if failed:
-        msg += f", FAILED: {', '.join(failed)}"
     return msg
 
 
@@ -832,18 +728,16 @@ def _site_public():
 
 def check_hpc_connection(username=""):
     """Cheap connection probe for the panel's Connect tab: is this user's
-    two-hop chain open, and which workspace is recorded."""
+    two-hop chain open (and its login hop on its own), and which workspace is
+    recorded."""
     u, err = _resolve_user(username)
     if err:
         return {"connected": False, "status": err.get("status"), "note": err["message"]}
-    alive = _chain_alive(u)
+    login_open, alive = _hops(u)
     account = {"username": u, "area": _area(u)}
     if alive:
         account["workspace"] = _workspace(u)
-    return {"connected": alive, "master_open": alive, "cluster_reachable": alive,
-            # connect_hpc rebuilds both hops whenever either is down, so the
-            # one-time code is always needed again; say so.
-            "gateway_open": False,
+    return {"connected": alive, "login_open": login_open, "cluster_reachable": alive,
             "account": account, "site": _site_public(), "sites": [_site_public()],
             "note": ("Ready to run fits." if alive else
                      "Not signed in to the cluster. Sign in on the Connect tab of the "
@@ -851,10 +745,13 @@ def check_hpc_connection(username=""):
                      "window closes.")}
 
 
+# What a workspace needs for campaigns: (label, path inside it). The two .py
+# paths are files the FitPack ai branch has; the rest are folders.
 _PROJECT_ITEMS = [
     ("JAM code (fitpack_legacy)", ""), ("fitlib", "fitlib"), ("qcdlib", "qcdlib"),
-    ("obslib", "obslib"), ("experimental data", "database"), ("run directory", "runs"),
-    ("interpolation grids", "grids"), ("fit cards", "inputs")]
+    ("obslib", "obslib"), ("experimental data", "database"), ("interpolation grids", "grids"),
+    ("campaign template (examples/input02.py)", "examples/input02.py"),
+    ("campaign runner (fitlib/ai.py, FitPack ai branch)", "fitlib/ai.py")]
 
 
 def check_project(username=""):
@@ -865,7 +762,7 @@ def check_project(username=""):
         return err
     root = _area(u)
     code = f"""
-import os, json, glob
+import os, json
 root = {root!r}
 items_spec = {_PROJECT_ITEMS!r}
 grid_names = {sorted(SITE.get("grid_links") or {})!r}
@@ -891,16 +788,8 @@ if active:
             items.append({{'name': label, 'detail': p + ' — ' + str(len(grid_names) - len(miss))
                           + ' of ' + str(len(grid_names)) + ' grids', 'ok': not miss, 'missing': miss}})
             continue
-        if rel == 'inputs':
-            # The folder alone is not enough: a fit needs at least one card.
-            n = len([c for c in glob.glob(os.path.join(p, '*.py')) + glob.glob(os.path.join(p, '*', '*.py'))
-                     if os.path.basename(c) != '__init__.py'])
-            items.append({{'name': label, 'detail': p + ' — ' + str(n) + (' card' if n == 1 else ' cards'),
-                          'ok': n > 0, 'cards': n}})
-            continue
-        items.append({{'name': label, 'detail': p, 'ok': os.path.isdir(p)}})
-    lh = os.path.join(root, 'lhapdf_tables')
-    items.append({{'name': 'LHAPDF tables', 'detail': lh, 'ok': os.path.exists(lh)}})
+        ok = os.path.exists(p) if rel.endswith('.py') else os.path.isdir(p)
+        items.append({{'name': label, 'detail': p, 'ok': ok}})
 print(json.dumps({{'marker': ws, 'active': active, 'candidates': cands, 'items': items}}))
 """
     r = _run_ifarm_py(u, code, timeout=60, cap=20000)
@@ -913,18 +802,20 @@ print(json.dumps({{'marker': ws, 'active': active, 'candidates': cands, 'items':
     if not d["active"]:
         return {"status": "ok", "username": u, "configured": False, "candidates": cands,
                 "note": "No workspace chosen yet."}
+    ai_files = {label for label, rel in _PROJECT_ITEMS if rel.endswith(".py")}
     for it in d["items"]:
-        if not it["ok"]:
-            if it["name"] == "LHAPDF tables":
-                it["action"] = "Re-select the workspace with 'Use selected' to restore the link."
-            elif "missing" in it:
-                it["action"] = ("Missing: " + ", ".join(it["missing"]) + ". Re-select the workspace "
-                                "with 'Use selected' to link the shared grids.")
-            elif "cards" in it:
-                it["action"] = ("No fit cards yet. Put a card (.py) in inputs/ or a folder inside it; "
-                                "the JAM repository itself ships none.")
-            else:
-                it["action"] = "Run 'Set up a new workspace' to create a fresh checkout."
+        if it["ok"]:
+            continue
+        if it["name"] in ai_files:
+            it["action"] = ("This checkout is not on the FitPack ai branch. Switch it with 'Switch "
+                            "to the ai branch' below, or create a new workspace.")
+            it["fix"] = "use_ai_branch"
+        elif "missing" in it:
+            it["action"] = ("Missing: " + ", ".join(it["missing"]) + ". Press 'Use selected' below "
+                            "to link the shared grids again.")
+            it["fix"] = "use_workspace"
+        else:
+            it["action"] = "Run 'Set up a new workspace' to create a fresh checkout."
     ok = all(it["ok"] for it in d["items"])
     note = "" if ok else "Something is missing from this workspace — see the items marked ✕."
     if not d["marker"]:
@@ -943,621 +834,17 @@ def use_workspace(path="", username=""):
     p = os.path.normpath((path or "").strip())
     if not p.startswith(root + "/"):
         return {"ok": False, "message": f"The workspace must be inside your own area ({root})."}
+    if not re.fullmatch(WORKSPACE_PATH_RE, p):
+        return {"ok": False, "message": f"{p} has characters other than letters, numbers, '.', '_', '-' "
+                                        "and '/'. Rename the folder, or choose another one."}
     out = _remote(u, f"test -d {_shq(p)}/fitlib && printf '%s\\n' {_shq(p)} > {root}/.jam_workspace "
-                     f"&& mkdir -p {_shq(p)}/runs/logs {_shq(p)}/inputs "
-                     f"&& {_lhapdf_link_cmd(root)} && echo USED", timeout=60)
+                     f"&& echo USED", timeout=60)
     if "USED" not in (out.get("out") or ""):
         return {"ok": False, "message": f"{p} is not a fitpack checkout (no fitlib/ inside)."}
     _link_grids(u, p)
-    _install_workspace_files(u, p)
     _WS_CACHE.pop(u, None)
+    _forget_library(u)
     return {"ok": True, "workspace": p, "report": check_project(u)}
-
-
-
-def _bad_card(*names):
-    """Card names are paths under <workspace>/inputs, at most one folder deep."""
-    for nm in names:
-        if not nm:
-            return {"status": "error",
-                    "message": "Name a card. list_runs shows the cards in your workspace."}
-        if not re.fullmatch(CARD_RE, nm):
-            return {"status": "error",
-                    "message": "card names are paths under inputs/ such as "
-                               f"input_pdf_fit.py or jam24/input_jam24_s7_warm.py; got {nm!r}"}
-    return None
-
-
-def _derived_name(out_card):
-    """Cards the gateway writes all go to inputs/derived/."""
-    return f"{DERIVED_DIR}/{out_card.rsplit('/', 1)[-1]}"
-
-
-def get_fit_parameters(card="", username=""):
-    """Read the actual fit parameters (block/name/value/min/max/fixed) from a
-    card, so UIs and agents always show the card's true values."""
-    u, err = _need_user(username)
-    if err:
-        return err
-    bad = _bad_card(card)
-    if bad:
-        return bad
-    code = _card_code(u) + f"""
-import re, json, ast
-txt = open(card_path({card!r})).read()
-rows = []
-for m in re.finditer(r"conf\\['params'\\]\\['(\\w+)'\\]\\['([^']+)'\\]\\s*=\\s*(\\{{[^}}]*\\}})", txt):
-    block, name, body = m.group(1), m.group(2), m.group(3)
-    try:
-        d = ast.literal_eval(body)
-        rows.append({{'block': block, 'name': name,
-                      'value': d.get('value'), 'min': d.get('min'),
-                      'max': d.get('max'), 'fixed': bool(d.get('fixed'))}})
-    except Exception:
-        pass
-print(json.dumps(rows))
-"""
-    r = _run_ifarm_py(u, code, timeout=60, cap=200000)
-    missing = _card_missing(r, card)
-    if missing:
-        return missing
-    try:
-        rows = json.loads(r["out"].strip().splitlines()[-1])
-        return {"status": "ok", "username": u, "card": card,
-                "parameters": rows, "count": len(rows)}
-    except Exception:
-        return {"status": "error", "username": u, "detail": r}
-
-
-def search_datasets(card="", query="", username=""):
-    u, err = _need_user(username)
-    if err:
-        return err
-    bad = _bad_card(card)
-    if bad:
-        return bad
-    q = (query or "").strip().lower()
-    code = _card_code(u) + f"""
-import re
-from collections import Counter
-txt = open(card_path({card!r})).read()
-rows = [(m.group(1), m.group(2)) for m in re.finditer(r"{DATASET_LINE_RE}", txt)
-        if {q!r} and {q!r} in (m.group(1) + m.group(2)).lower() or not {q!r}]
-c = Counter(reac for reac, _ in rows)
-print('datasets matching:', len(rows))
-print('by reaction:', dict(c))
-for reac, idx in rows[:40]:
-    print(f'  {{reac}} {{idx}}')
-"""
-    out = _run_ifarm_py(u, code, timeout=60)
-    return _card_missing(out, card) or {"status": "ok", "username": u, "card": card, **out}
-
-
-def get_dataset_catalog(card="", username="", reactions=""):
-    u, err = _need_user(username)
-    if err:
-        return err
-    card = card or SITE.get("template_card", "")
-    bad = _bad_card(card)
-    if bad:
-        return bad
-    code = _card_code(u) + f"""
-import re, json
-txt = open(card_path({card!r})).read()
-c = {{}}
-for m in re.finditer(r"{DATASET_LINE_RE}", txt):
-    c.setdefault(m.group(1), {{}})[m.group(2)] = True
-out = {{r: [{{'id': i, 'label': str(i)}} for i in sorted(ids)] for r, ids in c.items()}}
-print(json.dumps(out))
-"""
-    r = _run_ifarm_py(u, code, timeout=60, cap=60000)
-    missing = _card_missing(r, card)
-    if missing:
-        return missing
-    try:
-        catalog = json.loads(r["out"].strip().splitlines()[-1])
-        want = [x.strip() for x in (reactions or "").split(",") if x.strip()]
-        if want:
-            catalog = {k: v for k, v in catalog.items() if k in want}
-        return {"status": "ok", "username": u, "card": card, "catalog": catalog}
-    except Exception:
-        return {"status": "error", "username": u, "detail": r}
-
-
-def list_reactions(username=""):
-    """The reactions the analysis template offers, with how many datasets each
-    has — the first thing the user picks."""
-    cat = get_dataset_catalog("", username)
-    if cat.get("status") != "ok":
-        return cat
-    return {"status": "ok", "username": cat.get("username"), "template": cat["card"],
-            "reactions": [{"reaction": k, "datasets": len(v)} for k, v in cat["catalog"].items()]}
-
-
-def build_card(base_card="", exclude_ids="", out_card="", username=""):
-    u, err = _need_user(username)
-    if err:
-        return err
-    bad = _bad_card(base_card, out_card)
-    if bad:
-        return bad
-    out_card = _derived_name(out_card)
-    excl = [x.strip() for x in (exclude_ids or "").split(",") if x.strip()]
-    code = _card_code(u) + f"""
-import re
-txt = open(card_path({base_card!r})).read()
-excl = {excl!r}
-n = 0
-def rep(m):
-    global n
-    if m.group(2) in excl:
-        n += 1
-        return '# ' + m.group(0)
-    return m.group(0)
-txt2 = re.sub(r"{DATASET_LINE_RE}", rep, txt)
-_os.makedirs(_os.path.join(_INPUTS, {DERIVED_DIR!r}), exist_ok=True)
-open(_os.path.join(_INPUTS, {out_card!r}), 'w').write(txt2)
-print('commented out', n, 'dataset lines')
-"""
-    out = _run_ifarm_py(u, code, timeout=60)
-    return _card_missing(out, base_card) or {
-        "status": "ok", "username": u, "base_card": base_card,
-        "out_card": out_card, "excluded": excl, **out}
-
-
-def submit_jam_fit(card="", outdir="", prior_msr="", cores=4, seed=160300,
-                   hours=10, partition="", username=""):
-    u, err = _need_user(username)
-    if err:
-        return err
-    if not outdir:
-        return {"status": "error", "message": "need card and outdir"}
-    bad = _bad_card(card)
-    if bad:
-        return bad
-    # Resolve the card now, so a missing one is reported instead of failing
-    # inside a queued job.
-    where = _run_ifarm_py(u, _card_code(u) + f"print(card_path({card!r}))", timeout=60)
-    missing = _card_missing(where, card)
-    if missing:
-        return missing
-    card_abs = (where.get("out") or "").strip().splitlines()[-1:] or [""]
-    card_abs = card_abs[0]
-    if where.get("rc") != 0 or not card_abs.startswith("/"):
-        return {"status": "error", "username": u, "message": "could not locate the card",
-                "detail": where}
-    prior_msr = (prior_msr or "").strip()
-    if prior_msr:
-        # A warm start continues THIS workspace's own results: the prior must
-        # sit under <workspace>/runs (given by path or relative to it). It
-        # also goes into the job script inside quotes, hence the plain charset.
-        rr = _paths(u)[1]
-        pm = os.path.normpath(prior_msr if prior_msr.startswith("/") else f"{rr}/{prior_msr}")
-        if not (re.fullmatch(r"[A-Za-z0-9._/+-]{1,400}\.msr", pm) and pm.startswith(rr + "/")):
-            return {"status": "error",
-                    "message": f"prior_msr must be a .msr result of this workspace (under {rr}); "
-                               "list_runs shows them. A workspace without results starts cold."}
-        prior_msr = pm
-    partition = (partition or "").strip() or _auto_partition(hours)
-    if not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", partition):
-        return {"status": "error", "message": f"invalid partition {partition!r}"}
-    fp, _, ld = _paths(u)
-    out_abs = _resolve_outdir(u, outdir)
-    hhmm = f"{int(hours):02d}:00:00"
-    prior_flag = f'-p "{prior_msr}"' if prior_msr else ""
-    c = SITE["container"]
-    binds = " ".join(f"--bind {b}" for b in c.get("binds", []))
-    pypath = "$FP" + (f":{c['pythonpath']}" if c.get("pythonpath") else "")
-    lhapdf = ":".join([f"{_area(u)}/lhapdf_tables"] + list(SITE.get("lhapdf_extra") or []))
-    script = f"""#!/bin/bash
-#SBATCH --job-name=jamfit
-#SBATCH --partition={partition}
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task={cores}
-#SBATCH --time={hhmm}
-#SBATCH --mem=4G
-#SBATCH --output={ld}/jamfit_%j.out
-#SBATCH --error={ld}/jamfit_%j.err
-
-export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
-FP={fp}
-cd $FP || exit 1
-OUT={out_abs}
-mkdir -p "$OUT"
-echo "===== JAM FIT card={card} out=$OUT cores={cores} seed={seed} prior={prior_msr} ====="
-apptainer exec {binds} \\
-  --env PYTHONPATH={pypath} \\
-  --env FITPACK=$FP \\
-  --env LHAPDF_DATA_PATH={lhapdf} \\
-  {c['image']} \\
-  python3 -m fitlib.maxlike_jam {_shq(card_abs)} "$OUT" -n {cores} -v 10 -s {seed} {prior_flag}
-echo "exit=$?"
-ls "$OUT"/msr/ 2>/dev/null
-"""
-    b64 = base64.b64encode(script.encode()).decode()
-    # The job script and the sbatch reply live in the user's own logs folder;
-    # a fixed name in the compute host's /tmp would clash between users.
-    out = _remote(u, f"mkdir -p {ld} && echo {b64} | base64 -d > {ld}/jam_fit_latest.sh && "
-                  f"nohup bash -c 'sbatch {ld}/jam_fit_latest.sh' "
-                  f">{ld}/jam_fit_latest.submit 2>&1 </dev/null & echo FIRED", timeout=20)
-    return {"status": "fired", "username": u, "card": card, "outdir": out_abs,
-            "partition": partition, "hours": int(hours), **out}
-
-
-def _auto_partition(hours):
-    """Short jobs to the short partition, the rest to the batch partition."""
-    short = SITE.get("short_partition")
-    if short and int(hours) <= int(SITE.get("short_hours") or 0):
-        return short
-    return SITE["partition"]
-
-
-def submit_fit_from_selection(base_card="", selected_ids="",
-                              out_card="agent_selection.py", outdir="", prior_msr="",
-                              cores=4, hours=0, partition="", username="",
-                              qcd=None, params=None):
-    u, err = _need_user(username)
-    if err:
-        return err
-    base_card = base_card or SITE.get("template_card", "")
-    bad = _bad_card(base_card, out_card)
-    if bad:
-        return bad
-    out_card = _derived_name(out_card)
-    if not selected_ids.strip():
-        return {"status": "error", "message": "need selected_ids (comma-separated)"}
-    if int(hours) <= 0:
-        hours = 2 if prior_msr else 10   # resource rules: warm 2h, cold 10h
-    keep = set(x.strip() for x in selected_ids.split(",") if x.strip())
-    # "reaction:id" pins a dataset to its family — idis and dy share numeric
-    # ids, so a bare id keeps that id in every family. Bare ids still work.
-    keep_pairs = sorted(k for k in keep if ":" in k)
-    keep_ids = sorted(k for k in keep if ":" not in k)
-
-    # QCD overrides. The card writes tmc as False or 'AOT' and ht as a bool.
-    # v6 matched the value with \w+, which never matches 'AOT', so an override
-    # of a card that already had TMC on was silently dropped; and "on" was
-    # written as True, which is not a TMC scheme.
-    qcd = qcd or {}
-    qset = {}
-    if qcd.get("Q20") not in (None, ""):
-        qset["Q20"] = repr(float(qcd["Q20"]))
-    truthy = (True, "AOT", "aot", "on", "On", "true", "True")
-    if "tmc" in qcd:
-        qset["tmc"] = "'AOT'" if qcd["tmc"] in truthy else "False"
-    if "ht" in qcd:
-        qset["ht"] = "True" if qcd["ht"] in truthy else "False"
-    if SITE.get("grid_root"):
-        # Derived cards read grids from the site's shared area, never from the
-        # folder named in the base card (which may be someone's own).
-        qset["grid path"] = repr(SITE["grid_root"])
-    qpatch_code = _QCD_PATCH.replace("__QSET__", repr(qset)) if qset else ""
-
-    # Parameter overrides patch: replace the param dict line, or append if absent
-    plist = [p for p in (params or []) if p.get("block") and p.get("name")]
-    import json as _pj
-    param_json = _pj.dumps(plist)
-    param_lines = [
-        "overrides = json.loads(%r)" % param_json,
-        "for o in overrides:",
-        "    b, nm = o['block'], o['name']",
-        "    v = repr(o.get('value')); mn = 'None' if o.get('min') is None else repr(o['min'])",
-        "    mx = 'None' if o.get('max') is None else repr(o['max'])",
-        "    fx = 'True' if o.get('fixed') else 'False'",
-        "    newline = \"conf['params']['%s']['%s']={'value':%s,'min':%s,'max':%s,'fixed':%s}\" % (b, nm, v, mn, mx, fx)",
-        "    pat = re.compile(r\"conf\\['params'\\]\\['\" + re.escape(b) + r\"'\\]\\['\" + re.escape(nm) + r\"'\\]\\s*=\\s*\\{[^}]*\\}\")",
-        "    txt2, cnt = pat.subn(lambda m: newline, txt2)",
-        "    if cnt == 0:",
-        "        txt2 += \"\\nconf['params'].setdefault('%s',{})['%s']={'value':%s,'min':%s,'max':%s,'fixed':%s}\\n\" % (b, nm, v, mn, mx, fx)",
-        "print('param overrides applied:', len(overrides))",
-    ]
-    param_code = "\n".join(param_lines)
-
-    code = _card_code(u) + f"""import re, json
-txt = open(card_path({base_card!r})).read()
-keep_pairs = set({keep_pairs!r})
-keep_ids = set({keep_ids!r})
-n = 0
-def rep(m):
-    global n
-    if (m.group(1) + ':' + m.group(2)) in keep_pairs or m.group(2) in keep_ids:
-        return m.group(0)
-    n += 1
-    return '# ' + m.group(0)
-txt2 = re.sub(r"{DATASET_LINE_RE}", rep, txt)
-{qpatch_code}
-{param_code}
-_os.makedirs(_os.path.join(_INPUTS, {DERIVED_DIR!r}), exist_ok=True)
-open(_os.path.join(_INPUTS, {out_card!r}), 'w').write(txt2)
-print('commented out', n, 'of the non-selected datasets')
-"""
-    gen = _run_ifarm_py(u, code, timeout=60)
-    missing = _card_missing(gen, base_card)
-    if missing:
-        return missing
-    if gen.get("rc") != 0:
-        return {"status": "error", "username": u, "card_gen": gen}
-    sub = submit_jam_fit(card=out_card, outdir=outdir, prior_msr=prior_msr,
-                         cores=cores, hours=hours, partition=partition, username=u)
-    return {"status": sub.get("status"), "username": u, "out_card": out_card,
-            "kept": sorted(keep), "qcd": qset, "hours": hours,
-            "card_gen": gen.get("out", "").strip(), "submit": sub}
-
-
-# Applied to the derived card inside submit_fit_from_selection's generated
-# code. Matches the whole value to the end of the line, either quote style,
-# and appends the setting when the card has no line for it — an override is
-# never silently dropped.
-_QCD_PATCH = r'''
-qset = __QSET__
-applied = []
-for k, lit in qset.items():
-    pat = re.compile(r"conf\[['\"]" + k + r"['\"]\]\s*=\s*[^\n]+")
-    txt2, c = pat.subn(lambda m, k=k, lit=lit: "conf['%s']=%s" % (k, lit), txt2)
-    if c == 0:
-        txt2 += "\nconf['%s']=%s\n" % (k, lit)
-    applied.append('%s=%s' % (k, lit))
-print('qcd overrides applied:', ', '.join(applied))
-'''
-
-
-def get_jam_result(outdir="", job_name="jamfit", username=""):
-    u, err = _need_user(username)
-    if err:
-        return err
-    _, rr, ld = _paths(u)
-    out_abs = _resolve_outdir(u, outdir) if outdir else rr
-    out = _remote(u,
-        f"echo '--- queue ---'; squeue -u {u} -o '%.10i %.9P %.12j %.2t %.10M' | head -8; "
-        f"echo '--- submit log ---'; cat {ld}/jam_fit_latest.submit 2>&1; "
-        f"echo '--- progress ---'; ls -t {out_abs}/progress.json 2>/dev/null | head -1 | xargs -r tail -c 1500; "
-        f"echo; echo '--- msr ---'; ls {out_abs}/msr 2>&1 | head -5; "
-        f"echo '--- newest slurm err tail ---'; ls -t {ld}/jamfit_*.err 2>/dev/null | head -1 | xargs -r tail -12",
-        timeout=60)
-    return {"status": "ok", "username": u, **out}
-
-
-# One JSON line: chi2/N per iteration (thinned to ~400 points) and the
-# latest per-dataset chi2/N, worst first. Feeds the panel's Analysis chart.
-_CHI2_JSON = r'''
-import json
-d = json.load(open(__PROGRESS__))
-series = []
-for i, e in enumerate(d):
-    t = e.get('chi2')
-    n = sum(v.get('npts', 0) for v in e.get('datasets', {}).values())
-    if t is not None and n:
-        series.append([i, round(t / n, 5)])
-if len(series) > 400:
-    step = len(series) / 400.0
-    series = [series[int(k * step)] for k in range(400)] + [series[-1]]
-ds = d[-1].get('datasets', {}) if d else {}
-rows = sorted(([k, round(v['chi2'] / max(v['npts'], 1), 4), v['npts']] for k, v in ds.items()),
-              key=lambda r: -r[1])
-print(json.dumps({'entries': len(d), 'series': series, 'datasets': rows[:80]}))
-'''
-
-
-def read_chi2(outdir="", username="", structured=False):
-    u, err = _need_user(username)
-    if err:
-        return err
-    out_abs = _resolve_outdir(u, outdir) if outdir else _paths(u)[1]
-    if structured:
-        code = _CHI2_JSON.replace("__PROGRESS__", repr(out_abs + "/progress.json"))
-        r = _run_ifarm_py(u, code, timeout=120, cap=400000)
-        try:
-            d = json.loads(r["out"].strip().splitlines()[-1])
-        except Exception:
-            return {"status": "error", "username": u, "outdir": out_abs,
-                    "message": "No readable progress.json in this run yet.",
-                    "detail": (r.get("err") or r.get("out") or "")[-300:]}
-        return {"status": "ok", "username": u, "outdir": out_abs, **d}
-    code = f"""
-import json
-d = json.load(open({_shq(out_abs + '/progress.json')}))
-print('entries:', len(d))
-tot = [e.get('chi2') for e in d if e.get('chi2') is not None]
-npt = [sum(v.get('npts', 0) for v in e.get('datasets', {{}}).values()) for e in d]
-for i, (t, n) in enumerate(zip(tot, npt)):
-    if i >= len(tot) - 12 and n:
-        print(f'iter {{i}}: chi2={{t:.1f}} npts={{n}} chi2/N={{t/n:.3f}}')
-ds = d[-1].get('datasets', {{}})
-print('--- latest per-dataset chi2/N (top 10) ---')
-for k in sorted(ds, key=lambda k: -ds[k]['chi2'] / max(ds[k]['npts'], 1))[:10]:
-    v = ds[k]
-    print(f'{{k}}: chi2/N={{v["chi2"]/v["npts"]:.2f}} ({{v["npts"]}} pts)')
-"""
-    out = _run_ifarm_py(u, code, timeout=120)
-    return {"status": "ok", "username": u, **out}
-
-
-def evaluate_fit(outdir="", msr_file="", username=""):
-    u, err = _need_user(username)
-    if err:
-        return err
-    fp = _paths(u)[0]
-    out_abs = _resolve_outdir(u, outdir) if outdir else _paths(u)[1]
-    files_expr = f"['{msr_file}']" if msr_file else f"sorted(glob.glob({_shq(out_abs + '/msr/*.msr')}))"
-    code = f"""
-import sys, glob, statistics
-sys.path.insert(0, {_shq(fp)})
-from tools.tools import load
-files = {files_expr}
-def tot(f):
-    d = load(f)
-    if 'chi2' not in d:
-        raise KeyError('msr has no chi2 (partial save): keys=' + str(sorted(d.keys())))
-    tn = tc = 0.0
-    for reac, dd in d['chi2'].items():
-        for info in dd.values():
-            tn += info['npts']; tc += info['chi2']
-    return tc / tn
-vals = [tot(f) for f in files]
-print(f'msr files: {{len(files)}}')
-for f, v in zip(files, vals):
-    print(f'  {{f.split(chr(47))[-2]}}/{{f.split(chr(47))[-1]}}: chi2/N={{v:.3f}}')
-if vals:
-    print(f'OUR chi2/N: mean={{statistics.mean(vals):.3f}} min={{min(vals):.3f}} max={{max(vals):.3f}}')
-print('PAPER band (arXiv:2501.00665 step16a): mean=2.566 med=2.561 [2.190, 2.819]')
-"""
-    out = _run_ifarm_py(u, code, apptainer=True, timeout=300)
-    return {"status": "ok", "username": u, **out}
-
-
-def cluster_status(username=""):
-    u, err = _need_user(username)
-    if err:
-        return err
-    out = _remote(u,
-        "echo '--- partitions ---'; sinfo -o '%P %a %D %C' 2>/dev/null | head -8; "
-        f"echo '--- my queue ---'; squeue -u {u} -o '%.10i %.9P %.12j %.2t %.10M %.6D' | head -10",
-        timeout=90)
-    return {"status": "ok", "username": u, "site": SITE["id"],
-            "partition_rule": f"auto: {SITE.get('short_partition')} for jobs up to "
-                              f"{SITE.get('short_hours')} h, {SITE['partition']} otherwise",
-            "partitions": SITE.get("partitions", []), "hints": SITE.get("hints", []), **out}
-
-
-def chain_state(outdir="", username=""):
-    u, err = _need_user(username)
-    if err:
-        return err
-    fp = _paths(u)[0]
-    rr = _paths(u)[1]
-    target = _resolve_outdir(u, outdir.strip()) if outdir.strip() else ""
-    code = f"""
-import sys, glob, os
-sys.path.insert(0, {_shq(fp)})
-from tools.tools import load
-root = {_shq(rr)}
-target = {target!r}
-if target and os.path.isdir(target + '/msr'):
-    files = sorted(glob.glob(target + '/msr/*.msr'))
-else:
-    files = sorted(glob.glob(root + '/**/msr/*.msr', recursive=True), key=os.path.getmtime)
-def tot(d):
-    chi = d.get('chi2', {{}}); tn = tc = 0.0
-    for dd in chi.values():
-        for info in dd.values():
-            tn += info['npts']; tc += info['chi2']
-    return tc / tn, chi
-if not files:
-    print('no msr found')
-else:
-    f = files[-1]; d = load(f); t, chi = tot(d)
-    print('msr:', f)
-    print(f'total chi2/N={{t:.3f}}')
-    rows = []
-    for reac, dd in chi.items():
-        for idx, info in dd.items():
-            rows.append((reac, idx, info['chi2'] / max(info['npts'], 1), info['npts']))
-    rows.sort(key=lambda r: -r[2])
-    print('worst 8 datasets (chi2/N):')
-    for reac, idx, v, n in rows[:8]:
-        print(f'  {{reac}} {{idx}}: {{v:.2f}} ({{n}} pts)')
-    params = d.get('params', {{}})
-    steps = sorted(k for k in params if isinstance(k, int))
-    if steps:
-        p = params[steps[-1]]
-        print(f'params (step {{steps[-1]}}, {{len(p)}} total), first 12:')
-        order = d.get('order', {{}}).get(steps[-1], [])
-        for i, v in enumerate(p[:12]):
-            name = order[i][2] if i < len(order) and len(order[i]) > 2 else str(i)
-            print(f'  {{name}}: {{v}}')
-print('--- ladder context (per-step chi2/N) ---')
-for m in sorted(glob.glob(root + '/**/msr/*.msr', recursive=True), key=os.path.getmtime):
-    d2 = load(m); t2, _ = tot(d2)
-    print(f'  {{m.split(chr(47))[-3]}}: {{t2:.3f}}')
-"""
-    out = _run_ifarm_py(u, code, apptainer=True, timeout=300)
-    return {"status": "ok", "username": u, **out}
-
-
-# Runs = directories under <workspace>/runs (one or two levels down, e.g.
-# 001/step7) that hold fit output; plus the user's Slurm queue, so a run that
-# is submitted but not started yet is visible too.
-_RUNS_JSON = r"""
-import os, json, glob, subprocess
-rr = __RUNS__
-cards_dir = __CARDS__
-template = __TEMPLATE__
-user = __USER__
-runs = []
-for d in glob.glob(os.path.join(rr, '*')) + glob.glob(os.path.join(rr, '*', '*')):
-    if not os.path.isdir(d):
-        continue
-    prog = os.path.join(d, 'progress.json')
-    if not (os.path.isdir(os.path.join(d, 'msr')) or os.path.exists(prog)):
-        continue
-    msr = sorted(glob.glob(os.path.join(d, 'msr', '*.msr')), key=os.path.getmtime)
-    times = [os.path.getmtime(d)] + [os.path.getmtime(m) for m in msr[-1:]]
-    if os.path.exists(prog):
-        times.append(os.path.getmtime(prog))
-    runs.append({'name': os.path.relpath(d, rr), 'path': d, 'msr_count': len(msr),
-                 'msr': [os.path.basename(m) for m in msr[-5:]],
-                 'newest_msr': msr[-1] if msr else '',
-                 'has_progress': os.path.exists(prog), 'modified': int(max(times))})
-runs.sort(key=lambda r: -r['modified'])
-# Cards: .py files in inputs/ and one folder below, named relative to inputs/.
-# Those the gateway derived (inputs/derived/) are listed apart from the rest.
-cards, derived = [], []
-for c in sorted(glob.glob(os.path.join(cards_dir, '*.py')) + glob.glob(os.path.join(cards_dir, '*', '*.py'))):
-    rel = os.path.relpath(c, cards_dir)
-    if os.path.basename(rel) == '__init__.py':
-        continue
-    (derived if rel.startswith(__DERIVED__ + '/') else cards).append(rel)
-queue = []
-try:
-    q = subprocess.run(['squeue', '-h', '-u', user, '-o', '%i|%j|%T|%M|%P'],
-                       capture_output=True, text=True, timeout=30).stdout
-    for line in q.splitlines():
-        f = line.split('|')
-        if len(f) == 5:
-            queue.append({'job_id': f[0], 'name': f[1], 'state': f[2],
-                          'elapsed': f[3], 'partition': f[4]})
-except Exception:
-    pass
-print(json.dumps({'runs_root': rr, 'runs': runs[:200], 'cards': cards,
-                  'derived_cards': derived, 'queue': queue,
-                  'template_exists': bool(template) and os.path.isfile(template)}))
-"""
-
-
-def _template_path(ws):
-    """Absolute path of the site's template card inside workspace ws."""
-    t = SITE.get("template_card", "")
-    if not t:
-        return ""
-    return f"{ws}/{t}" if t.startswith("examples/") else f"{ws}/inputs/{t}"
-
-
-def list_runs(username=""):
-    """Structured run listing for the panel's Collections tab: every run with
-    output, newest first, the cards available to start from, and the queue."""
-    u, err = _need_user(username)
-    if err:
-        return err
-    fp, rr, _ = _paths(u)
-    code = (_RUNS_JSON.replace("__RUNS__", repr(rr))
-            .replace("__CARDS__", repr(f"{fp}/inputs"))
-            .replace("__DERIVED__", repr(DERIVED_DIR))
-            .replace("__TEMPLATE__", repr(_template_path(fp)))
-            .replace("__USER__", repr(u)))
-    r = _run_ifarm_py(u, code, timeout=90, cap=400000)
-    try:
-        d = json.loads(r["out"].strip().splitlines()[-1])
-    except Exception:
-        return {"status": "error", "username": u, "message": "could not list runs",
-                "detail": (r.get("err") or r.get("out") or "")[-300:]}
-    tpl = SITE.get("template_card", "")
-    exists = d.pop("template_exists", False)
-    return {"status": "ok", "username": u,
-            "template_card": tpl if exists else "",
-            "partitions": SITE.get("partitions", []),
-            "partition_auto": {"short": SITE.get("short_partition"), "short_hours": SITE.get("short_hours"),
-                               "long": SITE["partition"]}, **d}
 
 
 def open_panel(tab="connect"):
@@ -1581,7 +868,10 @@ def open_panel(tab="connect"):
 #
 # Fixed here relative to the app: parameter edits, cuts, datasets the template
 # does not list, "Max iterations", "Optimizer" and TMC "off" now all reach the
-# fit (see jamai/input_materializer.py and jamai/run_replica.py).
+# fit (see jamai/input_materializer.py and jamai/run_replica.py). The parameter
+# table is read from the workspace's own examples/input02.py (the library),
+# and only the rows the user changed go into the override block, so every
+# other parameter stays exactly as the library has it.
 
 JAMAI_DIR = os.environ.get("JAM_GW_JAMAI_DIR", os.path.join(HERE, "jamai"))
 JAMAI_REMOTE = ".jamai"                 # <ws>/.jamai/modules/jam/jamai
@@ -1589,33 +879,7 @@ CAMPAIGNS_DIR = "campaigns"             # <ws>/campaigns/<folder>/...
 CAMPAIGN_TEMPLATE = "examples/input02.py"
 STAGE = "pdf_stage"
 
-# The unpolarized PDF parameter table of the JAM app (FemtoMindOperationsPanel
-# `unpolarizedPdfParameterRows`), the same values as examples/input02.py.
-PDF_PARAMETER_ROWS = [
-    ("g1", "N", True, 3.87592e-01, None, None), ("g1", "a", False, -6.23068169e-01, -1.9, 1),
-    ("g1", "b", False, 9.25741583e0, 0, 20), ("g1", "c", False, 0, -100, 100),
-    ("g1", "d", False, 0, -100, 100),
-    ("uv1", "N", True, 3.47549e-01, None, None), ("uv1", "a", False, -1.21835956e-01, -0.9, 1),
-    ("uv1", "b", False, 3.20766744e0, 0, 10), ("uv1", "c", False, 0, -100, 100),
-    ("uv1", "d", False, 0, -100, 100),
-    ("dv1", "N", True, 1.52089e-01, None, None), ("dv1", "a", False, -2.39874967e-01, -0.9, 1),
-    ("dv1", "b", False, 3.8390262e0, 0, 10), ("dv1", "c", False, 0, -100, 100),
-    ("dv1", "d", False, 0, -100, 100),
-    ("sea1", "N", False, 5.71081196e-03, 0, 1), ("sea1", "a", False, -1.36329697e0, -1.9, -1),
-    ("sea1", "b", False, 4.7472105e0, 0, 100),
-    ("sea2", "N", False, 2.0864e-02, 0, 1), ("sea2", "a", False, -1.5e0, -1.9, -1),
-    ("sea2", "b", False, 1.0e1, 0, 100),
-    ("db1", "N", False, 3.67609928e-02, 0, 1), ("db1", "a", False, -8.41360631e-01, -1, 1),
-    ("db1", "b", False, 5.31285539e0, 0, 50), ("db1", "c", False, 0, -100, 100),
-    ("db1", "d", False, 0, -100, 100),
-    ("ub1", "N", False, 1.95464789e-02, 0, 1), ("ub1", "a", False, -9.93659187e-01, -1, 1),
-    ("ub1", "b", False, 8.38905814e0, 0, 20), ("ub1", "c", False, 0, -100, 100),
-    ("ub1", "d", False, 0, -100, 100),
-    ("s1", "N", True, 0, 0, 1), ("s1", "a", False, 1.34706224e-01, -0.5, 1),
-    ("s1", "b", False, 6.00759596e0, 0, 100),
-    ("sb1", "N", False, 7.46109845e-07, 0, 1), ("sb1", "a", False, 3.83495317e-01, -0.9, 1),
-    ("sb1", "b", False, 4.61209808e0, 0, 10),
-]
+# Shown with the library's parameter table.
 PDF_DETAILS = {
     "fit_basis_blocks": ["g1", "uv1", "dv1", "sea1", "sea2", "db1", "ub1", "s1", "sb1"],
     "auxiliary_blocks": ["c1", "cb1", "b1", "bb1", "g2", "uv2", "dv2", "mix"],
@@ -1663,9 +927,6 @@ CAMPAIGN_CHOICES = {
     "asMode": ["backward", "forward"], "optimizer": ["trf", "dogbox"],
     "initialization": ["default", "random_within_bounds"],
 }
-# Launches above this many replicas, and every append, need the user to type
-# the confirmation phrase back (the panel's Submit button is that click).
-CONFIRM_REPLICAS = 0
 
 
 def _confirm_phrase(kind, payload):
@@ -1681,20 +942,109 @@ def _parse_hms(text):
     return d * 86400 + h * 3600 + mi * 60 + se
 
 
+def _auto_partition(hours):
+    """Short jobs to the short partition, the rest to the batch partition."""
+    short = SITE.get("short_partition")
+    if short and int(hours) <= int(SITE.get("short_hours") or 0):
+        return short
+    return SITE["partition"]
+
+
 def _auto_partition_seconds(seconds):
     return _auto_partition(max(1, -(-seconds // 3600)))
 
 
 # ---- options and the dataset catalog ---------------------------------------
 
-def campaign_options():
-    """Everything the composer offers, with the library values."""
-    rows = [{"block": b, "parameter": p, "name": f"{b} {p}", "fixed": fx, "value": v,
-             "min": lo, "max": hi} for b, p, fx, v, lo, hi in PDF_PARAMETER_ROWS]
+# A parameter line of the library card that is not commented out:
+# conf['params']['pdf']['g1 a'] = {'value': ..., 'min': ..., 'max': ..., 'fixed': False}
+_PDF_PARAM_LINE = r"""^\s*conf\[['"]params['"]\]\[['"]pdf['"]\]\[['"]([^'"]+)['"]\]\s*=\s*(\{.*\})\s*$"""
+
+# The library's parameter table, in file order. A later line for the same
+# parameter replaces the earlier one, as when the card runs. A 'fixed' that
+# names another parameter is a tie: the row is fixed and says to what.
+_LIBRARY = r'''
+import ast, json, re
+line_re = re.compile(__LINE_RE__)
+try:
+    lines = open(__PATH__, encoding='utf-8').read().splitlines()
+except OSError:
+    print(json.dumps({'found': False, 'rows': []})); raise SystemExit(0)
+def num(v):
+    return None if v is None else float(v)
+rows, at = [], {}
+for line in lines:
+    m = line_re.match(line)
+    if not m:
+        continue
+    try:
+        d = ast.literal_eval(m.group(2))
+        value, lo, hi = float(d['value']), num(d.get('min')), num(d.get('max'))
+    except (ValueError, TypeError, KeyError, SyntaxError):
+        continue
+    name, fixed = m.group(1), d.get('fixed', False)
+    block, _, par = name.partition(' ')
+    row = {'block': block, 'parameter': par, 'name': name,
+           'fixed': True if isinstance(fixed, str) else bool(fixed), 'value': value, 'min': lo, 'max': hi}
+    if isinstance(fixed, str):
+        row['tied_to'] = fixed
+    if name in at:
+        rows[at[name]] = row
+    else:
+        at[name] = len(rows)
+        rows.append(row)
+print(json.dumps({'found': True, 'rows': rows}))
+'''
+_LIB_CACHE = {}                         # user -> (workspace, rows, path, expires at)
+
+
+def _library_parameters(u):
+    """The parameter table of u's workspace library (examples/input02.py):
+    (rows in file order, the file's path). Raises RuntimeError when the file
+    is missing or has no parameter lines."""
+    ws = _workspace(u)
+    hit = _LIB_CACHE.get(u)
+    if hit and hit[0] == ws and hit[3] > time.time():
+        return hit[1], hit[2]
+    path = f"{ws}/{CAMPAIGN_TEMPLATE}"
+    r = _run_ifarm_py(u, _fill(_LIBRARY, LINE_RE=_PDF_PARAM_LINE, PATH=path), timeout=60, cap=200000)
+    try:
+        d = json.loads(r["out"].strip().splitlines()[-1])
+    except Exception:
+        raise RuntimeError(f"Could not read {path}: " + (r.get("err") or r.get("out") or "")[-300:])
+    if not d["found"]:
+        raise RuntimeError(f"The workspace has no {CAMPAIGN_TEMPLATE} (FitPack ai branch) to read "
+                           "the parameter table from. Switch it to the FitPack ai branch (the "
+                           "Project tab's 'Switch to the ai branch', or use_ai_branch) or create a "
+                           "new workspace.")
+    if not d["rows"]:
+        # The file is there, so switching branches does not help.
+        raise RuntimeError(f"The workspace's {CAMPAIGN_TEMPLATE} has no conf['params']['pdf'] lines "
+                           "to read the parameter table from. Restore the ai branch's copy (git checkout "
+                           f"origin/ai -- {CAMPAIGN_TEMPLATE} in the workspace) or create a new workspace.")
+    _LIB_CACHE[u] = (ws, d["rows"], path, time.time() + 600)
+    return d["rows"], path
+
+
+def _forget_library(u):
+    """Drop u's cached parameter table (its workspace or branch changed)."""
+    _LIB_CACHE.pop(u, None)
+
+
+def campaign_options(username=""):
+    """Everything the composer offers; the parameter table is the workspace's
+    library (examples/input02.py)."""
+    u, err = _need_user(username)
+    if err:
+        return err
+    try:
+        rows, source = _library_parameters(u)
+    except RuntimeError as e:
+        return {"status": "error", "message": str(e)}
     return {"status": "ok",
             "steps": ["Non-perturbative object", "Reactions", "QCD settings", "Job config", "Review"],
             "objects": CAMPAIGN_OBJECTS,
-            "parameters": {"pdf": {"rows": rows, **PDF_DETAILS,
+            "parameters": {"pdf": {"rows": rows, "source": source, **PDF_DETAILS,
                                    "free": sum(1 for r in rows if not r["fixed"]),
                                    "fixed": sum(1 for r in rows if r["fixed"])}},
             "reactions": CAMPAIGN_REACTIONS,
@@ -1755,7 +1105,7 @@ def campaign_datasets(reaction="idis", search="", username=""):
     if reaction == "dy":
         items = [dict(d) for d in DY_DATASETS]
     else:
-        r = _run_ifarm_py(u, _IDIS_CATALOG.replace("__WS__", repr(_paths(u)[0])), timeout=60, cap=200000)
+        r = _run_ifarm_py(u, _fill(_IDIS_CATALOG, WS=_workspace(u)), timeout=60, cap=200000)
         try:
             items = json.loads(r["out"].strip().splitlines()[-1])
         except Exception:
@@ -1775,9 +1125,18 @@ def campaign_datasets(reaction="idis", search="", username=""):
 
 # ---- the input card ---------------------------------------------------------
 
-def _normalize_card(card):
+def _same_number(a, b):
+    """Both None, or numbers equal up to a tiny relative tolerance."""
+    if a is None or b is None:
+        return a is None and b is None
+    return abs(a - b) <= 1e-9 * max(abs(a), abs(b))
+
+
+def _normalize_card(card, library):
     """Accept the composer card (also the JAM app's shape) and return
-    (normalized card, errors)."""
+    (normalized card, errors). library is the workspace's parameter table
+    (_library_parameters); only the rows the user changed are checked, and
+    only those are written into the card."""
     card = json.loads(json.dumps(card or {}))
     errors = []
     obj = card.get("object") or {}
@@ -1789,26 +1148,58 @@ def _normalize_card(card):
     elif otype != "pdf":
         errors.append("Select a non-perturbative object: only Unpolarized PDF is available.")
     # parameters: {"g1 a": {...}} or the app's parameterBounds {"g1:a": {min,max}}
-    known = {f"{b} {p}": (fx, v, lo, hi) for b, p, fx, v, lo, hi in PDF_PARAMETER_ROWS}
+    known = {r["name"]: r for r in library}
     overrides = {}
     for key, ov in (obj.get("parameterBounds") or {}).items():
         overrides[key.replace(":", " ")] = dict(ov or {})
     for key, ov in (obj.get("parameters") or {}).items():
         overrides.setdefault(key.replace(":", " "), {}).update(ov or {})
-    params = []
-    for name, (fx, v, lo, hi) in known.items():
+    params, changed = [], []
+    for name, lib in known.items():
         ov = overrides.get(name, {})
-        row = {"name": name, "fixed": bool(ov.get("fixed", fx)), "value": ov.get("value", v),
-               "min": ov.get("min", lo), "max": ov.get("max", hi)}
+        fixed = ov.get("fixed", lib["fixed"])
+        if isinstance(fixed, str):
+            # A client may spell the flag out; any other string (a tie, say) is refused.
+            fixed = {"true": True, "fixed": True, "false": False, "free": False}.get(fixed.strip().lower(), fixed)
+        row = {"name": name, "fixed": fixed,
+               "value": ov.get("value", lib["value"]), "min": ov.get("min", lib["min"]),
+               "max": ov.get("max", lib["max"])}
+        params.append(row)
+        if not isinstance(fixed, bool):
+            changed.append(row)
+            errors.append(f"Parameter {name}: fixed must be true (FIXED) or false (FREE).")
+            continue
         try:
             row["value"] = float(row["value"])
-            if not row["fixed"]:
-                row["min"], row["max"] = float(row["min"]), float(row["max"])
-                if not row["min"] <= row["value"] <= row["max"]:
-                    errors.append(f"Parameter {name}: the value must lie within [min, max].")
+            row["min"] = None if row["min"] is None else float(row["min"])
+            row["max"] = None if row["max"] is None else float(row["max"])
         except (TypeError, ValueError):
+            changed.append(row)
             errors.append(f"Parameter {name}: value, min and max must be numbers.")
-        params.append(row)
+            continue
+        # float() also takes inf and nan, which no fit can use; an inf would
+        # even pass as unchanged next to a finite library value.
+        if not all(math.isfinite(row[k]) for k in ("value", "min", "max") if row[k] is not None):
+            changed.append(row)
+            errors.append(f"Parameter {name}: value, min and max must be finite numbers.")
+            continue
+        if row["fixed"] == lib["fixed"] and all(
+                _same_number(row[k], lib[k]) for k in ("value", "min", "max")):
+            continue
+        changed.append(row)
+        if row["fixed"]:
+            # FitPack sets a tied parameter from its partner; a number of its
+            # own written into the card would silently replace the tie.
+            if lib.get("tied_to"):
+                errors.append(f"Parameter {name} is tied to {lib['tied_to']}: leave its value, min and "
+                              "max as they are, or switch it to FREE to give it its own.")
+            continue
+        if row["min"] is None or row["max"] is None:
+            errors.append(f"Parameter {name} is FREE: give it a min and a max.")
+        elif not row["min"] < row["max"]:
+            errors.append(f"Parameter {name} is FREE: its min must be below its max.")
+        elif not row["min"] <= row["value"] <= row["max"]:
+            errors.append(f"Parameter {name}: the value must lie within [min, max].")
     for name in overrides:
         if name not in known:
             errors.append(f"Unknown parameter {name!r}.")
@@ -1930,16 +1321,18 @@ def _normalize_card(card):
         errors.append("Invalid partition name.")
     sl["partition_effective"] = sl["partition"] or (_auto_partition_seconds(secs) if secs else "")
     norm = {"object": {"type": "pdf", "label": "Unpolarized PDF"}, "parameters_table": params,
-            "reactions": rx, "datasets": datasets, "cuts": cuts, "qcd": q, "parameters": pi,
-            "job": j, "slurm": sl}
+            "parameters_changed": changed, "reactions": rx, "datasets": datasets, "cuts": cuts,
+            "qcd": q, "parameters": pi, "job": j, "slurm": sl}
     return norm, errors
 
 
 def _card_summary(norm):
     free = [p["name"] for p in norm["parameters_table"] if not p["fixed"]]
     fixed = [p["name"] for p in norm["parameters_table"] if p["fixed"]]
+    # Registry entries from before the library table have no parameters_changed.
+    changed = [p["name"] for p in norm.get("parameters_changed") or []]
     return {"object": "Unpolarized PDF", "free_parameters": len(free), "fixed_parameters": len(fixed),
-            "fixed": fixed, "reactions": norm["reactions"],
+            "fixed": fixed, "changed_parameters": changed, "reactions": norm["reactions"],
             "datasets": {r: len(v) for r, v in norm["datasets"].items()},
             "cuts": {r: [f'{c["variable"]}{c["op"]}{c["value"]:g}' for c in cs if c["enabled"]]
                      for r, cs in norm["cuts"].items()},
@@ -1959,9 +1352,10 @@ def _campaign_yaml(ws, folder, norm, nreplicas):
     pi = norm["parameters"]
     init = "random_within_bounds" if pi["initialization"] == "random_within_bounds" else "default_prior"
     seed = pi["randomSeed"] if pi["randomSeed"] is not None else 120000
+    # Only the rows the user changed; the card keeps the library's own for the rest.
     sectors = [{"key": "pdf", "parameters": [
         {"name": p["name"], "value": p["value"], "min": p["min"], "max": p["max"], "fixed": p["fixed"]}
-        for p in norm["parameters_table"]]}]
+        for p in norm["parameters_changed"]]}]
     return json.dumps({
         "campaign": {"name": folder, "fitpack_root": ws, "template_path": CAMPAIGN_TEMPLATE,
                      "campaign_root": f"{ws}/{CAMPAIGNS_DIR}/{folder}", "default_qcd": qcd,
@@ -1981,12 +1375,14 @@ def _campaign_yaml(ws, folder, norm, nreplicas):
                             "campaignName": norm["job"]["campaignName"]}}]}, indent=2)
 
 
-def _array_script(u, ws, folder, norm, first, last):
+def _array_script(ws, folder, norm, first, last):
     """The Slurm job array: one replica per task, inside the site's image."""
     sl, c = norm["slurm"], SITE["container"]
     stage = f"{ws}/{CAMPAIGNS_DIR}/{folder}/stages/{STAGE}"
     binds = " ".join(f"--bind {b}" for b in c.get("binds", []))
-    lhapdf = ":".join([f"{_area(u)}/lhapdf_tables"] + list(SITE.get("lhapdf_extra") or []))
+    lhapdf = ":".join(SITE.get("lhapdf_extra") or [])
+    lhapdf_env = f"--env LHAPDF_DATA_PATH={lhapdf} " if lhapdf else ""
+    qs, pypath = _shq(stage), _shq(f"{ws}:{ws}/{JAMAI_REMOTE}")
     return f"""#!/bin/bash
 #SBATCH --job-name=jam_{folder[:40]}
 #SBATCH --partition={sl["partition_effective"]}
@@ -2000,12 +1396,12 @@ export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 REPLICA_ID="$SLURM_ARRAY_TASK_ID"
 cd {_shq(ws)}
 apptainer exec {binds} \\
-  --env PYTHONPATH={ws}:{ws}/{JAMAI_REMOTE} --env FITPACK={ws} \\
+  --env PYTHONPATH={pypath} --env FITPACK={_shq(ws)} \\
   --env JAMAI_MAX_NFEV={norm["job"]["maxIterations"]} --env JAMAI_METHOD={norm["job"]["optimizer"]} \\
-  --env LHAPDF_DATA_PATH={lhapdf} --env MPLCONFIGDIR={stage}/.matplotlib \\
+  {lhapdf_env}--env MPLCONFIGDIR={qs}/.matplotlib \\
   {c["image"]} \\
-  python3 -m modules.jam.jamai.run_replica --manifest {stage}/manifest.resolved.yaml \\
-    --output {stage}/current/replica_${{REPLICA_ID}} --replica "${{REPLICA_ID}}" -n {sl["cpus"]}
+  python3 -m modules.jam.jamai.run_replica --manifest {qs}/manifest.resolved.yaml \\
+    --output {qs}/current/replica_${{REPLICA_ID}} --replica "${{REPLICA_ID}}" -n {sl["cpus"]}
 """
 
 
@@ -2033,8 +1429,7 @@ print(json.dumps(items))
 
 
 def _registry(u, op):
-    code = _REGISTRY.replace("__WS__", repr(_paths(u)[0])).replace("__OP__", repr(op))
-    r = _run_ifarm_py(u, code, timeout=60, cap=2000000)
+    r = _run_ifarm_py(u, _fill(_REGISTRY, WS=_workspace(u), OP=op), timeout=60, cap=2000000)
     try:
         return json.loads(r["out"].strip().splitlines()[-1])
     except Exception:
@@ -2048,9 +1443,13 @@ def _collection(u, cid):
     return None
 
 
-def _ai_branch_ready(u):
-    r = _remote(u, f"test -f {_shq(_paths(u)[0])}/fitlib/ai.py && echo READY", timeout=30)
-    return "READY" in (r.get("out") or "")
+def _ai_branch_files(u):
+    """(the workspace has the campaign runner fitlib/ai.py, it has the campaign template)."""
+    ws = _shq(_workspace(u))
+    r = _remote(u, f"test -f {ws}/fitlib/ai.py && echo READY; test -f {ws}/{CAMPAIGN_TEMPLATE} && echo TEMPLATE",
+                timeout=30)
+    out = r.get("out") or ""
+    return "READY" in out, "TEMPLATE" in out
 
 
 def use_ai_branch(username=""):
@@ -2059,9 +1458,17 @@ def use_ai_branch(username=""):
     u, err = _need_user(username)
     if err:
         return err
-    ws = _paths(u)[0]
-    if _ai_branch_ready(u):
+    ws = _workspace(u)
+    runner, template = _ai_branch_files(u)
+    if runner and template:
         return {"status": "ok", "workspace": ws, "message": "The workspace already has the ai branch."}
+    if runner:
+        # Already on the ai branch: a switch would not bring the template back.
+        return {"status": "error", "workspace": ws,
+                "message": f"This checkout already has the ai branch's runner (fitlib/ai.py) but no "
+                           f"{CAMPAIGN_TEMPLATE}, so switching branches does not help. Restore the file "
+                           f"(git checkout origin/ai -- {CAMPAIGN_TEMPLATE} in the workspace) or create "
+                           "a new workspace."}
     r = _remote(u, f"cd {_shq(ws)} && git rev-parse --verify -q origin/ai >/dev/null || "
                    f"GIT_TERMINAL_PROMPT=0 git fetch -q origin ai 2>&1; "
                    f"if [ -n \"$(git status --porcelain --untracked-files=no)\" ]; then echo DIRTY; "
@@ -2074,6 +1481,7 @@ def use_ai_branch(username=""):
     if "SWITCHED" not in out:
         return {"status": "error", "workspace": ws, "message": "Could not check out the ai branch.",
                 "detail": out[-400:]}
+    _forget_library(u)
     return {"status": "ok", "workspace": ws, "message": "Switched the workspace to the FitPack ai branch."}
 
 
@@ -2104,15 +1512,18 @@ print('JAMAI-OK', len(files))
 
 # ---- validate / submit / append ------------------------------------------------
 
-def validate_campaign(card=None, username=""):
-    """Validate an input card and show what would run, with the confirmation
-    phrase submit_campaign needs."""
-    u, err = _need_user(username)
-    if err:
-        return err
-    norm, errors = _normalize_card(card)
+def _checked_card(u, card):
+    """Normalize card against the workspace's library parameter table and check
+    the workspace has what it needs: (norm, None), or (None, the result to
+    return). validate_campaign and submit_campaign both use it, so the phrase
+    and the submitted card come from one reading of the table."""
+    try:
+        library, _ = _library_parameters(u)
+    except RuntimeError as e:
+        return None, {"status": "error", "valid": False, "message": str(e)}
+    norm, errors = _normalize_card(card, library)
     if not errors:
-        ws = _paths(u)[0]
+        ws = _workspace(u)
         checks = " ".join(f"{r}/expdata/{x}.xlsx" for r, ids in norm["datasets"].items() for x in ids)
         r = _remote(u, f"cd {_shq(ws)}/database 2>/dev/null && for f in {checks}; do "
                        f"[ -f \"$f\" ] || echo MISSING $f; done; "
@@ -2124,52 +1535,67 @@ def validate_campaign(card=None, username=""):
         if "NOTEMPLATE" in out:
             errors.append(f"The workspace has no {CAMPAIGN_TEMPLATE}.")
         if "NOAI" in out:
-            errors.append("The workspace is not on the FitPack ai branch (no fitlib/ai.py): run "
-                          "use_ai_branch, or create a new workspace.")
+            errors.append("The workspace is not on the FitPack ai branch (no fitlib/ai.py): switch it "
+                          "(the Project tab's 'Switch to the ai branch', or use_ai_branch), or create a "
+                          "new workspace.")
     if errors:
-        return {"status": "invalid", "valid": False, "errors": errors}
-    summary = _card_summary(norm)
-    phrase = _confirm_phrase("SUBMIT", norm)
-    return {"status": "ok", "valid": True, "summary": summary,
-            "slurm_script": _array_script(u, _paths(u)[0], "<campaign-folder>", norm, 1, norm["job"]["replicas"]),
-            "confirmation_phrase": phrase,
+        return None, {"status": "invalid", "valid": False, "errors": errors}
+    return norm, None
+
+
+def _validated(u, norm):
+    """validate_campaign's result for a card that passed _checked_card."""
+    return {"status": "ok", "valid": True, "summary": _card_summary(norm),
+            "slurm_script": _array_script(_workspace(u), "<campaign-folder>", norm, 1, norm["job"]["replicas"]),
+            "confirmation_phrase": _confirm_phrase("SUBMIT", norm),
             "next": "Show the user this summary and the Slurm script. Submit with "
                     "submit_campaign(card, confirm=<the phrase>) only after they confirm."}
+
+
+def validate_campaign(card=None, username=""):
+    """Validate an input card and show what would run, with the confirmation
+    phrase submit_campaign needs."""
+    u, err = _need_user(username)
+    if err:
+        return err
+    norm, err = _checked_card(u, card)
+    return err or _validated(u, norm)
 
 
 def submit_campaign(card=None, confirm="", username=""):
     u, err = _need_user(username)
     if err:
         return err
-    v = validate_campaign(card, u)
-    if not v.get("valid"):
-        return v
-    norm, _ = _normalize_card(card)
+    norm, err = _checked_card(u, card)
+    if err:
+        return err
+    v = _validated(u, norm)
     if (confirm or "").strip() != v["confirmation_phrase"]:
         return {"status": "needs_confirmation", "confirmation_phrase": v["confirmation_phrase"],
                 "summary": v["summary"], "slurm_script": v["slurm_script"],
                 "message": "Not submitted. Show the user the summary and Slurm script; when they "
                            "confirm, call again with confirm set to the phrase."}
-    ws = _paths(u)[0]
+    ws = _workspace(u)
     folder = norm["job"]["campaignName"] + "_" + time.strftime("%Y%m%d_%H%M%S", time.gmtime())
     croot = f"{ws}/{CAMPAIGNS_DIR}/{folder}"
     stage = f"{croot}/stages/{STAGE}"
     n = norm["job"]["replicas"]
     _upload_jamai(u, ws)
     yaml_b64 = base64.b64encode(_campaign_yaml(ws, folder, norm, n).encode()).decode()
-    script_b64 = base64.b64encode(_array_script(u, ws, folder, norm, 1, n).encode()).decode()
-    mat = (f"mkdir -p {croot} && echo {yaml_b64} | base64 -d > {croot}/campaign.request.json && "
+    script_b64 = base64.b64encode(_array_script(ws, folder, norm, 1, n).encode()).decode()
+    qc, qs = _shq(croot), _shq(stage)
+    mat = (f"mkdir -p {qc} && echo {yaml_b64} | base64 -d > {qc}/campaign.request.json && "
            f"cd {_shq(ws)} && {_container_exec(ws, f'{ws}/{JAMAI_REMOTE}')} -m modules.jam.jamai.campaign_manifest "
-           f"{croot}/campaign.request.json --materialize > {croot}/materialize.json 2>&1 && "
-           f"{_container_exec(ws)} -m py_compile {stage}/input.py && "
-           f"mkdir -p {stage}/logs {stage}/current {stage}/slurm && "
-           f"echo {script_b64} | base64 -d > {stage}/slurm/array_1_{n}.sh && "
-           f"sbatch {stage}/slurm/array_1_{n}.sh")
+           f"{qc}/campaign.request.json --materialize > {qc}/materialize.json 2>&1 && "
+           f"{_container_exec(ws)} -m py_compile {qs}/input.py && "
+           f"mkdir -p {qs}/logs {qs}/current {qs}/slurm && "
+           f"echo {script_b64} | base64 -d > {qs}/slurm/array_1_{n}.sh && "
+           f"sbatch {qs}/slurm/array_1_{n}.sh")
     r = _remote(u, mat, timeout=600)
     out = (r.get("out") or "") + (r.get("err") or "")
     m = re.search(r"Submitted batch job (\d+)", out)
     if not m:
-        tail = _remote(u, f"tail -c 1500 {croot}/materialize.json 2>/dev/null", timeout=30).get("out")
+        tail = _remote(u, f"tail -c 1500 {qc}/materialize.json 2>/dev/null", timeout=30).get("out")
         return {"status": "error", "message": "The campaign was not submitted.",
                 "detail": out[-600:], "materialize_log": (tail or "")[-1500:]}
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -2208,11 +1634,12 @@ def append_replicas(collection_id="", count=0, confirm="", username=""):
         return {"status": "needs_confirmation", "plan": plan, "confirmation_phrase": phrase,
                 "message": "Validated and launch-ready. Ask the user to confirm with the phrase; "
                            "nothing is queued until then."}
-    ws = _paths(u)[0]
+    ws = _workspace(u)
     stage = f"{ws}/{CAMPAIGNS_DIR}/{e['campaign_folder']}/stages/{STAGE}"
-    sb = base64.b64encode(_array_script(u, ws, e["campaign_folder"], e["input_card"], first, last).encode()).decode()
-    r = _remote(u, f"echo {sb} | base64 -d > {stage}/slurm/array_{first}_{last}.sh && "
-                   f"sbatch {stage}/slurm/array_{first}_{last}.sh", timeout=60)
+    sb = base64.b64encode(_array_script(ws, e["campaign_folder"], e["input_card"], first, last).encode()).decode()
+    qs = _shq(stage)
+    r = _remote(u, f"echo {sb} | base64 -d > {qs}/slurm/array_{first}_{last}.sh && "
+                   f"sbatch {qs}/slurm/array_{first}_{last}.sh", timeout=60)
     m = re.search(r"Submitted batch job (\d+)", (r.get("out") or "") + (r.get("err") or ""))
     if not m:
         return {"status": "error", "message": "sbatch refused the job.", "detail": (r.get("err") or r.get("out"))[-400:]}
@@ -2224,6 +1651,11 @@ def append_replicas(collection_id="", count=0, confirm="", username=""):
 
 
 # ---- collections and status ----------------------------------------------------
+
+# squeue can fail (a busy controller, a timeout). The queue is then unknown,
+# which is never taken for empty: stop and delete refuse, and the lists say so.
+QUEUE_UNKNOWN = "Could not read the Slurm queue, so what is still queued is unknown. Try again in a minute."
+QUEUE_UNKNOWN_REFUSED = "Could not read the Slurm queue, so nothing was changed. Try again in a minute."
 
 _STATUS = r'''
 import json, glob, os, subprocess
@@ -2239,47 +1671,84 @@ for i in range(1, total + 1):
             ok += json.load(open(p)).get('status') == 'success'
         except Exception:
             pass
-states = {}
-ids = ','.join(j['job_id'] for j in jobs)
+# Tasks of these jobs still in the queue, one line per array task (-r). The
+# user's whole queue is read and filtered here: squeue -j also fails for a job
+# Slurm has already forgotten, so only this way does a failure mean that the
+# queue could not be read. It is then None, never empty. Tasks that have just
+# ended are left out.
+ended = {'COMPLETED', 'CANCELLED', 'FAILED', 'TIMEOUT', 'PREEMPTED', 'BOOT_FAIL', 'NODE_FAIL',
+         'DEADLINE', 'OUT_OF_MEMORY', 'REVOKED', 'SPECIAL_EXIT'}
+states, queued_jobs = {}, set()
+ids = {str(j['job_id']) for j in jobs}
 try:
-    q = subprocess.run(['squeue', '-h', '-j', ids, '-o', '%T'], capture_output=True, text=True, timeout=30).stdout.split()
-    for s in q: states[s] = states.get(s, 0) + 1
+    q = subprocess.run(['squeue', '-h', '-r', '-u', __USER__, '-o', '%F|%T'], capture_output=True,
+                       text=True, timeout=30) if ids else None
+    if q and q.returncode != 0:
+        raise RuntimeError(q.stderr)
+    for line in (q.stdout if q else '').splitlines():
+        job, _, s = line.strip().partition('|')
+        if job in ids and s and s not in ended:
+            states[s] = states.get(s, 0) + 1
+            queued_jobs.add(job)
 except Exception:
-    pass
-print(json.dumps({'finished': done, 'succeeded': ok, 'queue': states}))
+    states, queued_jobs = None, set()
+print(json.dumps({'finished': done, 'succeeded': ok, 'queue': states, 'queued_jobs': sorted(queued_jobs)}))
 '''
 
 
 def _campaign_progress(u, e):
-    stage = f"{_paths(u)[0]}/{CAMPAIGNS_DIR}/{e['campaign_folder']}/stages/{STAGE}"
-    code = (_STATUS.replace("__STAGE__", repr(stage)).replace("__JOBS__", repr(e.get("jobs") or []))
-            .replace("__TOTAL__", str(int(e.get("replicas") or 0))))
+    """Replicas finished and succeeded, and the campaign's tasks in the Slurm
+    queue by state (queue None: squeue could not be read)."""
+    code = _fill(_STATUS, STAGE=_stage_root(u, e), JOBS=e.get("jobs") or [],
+                 TOTAL=int(e.get("replicas") or 0), USER=u)
     r = _run_ifarm_py(u, code, timeout=60)
     try:
         return json.loads(r["out"].strip().splitlines()[-1])
     except Exception:
-        return {"finished": None, "succeeded": None, "queue": {}}
+        return {"finished": None, "succeeded": None, "queue": None, "queued_jobs": []}
+
+
+def _slurm_queue(u):
+    """The user's whole Slurm queue, as squeue shows it (pending array tasks
+    folded into one line), so jobs from draft_slurm_job show up too; None when
+    squeue fails."""
+    r = _remote(u, f"squeue -h -u {_shq(u)} -o '%i|%j|%T|%M|%P'", timeout=60, cap=200000)
+    if r.get("rc") != 0:
+        return None
+    queue = []
+    for line in (r.get("out") or "").splitlines():
+        f = line.split("|")
+        if len(f) == 5:
+            queue.append({"job_id": f[0], "name": f[1], "state": f[2], "elapsed": f[3], "partition": f[4]})
+    return queue
 
 
 def list_campaigns(username=""):
     """Every campaign in this workspace (Collections), newest first, with live
-    replica counts."""
+    replica counts, and the user's whole Slurm queue."""
     u, err = _need_user(username)
     if err:
         return err
     out = []
     for e in sorted(_registry(u, {"kind": "read"}), key=lambda x: x.get("created_at", ""), reverse=True):
         prog = _campaign_progress(u, e)
-        running = sum(prog["queue"].values()) if prog.get("queue") else 0
-        state = ("running" if running else "postprocessed" if e.get("status") == "postprocessed"
-                 else "completed" if prog.get("finished") else e.get("status", "submitted"))
+        q = prog.get("queue")
+        queued = None if q is None else sum(q.values())
+        stored = e.get("status", "submitted")
+        # An unread queue keeps the stored status: the campaign may still run.
+        state = ("running" if queued else stored if queued is None or stored in ("postprocessed", "cancelled")
+                 else "completed" if prog.get("finished") else stored)
         out.append({"collection_id": e["collection_id"], "campaign_name": e.get("campaign_name"),
                     "created_at": e.get("created_at"), "replicas": e.get("replicas"),
                     "job_ids": [j["job_id"] for j in e.get("jobs") or []], "status": state,
                     "finished": prog.get("finished"), "succeeded": prog.get("succeeded"),
-                    "queue": prog.get("queue"), "reactions": e["input_card"]["reactions"],
+                    "queue": q, "queued": queued, "reactions": e["input_card"]["reactions"],
                     "datasets": e["input_card"]["datasets"]})
-    return {"status": "ok", "campaigns": out, "count": len(out)}
+    queue = _slurm_queue(u)
+    res = {"status": "ok", "campaigns": out, "count": len(out), "queue": queue}
+    if queue is None or any(c["queued"] is None for c in out):
+        res["message"] = QUEUE_UNKNOWN
+    return res
 
 
 def campaign_status(collection_id="", username=""):
@@ -2290,17 +1759,70 @@ def campaign_status(collection_id="", username=""):
     if not e:
         return {"status": "error", "message": f"No campaign {collection_id!r}."}
     prog = _campaign_progress(u, e)
-    return {"status": "ok", "collection_id": collection_id, "replicas": e["replicas"],
-            "jobs": e.get("jobs"), **prog, "summary": _card_summary(e["input_card"])}
+    # A replica's log is under the job whose first-last range holds the replica.
+    out = {"status": "ok", "collection_id": collection_id, "replicas": e["replicas"],
+           "jobs": e.get("jobs"), **prog,
+           "campaign_folder": f"{_workspace(u)}/{CAMPAIGNS_DIR}/{e['campaign_folder']}",
+           "log_pattern": f"{_stage_root(u, e)}/logs/stage_<job_id>_<replica>.out",
+           "summary": _card_summary(e["input_card"])}
+    if prog.get("queue") is None:
+        out["note"] = QUEUE_UNKNOWN
+    return out
 
 
-def delete_campaign(collection_id="", delete_folder=False, confirm="", username=""):
+def cancel_campaign(collection_id="", confirm="", username=""):
+    """Stop a campaign: scancel its queued and running Slurm tasks. Always
+    asks for the confirmation phrase first."""
     u, err = _need_user(username)
     if err:
         return err
     e = _collection(u, collection_id)
     if not e:
         return {"status": "error", "message": f"No campaign {collection_id!r}."}
+    ids = [str(j["job_id"]) for j in e.get("jobs") or []]
+    prog = _campaign_progress(u, e)
+    if prog.get("queue") is None:
+        return {"status": "error", "message": QUEUE_UNKNOWN_REFUSED}
+    queued = sum(prog["queue"].values())
+    if not queued:
+        return {"status": "ok", "cancelled": [], "message": "Nothing of this campaign is queued or running."}
+    plan = {"collection_id": collection_id, "job_ids": ids, "queued_tasks": queued}
+    phrase = _confirm_phrase("CANCEL", {"collection_id": collection_id, "job_ids": ids})
+    if (confirm or "").strip() != phrase:
+        return {"status": "needs_confirmation", "plan": plan, "confirmation_phrase": phrase,
+                "message": "Nothing is cancelled yet. Ask the user to confirm with the phrase."}
+    # Only the jobs that still have tasks in the queue, so an error from
+    # scancel is a real one and not about a job that has already ended.
+    live = [j for j in prog["queued_jobs"] if j in ids] or ids
+    r = _remote(u, "scancel " + " ".join(_shq(j) for j in live), timeout=60)
+    if r.get("rc") != 0:
+        return {"status": "error", "message": "scancel refused to stop the campaign.",
+                "detail": ((r.get("err") or "") + (r.get("out") or ""))[-400:]}
+    e.update(status="cancelled", updated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    _registry(u, {"kind": "upsert", "entry": e})
+    return {"status": "cancelled", "collection_id": collection_id, "job_ids": ids, "cancelled": live,
+            "message": "Stopped. Replicas that had already finished keep their results; postprocess "
+                       "them as usual."}
+
+
+def delete_campaign(collection_id="", delete_folder=False, confirm="", username=""):
+    u, err = _need_user(username)
+    if err:
+        return err
+    if isinstance(delete_folder, str):
+        delete_folder = {"true": True, "false": False}.get(delete_folder.strip().lower(), delete_folder)
+    if not isinstance(delete_folder, bool):
+        return {"status": "error", "message": "delete_folder must be true or false."}
+    e = _collection(u, collection_id)
+    if not e:
+        return {"status": "error", "message": f"No campaign {collection_id!r}."}
+    q = _campaign_progress(u, e).get("queue")
+    if q is None:
+        return {"status": "error", "message": QUEUE_UNKNOWN_REFUSED}
+    queued = sum(q.values())
+    if queued:
+        return {"status": "error", "message": f"This campaign still has {queued} task(s) in the Slurm "
+                                              "queue. Stop it first (cancel_campaign), then delete it."}
     plan = {"collection_id": collection_id, "delete_folder": bool(delete_folder)}
     phrase = _confirm_phrase("DELETE", plan)
     if (confirm or "").strip() != phrase:
@@ -2308,7 +1830,7 @@ def delete_campaign(collection_id="", delete_folder=False, confirm="", username=
     _registry(u, {"kind": "delete", "id": collection_id})
     removed = False
     if delete_folder:
-        folder = f"{_paths(u)[0]}/{CAMPAIGNS_DIR}/{e['campaign_folder']}"
+        folder = f"{_workspace(u)}/{CAMPAIGNS_DIR}/{e['campaign_folder']}"
         if re.fullmatch(r"[A-Za-z0-9._-]+", e["campaign_folder"]):
             removed = "GONE" in (_remote(u, f"rm -rf {_shq(folder)} && echo GONE", timeout=120).get("out") or "")
     return {"status": "ok", "deleted": collection_id, "folder_removed": removed}
@@ -2361,7 +1883,7 @@ print(json.dumps(agg))
 
 
 def _stage_root(u, e):
-    return f"{_paths(u)[0]}/{CAMPAIGNS_DIR}/{e['campaign_folder']}/stages/{STAGE}"
+    return f"{_workspace(u)}/{CAMPAIGNS_DIR}/{e['campaign_folder']}/stages/{STAGE}"
 
 
 def postprocess_campaign(collection_id="", username=""):
@@ -2372,7 +1894,7 @@ def postprocess_campaign(collection_id="", username=""):
     e = _collection(u, collection_id)
     if not e:
         return {"status": "error", "message": f"No campaign {collection_id!r}."}
-    code = _POSTPROCESS.replace("__STAGE__", repr(_stage_root(u, e))).replace("__TOTAL__", str(int(e["replicas"])))
+    code = _fill(_POSTPROCESS, STAGE=_stage_root(u, e), TOTAL=int(e["replicas"]))
     r = _run_ifarm_py(u, code, timeout=120, cap=2000000)
     try:
         agg = json.loads(r["out"].strip().splitlines()[-1])
@@ -2489,9 +2011,8 @@ def campaign_pdf_plots(collection_id="", flavors="u,d,g,s", q2=10.0, mean_overla
         assert q2 > 0
     except Exception:
         return {"status": "error", "message": "q2 must be a positive number"}
-    code = (_PDF_PLOTS.replace("__STAGE__", repr(_stage_root(u, e))).replace("__FLAVORS__", repr(fl))
-            .replace("__Q2__", repr(q2)).replace("__MEAN__", repr(bool(mean_overlay))))
-    ws = _paths(u)[0]
+    code = _fill(_PDF_PLOTS, STAGE=_stage_root(u, e), FLAVORS=fl, Q2=q2, MEAN=bool(mean_overlay))
+    ws = _workspace(u)
     r = _run_ifarm_py(u, code, apptainer=True, timeout=600, cap=20000000,
                       env={"MPLCONFIGDIR": f"{ws}/{CAMPAIGNS_DIR}/.matplotlib"})
     try:
@@ -2606,9 +2127,8 @@ def analyze_by_experiment(collection_id="", experiments="", plot=True, username=
     if not e:
         return {"status": "error", "message": f"No campaign {collection_id!r}."}
     want = [x.strip().lower() for x in (experiments or "").split(",") if x.strip()]
-    code = (_BY_EXPERIMENT.replace("__STAGE__", repr(_stage_root(u, e))).replace("__WANT__", repr(want))
-            .replace("__PLOT__", repr(bool(plot))))
-    ws = _paths(u)[0]
+    code = _fill(_BY_EXPERIMENT, STAGE=_stage_root(u, e), WANT=want, PLOT=bool(plot))
+    ws = _workspace(u)
     r = _run_ifarm_py(u, code, apptainer=True, timeout=900, cap=20000000,
                       env={"MPLCONFIGDIR": f"{ws}/{CAMPAIGNS_DIR}/.matplotlib"})
     try:
@@ -2677,7 +2197,7 @@ def draft_slurm_job(name="", command="", time_limit="01:00:00", cpus=1, mem="4G"
     part = (partition or "").strip() or _auto_partition_seconds(secs)
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", part):
         return {"status": "error", "message": "invalid partition"}
-    ws, area = _paths(u)[0], _area(u)
+    ws, area = _workspace(u), _area(u)
     wd = os.path.normpath((workdir or ws).strip())
     if not (wd == area or wd.startswith(area + "/")):
         return {"status": "error", "message": f"workdir must be inside your own area ({area})"}
@@ -2686,7 +2206,7 @@ def draft_slurm_job(name="", command="", time_limit="01:00:00", cpus=1, mem="4G"
     body = command.strip()
     if in_container:
         binds = " ".join(f"--bind {b}" for b in c.get("binds", []))
-        body = (f"apptainer exec {binds} --env PYTHONPATH={ws} --env FITPACK={ws} {c['image']} "
+        body = (f"apptainer exec {binds} --env PYTHONPATH={_shq(ws)} --env FITPACK={_shq(ws)} {c['image']} "
                 f"bash -lc {_shq(body)}")
     script = "\n".join([
         "#!/bin/bash", f"#SBATCH --job-name={name}", f"#SBATCH --partition={part}",
@@ -2695,8 +2215,9 @@ def draft_slurm_job(name="", command="", time_limit="01:00:00", cpus=1, mem="4G"
         f"#SBATCH --output={sdir}/{name}_%A{'_%a' if array else ''}.out",
         "set -euo pipefail", f"cd {_shq(wd)}", body, ""])
     b64 = base64.b64encode(script.encode()).decode()
-    r = _remote(u, f"mkdir -p {sdir} && echo {b64} | base64 -d > {sdir}/{name}.sh && "
-                   f"sbatch --test-only {sdir}/{name}.sh 2>&1", timeout=60)
+    qd = _shq(sdir)
+    r = _remote(u, f"mkdir -p {qd} && echo {b64} | base64 -d > {qd}/{name}.sh && "
+                   f"sbatch --test-only {qd}/{name}.sh 2>&1", timeout=60)
     # The login shell on the compute host prints an unrelated profile warning.
     test = "\n".join(l for l in ((r.get("out") or "") + (r.get("err") or "")).splitlines()
                      if "syscshrc" not in l).strip()
@@ -2714,7 +2235,7 @@ def submit_slurm_job(name="", confirm="", username=""):
         return err
     if not re.fullmatch(SLURM_NAME_RE, name or ""):
         return {"status": "error", "message": "invalid name"}
-    path = f"{_paths(u)[0]}/slurm/{name}.sh"
+    path = f"{_workspace(u)}/slurm/{name}.sh"
     r = _remote(u, f"cat {_shq(path)}", timeout=30, cap=200000)
     if r.get("rc") != 0:
         return {"status": "error", "message": f"No draft {name}; run draft_slurm_job first."}
@@ -2745,239 +2266,51 @@ TOOLS = {
         "fn": lambda a: get_console(a.get("tab", "connect"))},
     "connect_hpc": {
         "desc": "Open (or reuse) your two-hop chain to the cluster (login host, then the "
-                "compute host; see check_hpc_connection for this site's hosts). The username "
-                "comes from your gateway token, so it can be omitted. Call it with no "
-                "credentials first: status=reused means the chain is live and nothing "
-                "else is needed. If it is not live, do NOT ask for the PIN, one-time code "
-                "or password in chat — give the user the panel's Connect tab "
-                "(get_console tab=connect) and let them sign in there.",
+                "compute host; see check_hpc_connection for this site's hosts). It acts as "
+                "the user of your dashboard token. Call it with no credentials first: "
+                "status=reused means the chain is live and nothing else is needed. If it is "
+                "not live, do NOT ask for the PIN, one-time code or password in chat — give "
+                "the user the panel's Connect tab (get_console tab=connect) and let them sign "
+                "in there.",
         "schema": {"type": "object",
-                   "properties": {"username": {"type": "string"},
-                                  "pin_otp": {"type": "string"},
+                   "properties": {"pin_otp": {"type": "string"},
                                   "password": {"type": "string"}}},
-        "fn": lambda a: connect_hpc(a.get("username", ""),
-                                    a.get("pin_otp") or a.get("gateway_code", ""),
-                                    a.get("password") or a.get("ifarm_password", ""))},
-    "check_hpc": {"desc": "Verify the chain and show the connected user's queue plus their JAM directory.",
-                  "schema": {"type": "object", "properties": {"username": {"type": "string"}}},
-                  "fn": lambda a: check_hpc(a.get("username", ""))},
-    "submit_test_fit": {"desc": "Submit a trivial test job on the cluster through the chain (fire-and-forget).",
-                        "schema": {"type": "object", "properties": {"username": {"type": "string"}}},
-                        "fn": lambda a: submit_test_fit(a.get("username", ""))},
-    "get_submit_result": {"desc": "Poll the background test sbatch result and the queue.",
-                          "schema": {"type": "object", "properties": {"username": {"type": "string"}}},
-                          "fn": lambda a: get_submit_result(a.get("username", ""))},
-    "node_diag": {"owner": True,
-                  "desc": "Run a shell command on the gateway node (diagnostics / hot-redeploy). Owner only.",
+        "fn": lambda a: connect_hpc(pin_otp=a.get("pin_otp", ""), password=a.get("password", ""))},
+    "node_diag": {"hidden": True,
+                  "desc": "Run a shell command on the gateway node (hot_redeploy.py and "
+                          "diagnostics). Not in tools/list; callable by name.",
                   "schema": {"type": "object", "properties": {"cmd": {"type": "string"}}},
                   "fn": lambda a: node_diag(a.get("cmd", "id; hostname"))},
-    "remote_exec": {"owner": True,
-                    "desc": "Run a shell command on the cluster through the owner's chain. Owner only.",
-                    "schema": {"type": "object",
-                               "properties": {"cmd": {"type": "string"},
-                                              "timeout": {"type": "integer"},
-                                              "username": {"type": "string"}}},
-                    "fn": lambda a: remote_exec(a.get("cmd", "hostname"),
-                                                int(a.get("timeout", 120)),
-                                                a.get("username", ""))},
-    "list_jam_runs": {"desc": "List the connected user's cards, run dirs, and msr files as text.",
-                      "schema": {"type": "object", "properties": {"username": {"type": "string"}}},
-                      "fn": lambda a: list_jam_runs(a.get("username", ""))},
     "fs_list": {"desc": "List a directory on the cluster (defaults to the user's own area).",
+                "schema": {"type": "object", "properties": {"path": {"type": "string"}}},
+                "fn": lambda a: fs_list(a.get("path", ""))},
+    "fs_read": {"desc": "Read a text file on the cluster, e.g. a campaign's artifacts: a replica's "
+                       "log <campaign>/stages/pdf_stage/logs/stage_<job>_<replica>.out (campaign_status "
+                       "gives the full path as log_pattern), fit_summary.json, input.py. Path must be under "
+                       + " or ".join(SITE["read_roots"]) + ".",
                 "schema": {"type": "object",
                            "properties": {"path": {"type": "string"},
-                                          "username": {"type": "string"}}},
-                "fn": lambda a: fs_list(a.get("path", ""), a.get("username", ""))},
-    "fs_read": {"desc": "Read a text file on the cluster (fit cards, slurm logs, "
-                       "progress.json). Path must be under " + " or ".join(SITE["read_roots"]) + ".",
-                "schema": {"type": "object",
-                           "properties": {"path": {"type": "string"},
-                                          "max_lines": {"type": "integer"},
-                                          "username": {"type": "string"}}},
-                "fn": lambda a: fs_read(a.get("path", ""), int(a.get("max_lines", 200)),
-                                        a.get("username", ""))},
-    "fs_write": {"desc": "Write a text file on the cluster, restricted to the user's own "
-                        "area (" + SITE["area"].format(user="<username>") + ").",
-                 "schema": {"type": "object",
-                            "properties": {"path": {"type": "string"},
-                                           "content": {"type": "string"},
-                                           "username": {"type": "string"}},
-                            "required": ["path", "content"]},
-                 "fn": lambda a: fs_write(a.get("path", ""), a.get("content", ""),
-                                          a.get("username", ""))},
+                                          "max_lines": {"type": "integer"}}},
+                "fn": lambda a: fs_read(a.get("path", ""), int(a.get("max_lines", 200)))},
     "setup_workspace": {
-        "desc": "Create a workspace in your own area (" + SITE["area"].format(user="<you>")
-                + "): git-clone the JAM code (repo_url defaults to " + JAM_REPO_URL
-                + "; a private repository needs a GitHub token, which the user types on the "
-                "panel's Project tab — never ask for it in chat), create the runs "
-                "tree, link the shared grids and LHAPDF tables, and add what the repository "
-                "lacks (fit driver, JAM24 cards under inputs/jam24/). Existing files are "
-                "never overwritten. source=<username> copies that user's workspace "
-                "instead of cloning. Run once before the first fit.",
+        "desc": "Create a workspace: clone the FitPack ai branch (repo_url defaults to "
+                + JAM_REPO_URL + ") into a new folder of your own area ("
+                + SITE["area"].format(user="<you>") + "), record it as the workspace and link "
+                "the shared interpolation grids. A GitHub token for a private repository is "
+                "typed on the panel's Project tab, never in chat. A folder that already exists "
+                "is not cloned again: it becomes the workspace as it is. Run once before the "
+                "first campaign.",
         "schema": {"type": "object",
-                   "properties": {"source": {"type": "string"},
-                                  "repo_url": {"type": "string"},
+                   "properties": {"repo_url": {"type": "string"},
                                   "target_dir": {"type": "string"},
-                                  "username": {"type": "string"},
                                   "github_token": {"type": "string"},
                                   "folder_name": {"type": "string"},
                                   "branch": {"type": "string"}}},
-        "fn": lambda a: setup_workspace(a.get("source", ""),
-                                        a.get("repo_url", ""), a.get("github_token", ""),
-                                        a.get("target_dir", ""), a.get("username", ""),
-                                        a.get("folder_name", ""), a.get("branch", ""))},
-    "search_datasets": {
-        "desc": "List datasets (reaction + id) inside a JAM card, optionally "
-                "filtered by query. Use it to help the user pick which reactions "
-                "to include before building a custom card.",
-        "schema": {"type": "object",
-                   "properties": {"card": {"type": "string"},
-                                  "query": {"type": "string"},
-                                  "username": {"type": "string"}}},
-        "fn": lambda a: search_datasets(a.get("card", ""),
-                                        a.get("query", ""), a.get("username", ""))},
-    "list_reactions": {
-        "desc": "Step 3 of a fit: the reactions the analysis template offers (idis, dy, "
-                "jet, ...) with their dataset counts. Show them and ask which to include.",
-        "schema": {"type": "object", "properties": {}},
-        "fn": lambda a: list_reactions()},
-    "get_dataset_catalog": {
-        "desc": "Step 4 of a fit: the dataset ids of each reaction, {reaction: [{id, label}]}. "
-                "Pass reactions (comma list) to get only the ones the user picked; card "
-                "defaults to the analysis template. Nothing is preselected — ask which ids.",
-        "schema": {"type": "object",
-                   "properties": {"reactions": {"type": "string"},
-                                  "card": {"type": "string"},
-                                  "username": {"type": "string"}}},
-        "fn": lambda a: get_dataset_catalog(a.get("card", ""),
-                                            a.get("username", ""), a.get("reactions", ""))},
-    "get_fit_parameters": {
-        "desc": "Read the ACTUAL fit parameters (block/name/value/min/max/fixed) from "
-                "a card. UIs and agents must use these values, never hardcoded ones.",
-        "schema": {"type": "object",
-                   "properties": {"card": {"type": "string"},
-                                  "username": {"type": "string"}}},
-        "fn": lambda a: get_fit_parameters(a.get("card", ""),
-                                           a.get("username", ""))},
-    "build_card": {
-        "desc": "Create a modified fit card: copy base_card and comment out the "
-                "dataset lines whose ids are in exclude_ids (comma-separated). "
-                "base_card is a card path under inputs/; the new card is written to "
-                "inputs/derived/<out_card>.",
-        "schema": {"type": "object",
-                   "properties": {"base_card": {"type": "string"},
-                                  "exclude_ids": {"type": "string"},
-                                  "out_card": {"type": "string"},
-                                  "username": {"type": "string"}},
-                   "required": ["base_card", "out_card"]},
-        "fn": lambda a: build_card(a.get("base_card", ""), a.get("exclude_ids", ""),
-                                   a.get("out_card", ""), a.get("username", ""))},
-    "submit_fit_from_selection": {
-        "desc": "Step 6 of a fit: generate the card from the analysis template (or "
-                "base_card if the user named one), keeping only selected_ids (comma list of "
-                "reaction:id), and submit it. Powers the "
-                "web fit composer's Submit button. hours=0 (default) auto-sizes: "
-                "2h for warm starts, 10h for cold starts; 4 cores. partition empty = "
-                "auto (short jobs to the short partition, the rest to the batch one). "
-                "The derived card goes to inputs/derived/. "
-                "Optional qcd overrides (Q20/tmc/ht) and params overrides "
-                "(block/name/value/min/max/fixed) are written into the card.",
-        "schema": {"type": "object",
-                   "properties": {"base_card": {"type": "string"},
-                                  "selected_ids": {"type": "string"},
-                                  "out_card": {"type": "string"},
-                                  "outdir": {"type": "string"},
-                                  "prior_msr": {"type": "string"},
-                                  "cores": {"type": "integer"},
-                                  "hours": {"type": "integer"},
-                                  "partition": {"type": "string"},
-                                  "username": {"type": "string"},
-                                  "qcd": {"type": "object",
-                                          "properties": {"Q20": {"type": "number"},
-                                                         "tmc": {"type": "boolean"},
-                                                         "ht": {"type": "boolean"}}},
-                                  "params": {"type": "array",
-                                             "items": {"type": "object",
-                                                       "properties": {"block": {"type": "string"},
-                                                                      "name": {"type": "string"},
-                                                                      "value": {},
-                                                                      "min": {},
-                                                                      "max": {},
-                                                                      "fixed": {"type": "boolean"}},
-                                                       "required": ["block", "name"]}}},
-                   "required": ["selected_ids"]},
-        "fn": lambda a: submit_fit_from_selection(
-            a.get("base_card", ""),
-            a.get("selected_ids", ""), a.get("out_card", "agent_selection.py"),
-            a.get("outdir", ""), a.get("prior_msr", ""),
-            int(a.get("cores", 4)), int(a.get("hours", 0)),
-            a.get("partition", ""), a.get("username", ""),
-            a.get("qcd") or None, a.get("params") or None)},
-    "submit_jam_fit": {
-        "desc": "Submit a REAL JAM fit on the cluster as the connected user "
-                "(apptainer maxlike_jam). card = card path under inputs/; outdir = "
-                "output dir (relative to <workspace>/runs or absolute); prior_msr = "
-                "optional prior .msr file (empty = cold start). RESOURCE RULES: warm "
-                "start (prior given) 1-2h; cold start (no prior) hours>=10; 4 cores is "
-                "the ladder reference; partition empty = auto (" + str(SITE.get("short_partition"))
-                + " up to " + str(SITE.get("short_hours")) + " h, " + SITE["partition"]
-                + " otherwise). Check cluster_status first when the queue looks busy.",
-        "schema": {"type": "object",
-                   "properties": {"card": {"type": "string"},
-                                  "outdir": {"type": "string"},
-                                  "prior_msr": {"type": "string"},
-                                  "cores": {"type": "integer"},
-                                  "seed": {"type": "integer"},
-                                  "hours": {"type": "integer"},
-                                  "partition": {"type": "string"},
-                                  "username": {"type": "string"}},
-                   "required": ["card", "outdir"]},
-        "fn": lambda a: submit_jam_fit(
-            a.get("card", ""), a.get("outdir", ""), a.get("prior_msr", ""),
-            int(a.get("cores", 4)), int(a.get("seed", 160300)),
-            int(a.get("hours", 10)), a.get("partition", ""),
-            a.get("username", ""))},
-    "get_jam_result": {
-        "desc": "Poll the latest JAM fit: queue, submit log, progress.json tail, msr listing.",
-        "schema": {"type": "object",
-                   "properties": {"outdir": {"type": "string"},
-                                  "job_name": {"type": "string"},
-                                  "username": {"type": "string"}}},
-        "fn": lambda a: get_jam_result(a.get("outdir", ""), a.get("job_name", "jamfit"),
-                                       a.get("username", ""))},
-    "read_chi2": {
-        "desc": "Parse progress.json on the cluster: chi2/N series + per-dataset chi2/N. "
-                "structured=true returns the full series as data instead of text.",
-        "schema": {"type": "object",
-                   "properties": {"outdir": {"type": "string"},
-                                  "username": {"type": "string"},
-                                  "structured": {"type": "boolean"}}},
-        "fn": lambda a: read_chi2(a.get("outdir", ""), a.get("username", ""),
-                                  bool(a.get("structured", False)))},
-    "evaluate_fit": {
-        "desc": "Evaluate finished .msr files against the JAM24 paper band "
-                "(chi2/N 2.566 [2.190,2.819]). Runs inside apptainer (needs numpy).",
-        "schema": {"type": "object",
-                   "properties": {"outdir": {"type": "string"},
-                                  "msr_file": {"type": "string"},
-                                  "username": {"type": "string"}}},
-        "fn": lambda a: evaluate_fit(a.get("outdir", ""), a.get("msr_file", ""),
-                                     a.get("username", ""))},
-    "cluster_status": {
-        "desc": "Cluster perception: partitions, the user's queue, and run-time "
-                "hints. Call BEFORE submit_jam_fit to size cores/hours/partition "
-                "sensibly for the current load.",
-        "schema": {"type": "object", "properties": {"username": {"type": "string"}}},
-        "fn": lambda a: cluster_status(a.get("username", ""))},
-    "chain_state": {
-        "desc": "Freeze/continue/reset judgment data: newest msr total chi2/N, "
-                "worst per-dataset chi2/N, fitted parameter values, and the "
-                "per-step ladder chi2/N. Use it to decide whether to freeze the "
-                "fit and add datasets, adjust the dataset set, or reset cold.",
-        "schema": {"type": "object",
-                   "properties": {"outdir": {"type": "string"},
-                                  "username": {"type": "string"}}},
-        "fn": lambda a: chain_state(a.get("outdir", ""), a.get("username", ""))},
+        "fn": lambda a: setup_workspace(repo_url=a.get("repo_url", ""),
+                                        github_token=a.get("github_token", ""),
+                                        target_dir=a.get("target_dir", ""),
+                                        folder_name=a.get("folder_name", ""),
+                                        branch=a.get("branch", ""))},
     "open_panel": {
         "desc": "Show the FemtoMind operations panel (Connect / Project / Campaign / "
                 "Collections / Analysis). Clients that render MCP Apps display it inline; "
@@ -2990,12 +2323,16 @@ TOOLS = {
         "fn": lambda a: open_panel(a.get("tab", "connect"))},
     "check_hpc_connection": {
         "desc": "Is your cluster chain open, which site and hosts it uses, and which "
-                "workspace is recorded? Cheap; use it before anything that needs the cluster.",
+                "workspace is recorded? login_open says the login hop alone is still open "
+                "(signing in then needs only the password). Cheap; use it before anything "
+                "that needs the cluster.",
         "schema": {"type": "object", "properties": {}},
         "fn": lambda a: check_hpc_connection()},
     "check_project": {
         "desc": "Report on your workspace: which checkout is in use, every checkout in "
-                "your area, and whether code, data, runs and grids are all present.",
+                "your area, and whether code, data, grids, the campaign template and the "
+                "campaign runner (FitPack ai branch) are all present. A missing item says "
+                "how to fix it (fix: use_ai_branch or use_workspace).",
         "schema": {"type": "object", "properties": {}},
         "fn": lambda a: check_project()},
     "use_workspace": {
@@ -3005,17 +2342,13 @@ TOOLS = {
         "schema": {"type": "object", "properties": {"path": {"type": "string"}},
                    "required": ["path"]},
         "fn": lambda a: use_workspace(a.get("path", ""))},
-    "list_runs": {
-        "desc": "Your fit runs with output (newest first, with their .msr files), the "
-                "cards in your workspace (paths under inputs/; cards the gateway derived "
-                "are listed apart), and your Slurm queue — as data.",
-        "schema": {"type": "object", "properties": {}},
-        "fn": lambda a: list_runs()},
     "campaign_options": {
         "desc": "The fit composer's choices, as in the JAM app: objects, the Unpolarized PDF "
-                "parameter table (block, parameter, FIXED/FREE, library value, min, max), the "
+                "parameter table read from the workspace's examples/input02.py (the library: "
+                "block, parameter, FIXED/FREE, value, min, max; source names the file), the "
                 "reactions, default cuts, QCD and job settings with their allowed values, and the "
-                "Slurm partitions. Call it first and walk the user through each step.",
+                "Slurm partitions. Needs the cluster chain and a workspace. Call it first and walk "
+                "the user through each step.",
         "schema": {"type": "object", "properties": {}},
         "fn": lambda a: campaign_options()},
     "campaign_datasets": {
@@ -3032,8 +2365,8 @@ TOOLS = {
         "fn": lambda a: use_ai_branch()},
     "validate_campaign": {
         "desc": "Create Input Card: validate the composer card and return the summary (free/fixed "
-                "parameters, datasets, cuts, QCD, job), the Slurm array script and the confirmation "
-                "phrase. " + 'card = {"object": {"type": "pdf", "parameters": {"g1 a": {"value", "min", "max", "fixed"}, ...}}, "reactions": ["idis", "dy"], "datasets": {"idis": ["10010", ...]}, "cuts": {"idis": [{"variable": "Q2", "op": ">", "value": 1.69, "enabled": true}]}, "qcd": {"order", "Q20", "tmc": "off"|"AOT", "higherTwist", "dglapMode", "asMode"}, "parameters": {"initialization": "default"|"random_within_bounds", "randomSeed", "perReplicaSeed"}, "job": {"campaignName", "replicas", "maxIterations", "tolerance", "optimizer", "bootstrap"}, "slurm": {"partition" ("" = auto), "time" (per replica, HH:MM:SS), "mem", "cpus"}}. Only parameters the user changed need to be listed; the rest keep the library values.',
+                "parameters, the ones changed from the library, datasets, cuts, QCD, job), the Slurm "
+                "array script and the confirmation phrase. " + 'card = {"object": {"type": "pdf", "parameters": {"g1 a": {"value", "min", "max", "fixed": true|false}, ...}}, "reactions": ["idis", "dy"], "datasets": {"idis": ["10010", ...]}, "cuts": {"idis": [{"variable": "Q2", "op": ">", "value": 1.69, "enabled": true}]}, "qcd": {"order", "Q20", "tmc": "off"|"AOT", "higherTwist", "dglapMode", "asMode"}, "parameters": {"initialization": "default"|"random_within_bounds", "randomSeed", "perReplicaSeed"}, "job": {"campaignName", "replicas", "maxIterations", "tolerance", "optimizer", "bootstrap"}, "slurm": {"partition" ("" = auto), "time" (per replica, HH:MM:SS), "mem", "cpus"}}. Only parameters the user changed need to be listed; the rest keep the library values, and only changed rows are written into the card. A parameter switched to FREE needs a min and a max.',
         "schema": {"type": "object", "properties": {"card": {"type": "object"}}, "required": ["card"]},
         "fn": lambda a: validate_campaign(a.get("card"))},
     "submit_campaign": {
@@ -3044,12 +2377,15 @@ TOOLS = {
                    "required": ["card"]},
         "fn": lambda a: submit_campaign(a.get("card"), a.get("confirm", ""))},
     "list_campaigns": {
-        "desc": "Collections: every campaign in this workspace with its status, job ids and how "
-                "many replicas have finished.",
+        "desc": "Collections: every campaign in this workspace with its status, job ids, how many "
+                "replicas have finished and how many of its tasks are still queued, plus your whole "
+                "Slurm queue (queue). When squeue cannot be read, queued and queue are null: unknown, "
+                "not empty.",
         "schema": {"type": "object", "properties": {}},
         "fn": lambda a: list_campaigns()},
     "campaign_status": {
-        "desc": "One campaign's Slurm state and replica progress.",
+        "desc": "One campaign's Slurm state and replica progress (queue is null when squeue cannot "
+                "be read), its folder, and log_pattern: the path of a replica's log for fs_read.",
         "schema": {"type": "object", "properties": {"collection_id": {"type": "string"}},
                    "required": ["collection_id"]},
         "fn": lambda a: campaign_status(a.get("collection_id", ""))},
@@ -3094,14 +2430,23 @@ TOOLS = {
                                                     "confirm": {"type": "string"}},
                    "required": ["collection_id", "count"]},
         "fn": lambda a: append_replicas(a.get("collection_id", ""), a.get("count", 0), a.get("confirm", ""))},
+    "cancel_campaign": {
+        "desc": "Stop a campaign: cancel its queued and running Slurm tasks. The first call returns "
+                "the plan and a confirmation phrase; nothing is cancelled until the user confirms "
+                "and the call is repeated with confirm = the phrase.",
+        "schema": {"type": "object", "properties": {"collection_id": {"type": "string"},
+                                                    "confirm": {"type": "string"}},
+                   "required": ["collection_id"]},
+        "fn": lambda a: cancel_campaign(a.get("collection_id", ""), a.get("confirm", ""))},
     "delete_campaign": {
-        "desc": "Remove a campaign from Collections (delete_folder also removes its files). Needs "
-                "the confirmation phrase from a first call.",
+        "desc": "Remove a campaign from Collections (delete_folder also removes its folder and "
+                "results). Refused while any of its tasks are in the Slurm queue: stop it first "
+                "with cancel_campaign. Needs the confirmation phrase from a first call.",
         "schema": {"type": "object", "properties": {"collection_id": {"type": "string"},
                                                     "delete_folder": {"type": "boolean"},
                                                     "confirm": {"type": "string"}},
                    "required": ["collection_id"]},
-        "fn": lambda a: delete_campaign(a.get("collection_id", ""), bool(a.get("delete_folder", False)),
+        "fn": lambda a: delete_campaign(a.get("collection_id", ""), a.get("delete_folder") or False,
                                         a.get("confirm", ""))},
     "slurm_partitions": {
         "desc": "Partitions with time limits, idle/total CPUs and memory per node, for choosing "
@@ -3135,9 +2480,6 @@ TOOLS = {
         "fn": lambda a: submit_slurm_job(a.get("name", ""), a.get("confirm", ""))},
 }
 
-OWNER_ONLY = {k for k, v in TOOLS.items() if v.get("owner")}
-
-
 
 # ── http layer ──────────────────────────────────────────────────────────────
 
@@ -3155,20 +2497,24 @@ _FALLBACK_PANEL = ("<!doctype html><meta charset='utf-8'><title>JAM gateway</tit
 
 INSTRUCTIONS = (
     f"JAM global-analysis gateway for {SITE['label']}: the FemtoMind JAM app's fitting "
-    "campaign, as a conversation. Every call acts as the user who owns the gateway token; "
-    "never ask for or pass another username. Go one question at a time, in this order:\n"
+    "campaign, as a conversation. Every call acts as the gateway's owner (the user whose "
+    "dashboard token the client sends); never ask for or pass another username. Go one "
+    "question at a time, in this order:\n"
     "1. HPC: check_hpc_connection; ask which HPC (its 'sites'). If not connected, the user "
     f"signs in ({SITE['login_secret']} for {SITE['login_host']}, {SITE['compute_secret']} for "
     f"{SITE['compute_host']}) on the panel's Connect tab — give the link (get_console "
     "tab=connect) and wait. Never ask for these in chat.\n"
-    "2. Workspace: check_project lists the folders in the user's area; ask which to use "
-    "(use_workspace) or create a new one (setup_workspace; it clones the FitPack ai branch). "
-    "If a clone needs a GitHub token, send the user to the panel's Project tab (the link in "
-    "the result) — never ask for a token in chat. Campaigns need fitlib/ai.py: if "
-    "validate_campaign says the workspace is not on the ai branch, offer use_ai_branch.\n"
-    "3. Non-perturbative object and parameters: campaign_options. Only Unpolarized PDF is "
-    "available. Show the parameter table (FREE/FIXED, library value, min, max) and ask which "
-    "to change.\n"
+    "2. Workspace: check_project lists the folders in the user's area and what the workspace "
+    "has; ask which to use (use_workspace) or create a new one (setup_workspace; it clones the "
+    "FitPack ai branch). If a clone needs a GitHub token, send the user to the panel's Project "
+    "tab (the link in the result) — never ask for a token in chat. If the campaign runner or "
+    "the campaign template is marked missing (fix: use_ai_branch), the checkout is not on the "
+    "FitPack ai branch: offer use_ai_branch or a new workspace.\n"
+    "3. Non-perturbative object and parameters: only Unpolarized PDF is available. "
+    "campaign_options returns the parameter table read from the workspace's "
+    "examples/input02.py (the library): FREE/FIXED, value, min, max. Ask which to change; "
+    "only changed rows are written into the card. A parameter switched to FREE needs a min "
+    "and max from the user.\n"
     "4. Reactions: idis (DIS) or dy (Drell-Yan); the others are not available yet. Ask.\n"
     "5. Datasets and cuts: campaign_datasets per reaction, grouped by experiment; ask which "
     "ids. Show the reaction's cuts (e.g. Q2>1.69, W2>10) and ask whether to keep them.\n"
@@ -3182,10 +2528,14 @@ INSTRUCTIONS = (
     "8. Review: validate_campaign; show the summary and the Slurm array script exactly as "
     "returned (not shortened); submit with "
     "submit_campaign(card, confirm=<phrase>) only after the user agrees.\n"
-    "9. Collections and analysis: list_campaigns, campaign_status, postprocess_campaign, "
-    "campaign_summary (fit summary), campaign_pdf_plots (PDF plots, returned as images), "
-    "analyze_by_experiment (chi2 and data vs theory by experiment), append_replicas (always "
-    "confirmed with its phrase). The panel's Collections and Analysis tabs show the same.\n"
+    "9. Collections and analysis: list_campaigns (it also returns the user's Slurm queue), "
+    "campaign_status, postprocess_campaign, campaign_summary (fit summary), campaign_pdf_plots "
+    "(PDF plots, returned as images), analyze_by_experiment (chi2 and data vs theory by "
+    "experiment), append_replicas (always confirmed with its phrase), cancel_campaign (stops "
+    "its queued and running tasks) and delete_campaign (only when nothing of it is queued) — "
+    "both also confirmed with their phrase. For a failed replica, read its log with fs_read: "
+    "campaign_status gives log_pattern; fill in the replica and the job id (from its jobs) whose "
+    "first-last range holds that replica. The panel's Collections and Analysis tabs show the same.\n"
     "10. Any other cluster job: draft_slurm_job with the resources agreed with the user (it "
     "runs sbatch --test-only), show the returned script exactly as written, ask the user, "
     "then submit_slurm_job with the phrase.")
@@ -3233,14 +2583,8 @@ def _tool_result(out, is_error=False):
 
 
 def _request_identity(headers):
-    """Authorization: Bearer <token>, or X-Jam-Gateway-Token: <token> for paths
-    where a proxy in front of the gateway does not pass Authorization through."""
-    user, role = _identify(headers.get("Authorization"))
-    if not user:
-        alt = (headers.get("X-Jam-Gateway-Token") or "").strip()
-        if alt:
-            user, role = _identify("Bearer " + alt)
-    return user, role
+    """The user a request acts as, from its Authorization: Bearer <token>."""
+    return _identify(headers.get("Authorization"))
 
 
 class H(BaseHTTPRequestHandler):
@@ -3300,12 +2644,11 @@ class H(BaseHTTPRequestHandler):
               f"ua={self.headers.get('User-Agent', '')[:40]!r} "
               f"len={self.headers.get('Content-Length')}")
         sid = _req_sid(self.headers)
-        _tls.sid = sid
-        _tls.user, _tls.role = _request_identity(self.headers)
+        _tls.user = _request_identity(self.headers)
         try:
             self._dispatch(sid)
         finally:
-            _tls.user, _tls.role = "", ""
+            _tls.user = ""
 
     def _dispatch(self, sid):
         n = int(self.headers.get("Content-Length", 0) or 0)
@@ -3326,15 +2669,6 @@ class H(BaseHTTPRequestHandler):
             self._reply(sid, 202)
             return
         rid = req.get("id")
-        if not getattr(_tls, "user", ""):
-            # Owner tooling also sends the token in params._meta: the body always
-            # reaches us, so a proxy that drops headers can never lock the owner out.
-            meta = params.get("_meta") if isinstance(params, dict) else None
-            tok = meta.get("jam_gateway_token") if isinstance(meta, dict) else None
-            if isinstance(tok, str) and tok:
-                _tls.user, _tls.role = _identify("Bearer " + tok)
-                _tls.via_body = bool(_tls.user)
-        role = getattr(_tls, "role", "")
         error = None
         result = None
         if method == "initialize":
@@ -3345,8 +2679,8 @@ class H(BaseHTTPRequestHandler):
         elif method == "ping":
             result = {}
         elif method == "tools/list":
-            result = {"tools": [_tool_entry(k, v) for k, v in TOOLS.items()
-                                if not v.get("owner") or role == "owner"]}
+            # Hidden tools (node_diag, for hot_redeploy.py) stay callable by name.
+            result = {"tools": [_tool_entry(k, v) for k, v in TOOLS.items() if not v.get("hidden")]}
         elif method == "resources/list":
             result = {"resources": [
                 {"uri": PANEL_URI, "name": "jam-panel", "mimeType": PANEL_MIME,
@@ -3367,8 +2701,7 @@ class H(BaseHTTPRequestHandler):
             name = params.get("name", "")
             args = params.get("arguments") or {}
             spec = TOOLS.get(name)
-            if spec is None or (spec.get("owner") and role != "owner"):
-                # Owner tools are not listed to anyone else, so they answer as unknown.
+            if spec is None:
                 result = _tool_result("unknown tool", is_error=True)
             elif not getattr(_tls, "user", ""):
                 result = _tool_result({"status": "unauthorized", "message": AUTH_HELP},
