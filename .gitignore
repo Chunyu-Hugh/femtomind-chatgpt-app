@@ -1,25 +1,8 @@
 __pycache__/
 *.py[cod]
 .venv/
-*.db
-*.db-journal
-# WAL mode is on for hpc_tasks.db, and the write-ahead log routinely holds
-# rows the .db file does not — 11 of 24 at one measurement. Ignoring the
-# database without its sidecars would let a partial copy look complete.
-*.db-wal
-*.db-shm
 .env
-env.conf
-*.prev
-*.bak
 *.log
 
-# Globus credentials. The key file is what makes the encrypted tokens in the
-# workflow database useless to anyone who only has a copy of that database —
-# committing either one defeats the point.
-.globus_token_key
-*.globus_token_key
-hpc_tasks.db
-hpc_tasks.db-journal
-hpc_tasks.db-wal
-hpc_tasks.db-shm
+# Written by `redeploy_jam.py script` for the dashboard page; regenerate it, never commit it.
+lqcdmcp-deploy/jam-gateway-*.slurm
