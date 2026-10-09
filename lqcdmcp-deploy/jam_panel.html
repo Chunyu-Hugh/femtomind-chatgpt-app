@@ -160,6 +160,14 @@
   .imgs img{width:100%;height:auto;display:block;} .imgs figcaption{font-size:11.5px;color:#5a6474;padding:4px 4px 0;}
   .phrase{font-family:var(--mono);font-weight:600;}
   .rowacts{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;}
+  /* replicas that did not fit or failed, datasets the cuts leave empty */
+  .wn,.kv b.wn{color:var(--warn);}
+  .tag,.nowrap{white-space:nowrap;}
+  ul.notes{margin:0;padding-left:18px;} ul.notes li{margin:2px 0;}
+  .kv.lghead{align-items:center;margin-top:14px;}
+  .lgtbl td,.lgtbl th{padding:4px 7px;}
+  @media (max-width:560px){.lgtbl .lgcol{display:none;}}    /* narrow: View stays in sight; the detail shows the log path */
+  #caLogsBox pre.out{overflow-wrap:anywhere;}     /* long paths in a traceback wrap on a phone */
 </style>
 </head>
 <body>
@@ -383,7 +391,7 @@
   <section class="tab" data-tab="collections">
     <div class="card">
       <h3>Collections</h3>
-      <p class="sub">Campaigns in this workspace, newest first, with how many replicas have finished. Stop a
+      <p class="sub">Campaigns in this workspace, newest first, with how many replicas really fitted. Stop a
         campaign that is still queued or running, or delete one together with its folder and results.</p>
       <div id="collMsg"></div>
       <div id="collBody"><div class="spin">Open this tab to load…</div></div>
@@ -409,6 +417,7 @@
         <button class="btn" id="caSum">Load Fit Summary</button>
         <button class="btn" id="caPdf">View PDF Plots</button>
         <button class="btn" id="caExp">By experiment</button>
+        <button class="btn" id="caLogs">Logs</button>
       </div>
       <div id="caMoreBox" class="subbox" style="display:none">
         <div class="grid2"><div class="field"><div class="label sm">Additional replicas</div><input type="number" min="1" max="2000" id="caMoreN" value="10"></div>
@@ -430,6 +439,7 @@
           <button class="btn primary" id="caExpGo">Analyze</button>
         </div>
       </div>
+      <div id="caLogsBox" class="subbox" style="display:none"></div>
       <div id="caOut"><div class="empty">Pick a campaign, then Postprocess once replicas have finished.</div></div>
     </div>
   </section>
@@ -1145,15 +1155,23 @@
     $("reviewErr").textContent = "";
     const s = validated.summary;
     const changed = s.changed_parameters || [];
+    // Points each dataset keeps after the cuts ("idis:10001" -> 0), one line each;
+    // a dataset left with none adds nothing to the fit.
+    const pts = Object.entries(s.points_after_cuts || {}).map(([k,n])=>'<br><span'+(n === 0 ? ' class="wn"' : '')+'>'
+      + esc(k.replace(":", " ")+": "+(n == null ? "points after cuts unknown" : n+(n === 1 ? " point" : " points")+" after cuts"))+'</span>').join("");
     const rows = [["Non-perturbative object", s.object], ["Parameters", s.free_parameters+" free · "+s.fixed_parameters+" fixed ("+s.fixed.join(", ")+") · "
         + (changed.length ? "changed: "+changed.join(", ") : "none changed")],
-      ["Reactions", s.reactions.join(", ")], ["Datasets", Object.entries(s.datasets).map(([r,n])=>r+": "+n).join(" · ")],
+      ["Reactions", s.reactions.join(", ")], ["Datasets", Object.entries(s.datasets).map(([r,n])=>r+": "+n).join(" · "), pts],
       ["Cuts", Object.entries(s.cuts).map(([r,c])=>r+": "+c.join(", ")).join(" · ")],
       ["QCD", s.qcd.order+" · Q₀² "+s.qcd.Q20+" · TMC "+s.qcd.tmc+" · HT "+(s.qcd.higherTwist ? "on" : "off")+" · DGLAP "+s.qcd.dglapMode+" · αS "+s.qcd.asMode],
       ["Initialization", s.initialization], ["Inference mode", s.inference],
       ["Replicas · max iterations · tolerance · optimizer", s.replicas+" · "+s.max_iterations+" · "+s.tolerance+" · "+s.optimizer],
       ["Slurm (per replica)", s.slurm.partition_effective+" · "+s.slurm.time+" · "+s.slurm.mem+" · "+s.slurm.cpus+" cpu"]];
-    $("reviewBox").innerHTML = rows.map(r=>'<div class="row"><span class="k">'+esc(r[0])+'</span><span class="v">'+esc(r[1])+'</span></div>').join("");
+    // Warnings from reading the data files (a dataset the cuts leave empty, a column
+    // FitPack's report lacks) never block the submission: they sit above the summary.
+    const warns = Array.isArray(validated.warnings) && validated.warnings.length
+      ? '<div class="note warn" style="margin-bottom:8px"><ul class="notes">'+validated.warnings.map(x=>'<li>'+esc(x)+'</li>').join("")+'</ul></div>' : "";
+    $("reviewBox").innerHTML = warns + '<div>'+rows.map(r=>'<div class="row"><span class="k">'+esc(r[0])+'</span><span class="v">'+esc(r[1])+(r[2] || "")+'</span></div>').join("")+'</div>';
     $("scriptBox").style.display = ""; $("scriptText").textContent = validated.slurm_script || "";
   }
   $("createCard").onclick = async ()=>{
@@ -1287,7 +1305,23 @@
   }
   $("collBtn").onclick = ()=>loadCollections();
   const collNote = (text, warn, cause)=>'<div class="note'+(warn ? " warn" : "")+'" style="margin:0 0 12px">'+esc(text)+causePre(cause)+'</div>';
-  function stateTag(s){ return '<span class="tag '+({running: "active", submitted: "active", completed: "done", postprocessed: "done"}[s] || "other")+'">'+esc(s)+'</span>'; }
+  function stateTag(s){ return '<span class="tag '+({running: "active", submitted: "active", completed: "done", postprocessed: "done",
+                                                     "not fitted": "bad"}[s] || "other")+'">'+esc(s)+'</span>'; }
+  // succeeded counts the replicas that really fitted. Of the other finished ones,
+  // not_fitted fell back to χ² at the starting values (the optimization failed) and
+  // failed did not finish with success; a gateway that sends no failed leaves the
+  // rest of finished, one that sends no not_fitted counts none.
+  function replicaCounts(c){
+    const nf = Number(c.not_fitted) || 0;
+    const failed = c.failed != null ? Number(c.failed) || 0
+      : (c.finished != null && c.succeeded != null ? Math.max(c.finished - c.succeeded - nf, 0) : 0);
+    return {nf, failed};
+  }
+  function problemLines(c){
+    const {nf, failed} = replicaCounts(c);
+    return (nf ? '<div class="wn" style="font-size:11px">'+nf+' did not fit</div>' : '')
+      + (failed ? '<div class="wn" style="font-size:11px">'+failed+' failed</div>' : '');
+  }
   function paintCampaigns(d){
     if (!d || !Array.isArray(d.campaigns)){ $("collBody").innerHTML = '<div class="note warn">'+esc(msgOf(d, "Sign in on the Connect tab first."))+'</div>'; return; }
     // The list's own note (the Slurm queue could not be read) says why a campaign whose
@@ -1298,7 +1332,7 @@
       + d.campaigns.map((c,i)=>'<tr><td><b>'+esc(c.campaign_name)+'</b><div class="mono muted" style="font-size:11px">'+esc(c.collection_id)+'</div>'
         + '<div class="muted" style="font-size:11.5px">'+esc(Object.entries(c.datasets || {}).map(([r,v])=>r+" "+v.length).join(" · "))+'</div></td>'
         + '<td class="mono" style="font-size:11.5px">'+esc(fmtET(isoSec(c.created_at)))+'</td>'
-        + '<td class="mono">'+esc(c.succeeded == null ? "?" : c.succeeded)+' / '+esc(c.replicas)+' done'+(c.finished > c.succeeded ? '<div class="muted" style="font-size:11px">'+(c.finished - c.succeeded)+' failed</div>' : '')+'</td>'
+        + '<td class="mono nowrap">'+esc(c.succeeded == null ? "?" : c.succeeded)+' / '+esc(c.replicas)+' fitted'+problemLines(c)+'</td>'
         + '<td>'+stateTag(c.status)+'</td><td class="mono" style="font-size:11.5px">'+esc((c.job_ids || []).join(", "))+'</td>'
         + '<td><div class="rowacts"><button class="btn sm" data-a="analyze" data-i="'+i+'">Analyze</button>'
         // queued is null when the gateway could not read the queue: offer Stop, it refuses cleanly if nothing runs.
@@ -1374,11 +1408,12 @@
 
   /* ---------- analysis ---------- */
   let analysisCampaign = ws().analysisCampaign || "";
+  let logsSeq = 0;      // a newer Logs request, a closed Logs box or another campaign voids an answer on its way
   const FLAVORS = ["u","d","g","s","ub","db","sb"];
   const pdfOn = new Set(["u","d","g","s"]);
   // What is shown under the buttons belongs to one campaign: picking another clears it.
   function pickAnalysis(id){
-    if (analysisCampaign && id !== analysisCampaign){ $("caOut").innerHTML = ""; $("caMoreOut").innerHTML = ""; }
+    if (analysisCampaign && id !== analysisCampaign){ $("caOut").innerHTML = ""; $("caMoreOut").innerHTML = ""; closeLogs(); }
     analysisCampaign = id;
   }
   async function loadAnalysisCampaigns(){
@@ -1401,14 +1436,20 @@
   function paintCaHead(){
     const c = (campaignsCache || []).find(x=>x.collection_id === analysisCampaign);
     if (!c){ $("caHead").innerHTML = ""; return; }
+    const {nf, failed} = replicaCounts(c);
     $("caHead").innerHTML = '<div class="kv"><span>Collection ID <b>'+esc(c.collection_id)+'</b></span><span>Status '+stateTag(c.status)+'</span>'
-      + '<span>Replicas <b>'+esc(c.replicas)+'</b></span><span>Finished <b>'+esc(c.succeeded == null ? "?" : c.succeeded)+'</b></span>'
+      + '<span>Replicas <b>'+esc(c.replicas)+'</b></span><span>Fitted <b>'+esc(c.succeeded == null ? "?" : c.succeeded)+'</b></span>'
+      + (c.not_fitted == null ? '' : '<span>Not fitted <b'+(nf ? ' class="wn"' : '')+'>'+esc(c.not_fitted)+'</b></span>')
+      + (failed ? '<span>Failed <b class="wn">'+failed+'</b></span>' : '')
       + '<span>Job ID <b>'+esc((c.job_ids || []).join(", "))+'</b></span></div>';
   }
   $("caSel").onchange = ()=>{ pickAnalysis($("caSel").value); persist(); paintCaHead(); };
   function caBusy(t){ $("caOut").innerHTML = '<div class="spin">'+esc(t)+'</div>'; }
   function caWarn(t, cause){ $("caOut").innerHTML = '<div class="note warn">'+esc(t)+causePre(cause)+'</div>'; }
-  function showBox(id){ ["caMoreBox","caPdfBox","caExpBox"].forEach(b=>$(b).style.display = b === id && $(b).style.display === "none" ? "" : "none"); }
+  function showBox(id){
+    ["caMoreBox","caPdfBox","caExpBox","caLogsBox"].forEach(b=>$(b).style.display = b === id && $(b).style.display === "none" ? "" : "none");
+    if ($("caLogsBox").style.display === "none") logsSeq++;
+  }
   function fmtNum(v){
     if (!isFinite(v)) return String(v);
     const a = Math.abs(v);
@@ -1418,12 +1459,33 @@
   function summaryHtml(s){
     if (!s) return "";
     const f = v=>v == null ? "—" : (typeof v === "number" ? (Number.isInteger(v) ? String(v) : fmtNum(v)) : String(v));
-    return '<div class="rev">'+[["Status", s.status], ["Completed / failed / missing", f(s.completed_replicas)+" / "+f(s.failed_replicas)+" / "+f(s.missing_replicas)],
+    // Only replicas that really fitted are in the statistics. Those that did not fit
+    // (χ² at the starting values only) are counted apart from the failed ones; a
+    // summary written before that distinction has no not_fitted_replicas.
+    const nf = s.not_fitted_replicas;
+    const counts = nf === undefined
+      ? ["Completed / failed / missing", f(s.completed_replicas)+" / "+f(s.failed_replicas)+" / "+f(s.missing_replicas)]
+      : ["Fitted / not fitted / failed / missing", f(s.completed_replicas)+" / "+f(nf)+" / "+f(s.failed_replicas)+" / "+f(s.missing_replicas)];
+    const bad = (Number(nf) || 0) + (Number(s.failed_replicas) || 0) > 0;
+    return '<div class="rev">'+[["Status", s.status], counts,
       ["Good fraction", s.good_fraction == null ? "—" : (100*s.good_fraction).toFixed(0)+"%"],
       ["χ² mean / median", f(s.mean_total_chi2)+" / "+f(s.median_total_chi2)], ["χ² min / max", f(s.min_total_chi2)+" / "+f(s.max_total_chi2)],
       ["Central-value χ²/N (mean)", f(s.mean_central_value_chi2_per_point)],
       ["Best replica", s.best_replica ? ("#"+s.best_replica.replica+"  χ² "+f(s.best_replica.chi2_total)) : "—"]]
-      .map(r=>'<div class="row"><span class="k">'+esc(r[0])+'</span><span class="v">'+esc(r[1])+'</span></div>').join("")+'</div>';
+      .map(r=>'<div class="row"><span class="k">'+esc(r[0])+'</span><span class="v'+(r === counts && bad ? ' wn' : '')+'">'+esc(r[1])+'</span></div>').join("")+'</div>';
+  }
+  // A gateway note without the sentences that match drop. Its notes are worded for
+  // the AI and may name a tool where the panel has a button.
+  function noteWithout(note, drop){
+    return String(note || "").split(/\.\s+/).map((x, i, a)=>i < a.length - 1 ? x+"." : x)
+      .filter(x=>x.trim() && !drop.test(x)).join(" ");
+  }
+  // The gateway's note on replicas that did not fit (Logs shows why), shown as it is:
+  // not_fitted_note, or else what of note does not ask for postprocess_campaign (a
+  // stale summary, which the panel words itself, naming the button).
+  function notFitNote(r){
+    const t = r && (r.not_fitted_note || noteWithout(r.note, /postprocess_campaign/));
+    return t ? '<div class="note warn">'+esc(t)+'</div>' : "";
   }
   $("caPost").onclick = async ()=>{
     if (!analysisCampaign) return; caBusy("Aggregating the replicas…");
@@ -1431,7 +1493,7 @@
     try{ const r = await call("postprocess_campaign", {collection_id: cid});
       if (cid !== analysisCampaign) return;                 // another campaign was picked meanwhile
       if (!r || r.status !== "ok"){ caWarn(msgOf(r, "Postprocess failed."), r && r.detail); return; }
-      $("caOut").innerHTML = '<div class="note">'+esc(r.message)+'</div>'+summaryHtml(r.summary); loadAnalysisCampaigns();
+      $("caOut").innerHTML = '<div class="note">'+esc(r.message)+'</div>'+notFitNote(r)+summaryHtml(r.summary); loadAnalysisCampaigns();
     } catch(e){ if (cid === analysisCampaign) caWarn("Postprocess failed: "+(e && e.message || e)); }
   };
   $("caSum").onclick = async ()=>{
@@ -1440,12 +1502,14 @@
     try{ const r = await call("campaign_summary", {collection_id: cid});
       if (cid !== analysisCampaign) return;
       // The gateway's notes here name its tool (postprocess_campaign); the panel names the button.
+      const nfNote = notFitNote(r);
       if (!r || !r.summary){ caWarn(r && r.status === "ok" ? "No fit summary yet. Press Postprocess once replicas have finished."
-                                                           : msgOf(r, "No fit summary yet.")); return; }
+                                                           : msgOf(r, "No fit summary yet."));
+                             $("caOut").insertAdjacentHTML("beforeend", nfNote); return; }
       const rows = r.datasets || [], mx = Math.max(...rows.map(x=>x.chi2_per_npt || 0), 1e-9);
       const stale = r.stale ? '<div class="note warn">This summary aggregates '+esc(r.summary.completed_replicas)
         + ' replicas and is out of date: press Postprocess to update it.</div>' : "";
-      $("caOut").innerHTML = stale + summaryHtml(r.summary) + (rows.length ? '<div class="label" style="margin:16px 0 6px">χ² per dataset, fitted pseudo-data (mean over replicas)</div>'
+      $("caOut").innerHTML = stale + nfNote + summaryHtml(r.summary) + (rows.length ? '<div class="label" style="margin:16px 0 6px">χ² per dataset, fitted pseudo-data (mean over replicas)</div>'
         + '<table class="tbl"><thead><tr><th>Dataset</th><th style="text-transform:none">χ²/N</th><th style="text-transform:none">χ²</th><th>Points</th><th style="width:30%"></th></tr></thead><tbody>'
         + rows.map(x=>'<tr><td class="mono">'+esc(x.reaction+":"+x.dataset_id)+'</td><td class="mono">'+esc(x.chi2_per_npt == null ? "—" : fmtNum(x.chi2_per_npt))+'</td>'
           + '<td class="mono">'+esc(x.chi2 == null ? "—" : fmtNum(x.chi2))+'</td><td class="mono">'+esc(x.npts == null ? "—" : x.npts)+'</td>'
@@ -1485,6 +1549,89 @@
           + '<td class="mono">'+esc(g.npts)+'</td><td class="mono">'+esc(g.chi2_per_npt == null ? "—" : fmtNum(g.chi2_per_npt))+'</td></tr>').join("")+'</tbody></table>'
         + imagesHtml(r._panel_plots, p=>"Data vs theory · "+p.path);
     } catch(e){ if (cid === analysisCampaign) caWarn("Analysis failed: "+(e && e.message || e)); }
+  };
+
+  /* Logs (campaign_logs): every replica's state and, for one that did not fit, failed
+     or wrote no output, its Python error and the end of its Slurm log. The first such
+     replica is shown at once; View shows any replica. */
+  const REPLICA_STATES = {fitted: ["fitted", "done"], not_fitted: ["not fitted", "bad"], failed: ["failed", "bad"],
+                          running: ["running", "active"], queued: ["queued", "other"], no_output: ["no output", "bad"]};
+  function replicaTag(s){
+    const m = REPLICA_STATES[s] || [s == null ? "unknown" : String(s).replace(/_/g, " "), "other"];
+    return '<span class="tag '+m[1]+'">'+esc(m[0])+'</span>';
+  }
+  function closeLogs(){ logsSeq++; $("caLogsBox").style.display = "none"; $("caLogsBox").innerHTML = ""; }
+  // One replica's χ² with the digits that tell replicas apart (fmtNum shows 41873.2 as 4.2e+4).
+  function chi2Txt(v){
+    const n = v == null ? NaN : Number(v);
+    return !isFinite(n) ? "—" : (Math.abs(n) >= 1e7 ? n.toExponential(3) : n.toFixed(1));
+  }
+  // campaign_logs lists the replicas in replicas or overview, gives the first problem
+  // as first_problem or replica_detail and one replica flat or in replica_detail, with
+  // χ² as chi2 or chi2_total: everything below reads them the same way.
+  const logRow = x=>x.chi2 == null && x.chi2_total != null ? Object.assign({}, x, {chi2: x.chi2_total}) : x;
+  const clip = (t, n)=>t.length > n ? t.slice(0, n - 1)+"…" : t;
+  function logDetailHtml(x, lead){
+    const pre = (t, none)=>t ? '<pre class="out">'+esc(t)+'</pre>' : '<div class="hint">'+esc(none)+'</div>';
+    return '<div class="kv lghead">'+(lead ? '<span>'+esc(lead)+'</span>' : '')+'<span>Replica <b>'+esc(x.replica)+'</b></span>'
+      + (x.state ? replicaTag(x.state) : '')+(x.chi2 == null ? '' : '<span>χ² <b>'+esc(chi2Txt(x.chi2))+'</b></span>')+'</div>'
+      + (x.meaning ? '<div class="hint">'+esc(x.meaning)+'</div>' : '')
+      + (x.log ? '<div class="hint mono" style="word-break:break-all">'+esc(x.log)+'</div>' : '')
+      + '<div class="label sm" style="margin:10px 0 0">Python error</div>'+pre(x.traceback, "No Python error in this log.")
+      + '<div class="label sm" style="margin:10px 0 0">End of the Slurm log</div>'
+      + pre(x.tail, x.log_error ? "Could not read the log: "+x.log_error : "The log is empty or not written yet.");
+  }
+  async function loadLogs(){
+    const cid = analysisCampaign, seq = ++logsSeq, box = $("caLogsBox");
+    box.innerHTML = '<div class="spin">Reading the replica logs on the cluster…</div>';
+    let r;
+    try { r = await call("campaign_logs", {collection_id: cid}); }
+    catch(e){ r = {message: "Could not read the logs: "+(e && e.message || e)}; }
+    if (seq !== logsSeq || cid !== analysisCampaign) return;         // a newer request, a closed box or another campaign
+    const rows = r && (Array.isArray(r.replicas) ? r.replicas : r.overview);
+    if (!r || r.status !== "ok" || !Array.isArray(rows)){
+      box.innerHTML = '<div class="note warn" style="margin:0">'+esc(msgOf(r, "Could not read the logs."))+causePre(r && r.detail)+'</div>';
+      return;
+    }
+    // Its message is worded for the AI; a note (the Slurm queue could not be read) is for the user.
+    const reps = rows.map(logRow), file = p=>String(p).split("/").pop();
+    box.innerHTML = (r.note ? '<div class="note warn" style="margin:0 0 10px">'+esc(r.note)+'</div>' : '')
+      + (reps.length ? '<div class="tblwrap" style="margin-top:0"><table class="tbl ptbl lgtbl"><thead><tr><th>Replica</th><th>State</th>'
+        + '<th style="text-transform:none">χ²</th><th class="lgcol">Log</th><th></th></tr></thead><tbody>'
+        + reps.map(x=>'<tr><td class="mono">'+esc(x.replica)+'</td><td>'+replicaTag(x.state)
+          + (x.error || x.has_traceback ? '<div class="wn" style="font-size:11px;max-width:260px;overflow-wrap:anywhere">'
+             + esc(x.error ? clip(String(x.error), 90) : "Python error")+'</div>' : '')+'</td>'
+          + '<td class="mono">'+esc(chi2Txt(x.chi2))+'</td>'
+          + '<td class="mono nowrap lgcol" style="font-size:11px">'+esc(x.log ? file(x.log) : "—")+'</td>'
+          + '<td><button class="btn sm" data-r="'+esc(x.replica)+'" aria-label="View the log of replica '+esc(x.replica)+'">View</button></td></tr>').join("")
+        + '</tbody></table></div>'
+        : '<div class="empty">This campaign has no replicas.</div>')
+      + (reps.some(x=>x.state === "not_fitted") ? '<div class="hint">The χ² of a replica that did not fit is at the starting values.</div>' : '')
+      + '<div class="lgdet"></div>';
+    const det = box.querySelector(".lgdet"), fp = r.first_problem || r.replica_detail;
+    box.querySelectorAll("button[data-r]").forEach(b=>b.onclick = ()=>viewLog(cid, Number(b.dataset.r), det));
+    // Without the first problem in the answer, the first replica in a problem state is read instead.
+    const bad = reps.find(x=>["not_fitted", "failed", "no_output"].includes(x.state));
+    if (fp && fp.replica != null)
+      det.innerHTML = logDetailHtml(Object.assign({}, reps.find(x=>String(x.replica) === String(fp.replica)), logRow(fp)), "First problem");
+    else if (bad) viewLog(cid, Number(bad.replica), det, "First problem");
+    else if (reps.length)
+      det.innerHTML = '<div class="hint" style="margin-top:10px">No replica failed or did not fit. View shows any replica\'s log.</div>';
+  }
+  async function viewLog(cid, n, det, lead){
+    const seq = ++logsSeq;
+    det.innerHTML = '<div class="spin">Reading the log of replica '+esc(n)+'…</div>';
+    let r;
+    try { r = await call("campaign_logs", {collection_id: cid, replica: n}); }
+    catch(e){ r = {message: "Could not read the log: "+(e && e.message || e)}; }
+    if (seq !== logsSeq || cid !== analysisCampaign) return;
+    det.innerHTML = r && r.status === "ok" ? logDetailHtml(Object.assign({replica: n}, logRow(r.replica_detail || r)), lead)
+      : '<div class="note warn">'+esc(msgOf(r, "Could not read the log."))+causePre(r && r.detail)+'</div>';
+  }
+  $("caLogs").onclick = ()=>{
+    if (!analysisCampaign) return;
+    showBox("caLogsBox");
+    if ($("caLogsBox").style.display !== "none") loadLogs();
   };
   $("caMore").onclick = ()=>{ $("caMoreOut").innerHTML = ""; showBox("caMoreBox"); };
   $("caMorePlan").onclick = async ()=>{

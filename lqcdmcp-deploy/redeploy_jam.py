@@ -79,13 +79,16 @@ def call(method, params=None, timeout=180):
         raise SystemExit(f"the connection to the dashboard dropped before it answered ({type(e).__name__}: "
                          f"{e}). The dashboard may still carry out the request: run python3 redeploy_jam.py "
                          "status before you repeat it")
-    evs = re.findall(r"data: (\{.*?\})\n\n", raw, re.S) or re.findall(r"data: (\{.*\})", raw, re.S)
-    if evs:
-        for e in reversed(evs):
-            try:
-                return json.loads(e)
-            except json.JSONDecodeError:
-                pass
+    # The dashboard answers as an event stream with CRLF line ends, often a log
+    # notification first: the answer is the last event that carries a result or
+    # an error.
+    for e in reversed(re.findall(r"^data: (.*?)\r?$", raw, re.M) or [raw]):
+        try:
+            d = json.loads(e)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(d, dict) and ("result" in d or "error" in d):
+            return d
     return {"raw": raw[:400]}
 
 

@@ -14,11 +14,17 @@ Claude Code / Codex  ──┼──>  your gateway  ──>  ifarm: your worksp
                        │      through Jie Chen's LQCDMCP platform)
 ```
 
-- The **gateway** is yours alone. You start it at the beginning of the day and
-  stop it when you are done.
-- The **dashboard token** is your key. It comes from the LQCDMCP dashboard
-  login. It starts your gateway, and the panel and the AI assistant use it to
-  talk to the gateway. Nobody else's token opens your gateway.
+- The **gateway** is your own: it works on the cluster as you. You start it
+  at the beginning of the day and stop it when you are done.
+- The **dashboard token** comes from the LQCDMCP dashboard login. It starts
+  your gateway, and the panel and the AI assistant use it to talk to the
+  gateway.
+- **Others can use your gateway while it runs.** The gateway asks the
+  dashboard whether a token is yours, but in October 2026 the dashboard
+  answered yes for any token (tested with a made-up token and with none). So
+  this check does not keep others out: anyone who can reach your gateway's
+  address can use it as you, including your cluster sign-in. Stop your
+  gateway when you are done (step 2.4).
 - Your **cluster sign-in** (PIN + one-time code, ifarm password) and your
   **GitHub token** are typed only on the panel. Never type them into a chat.
 - Your **fits** are ordinary Slurm jobs on ifarm. They keep running when your
@@ -130,6 +136,9 @@ It succeeds when the last line is `DONE` and you see:
    your token   -> accepted (good)
 ```
 
+These lines show that your token works. They do not show that other tokens
+are refused (see the top of this guide).
+
 Before you sign in (step 2.2), the report says `cluster chain: not open yet`.
 That is expected.
 
@@ -205,8 +214,10 @@ Project tab lists the checkouts it finds there: select yours and press
 python3 redeploy_jam.py cancel
 ```
 
-This stops your gateway and frees the slot for the next person. Your
-workspace, your results and any fits still running are not affected.
+This stops your gateway and frees the slot for the next person. Do it every
+time: while your gateway runs, others can use it (see the top of this
+guide). Your workspace, your results and any fits still running are not
+affected.
 
 ---
 
@@ -255,6 +266,13 @@ or click a step.
    it). Read them, then press **Submit Jobs**. Problems are listed under the
    buttons, for example `Parameter g1 N is FREE: give it a min and a max.`
    If you change anything afterwards, press **Create Input Card** again.
+   - The summary's Datasets row shows how many points each dataset keeps
+     after the cuts, for example `idis 10001: 0 points after cuts`.
+   - Warnings above the summary do not stop you from submitting. They point
+     out, for example, a dataset that the cuts leave empty ("Dataset idis
+     10001 has no points left after the cuts Q2>1.69, W2>10, so it adds
+     nothing to the fit.") or a data file without a column that FitPack's
+     status report reads (the fit still runs).
 
 After submitting, the tab shows the campaign's collection ID and Slurm job
 number, with an **Open Collections** link. **New campaign** starts a fresh
@@ -283,9 +301,16 @@ Settings start at these values; keep or change each one:
 ### 3.2 Collections: follow, stop or delete
 
 - The table lists your campaigns, newest first: name, creation time (US
-  Eastern), replicas done (and failed), status (submitted, running,
-  completed, postprocessed or cancelled) and the Slurm job numbers.
-  **Refresh** reloads it.
+  Eastern), replicas (`<fitted> / <total> fitted`, with `<n> did not fit`
+  and `<n> failed` below it when there are any), status (submitted, running,
+  completed, not fitted, postprocessed or cancelled) and the Slurm job
+  numbers. **Refresh** reloads it.
+- A replica counts as fitted only when its optimization ran. A replica that
+  **did not fit** is one whose optimization failed: FitPack then only
+  computed χ² at the starting values, so it has no fitted parameters and is
+  left out of the fit statistics and the plots. A **failed** replica ended
+  without success. The status **not fitted** means that nothing is queued
+  and every finished replica did not fit. Analysis → **Logs** shows why.
 - **Analyze** opens the campaign on the Analysis tab.
 - **Stop** appears while the campaign has tasks queued or running, and also
   when the Slurm queue could not be read: the note above the table then
@@ -302,26 +327,36 @@ Settings start at these values; keep or change each one:
 
 ### 3.3 Analysis: look at the results
 
-Choose the campaign at the top, then:
+Choose the campaign at the top. The line below it shows how many replicas
+are Fitted, Not fitted and (when there are any) Failed. Then:
 
 - **Postprocess** — collects the finished replicas into the campaign's fit
-  summary. Press it again when more replicas have finished; Load Fit Summary
-  tells you when the summary is out of date.
-- **Load Fit Summary** — replicas completed / failed / missing, χ²
-  statistics and the best replica, then a table of χ²/N per dataset, worst
-  first. It is each replica's χ² for the data it was fitted to (the
-  pseudo-data, in the ensemble mode), averaged over the replicas and divided
-  by the number of points. **By experiment** (below) compares the best
-  replica with the central data values instead.
+  summary; only fitted replicas enter its statistics. Press it again when
+  more replicas have finished; Load Fit Summary tells you when the summary
+  is out of date.
+- **Load Fit Summary** — replicas fitted / not fitted / failed / missing,
+  χ² statistics of the fitted replicas and the best replica, then a table of
+  χ²/N per dataset, worst first. It is each fitted replica's χ² for the data
+  it was fitted to (the pseudo-data, in the ensemble mode), averaged over
+  the replicas and divided by the number of points. **By experiment**
+  (below) compares the best replica with the central data values instead.
+  When replicas did not fit, a warning above the summary says how many.
 - **View PDF Plots** — pick flavors (u, d, g and s are on; ub, db and sb can
   be added) and Q² (starts at 10 GeV²), then press **Draw**. You get
-  x f(x, Q²) of every finished replica, with the mean and 68% band when that
+  x f(x, Q²) of every fitted replica, with the mean and 68% band when that
   box is ticked.
 - **By experiment** — list the experiments to plot (for example
   `SLAC, BCDMS`; empty = all) and press **Analyze**. You get a table of χ²/N
   for every experiment, for the best replica against the central data
   values, and data-vs-theory plots for the experiments you listed (up to 12
   datasets in one image).
+- **Logs** — a table of the replicas: state (fitted, not fitted, failed,
+  running, queued or no output), χ² and log file. The first replica that
+  did not fit, failed or left no output is shown at once, with its "Python
+  error" and the "End of the Slurm log"; **View** shows them for any
+  replica. The χ² of a replica that did not fit is at the starting values.
+  Lines `(status report unavailable: …)` in a log are harmless: the fit
+  goes on.
 - **Generate More Replicas** — enter how many, press **Plan**, read the
   plan, type the confirmation phrase and press **Launch**. The new replicas
   use the same input card.
@@ -420,7 +455,7 @@ connection."* If the token is not exported, Codex reports
 ### 4.3 What to say
 
 - *"Check my cluster connection."* — ask this first: it proves the assistant
-  reaches your gateway with a valid token.
+  reaches your gateway and the gateway accepts its token.
 - *"Help me run a JAM fit."* — it asks, one step at a time, for the same
   choices as the Campaign tab, shows you the input-card summary and the
   Slurm script, and submits only after you say yes.
@@ -431,7 +466,9 @@ connection."* If the token is not exported, Codex reports
   Q² = 10."* · *"Which experiment fits worst? Show data vs theory for NMC."*
 - *"Stop my campaign."* · *"Delete the test campaign."* — it tells you what
   will happen and asks you to confirm.
-- *"Show me the log of a failed replica."* — it reads the log on the cluster.
+- *"Why did my replicas fail?"* · *"Show me the log of replica 3."* — it
+  reads the replicas' states and Slurm logs on the cluster and explains the
+  Python error in plain words.
 - *"Write a Slurm job that …"* — it drafts the script with you, checks it
   with `sbatch --test-only`, and submits only after you confirm.
 
@@ -455,7 +492,7 @@ platform does not offer. Use Codex (4.2) with your ChatGPT account instead.
 | "the gateway is not up yet, and the job launched above is no longer queued or running" | Gateway jobs end when the daily window closes (about 16:00 US Eastern): start again the next day. Earlier in the day, send the report to Chunyu. |
 | "the gateway is not up yet: you have no gateway job queued or running" | Run `python3 deploy_and_verify.py` without `--check`. |
 | `jam-gateway-<you> (owner <you>) is NOT in the list` | Your gateway is not running (do step 2.1), or the token comes from another account's dashboard login. |
-| "the dashboard does not confirm this token as <you>'s" | The end of the line says why: the token is another account's or `JAM_GW_USER` is not your JLab username; MCP servers are not enabled for you (step 1.2); or the dashboard answered with an error (sign in again and copy a new token). |
+| `the dashboard does not confirm this token as <you>'s` | The end of the line says why: the token is another account's or `JAM_GW_USER` is not your JLab username; MCP servers are not enabled for you (step 1.2); or the dashboard answered with an error (sign in again and copy a new token). |
 | "the gateway does not accept this token", `unauthorized`, or the panel says "The gateway did not accept this token." | The token expired or belongs to another account. Sign in to the dashboard again and copy the token. Then `export LQCDMCP_TOKEN='...'` and restart Claude Code or Codex. On the panel, paste it again (the **Token** button at the top right). |
 | "the running gateway is an older version than the code in this folder" | You updated this folder (for example with `git pull`) after starting your gateway. Run `python3 hot_redeploy.py` (keeps your cluster sign-in), then `python3 deploy_and_verify.py --check`; or start over: `python3 redeploy_jam.py cancel`, then `python3 deploy_and_verify.py`. |
 | "the gateway answers without a token" | Stop it at once with `python3 redeploy_jam.py cancel` and send the report to Chunyu. |
@@ -470,6 +507,8 @@ platform does not offer. Use Codex (4.2) with your ChatGPT account instead.
 | Campaign tab: "Sign in on the Connect tab and choose a workspace first" | Do steps 2.2 and 2.3 (the line below it says what is missing), then open the Campaign tab again. |
 | Delete is refused: "This campaign still has … task(s) in the Slurm queue" | Press **Stop** first, then **Delete**. |
 | "Could not read the Slurm queue" | Slurm did not answer. Press **Refresh** in a minute; Stop and Delete work again once the queue can be read. |
+| Collections shows `<n> did not fit` or `<n> failed`, or the status `not fitted` | Did not fit: the optimization failed, so FitPack only computed χ² at the starting values. Failed: the replica ended without success. Open Analysis → **Logs** to see the Python error, or ask the assistant *"Why did my replicas not fit?"* |
+| Create Input Card: "Dataset … has no points left after the cuts …, so it adds nothing to the fit." | The cuts remove every point of that dataset. If that is not what you want, change the cuts or the datasets and press **Create Input Card** again. The warning does not block **Submit Jobs**. |
 | The assistant says "not connected" or "no live chain" | Sign in on the panel's Connect tab (2.2), then ask again. |
 | Claude Code: `Missing environment variables: LQCDMCP_TOKEN` | Export the token (1.5) and restart `claude`. |
 | Codex: `Environment variable LQCDMCP_TOKEN for MCP server 'jam-gateway' is not set` | Export the token (1.5) and restart `codex`. |
@@ -488,7 +527,8 @@ platform does not offer. Use Codex (4.2) with your ChatGPT account instead.
   in the folder name is UTC; Collections shows US Eastern):
   - the input card: `stages/pdf_stage/input.py` (your workspace's
     `examples/input02.py`, with your choices appended at the end);
-  - each replica's log: `stages/pdf_stage/logs/stage_<job>_<replica>.out`;
+  - each replica's log: `stages/pdf_stage/logs/stage_<job>_<replica>.out`
+    (Analysis → **Logs** shows it);
   - each replica's results: `stages/pdf_stage/current/replica_<n>/`;
   - the fit summary: `stages/pdf_stage/current/fit_summary.json`;
   - plots: `analysis/pdf_plots/` and `analysis/by_experiment/`.

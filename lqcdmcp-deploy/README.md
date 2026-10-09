@@ -50,7 +50,7 @@ proxy as `jam-gateway-<user>`, at
   `jam-gateway-<user>.slurm`; launch an MCP server with that name and file.
 - **Upgrade a running gateway:** `python3 hot_redeploy.py`, then
   `python3 deploy_and_verify.py --check`. Through `node_diag` (a shell on the
-  gateway node, absent from `tools/list` but callable with the owner's token)
+  gateway node, absent from `tools/list` but callable by name; see Access)
   it uploads the new gateway and test-imports it on the node (nothing is
   replaced if that fails), installs the panel and `jamai/`, keeps the old
   gateway as `jam_gateway.prev.py` and stops the server, which the job's
@@ -63,8 +63,9 @@ proxy as `jam-gateway-<user>`, at
 
 - **Access.** Every `tools/call` needs `Authorization: Bearer <dashboard
   token>`; `initialize` and `tools/list` need none, and the LQCDMCP proxy
-  forwards `/cloud/<name>/mcp` without checking anyone. The gateway asks the
-  dashboard with the caller's token. `validate_user` (for the gateway's owner)
+  forwards `/cloud/<name>/mcp` without checking anyone. The gateway refuses an
+  empty token or one shorter than 16 characters, and asks the dashboard about
+  any other, with the caller's token. `validate_user` (for the gateway's owner)
   must not answer with an error or `allow_mcp: false`, and when it names an
   account (`user_account`, `user_id`), one of them must be the owner.
   `get_my_mcp_servers` must list this gateway: its name, owner == the
@@ -74,6 +75,15 @@ proxy as `jam-gateway-<user>`, at
   Decisions are cached per token hash: 10 min when accepted, 60 s when
   refused, 15 s after a dashboard error. A doubled `Bearer ` is tolerated.
   `JAM_GW_TEST_TOKEN` is the token of a test instance (below).
+  **This check does not keep others out.** In October 2026 the dashboard
+  answered yes for any token (tested with a made-up token and with none):
+  `validate_user` trusts its `username` argument, which the gateway sets to
+  its owner, and `get_my_mcp_servers` then answers for that user. So the
+  gateway accepts any token of 16 or more characters, and whoever reaches it
+  can call every tool as its owner, `node_diag` and the open cluster chain
+  included. `deploy_and_verify.py` and `check_dashboard_token.py` show only
+  that the owner's token works. Until the dashboard checks the token, stop a
+  gateway when you are done with it (`python3 redeploy_jam.py cancel`).
 - **Panel.** A browser GET (`Accept: text/html`) of the gateway URL returns
   `jam_panel.html` with a strict CSP (inline script and style only,
   `connect-src 'self'`, `frame-ancestors 'none'`); `?tab=` picks the tab. The
@@ -104,12 +114,46 @@ proxy as `jam-gateway-<user>`, at
   card. `jamai` copies `input02.py` to `stages/pdf_stage/input.py` and appends
   an override block. A Slurm array runs one replica per task in the site's
   container: `jamai/run_replica.py` applies max iterations and the optimizer,
-  then runs `fitlib/ai.py`. The array sets `LHAPDF_DATA_PATH` to the shared
-  `lhapdf_extra` tables (never a personal folder). The registry is
+  guards FitPack's status report, then runs `fitlib/ai.py`. The status report
+  (`fitlib.resman.RESMAN.gen_report`, printed while fitting) is output only
+  but reads each data table's `col`, `obs` and `target`; idis 10005 has no
+  `col`, and the `KeyError` made `ai.py` fall back to χ² at the starting
+  values. Now an error there becomes one line of the report, such as
+  `(status report unavailable: KeyError: 'col')`, and the fit goes on. The
+  array sets `LHAPDF_DATA_PATH` to the shared `lhapdf_extra` tables (never a
+  personal folder). The registry is
   `<workspace>/campaigns/collections.json`. Stopping a campaign cancels its
   jobs that still have tasks in the queue; deleting is refused while any of
   its tasks is queued. When `squeue` fails the queue is unknown, never empty:
   stop and delete refuse, and the lists say so.
+- **Data check.** `validate_campaign` also reads each selected dataset's
+  `database/<reaction>/expdata/<id>.xlsx` in one container call, derives the
+  cut variables as FitPack's readers do (idis `W2` or `X`, dy `Q2`) and
+  applies each enabled cut with `tab.query`, as `tools/reader.py` does. It
+  returns `summary.points_after_cuts` (`{"idis:10005": 33}`) and `warnings`,
+  which never block: no points left after the cuts, a cut that cannot be
+  evaluated, a missing column that the status report reads. If the check
+  fails, validation still succeeds, with one warning saying so.
+- **Replica states.** When the optimization fails, `fitlib/ai.py` computes
+  χ² at the starting values instead and still writes `"status": "success"`,
+  with `"mode": "validation_only"` and no `.msr` file. So a replica is
+  fitted only with status `success` and mode `fit` (a summary without
+  `mode`: when its `msr_path` exists), not fitted with any other `success`,
+  and failed otherwise or when its summary cannot be read.
+  `_REPLICA_STATE` decides this for the status, postprocess and log snippets
+  alike: `list_campaigns` and `campaign_status` count `succeeded` (fitted),
+  `not_fitted` and `failed` (state `not fitted` when nothing is queued and
+  every finished replica did not fit), and postprocessing builds the
+  statistics from fitted replicas only (`not_fitted_replicas` apart,
+  `good_fraction` = fitted / total).
+- **Logs.** `campaign_logs` reads, in one plain-Python call on ifarm, each
+  replica's `fit_summary.json`, its Slurm log (`logs/stage_<job>_<replica>.out`
+  of the job whose replica range holds it) and the queue. It returns each
+  replica's state, χ² and whether its log holds a Python traceback, and for
+  the first replica that did not fit, failed or left no output (or for
+  replica N) the traceback and the end of the log (`lines`, default 80, at
+  most 400). The whole log is searched: the traceback goes to stderr while
+  stdout is buffered, so it often sits near the start of the merged file.
 - **Confirmation phrases.** `submit_campaign`, `append_replicas`,
   `cancel_campaign`, `delete_campaign` and `submit_slurm_job` act only when
   called again with the phrase from a first call (`CONFIRM JAM <kind>
@@ -123,9 +167,9 @@ proxy as `jam-gateway-<user>`, at
   fs_read, campaign_options, campaign_datasets, validate_campaign,
   submit_campaign, list_campaigns, campaign_status, cancel_campaign,
   delete_campaign, postprocess_campaign, campaign_summary, campaign_pdf_plots,
-  analyze_by_experiment, append_replicas, slurm_partitions, draft_slurm_job,
-  submit_slurm_job; hidden: node_diag. The AI-facing workflow is
-  `INSTRUCTIONS` in `jam_gateway.py`.
+  analyze_by_experiment, campaign_logs, append_replicas, slurm_partitions,
+  draft_slurm_job, submit_slurm_job; hidden: node_diag. The AI-facing
+  workflow is `INSTRUCTIONS` in `jam_gateway.py`.
 
 **Test instance.** `jam_gateway.py` also runs off the platform, on a machine
 that can reach scilogin: set `JAM_GW_OWNER` (the JLab user), `JAM_GW_NAME`,
@@ -149,7 +193,7 @@ test instance of the gateway:
   guide's `${LQCDMCP_TOKEN}` header and expanded it at start (local and user
   scope).
 
-The fixes made after `0ad83c4` (queued or ended gateway jobs and failed
+The fixes in commit `a6cc642` (queued or ended gateway jobs and failed
 dashboard requests in the deploy scripts, a deleted workspace folder or
 template, the panel's Collections note, Generate More Replicas and
 GitHub-token field) were tested offline only. With them, the offline
@@ -158,12 +202,34 @@ and scripts, 151 of `deploy_and_verify.py` and `redeploy_jam.py` against
 stand-in dashboard and gateway servers (Python 3.10, 3.11 and 3.13), and
 631 of the panel (jsdom).
 
-**Not yet verified live with this version:** the owner check against the
-real dashboard (run `python3 deploy_and_verify.py --check` after the next
-deploy), the deploy scripts' queue and error handling against the real
-dashboard, `hot_redeploy.py` on the platform, and a workspace clone with a
-GitHub token. Earlier the same day, with the previous version, the platform
-deploy and the access control were verified.
+**2026-10-09 on the LQCDMCP platform** (gateway `jam-gateway-chunyu`,
+launched with `deploy_and_verify.py`, then updated in place with
+`hot_redeploy.py`; the cluster sign-in survived the update):
+
+- `deploy_and_verify.py` and `--check`: launched, reachable through the
+  proxy, the owner's token accepted and a call without a token refused,
+  28 tools, `node_diag` hidden. The dashboard answers as an event stream
+  with CRLF line ends and a log notification before the result;
+  `redeploy_jam.py` now reads that (before, every answer was shown as `{}`).
+- the changes after `a6cc642` (replica states, the data check,
+  `campaign_logs`, the panel's Logs and warnings, the status-report guard in
+  `run_replica.py`), live: 18 checks, all passed. A campaign with idis 10005
+  and 10006 really fitted (`mode: fit`, 35 fitted parameters, an `.msr` per
+  replica; the guarded status report shows as one line in the log);
+  postprocess and a PDF plot from the fitted replicas; Create Input Card
+  warned that 10001 and 10004 have no points after the cuts and that 10005
+  has no `col` column; a campaign run before the guard shows as "not fitted"
+  (0 / 10) with its `KeyError: 'col'` traceback in `campaign_logs` and in the
+  panel's Logs (headless Chromium, 11 checks).
+- offline, all passed: 419 checks of the gateway and scripts, 151 of
+  `deploy_and_verify.py` and `redeploy_jam.py` against stand-in dashboard
+  and gateway servers (Python 3.10, 3.11 and 3.13), 631 of the panel
+  (jsdom); the suites are not part of this repository.
+
+**Not yet verified live:** a workspace clone with a GitHub token, and the
+deploy scripts' queue handling when another gateway holds the reservation.
+In October 2026 the dashboard was found to answer yes for any token (see
+Access).
 
 Also not verified: the VS Code and Claude Desktop setups in the guide, and
 Claude Code tool calls longer than 60 s with the guide's timeout settings

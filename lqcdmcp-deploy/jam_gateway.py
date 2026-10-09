@@ -11,8 +11,10 @@ Stdlib only; plain JSON-RPC over HTTP.
 Access: every tool call needs the owner's LQCDMCP dashboard token (Bearer).
 The gateway asks the dashboard who the token's user is and which MCP servers
 they launched, and accepts the token only when that user is its owner and
-this gateway is among them. The proxy itself checks nobody, so this is what
-keeps the owner's open cluster session private.
+this gateway is among them. The proxy itself checks nobody. As of October
+2026 the dashboard answers for the user named in validate_user whatever the
+token is, so this check does not keep other people out; the owner stops the
+gateway when done (redeploy_jam.py cancel).
 
 Cluster: a two-hop SSH chain per user (login host with PIN + one-time code,
 then the compute host with the password). Credentials are typed on the
@@ -27,9 +29,9 @@ jamai/ copies that file and appends the choices, with only the parameters
 the user changed, and a Slurm array runs one replica per task through
 fitlib/ai.py (FitPack `ai` branch) inside the site's container. Collections:
 stop or delete a campaign. Analysis: postprocess, fit summary, PDF plots,
-chi2 and data vs theory by experiment, more replicas (with a confirmation
-phrase). Any other job: LLM-guided Slurm drafts checked with
-sbatch --test-only.
+chi2 and data vs theory by experiment, each replica's state and log, more
+replicas (with a confirmation phrase). Any other job: LLM-guided Slurm
+drafts checked with sbatch --test-only.
 
 Sections, in order: constants and site · local and remote helpers · access ·
 cluster chain · tools · campaigns · tool registry · http · boot.
@@ -315,8 +317,11 @@ def _identify(auth_header):
 # launched, and the token is the owner's when that user is this gateway's
 # owner and the list holds this gateway (its name, owner and Slurm job). A
 # listing the gateway cannot read is a refusal. The proxy itself forwards
-# /cloud/<name>/mcp without checking anyone, so this check is what keeps
-# other people off a gateway whose cluster chain is open.
+# /cloud/<name>/mcp without checking anyone. As of October 2026 the dashboard
+# does not verify the token either (validate_user answers for whatever
+# username it is given), so this check only keeps out callers who name the
+# wrong gateway; it is not what keeps a gateway with an open cluster chain
+# private. Until the dashboard checks tokens, stopping the gateway is.
 
 DASHBOARD_URL = os.environ.get("JAM_GW_DASHBOARD_URL", f"{PROXY}/jlab/")
 DASHBOARD_AUTH = os.environ.get("JAM_GW_DASHBOARD_AUTH", "1") != "0"
@@ -555,7 +560,7 @@ def get_console(tab="connect"):
                     "the cluster), Project (check or create the workspace), Campaign (build and "
                     "submit a fit), Collections (campaigns, the Slurm queue, stop or delete a "
                     "campaign) and Analysis (postprocess, fit summary, PDF plots, by experiment, "
-                    "more replicas). Cluster credentials are typed only on that page, never into "
+                    "logs, more replicas). Cluster credentials are typed only on that page, never into "
                     "chat. The page asks once for the user's LQCDMCP dashboard token."}
 
 
@@ -1580,14 +1585,146 @@ def _validated(u, norm):
                     "submit_campaign(card, confirm=<the phrase>) only after they confirm."}
 
 
+# The data a card selects, read as FitPack reads it: the reaction's reader
+# first derives the variables cuts use (idis as obslib/idis/reader.py: Q2
+# from q2, col from exp, X from W2, W or x, Y from the beam energy, then
+# W2 = M^2 + Q2/X - Q2; dy as obslib/dy/reader.py: tau, S, Y and Q2 = tau S
+# from Rtau, RS and xF), then tools/reader.py applies each cut with
+# tab.query and silently skips one that cannot be evaluated; a dataset with
+# no points left is dropped from the fit. report holds the columns FitPack's
+# status report reads for each reaction.
+_DATA_CHECK = r'''
+import json, os
+import numpy as np
+import pandas as pd
+ws = __WS__; datasets = __DATASETS__; cuts = __CUTS__; report = __REPORT__
+M = 0.93891897                      # the nucleon mass of qcdlib/aux.py
+M2 = M * M
+def idis(t):
+    have = set(t.columns)
+    if 'value' not in have and '*value' in have:
+        t['value'] = t['*value']
+    if 'col' not in have and 'exp' in have:
+        t['col'] = t['exp']
+    if 'q2' in have:
+        t['Q2'] = t['q2']
+    # A column FitPack cannot derive stays missing; the cuts then say so.
+    try:
+        if 'X' not in t.columns:
+            if 'W2' in t.columns: t['X'] = t['Q2'] / (t['W2'] - M2 + t['Q2'])
+            elif 'W' in t.columns: t['X'] = t['Q2'] / (t['W'] ** 2 - M2 + t['Q2'])
+            elif 'x' in t.columns: t['X'] = t['x']
+            elif 'x*' in t.columns: t['X'] = t['x*']
+        if 'Y' not in t.columns:
+            e = next((c for c in ('Elab', 'E', 'Ebeam') if c in t.columns), None)
+            if e: t['Y'] = t['Q2'] / (2 * M * t['X'] * t[e])
+            elif 'RS' in t.columns: t['Y'] = t['Q2'] / (t['RS'] ** 2 - M2) / t['X']
+    except Exception:
+        pass
+    try:
+        if 'W2' not in t.columns: t['W2'] = M2 + t['Q2'] / t['X'] - t['Q2']
+    except Exception:
+        pass
+def dy(t):
+    def named(n):
+        return next(c for c in t.columns if str(c).lower().strip() == n)
+    try: t['tau'] = t[named('rtau')] ** 2
+    except Exception: pass
+    try: t['S'] = t[named('rs')] ** 2
+    except Exception: pass
+    try: t['Y'] = np.arcsinh(0.5 * t['xF'] / t['tau'] ** 0.5)
+    except Exception: pass
+    try: t['Q2'] = t['tau'] * t['S']
+    except Exception: pass
+out = []
+for r, ids in datasets.items():
+    for x in ids:
+        d = {'reaction': r, 'id': x}
+        out.append(d)
+        try:
+            t = pd.read_excel(os.path.join(ws, 'database', r, 'expdata', x + '.xlsx'))
+        except Exception as e:
+            d['error'] = ' '.join(('%s: %s' % (type(e).__name__, e)).split())[:300]
+            continue
+        {'idis': idis, 'dy': dy}.get(r, lambda t: None)(t)
+        applied, skipped = [], []
+        for f in cuts.get(r, []):
+            try:
+                t = t.query(f)
+                applied.append(f)
+            except Exception as e:
+                skipped.append([f, ' '.join(str(e).split())[:200] or type(e).__name__])
+        d.update(points=int(len(t.index)), applied=applied, skipped=skipped,
+                 missing=[c for c in report.get(r, ()) if c not in t.columns])
+print(json.dumps(out))
+'''
+# What FitPack's status report reads from each data table, and what it names.
+_REPORT_COLUMNS = {"idis": ("col", "obs", "target"), "dy": ("col", "reaction")}
+_COLUMN_NAMES = {"col": "experiment name", "obs": "observable", "target": "target",
+                 "reaction": "reaction"}
+
+
+def _data_warnings(u, norm):
+    """Warnings about the data a card selects, which never block submission,
+    and the points each dataset keeps after the cuts ({"idis:10005": 33});
+    one container call for all datasets."""
+    cuts = {r: [f'{c["variable"]}{c["op"]}{c["value"]:g}' for c in cs if c["enabled"]]
+            for r, cs in norm["cuts"].items()}
+    code = _fill(_DATA_CHECK, WS=_workspace(u), DATASETS=norm["datasets"], CUTS=cuts,
+                 REPORT=_REPORT_COLUMNS)
+    r = {}
+    try:
+        r = _run_ifarm_py(u, code, apptainer=True, timeout=120, cap=200000)
+        rows = json.loads(r["out"].strip().splitlines()[-1])
+        if not isinstance(rows, list):
+            raise ValueError("unexpected answer")
+    except subprocess.TimeoutExpired:
+        return ["Could not check the data files: the check took longer than 2 minutes."], {}
+    except Exception as e:
+        # The login shell on the compute host prints an unrelated profile warning.
+        why = " ".join(l.strip() for l in ((r.get("err") or "") + "\n" + (r.get("out") or "")).splitlines()
+                       if l.strip() and "syscshrc" not in l)
+        return [f"Could not check the data files: {why[-300:] or type(e).__name__}"], {}
+    warnings, points = [], {}
+    for d in rows:
+        name = f"{d['reaction']} {d['id']}"
+        if d.get("error"):
+            warnings.append(f"Could not read the data file of dataset {name}: {d['error']}")
+            continue
+        points[f"{d['reaction']}:{d['id']}"] = d["points"]
+        for cut, why in d["skipped"]:
+            warnings.append(f"The cut {cut} cannot be evaluated on dataset {name} ({why}), so FitPack "
+                            "skips it for this dataset.")
+        if not d["points"]:
+            warnings.append((f"Dataset {name} has no points left after the cuts {', '.join(d['applied'])}, "
+                             "so it adds nothing to the fit.") if d["applied"] else
+                            f"Dataset {name} has no data points, so it adds nothing to the fit.")
+            continue
+        for c in d["missing"]:
+            warnings.append(f"Dataset {name} has no '{c}' column in its data file; the fit runs (the "
+                            "gateway works around FitPack's status report), but its "
+                            f"{_COLUMN_NAMES.get(c, c)} is unknown in reports.")
+    return warnings, points
+
+
 def validate_campaign(card=None, username=""):
     """Validate an input card and show what would run, with the confirmation
-    phrase submit_campaign needs."""
+    phrase submit_campaign needs, and warnings about the selected data."""
     u, err = _need_user(username)
     if err:
         return err
     norm, err = _checked_card(u, card)
-    return err or _validated(u, norm)
+    if err:
+        return err
+    warnings, points = _data_warnings(u, norm)
+    out = {"status": "ok", "valid": True, "warnings": warnings}
+    out.update(_validated(u, norm))
+    out["summary"]["points_after_cuts"] = points
+    if warnings:
+        out["next"] = ("Show the user this summary, the warnings (they do not block submission) and the "
+                       "Slurm script. Submit with submit_campaign(card, confirm=<the phrase>) only after "
+                       "they confirm.")
+    return out
 
 
 def submit_campaign(card=None, confirm="", username=""):
@@ -1685,20 +1822,47 @@ def append_replicas(collection_id="", count=0, confirm="", username=""):
 QUEUE_UNKNOWN = "Could not read the Slurm queue, so what is still queued is unknown. Try again in a minute."
 QUEUE_UNKNOWN_REFUSED = "Could not read the Slurm queue, so nothing was changed. Try again in a minute."
 
-_STATUS = r'''
+# How a finished replica ended, from its fit_summary.json. When the
+# optimization fails, FitPack's fitlib/ai.py computes chi2 at the starting
+# values instead and still writes status 'success', with mode
+# 'validation_only' and no .msr file. So a replica is 'fitted' only with
+# status 'success' and mode 'fit' (a summary from before 'mode' was written:
+# when its .msr file exists); any other 'success' is 'not_fitted'; any other
+# status, or a summary that cannot be read, is 'failed'. The status,
+# postprocess and log snippets all start with it, so they always agree.
+_REPLICA_STATE = r'''
+import json, os
+def replica_state(path):
+    # (state, summary); state None while the replica has no fit_summary.json.
+    if not os.path.isfile(path):
+        return None, None
+    try:
+        s = json.load(open(path))
+    except Exception:
+        return 'failed', None
+    if not isinstance(s, dict):
+        return 'failed', None
+    if s.get('status') != 'success':
+        return 'failed', s
+    if s.get('mode'):
+        return ('fitted' if s['mode'] == 'fit' else 'not_fitted'), s
+    msr = s.get('msr_path')
+    return ('fitted' if msr and os.path.isfile(str(msr)) else 'not_fitted'), s
+'''
+
+_STATUS = _REPLICA_STATE + r'''
 import json, glob, os, subprocess
 stage = __STAGE__
 jobs = __JOBS__
 total = __TOTAL__
-done = ok = 0
+# Finished replicas (those with a fit_summary.json), by how they ended.
+done = ok = not_fitted = 0
 for i in range(1, total + 1):
-    p = os.path.join(stage, 'current', 'replica_%d' % i, 'fit_summary.json')
-    if os.path.isfile(p):
+    state, _ = replica_state(os.path.join(stage, 'current', 'replica_%d' % i, 'fit_summary.json'))
+    if state:
         done += 1
-        try:
-            ok += json.load(open(p)).get('status') == 'success'
-        except Exception:
-            pass
+        ok += state == 'fitted'
+        not_fitted += state == 'not_fitted'
 # Tasks of these jobs still in the queue, one line per array task (-r). The
 # user's whole queue is read and filtered here: squeue -j also fails for a job
 # Slurm has already forgotten, so only this way does a failure mean that the
@@ -1720,20 +1884,24 @@ try:
             queued_jobs.add(job)
 except Exception:
     states, queued_jobs = None, set()
-print(json.dumps({'finished': done, 'succeeded': ok, 'queue': states, 'queued_jobs': sorted(queued_jobs)}))
+print(json.dumps({'finished': done, 'succeeded': ok, 'not_fitted': not_fitted, 'failed': done - ok - not_fitted,
+                  'queue': states, 'queued_jobs': sorted(queued_jobs)}))
 '''
 
 
 def _campaign_progress(u, e):
-    """Replicas finished and succeeded, and the campaign's tasks in the Slurm
-    queue by state (queue None: squeue could not be read)."""
+    """Replicas finished, and of those: succeeded (really fitted), not_fitted
+    (the optimization failed; only chi2 at the starting values) and failed;
+    and the campaign's tasks in the Slurm queue by state (queue None: squeue
+    could not be read)."""
     code = _fill(_STATUS, STAGE=_stage_root(u, e), JOBS=e.get("jobs") or [],
                  TOTAL=int(e.get("replicas") or 0), USER=u)
     r = _run_ifarm_py(u, code, timeout=60)
     try:
         return json.loads(r["out"].strip().splitlines()[-1])
     except Exception:
-        return {"finished": None, "succeeded": None, "queue": None, "queued_jobs": []}
+        return {"finished": None, "succeeded": None, "not_fitted": None, "failed": None,
+                "queue": None, "queued_jobs": []}
 
 
 def _slurm_queue(u):
@@ -1763,13 +1931,18 @@ def list_campaigns(username=""):
         q = prog.get("queue")
         queued = None if q is None else sum(q.values())
         stored = e.get("status", "submitted")
+        finished, not_fitted = prog.get("finished"), prog.get("not_fitted")
         # An unread queue keeps the stored status: the campaign may still run.
-        state = ("running" if queued else stored if queued is None or stored in ("postprocessed", "cancelled")
-                 else "completed" if prog.get("finished") else stored)
+        # Nothing queued and not one finished replica fitted: 'not fitted'.
+        state = ("running" if queued else stored if queued is None
+                 else "not fitted" if finished and not_fitted == finished
+                 else stored if stored in ("postprocessed", "cancelled")
+                 else "completed" if finished else stored)
         out.append({"collection_id": e["collection_id"], "campaign_name": e.get("campaign_name"),
                     "created_at": e.get("created_at"), "replicas": e.get("replicas"),
                     "job_ids": [j["job_id"] for j in e.get("jobs") or []], "status": state,
-                    "finished": prog.get("finished"), "succeeded": prog.get("succeeded"),
+                    "finished": finished, "succeeded": prog.get("succeeded"),
+                    "not_fitted": not_fitted, "failed": prog.get("failed"),
                     "queue": q, "queued": queued, "reactions": e["input_card"]["reactions"],
                     "datasets": e["input_card"]["datasets"]})
     queue = _slurm_queue(u)
@@ -1866,18 +2039,19 @@ def delete_campaign(collection_id="", delete_folder=False, confirm="", username=
 
 # ---- analysis ---------------------------------------------------------------------
 
-_POSTPROCESS = r'''
+_POSTPROCESS = _REPLICA_STATE + r'''
 import glob, json, os, statistics
 stage = __STAGE__
 total = __TOTAL__
 paths = sorted(glob.glob(os.path.join(stage, 'current', 'replica_*', 'fit_summary.json')))
-summaries = []
+# Only replicas that really fitted enter the statistics; those that did not fit
+# (chi2 at the starting values only) are counted apart from the failed ones.
+completed = failed = not_fitted = 0; chi2s = []; best = None; per = {}; cv = []
 for p in paths:
-    try: summaries.append((p, json.load(open(p))))
-    except Exception: pass
-completed = failed = 0; chi2s = []; best = None; per = {}; cv = []
-for p, s in summaries:
-    if s.get('status') == 'success' and s.get('chi2_total') is not None:
+    state, s = replica_state(p)
+    if state == 'not_fitted':
+        not_fitted += 1
+    elif state == 'fitted' and s.get('chi2_total') is not None:
         completed += 1
         c = float(s['chi2_total']); chi2s.append(c)
         if best is None or c < best['chi2_total']:
@@ -1893,7 +2067,7 @@ for p, s in summaries:
 agg = {'status': 'success' if completed else 'failed', 'mode': 'aggregate', 'stage_name': 'pdf_stage',
        'summary_path': os.path.join(stage, 'current', 'fit_summary.json'),
        'total_replicas': total, 'completed_replicas': completed, 'failed_replicas': failed,
-       'missing_replicas': max(total - len(summaries), 0),
+       'not_fitted_replicas': not_fitted, 'missing_replicas': max(total - len(paths), 0),
        'good_fraction': completed / total if total else None, 'best_replica': best,
        'mean_total_chi2': statistics.mean(chi2s) if chi2s else None,
        'median_total_chi2': statistics.median(chi2s) if chi2s else None,
@@ -1914,8 +2088,14 @@ def _stage_root(u, e):
     return f"{_workspace(u)}/{CAMPAIGNS_DIR}/{e['campaign_folder']}/stages/{STAGE}"
 
 
+def _not_fitted_note(n, total):
+    return (f"{n} of {total} replicas did not fit: the optimization failed and only chi2 at the "
+            "starting values was computed. campaign_logs (the panel's Logs button) shows why.")
+
+
 def postprocess_campaign(collection_id="", username=""):
-    """Aggregate every replica's fit_summary.json into the campaign summary."""
+    """Aggregate every replica's fit_summary.json into the campaign summary:
+    the statistics over the replicas that really fitted."""
     u, err = _need_user(username)
     if err:
         return err
@@ -1931,13 +2111,18 @@ def postprocess_campaign(collection_id="", username=""):
     e.update(status="postprocessed", result_summary={k: agg[k] for k in agg if k != "chi2_per_dataset"},
              updated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     _registry(u, {"kind": "upsert", "entry": e})
-    return {"status": "ok", "collection_id": collection_id, "message": "Campaign postprocess completed.",
-            "summary": {k: agg[k] for k in agg if k != "chi2_per_dataset"}}
+    out = {"status": "ok", "collection_id": collection_id, "message": "Campaign postprocess completed.",
+           "summary": {k: agg[k] for k in agg if k != "chi2_per_dataset"}}
+    if agg.get("not_fitted_replicas"):
+        out["note"] = out["not_fitted_note"] = _not_fitted_note(agg["not_fitted_replicas"],
+                                                                agg["total_replicas"])
+    return out
 
 
 def campaign_summary(collection_id="", username=""):
-    """The fit summary: replicas completed/failed, chi2 statistics, best replica,
-    and chi2 per dataset (Load Fit Summary)."""
+    """The fit summary: replicas fitted (completed) / not fitted / failed, chi2
+    statistics over the fitted ones, best replica, and chi2 per dataset (Load
+    Fit Summary)."""
     u, err = _need_user(username)
     if err:
         return err
@@ -1959,13 +2144,32 @@ def campaign_summary(collection_id="", username=""):
     rows.sort(key=lambda x: -(x["chi2_per_npt"] or 0))
     out = {"status": "ok", "collection_id": collection_id,
            "summary": {k: agg[k] for k in agg if k != "chi2_per_dataset"}, "datasets": rows}
-    # Replicas that finished after the last postprocess are not in it yet.
-    prog = _campaign_progress(u, e)
-    if (prog.get("succeeded") or 0) > (agg.get("completed_replicas") or 0) or int(e["replicas"]) != agg.get("total_replicas"):
+    prog, total, notes = _campaign_progress(u, e), int(e["replicas"]), []
+    # A summary from before replicas that did not fit were counted apart may
+    # count them as completed; replicas that finished after the last
+    # postprocess are not in it yet.
+    counted = sum(agg.get(k) or 0 for k in ("completed_replicas", "not_fitted_replicas", "failed_replicas"))
+    finished = prog.get("finished")
+    if "not_fitted_replicas" not in agg:
+        notes.append("This summary was made before the gateway told replicas that fitted from replicas "
+                     "that did not fit, so it may count both as completed: run postprocess_campaign to "
+                     "redo it.")
+    elif ((prog.get("succeeded") or 0) > (agg.get("completed_replicas") or 0)
+          or (finished or 0) > counted or total != agg.get("total_replicas")):
+        notes.append(f"This summary covers {counted} finished replicas, but "
+                     + (f"{finished} of {total} have finished now" if finished is not None
+                        else f"the campaign has {total} replicas now")
+                     + ": run postprocess_campaign to include them.")
+    if notes:
         out["stale"] = True
-        out["note"] = (f"This summary aggregates {agg.get('completed_replicas')} replicas, but "
-                       f"{prog.get('succeeded')} of {e['replicas']} have finished since: run "
-                       "postprocess_campaign to include them.")
+    # How many did not fit now (the summary's own count may be older).
+    n = prog.get("not_fitted")
+    n = agg.get("not_fitted_replicas") if n is None else n
+    if n:
+        out["not_fitted_note"] = _not_fitted_note(n, total)
+        notes.append(out["not_fitted_note"])
+    if notes:
+        out["note"] = " ".join(notes)
     return out
 
 
@@ -2024,7 +2228,7 @@ print(json.dumps({'status': 'success', 'plots': out}))
 
 
 def campaign_pdf_plots(collection_id="", flavors="u,d,g,s", q2=10.0, mean_overlay=True, username=""):
-    """Draw the fitted PDFs of every finished replica at Q2 (View PDF Plots)."""
+    """Draw the PDFs of every fitted replica at Q2 (View PDF Plots)."""
     u, err = _need_user(username)
     if err:
         return err
@@ -2171,6 +2375,257 @@ def analyze_by_experiment(collection_id="", experiments="", plot=True, username=
             "plots": [{"path": i["path"], "panels": i["panels"]} for i in imgs],
             "_images": [{"data": i["png_b64"], "mimeType": "image/png"} for i in imgs],
             "_panel_plots": [{"path": i["path"], "data_url": "data:image/png;base64," + i["png_b64"]} for i in imgs]}
+
+
+# Each replica's state and Slurm log (Logs). Replica i's log is
+# logs/stage_<job>_<i>.out of the job whose first-last range holds i (each
+# append is a job of its own). Slurm merges the replica's stdout and stderr
+# there, and stdout is buffered, so a Python traceback can sit anywhere in
+# the file, often near its start: the whole file is searched. A traceback
+# block runs from "Traceback (most recent call last):" to its exception line,
+# chained exceptions included. The overview searches the logs for up to a
+# minute; a log it had no time for has has_traceback None. The queue is read
+# as in the status snippet: a failure leaves it unknown, never empty.
+_LOGS = _REPLICA_STATE + r'''
+import subprocess, time
+stage = __STAGE__
+jobs = __JOBS__
+total = __TOTAL__
+want = __REPLICA__
+nlines = __LINES__
+MARK = 'Traceback (most recent call last):'
+CHAINED = ('During handling of the above exception, another exception occurred:',
+           'The above exception was the direct cause of the following exception:')
+PROBLEMS = ('not_fitted', 'failed', 'no_output')
+WIDTH = 1000                    # the longest line returned
+deadline = time.time() + 60
+ended = {'COMPLETED', 'CANCELLED', 'FAILED', 'TIMEOUT', 'PREEMPTED', 'BOOT_FAIL', 'NODE_FAIL',
+         'DEADLINE', 'OUT_OF_MEMORY', 'REVOKED', 'SPECIAL_EXIT'}
+ids = set(str(j.get('job_id')) for j in jobs)
+queue, queue_read = {}, True    # replica (the array task index) -> its Slurm state
+try:
+    q = subprocess.run(['squeue', '-h', '-r', '-u', __USER__, '-o', '%F|%K|%T'], capture_output=True,
+                       text=True, timeout=30) if ids else None
+    if q and q.returncode != 0:
+        raise RuntimeError(q.stderr)
+    for line in (q.stdout if q else '').splitlines():
+        job, task, s = (line.strip().split('|') + ['', ''])[:3]
+        if job in ids and task.isdigit() and s and s not in ended:
+            queue[int(task)] = s
+except Exception:
+    queue, queue_read = {}, False
+
+def clip(line):
+    return line if len(line) <= WIDTH else line[:WIDTH] + ' ...'
+
+def num(s, key):
+    try:
+        v = float(s[key])
+    except Exception:
+        return None
+    return v if abs(v) < float('inf') else None     # NaN and infinities are not JSON
+
+def job_of(i):
+    found = None
+    for j in jobs:
+        try:
+            if int(j['first']) <= i <= int(j['last']):
+                found = str(j['job_id'])
+        except (KeyError, TypeError, ValueError):
+            pass
+    return found
+
+def has_traceback(path):
+    mark, prev = MARK.encode(), b''
+    with open(path, 'rb') as fh:
+        while True:
+            chunk = fh.read(1 << 20)
+            if not chunk:
+                return False
+            if mark in prev + chunk:
+                return True
+            prev = chunk[-len(mark):]
+
+def tracebacks(path):
+    # (the log's last traceback block, the exception line of each block in file order)
+    last, excs, cur, frames, held = [], [], None, False, []
+    with open(path, 'rb') as fh:
+        for raw in fh:
+            line = clip(raw.decode('utf-8', 'replace').rstrip('\r\n'))
+            if cur is not None and frames:
+                cur.append(line)
+                frames = not line.strip() or line[0].isspace()    # the first unindented line is the exception
+                continue
+            if line.startswith(MARK):
+                if cur is not None and any(h.strip() in CHAINED for h in held):
+                    cur.extend(held)                               # a chained exception: the same block
+                else:
+                    if cur is not None:
+                        last = cur; excs.append(cur[-1])
+                    cur = []
+                cur.append(line)
+                frames, held = True, []
+            elif cur is not None:
+                held.append(line)
+                if (line.strip() and line.strip() not in CHAINED) or len(held) > 3:
+                    last = cur; excs.append(cur[-1])
+                    cur, held = None, []
+    if cur is not None:
+        last = cur; excs.append(cur[-1])
+    return last, excs
+
+def tail(path, n):
+    with open(path, 'rb') as fh:
+        fh.seek(0, 2)
+        end = pos = fh.tell()
+        data = b''
+        while pos > 0 and data.count(b'\n') <= n and end - pos < (4 << 20):
+            step = min(1 << 16, pos)
+            pos -= step
+            fh.seek(pos)
+            data = fh.read(step) + data
+    lines = data.decode('utf-8', 'replace').split('\n')
+    if lines and lines[-1] == '':
+        lines.pop()
+    if pos > 0:
+        lines = lines[1:]               # the first line read may be cut
+    out = []
+    for line in lines[-n:]:
+        # What a terminal shows of a line that carriage returns rewrote.
+        parts = [p for p in line.split('\r') if p.strip()]
+        out.append(clip(parts[-1] if parts else ''))
+    return out
+
+def row_of(i, scan):
+    state, s = replica_state(os.path.join(stage, 'current', 'replica_%d' % i, 'fit_summary.json'))
+    if state is None:
+        if i in queue:
+            state = 'running' if queue[i] in ('RUNNING', 'COMPLETING') else 'queued'
+        else:
+            state = 'no_output' if queue_read else 'unknown'
+    job = job_of(i)
+    log = os.path.join(stage, 'logs', 'stage_%s_%d.out' % (job, i)) if job else None
+    row = {'replica': i, 'state': state, 'chi2_total': num(s, 'chi2_total'),
+           'central_value_chi2_per_point': num(s, 'central_value_chi2_per_point'),
+           'job_id': job, 'log': log, 'log_exists': bool(log and os.path.isfile(log)), 'has_traceback': False}
+    if state in ('running', 'queued'):
+        row['slurm_state'] = queue[i]
+    if row['log_exists']:
+        row['has_traceback'] = None
+        if scan and time.time() < deadline:
+            try:
+                if state in PROBLEMS:
+                    excs = tracebacks(log)[1]
+                    row['has_traceback'] = bool(excs)
+                    if excs:
+                        row['error'] = excs[-1]
+                else:
+                    row['has_traceback'] = has_traceback(log)
+            except OSError:
+                pass
+    return row, s
+
+def detail_of(i):
+    row, s = row_of(i, False)
+    row['fit_summary'] = None if s is None else {
+        'status': s.get('status'), 'mode': s.get('mode'), 'requested_mode': s.get('requested_mode'),
+        'chi2_total': num(s, 'chi2_total'),
+        'central_value_chi2_per_point': num(s, 'central_value_chi2_per_point')}
+    row.update(traceback='', exceptions=[], tail='', tail_lines=0)
+    if row['log_exists']:
+        try:
+            last, excs = tracebacks(row['log'])
+            lines = tail(row['log'], nlines)
+        except OSError as e:
+            row['log_error'] = str(e)
+        else:
+            if len(last) > 60:
+                last = last[:15] + ['    ... (%d lines omitted) ...' % (len(last) - 59)] + last[-44:]
+            row.update(has_traceback=bool(excs), traceback='\n'.join(last), exceptions=excs[-10:],
+                       tail='\n'.join(lines), tail_lines=len(lines))
+            if excs:
+                row['error'] = excs[-1]
+    return row
+
+if want:
+    print(json.dumps({'queue_read': queue_read, 'detail': detail_of(want)}))
+else:
+    rows = [row_of(i, True)[0] for i in range(1, total + 1)]
+    first = next((r['replica'] for r in rows if r['state'] in PROBLEMS), 0)
+    print(json.dumps({'queue_read': queue_read, 'rows': rows, 'detail': detail_of(first) if first else None}))
+'''
+_LOG_STATES = ("fitted", "not_fitted", "failed", "running", "queued", "no_output")
+# What a state means, for the user; and how the overview message counts it.
+_LOG_MEANING = {
+    "fitted": "The optimization ran and this replica was fitted.",
+    "not_fitted": "The optimization failed, so FitPack only computed chi2 at the starting values: this "
+                  "replica has no fitted parameters.",
+    "failed": "The replica ended without success: its fit_summary.json reports a failure or cannot be read.",
+    "running": "The replica is running.",
+    "queued": "The replica is waiting in the Slurm queue.",
+    "no_output": "The replica wrote no fit_summary.json and nothing of it is queued: it stopped before "
+                 "writing results (an error, the time limit, or it was cancelled).",
+    "unknown": "The replica has no fit_summary.json yet, and the Slurm queue could not be read, so whether "
+               "it is still queued is unknown.",
+}
+_LOG_COUNTED = {"not_fitted": "did not fit", "failed": "failed", "running": "running", "queued": "queued",
+                "no_output": "left no output", "unknown": "unknown (the Slurm queue could not be read)"}
+
+
+def campaign_logs(collection_id="", replica=0, lines=80, username=""):
+    """Each replica's state and Slurm log (the Analysis tab's Logs). replica 0:
+    every replica, plus the Python error and the end of the log of the first
+    one that did not fit, failed or left no output; replica N: that one."""
+    u, err = _need_user(username)
+    if err:
+        return err
+    e = _collection(u, collection_id)
+    if not e:
+        return {"status": "error", "message": f"No campaign {collection_id!r}."}
+    total = int(e.get("replicas") or 0)
+    try:
+        replica, lines = int(replica or 0), int(lines or 80)
+    except (TypeError, ValueError):
+        return {"status": "error", "message": "replica and lines must be whole numbers."}
+    if not 0 <= replica <= total:
+        return {"status": "error", "message": f"Campaign {collection_id!r} has replicas 1 to {total}; "
+                                              f"there is no replica {replica}."}
+    code = _fill(_LOGS, STAGE=_stage_root(u, e), JOBS=e.get("jobs") or [], TOTAL=total,
+                 REPLICA=replica, LINES=max(1, min(lines, 400)), USER=u)
+    try:
+        r = _run_ifarm_py(u, code, timeout=150, cap=4000000)
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "message": "Reading the logs took longer than 2.5 minutes. Ask for one "
+                                              "replica at a time (replica=N)."}
+    try:
+        d = json.loads(r["out"].strip().splitlines()[-1])
+    except Exception:
+        return {"status": "error", "message": "Could not read the campaign's logs.",
+                "detail": (r.get("err") or r.get("out") or "")[-400:]}
+    detail = d.get("detail")
+    if detail:
+        detail["meaning"] = _LOG_MEANING.get(detail["state"], "")
+    out = {"status": "ok", "collection_id": collection_id, "replicas": total}
+    if replica:
+        out.update(replica=replica, replica_detail=detail)
+    else:
+        rows = d.get("rows") or []
+        counts = {s: sum(1 for x in rows if x["state"] == s) for s in _LOG_STATES}
+        unknown = sum(1 for x in rows if x["state"] == "unknown")
+        if unknown:
+            counts["unknown"] = unknown
+        message = ", ".join([f"{counts['fitted']} of {total} replicas fitted"]
+                            + [f"{counts[s]} {_LOG_COUNTED[s]}" for s in _LOG_COUNTED if counts.get(s)]) + "."
+        if detail:
+            message += (f" Replica {detail['replica']} is the first that {_LOG_COUNTED[detail['state']]}: "
+                        + ("replica_detail has its Python error and the end of its Slurm log."
+                           if detail.get("traceback") else
+                           "replica_detail has the end of its Slurm log, which holds no Python error."
+                           if detail.get("log_exists") else "it has no Slurm log."))
+        out.update(counts=counts, overview=rows, replica_detail=detail, message=message)
+    if not d.get("queue_read", True):
+        out["note"] = QUEUE_UNKNOWN
+    return out
 
 
 # ---- LLM-guided Slurm --------------------------------------------------------------
@@ -2393,8 +2848,10 @@ TOOLS = {
         "fn": lambda a: use_ai_branch()},
     "validate_campaign": {
         "desc": "Create Input Card: validate the composer card and return the summary (free/fixed "
-                "parameters, the ones changed from the library, datasets, cuts, QCD, job), the Slurm "
-                "array script and the confirmation phrase. " + 'card = {"object": {"type": "pdf", "parameters": {"g1 a": {"value", "min", "max", "fixed": true|false}, ...}}, "reactions": ["idis", "dy"], "datasets": {"idis": ["10010", ...]}, "cuts": {"idis": [{"variable": "Q2", "op": ">", "value": 1.69, "enabled": true}]}, "qcd": {"order", "Q20", "tmc": "off"|"AOT", "higherTwist", "dglapMode", "asMode"}, "parameters": {"initialization": "default"|"random_within_bounds", "randomSeed", "perReplicaSeed"}, "job": {"campaignName", "replicas", "maxIterations", "tolerance", "optimizer", "bootstrap"}, "slurm": {"partition" ("" = auto), "time" (per replica, HH:MM:SS), "mem", "cpus"}}. Only parameters the user changed need to be listed; the rest keep the library values, and only changed rows are written into the card. A parameter switched to FREE needs a min and a max.',
+                "parameters, the ones changed from the library, datasets, cuts, QCD, job, and "
+                "points_after_cuts per dataset), the Slurm array script, the confirmation phrase and "
+                "warnings (a dataset with no points left after the cuts, a data file without a column "
+                "FitPack's status report reads); warnings never block submission. " + 'card = {"object": {"type": "pdf", "parameters": {"g1 a": {"value", "min", "max", "fixed": true|false}, ...}}, "reactions": ["idis", "dy"], "datasets": {"idis": ["10010", ...]}, "cuts": {"idis": [{"variable": "Q2", "op": ">", "value": 1.69, "enabled": true}]}, "qcd": {"order", "Q20", "tmc": "off"|"AOT", "higherTwist", "dglapMode", "asMode"}, "parameters": {"initialization": "default"|"random_within_bounds", "randomSeed", "perReplicaSeed"}, "job": {"campaignName", "replicas", "maxIterations", "tolerance", "optimizer", "bootstrap"}, "slurm": {"partition" ("" = auto), "time" (per replica, HH:MM:SS), "mem", "cpus"}}. Only parameters the user changed need to be listed; the rest keep the library values, and only changed rows are written into the card. A parameter switched to FREE needs a min and a max.',
         "schema": {"type": "object", "properties": {"card": {"type": "object"}}, "required": ["card"]},
         "fn": lambda a: validate_campaign(a.get("card"))},
     "submit_campaign": {
@@ -2405,31 +2862,39 @@ TOOLS = {
                    "required": ["card"]},
         "fn": lambda a: submit_campaign(a.get("card"), a.get("confirm", ""))},
     "list_campaigns": {
-        "desc": "Collections: every campaign in this workspace with its status, job ids, how many "
-                "replicas have finished and how many of its tasks are still queued, plus your whole "
-                "Slurm queue (queue). When squeue cannot be read, queued and queue are null: unknown, "
-                "not empty.",
+        "desc": "Collections: every campaign in this workspace with its status (running, submitted, "
+                "completed, not fitted, postprocessed, cancelled), job ids, how many replicas have "
+                "finished: succeeded (really fitted), not_fitted (the optimization failed, so only chi2 "
+                "at the starting values was computed) and failed; how many of its tasks are still "
+                "queued, plus your whole Slurm queue (queue). When squeue cannot be read, queued and "
+                "queue are null: unknown, not empty.",
         "schema": {"type": "object", "properties": {}},
         "fn": lambda a: list_campaigns()},
     "campaign_status": {
-        "desc": "One campaign's Slurm state and replica progress (queue is null when squeue cannot "
-                "be read), its folder, and log_pattern: the path of a replica's log for fs_read.",
+        "desc": "One campaign's Slurm state and replica progress: finished, succeeded (really fitted), "
+                "not_fitted (the optimization failed, so only chi2 at the starting values was computed) "
+                "and failed (queue is null when squeue cannot be read), its folder, and log_pattern: the "
+                "path of a replica's log. campaign_logs shows why replicas did not fit or failed.",
         "schema": {"type": "object", "properties": {"collection_id": {"type": "string"}},
                    "required": ["collection_id"]},
         "fn": lambda a: campaign_status(a.get("collection_id", ""))},
     "postprocess_campaign": {
-        "desc": "Postprocess: aggregate the finished replicas into the campaign fit summary.",
+        "desc": "Postprocess: aggregate the finished replicas into the campaign fit summary. Only the "
+                "replicas that really fitted enter the statistics; the ones that did not fit (only chi2 "
+                "at the starting values) are counted apart (not_fitted_replicas).",
         "schema": {"type": "object", "properties": {"collection_id": {"type": "string"}},
                    "required": ["collection_id"]},
         "fn": lambda a: postprocess_campaign(a.get("collection_id", ""))},
     "campaign_summary": {
-        "desc": "Load Fit Summary: completed/failed replicas, chi2 statistics, the best replica, and "
-                "chi2/N per dataset (worst first).",
+        "desc": "Load Fit Summary: replicas that fitted (completed_replicas), did not fit "
+                "(not_fitted_replicas) and failed, chi2 statistics over the fitted ones, the best "
+                "replica, and chi2/N per dataset (worst first). note says when replicas did not fit "
+                "or the summary is out of date.",
         "schema": {"type": "object", "properties": {"collection_id": {"type": "string"}},
                    "required": ["collection_id"]},
         "fn": lambda a: campaign_summary(a.get("collection_id", ""))},
     "campaign_pdf_plots": {
-        "desc": "View PDF Plots: draw x f(x, Q2) of every finished replica (flavors: comma list of "
+        "desc": "View PDF Plots: draw x f(x, Q2) of every fitted replica (flavors: comma list of "
                 "g, u, d, s, ub, db, sb; q2 in GeV^2; mean_overlay adds the mean and 68% band). "
                 "Returns the images.",
         "schema": {"type": "object", "properties": {"collection_id": {"type": "string"},
@@ -2449,6 +2914,22 @@ TOOLS = {
                    "required": ["collection_id"]},
         "fn": lambda a: analyze_by_experiment(a.get("collection_id", ""), a.get("experiments", ""),
                                               a.get("plot", True))},
+    "campaign_logs": {
+        "desc": "Logs of a campaign: each replica's state (fitted, not fitted, failed, running, no "
+                "output) and, for a replica that did not fit, the Python error and the end of its "
+                "Slurm log. Use it whenever replicas fail or did not fit, and explain the error to the "
+                "user.",
+        "schema": {"type": "object", "properties": {
+            "collection_id": {"type": "string"},
+            "replica": {"type": "integer",
+                        "description": "0 (default): every replica, with the Python error and the end of "
+                                       "the log of the first one that did not fit, failed or left no "
+                                       "output; N: replica N only."},
+            "lines": {"type": "integer",
+                      "description": "How many lines of the end of the log to show (default 80, "
+                                     "at most 400)."}},
+                   "required": ["collection_id"]},
+        "fn": lambda a: campaign_logs(a.get("collection_id", ""), a.get("replica", 0), a.get("lines", 80))},
     "append_replicas": {
         "desc": "Generate More Replicas: add count replicas to a campaign. The first call returns "
                 "the plan and a confirmation phrase; nothing is queued until the user confirms "
@@ -2555,17 +3036,20 @@ INSTRUCTIONS = (
     "memory, cpus, partition or auto), using slurm_partitions to explain the choice.\n"
     "Every setting shows its library value; the user keeps or changes it. Reactions and "
     "datasets are never preselected; never pick a value for the user.\n"
-    "8. Review: validate_campaign; show the summary and the Slurm array script exactly as "
-    "returned (not shortened); submit with "
+    "8. Review: validate_campaign; show the summary, its warnings (they never block "
+    "submission) and the Slurm array script exactly as returned (not shortened); submit with "
     "submit_campaign(card, confirm=<phrase>) only after the user agrees.\n"
     "9. Collections and analysis: list_campaigns (it also returns the user's Slurm queue), "
     "campaign_status, postprocess_campaign, campaign_summary (fit summary), campaign_pdf_plots "
     "(PDF plots, returned as images), analyze_by_experiment (chi2 and data vs theory by "
-    "experiment), append_replicas (always confirmed with its phrase), cancel_campaign (stops "
-    "its queued and running tasks) and delete_campaign (only when nothing of it is queued) — "
-    "both also confirmed with their phrase. For a failed replica, read its log with fs_read: "
-    "campaign_status gives log_pattern; fill in the replica and the job id (from its jobs) whose "
-    "first-last range holds that replica. The panel's Collections and Analysis tabs show the same.\n"
+    "experiment), campaign_logs (each replica's state and log), append_replicas (always "
+    "confirmed with its phrase), cancel_campaign (stops its queued and running tasks) and "
+    "delete_campaign (only when nothing of it is queued) — both also confirmed with their "
+    "phrase. A replica counts as fitted only when its optimization ran: succeeded counts those, "
+    "not_fitted counts replicas whose optimization failed (FitPack then only computed chi2 at "
+    "the starting values). When replicas did not fit or failed, call campaign_logs and explain "
+    "the error to the user in plain words. The panel's Collections and Analysis tabs show the "
+    "same (Analysis has a Logs button).\n"
     "10. Any other cluster job: draft_slurm_job with the resources agreed with the user (it "
     "runs sbatch --test-only), show the returned script exactly as written, ask the user, "
     "then submit_slurm_job with the phrase.")

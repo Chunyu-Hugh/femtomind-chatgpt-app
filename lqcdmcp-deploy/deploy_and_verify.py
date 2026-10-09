@@ -180,7 +180,7 @@ if ok.get("isError"):
 say("\n5. tools on the deployed gateway")
 names = [t["name"] for t in gateway("tools/list")["result"]["tools"]]
 missing = [n for n in ("campaign_options", "validate_campaign", "submit_campaign", "list_campaigns",
-                       "cancel_campaign", "delete_campaign", "campaign_pdf_plots", "draft_slurm_job")
+                       "cancel_campaign", "delete_campaign", "campaign_pdf_plots", "campaign_logs", "draft_slurm_job")
            if n not in names]
 say(f"   {len(names)} tools; campaign tools present: {'all' if not missing else 'MISSING ' + ', '.join(missing)}")
 say(f"   node_diag hidden from AI clients: {'yes (good)' if 'node_diag' not in names else 'NO (bad)'}")
