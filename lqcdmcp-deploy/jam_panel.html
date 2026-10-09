@@ -873,7 +873,6 @@
     out.innerHTML = '<div class="spin">Creating '+esc(name)+' and cloning fitpack_legacy'+(branch ? " @ "+esc(branch) : "")+'…</div>';
     try{
       const r = await call("setup_workspace", {repo_url: JAM_REPO, folder_name: name, branch: branch, github_token: token});
-      $("setupToken").value = "";                       // never leave a token in the DOM
       if (r && r.ok){
         entered.campaign = false;
         // The box closes, so the outcome (a fresh clone, or a folder that already
@@ -885,7 +884,12 @@
         recheck();
       } else {
         const det = r && r.detail ? '<pre class="out" style="max-height:140px">'+esc(r.detail)+'</pre>' : "";
-        out.innerHTML = '<div class="note warn">'+esc(msgOf(r, "Setup failed."))+det+'</div>';
+        // The gateway words an auth refusal for the AI (it names panel_url); the
+        // panel says in its own words where the token goes.
+        const msg = !(r && r.reason === "auth") ? msgOf(r, "Setup failed.") : host.kind === "page"
+          ? "This repository is private: paste a GitHub token above and press Create and clone again."
+          : "This repository is private. Open the gateway page, paste a GitHub token there and press Create and clone.";
+        out.innerHTML = '<div class="note warn">'+esc(msg)+det+'</div>';
         if (r && r.reason === "auth" && host.kind === "page"){ $("setupToken").focus(); $("setupToken").placeholder = "paste a GitHub token"; }
         else if (r && r.reason === "auth" && r.panel_url){
           out.insertAdjacentHTML("beforeend", '<div class="actions"><button class="btn primary" id="setupOpenPage">Open the gateway page</button></div>');
@@ -893,6 +897,7 @@
         }
       }
     } catch(e){ out.innerHTML = '<div class="note warn">Setup failed: '+esc(e && e.message || e)+'</div>'; }
+    finally { $("setupToken").value = ""; }             // never leave a token in the DOM, whatever the outcome
     $("setupBtn").disabled = false; $("setupBtn").textContent = "Create and clone";
   }
   $("setupBtn").onclick = doSetup;
@@ -1285,8 +1290,11 @@
   function stateTag(s){ return '<span class="tag '+({running: "active", submitted: "active", completed: "done", postprocessed: "done"}[s] || "other")+'">'+esc(s)+'</span>'; }
   function paintCampaigns(d){
     if (!d || !Array.isArray(d.campaigns)){ $("collBody").innerHTML = '<div class="note warn">'+esc(msgOf(d, "Sign in on the Connect tab first."))+'</div>'; return; }
-    if (!d.campaigns.length){ $("collBody").innerHTML = '<div class="empty">No campaigns yet. Build one on the Campaign tab.</div>'; return; }
-    $("collBody").innerHTML = '<div class="tblscroll"><table class="tbl"><thead><tr><th>Campaign</th><th>Created</th><th>Replicas</th><th>Status</th><th>Jobs</th><th></th></tr></thead><tbody>'
+    // The list's own note (the Slurm queue could not be read) says why a campaign whose
+    // queue is unknown still offers Stop. It sits above the list; collMsg keeps an action's outcome.
+    const why = d.message ? collNote(d.message, true) : "";
+    if (!d.campaigns.length){ $("collBody").innerHTML = why + '<div class="empty">No campaigns yet. Build one on the Campaign tab.</div>'; return; }
+    $("collBody").innerHTML = why + '<div class="tblscroll"><table class="tbl"><thead><tr><th>Campaign</th><th>Created</th><th>Replicas</th><th>Status</th><th>Jobs</th><th></th></tr></thead><tbody>'
       + d.campaigns.map((c,i)=>'<tr><td><b>'+esc(c.campaign_name)+'</b><div class="mono muted" style="font-size:11px">'+esc(c.collection_id)+'</div>'
         + '<div class="muted" style="font-size:11.5px">'+esc(Object.entries(c.datasets || {}).map(([r,v])=>r+" "+v.length).join(" · "))+'</div></td>'
         + '<td class="mono" style="font-size:11.5px">'+esc(fmtET(isoSec(c.created_at)))+'</td>'
@@ -1493,19 +1501,23 @@
         + '<div class="grid2"><input type="text" id="caMorePhrase" placeholder="confirmation phrase"><button class="btn primary" id="caMoreGo">Launch</button></div>'
         + '<div class="err" id="caMoreErr"></div>';
       $("caMoreGo").onclick = async ()=>{
-        $("caMoreGo").disabled = true; $("caMoreErr").textContent = "";
+        // The plan may be gone when the answer comes (another campaign picked, the box
+        // reopened, a new plan): then only the campaign list is refreshed.
+        const go = $("caMoreGo"), err = $("caMoreErr");
+        go.disabled = true; err.textContent = "";
         try{ const s = await call("append_replicas", {collection_id: cid, count: p.add, confirm: $("caMorePhrase").value.trim()});
+          if (!go.isConnected){ loadAnalysisCampaigns(); return; }
           // A wrong phrase keeps the plan on screen, as Delete does, so it can be typed again.
           if (s && s.status === "needs_confirmation"){
-            $("caMoreErr").textContent = "The phrase did not match; nothing was queued."; $("caMoreGo").disabled = false; return;
+            err.textContent = "The phrase did not match; nothing was queued."; go.disabled = false; return;
           }
           $("caMoreOut").innerHTML = s && s.status === "submitted"
             ? '<div class="note">Queued '+esc(p.add)+' more replicas ('+esc(p.replica_range)+') as job '+esc(s.job_id)+'.</div>'
             : '<div class="note warn">'+esc(msgOf(s, "Not launched."))+causePre(s && s.detail)+'</div>';
           loadAnalysisCampaigns();
-        } catch(e){ $("caMoreOut").innerHTML = '<div class="note warn">Launch failed: '+esc(e && e.message || e)+'</div>'; }
+        } catch(e){ if (go.isConnected) $("caMoreOut").innerHTML = '<div class="note warn">Launch failed: '+esc(e && e.message || e)+'</div>'; }
       };
-    } catch(e){ $("caMoreOut").innerHTML = '<div class="note warn">'+esc(e && e.message || e)+'</div>'; }
+    } catch(e){ if (cid === analysisCampaign) $("caMoreOut").innerHTML = '<div class="note warn">'+esc(e && e.message || e)+'</div>'; }
   };
 
   /* ---------- init ---------- */

@@ -15,7 +15,7 @@ the FemtoMind JAM app's fitting campaign.
 | `jam_gateway.py` | The gateway (stdlib only): MCP tools, access check, cluster chain, campaigns, HTTP server. Runs on a cluster node. |
 | `jam_panel.html` | The panel (Connect / Project / Campaign / Collections / Analysis), served by the gateway as a browser page and as an MCP Apps / ChatGPT widget resource. |
 | `jamai/` | Turns a campaign into a FitPack input card and runs one replica (`run_replica.py`); uploaded to `<workspace>/.jamai/` at every submit. |
-| `deploy_and_verify.py` | Launch your gateway if it is not running, wait, and check it end to end (`--check`: check only). Prints a shareable report without credentials. |
+| `deploy_and_verify.py` | Launch your gateway unless your gateway job is already queued or running, wait for it (it stops early when the job stays queued, or when a job it launched ends), and check it end to end (`--check`: check only). Prints a shareable report without credentials. |
 | `redeploy_jam.py` | `launch` / `cancel` / `status` through the dashboard API; `script` writes the job script for the dashboard page. |
 | `hot_redeploy.py` | Replace a running gateway's code (gateway, panel, `jamai/`) inside the same job. |
 | `check_dashboard_token.py` | Make the dashboard calls the gateway's access check makes, and print the decision. |
@@ -137,23 +137,31 @@ reach it with `JAM_GW_URL` and `JAM_GW_TOKEN`; `hot_redeploy.py` refuses it
 
 ## Verified
 
-2026-10-08, with the final code of this version, against ifarm through a
-local test instance of the gateway:
+2026-10-08, with the code of commit `0ad83c4`, against ifarm through a local
+test instance of the gateway:
 
 - live run, 36 checks, all passed: the library table (39 rows), a generated
   card that differs from `input02.py` only in the changed row, stop and
   delete (delete refused while tasks are queued), postprocess, fit summary,
   a PDF plot, the analysis by experiment, an append plan;
 - the panel in headless Chromium: 19 checks, all passed;
-- offline suites: 368 checks of the gateway and scripts and 92 of the panel
-  (jsdom), all passed (the suites are not part of this repository);
 - Codex 0.161.0 connected and called a tool; Claude Code 2.x stored the
   guide's `${LQCDMCP_TOKEN}` header and expanded it at start (local and user
   scope).
 
+The fixes made after `0ad83c4` (queued or ended gateway jobs and failed
+dashboard requests in the deploy scripts, a deleted workspace folder or
+template, the panel's Collections note, Generate More Replicas and
+GitHub-token field) were tested offline only. With them, the offline
+suites (not part of this repository) all pass: 377 checks of the gateway
+and scripts, 151 of `deploy_and_verify.py` and `redeploy_jam.py` against
+stand-in dashboard and gateway servers (Python 3.10, 3.11 and 3.13), and
+631 of the panel (jsdom).
+
 **Not yet verified live with this version:** the owner check against the
 real dashboard (run `python3 deploy_and_verify.py --check` after the next
-deploy), `hot_redeploy.py` on the platform, and a workspace clone with a
+deploy), the deploy scripts' queue and error handling against the real
+dashboard, `hot_redeploy.py` on the platform, and a workspace clone with a
 GitHub token. Earlier the same day, with the previous version, the platform
 deploy and the access control were verified.
 

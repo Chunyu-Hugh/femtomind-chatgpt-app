@@ -600,6 +600,9 @@ def fs_read(path="", max_lines=200, username=""):
 # A workspace path goes into shell commands and Slurm scripts on the cluster,
 # so it may hold only these characters.
 WORKSPACE_PATH_RE = r"/[A-Za-z0-9._/-]+"
+# The recorded workspace folder was deleted or moved: a branch switch cannot help.
+WORKSPACE_GONE = ("The workspace folder {} no longer exists: choose another workspace on the Project "
+                  "tab or create a new one.")
 
 
 def setup_workspace(repo_url="", github_token="", target_dir="", username="",
@@ -803,14 +806,22 @@ print(json.dumps({{'marker': ws, 'active': active, 'candidates': cands, 'items':
         return {"status": "ok", "username": u, "configured": False, "candidates": cands,
                 "note": "No workspace chosen yet."}
     ai_files = {label for label, rel in _PROJECT_ITEMS if rel.endswith(".py")}
+    # Each part by its path inside the workspace ("" is the workspace folder itself).
+    have = {rel: it["ok"] for (_, rel), it in zip(_PROJECT_ITEMS, d["items"])}
+    gone = not have[""]                 # then neither a branch switch nor new grid links can help
     for it in d["items"]:
         if it["ok"]:
             continue
-        if it["name"] in ai_files:
-            it["action"] = ("This checkout is not on the FitPack ai branch. Switch it with 'Switch "
-                            "to the ai branch' below, or create a new workspace.")
-            it["fix"] = "use_ai_branch"
-        elif "missing" in it:
+        if it["name"] in ai_files and not gone:
+            if have["fitlib/ai.py"]:
+                # The runner is there, so the checkout is on the ai branch already and a
+                # switch would not bring the template back.
+                it["action"] = TEMPLATE_GONE
+            else:
+                it["action"] = ("This checkout is not on the FitPack ai branch. Switch it with 'Switch "
+                                "to the ai branch' below, or create a new workspace.")
+                it["fix"] = "use_ai_branch"
+        elif "missing" in it and not gone:
             it["action"] = ("Missing: " + ", ".join(it["missing"]) + ". Press 'Use selected' below "
                             "to link the shared grids again.")
             it["fix"] = "use_workspace"
@@ -877,6 +888,10 @@ JAMAI_DIR = os.environ.get("JAM_GW_JAMAI_DIR", os.path.join(HERE, "jamai"))
 JAMAI_REMOTE = ".jamai"                 # <ws>/.jamai/modules/jam/jamai
 CAMPAIGNS_DIR = "campaigns"             # <ws>/campaigns/<folder>/...
 CAMPAIGN_TEMPLATE = "examples/input02.py"
+# An ai-branch checkout (it has fitlib/ai.py) whose template was deleted:
+# switching branches would not bring it back.
+TEMPLATE_GONE = (f"{CAMPAIGN_TEMPLATE} is missing from this ai-branch checkout: restore it with git "
+                 f"checkout origin/ai -- {CAMPAIGN_TEMPLATE} in the workspace, or create a new workspace.")
 STAGE = "pdf_stage"
 
 # Shown with the library's parameter table.
@@ -962,14 +977,18 @@ _PDF_PARAM_LINE = r"""^\s*conf\[['"]params['"]\]\[['"]pdf['"]\]\[['"]([^'"]+)['"
 
 # The library's parameter table, in file order. A later line for the same
 # parameter replaces the earlier one, as when the card runs. A 'fixed' that
-# names another parameter is a tie: the row is fixed and says to what.
+# names another parameter is a tie: the row is fixed and says to what. When
+# the file cannot be read, it says whether the workspace folder and the ai
+# branch's fitlib/ai.py are there.
 _LIBRARY = r'''
-import ast, json, re
+import ast, json, os, re
 line_re = re.compile(__LINE_RE__)
 try:
     lines = open(__PATH__, encoding='utf-8').read().splitlines()
 except OSError:
-    print(json.dumps({'found': False, 'rows': []})); raise SystemExit(0)
+    print(json.dumps({'found': False, 'rows': [], 'folder': os.path.isdir(__WS__),
+                      'runner': os.path.isfile(os.path.join(__WS__, 'fitlib', 'ai.py'))}))
+    raise SystemExit(0)
 def num(v):
     return None if v is None else float(v)
 rows, at = [], {}
@@ -1007,12 +1026,17 @@ def _library_parameters(u):
     if hit and hit[0] == ws and hit[3] > time.time():
         return hit[1], hit[2]
     path = f"{ws}/{CAMPAIGN_TEMPLATE}"
-    r = _run_ifarm_py(u, _fill(_LIBRARY, LINE_RE=_PDF_PARAM_LINE, PATH=path), timeout=60, cap=200000)
+    r = _run_ifarm_py(u, _fill(_LIBRARY, LINE_RE=_PDF_PARAM_LINE, PATH=path, WS=ws), timeout=60, cap=200000)
     try:
         d = json.loads(r["out"].strip().splitlines()[-1])
     except Exception:
         raise RuntimeError(f"Could not read {path}: " + (r.get("err") or r.get("out") or "")[-300:])
     if not d["found"]:
+        # A folder that is gone, or a checkout already on the ai branch: switching does not help.
+        if not d["folder"]:
+            raise RuntimeError(WORKSPACE_GONE.format(ws))
+        if d["runner"]:
+            raise RuntimeError(TEMPLATE_GONE)
         raise RuntimeError(f"The workspace has no {CAMPAIGN_TEMPLATE} (FitPack ai branch) to read "
                            "the parameter table from. Switch it to the FitPack ai branch (the "
                            "Project tab's 'Switch to the ai branch', or use_ai_branch) or create a "
@@ -1469,11 +1493,15 @@ def use_ai_branch(username=""):
                            f"{CAMPAIGN_TEMPLATE}, so switching branches does not help. Restore the file "
                            f"(git checkout origin/ai -- {CAMPAIGN_TEMPLATE} in the workspace) or create "
                            "a new workspace."}
-    r = _remote(u, f"cd {_shq(ws)} && git rev-parse --verify -q origin/ai >/dev/null || "
+    # Without the folder, stop: git must never run in the login directory instead.
+    r = _remote(u, f"cd {_shq(ws)} || {{ echo NOWS; exit 0; }}; "
+                   f"git rev-parse --verify -q origin/ai >/dev/null || "
                    f"GIT_TERMINAL_PROMPT=0 git fetch -q origin ai 2>&1; "
                    f"if [ -n \"$(git status --porcelain --untracked-files=no)\" ]; then echo DIRTY; "
                    f"else git checkout -q -B ai origin/ai 2>&1 && echo SWITCHED; fi", timeout=180)
     out = (r.get("out") or "") + (r.get("err") or "")
+    if "NOWS" in (r.get("out") or "").split():
+        return {"status": "error", "workspace": ws, "message": WORKSPACE_GONE.format(ws)}
     if "DIRTY" in out:
         return {"status": "error", "workspace": ws,
                 "message": "This checkout has uncommitted changes to tracked files, so it is not "
@@ -2508,8 +2536,10 @@ INSTRUCTIONS = (
     "has; ask which to use (use_workspace) or create a new one (setup_workspace; it clones the "
     "FitPack ai branch). If a clone needs a GitHub token, send the user to the panel's Project "
     "tab (the link in the result) — never ask for a token in chat. If the campaign runner or "
-    "the campaign template is marked missing (fix: use_ai_branch), the checkout is not on the "
-    "FitPack ai branch: offer use_ai_branch or a new workspace.\n"
+    "the campaign template is marked missing with fix: use_ai_branch, the checkout is not on the "
+    "FitPack ai branch: offer use_ai_branch or a new workspace. A missing item without a fix (for "
+    "example a workspace folder that no longer exists, or an ai-branch checkout without "
+    "examples/input02.py): give the user its action; use_ai_branch does not help there.\n"
     "3. Non-perturbative object and parameters: only Unpolarized PDF is available. "
     "campaign_options returns the parameter table read from the workspace's "
     "examples/input02.py (the library): FREE/FIXED, value, min, max. Ask which to change; "

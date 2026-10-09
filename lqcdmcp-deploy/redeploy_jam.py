@@ -15,12 +15,15 @@ Optional: JAM_GW_RESERVATION (default chen_mcp_daily, "" for none),
 JAM_GW_PARTITION (default 24s), JAM_GW_HOURS (default 6).
 """
 import base64
+import http.client
 import json
 import os
 import re
+import socket
 import ssl
 import sys
 import time
+import urllib.error
 import urllib.request
 import zlib
 
@@ -54,9 +57,28 @@ def call(method, params=None, timeout=180):
         hdrs["Mcp-Session-Id"] = sid
     req = urllib.request.Request(B, data=json.dumps(body).encode(),
                                  headers=hdrs, method="POST")
-    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
-        sid = r.headers.get("Mcp-Session-Id") or sid
-        raw = r.read().decode()
+    # A failed request ends the script with one line that says what to do, not a
+    # traceback; deploy_and_verify.py shows that line in its report.
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+            sid = r.headers.get("Mcp-Session-Id") or sid
+            raw = r.read().decode()
+    except urllib.error.HTTPError as e:
+        answer = f"HTTP {e.code} {e.reason or ''}".strip()
+        if e.code in (401, 403):
+            raise SystemExit(f"the dashboard refused this token ({answer}): sign in to the dashboard again, "
+                             "copy the new token, export LQCDMCP_TOKEN and run this again")
+        raise SystemExit(f"the dashboard answered {answer}: try again in a few minutes")
+    except urllib.error.URLError as e:
+        raise SystemExit(f"could not reach the dashboard: {e.reason}. Check the network connection and "
+                         "try again")
+    except socket.timeout:
+        raise SystemExit(f"the dashboard did not answer within {timeout} s (timed out). The dashboard may "
+                         "still carry out the request: run python3 redeploy_jam.py status before you repeat it")
+    except (OSError, http.client.HTTPException) as e:
+        raise SystemExit(f"the connection to the dashboard dropped before it answered ({type(e).__name__}: "
+                         f"{e}). The dashboard may still carry out the request: run python3 redeploy_jam.py "
+                         "status before you repeat it")
     evs = re.findall(r"data: (\{.*?\})\n\n", raw, re.S) or re.findall(r"data: (\{.*\})", raw, re.S)
     if evs:
         for e in reversed(evs):
@@ -68,12 +90,17 @@ def call(method, params=None, timeout=180):
 
 
 def tool_call(name, args, timeout=180):
+    """(the text of the tool's answer, whether the answer is an error: the
+    tool's isError, or a JSON-RPC error from the dashboard)."""
     r = call("tools/call", {"name": name, "arguments": args}, timeout)
+    if r.get("error") is not None:
+        return f"the dashboard answered with an error: {json.dumps(r['error'])}"[:3000], True
     res = r.get("result", {})
+    error = isinstance(res, dict) and bool(res.get("isError"))
     if isinstance(res, dict) and "content" in res:
         return " ".join(c.get("text", "") for c in res["content"]
-                        if isinstance(c, dict) and c.get("type") == "text")[:3000]
-    return json.dumps(res)[:3000]
+                        if isinstance(c, dict) and c.get("type") == "text")[:3000], error
+    return json.dumps(res)[:3000], error
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -147,18 +174,18 @@ def main():
         return
     call("initialize", {"protocolVersion": "2025-03-26", "capabilities": {},
                         "clientInfo": {"name": "redeploy-jam", "version": "1"}})
-    print("validate:", tool_call("validate_user", {"username": USER})[:150])
+    print("validate:", tool_call("validate_user", {"username": USER})[0][:150])
     time.sleep(1)
     cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
     if cmd == "cancel":
-        print(tool_call("cancel_mcp_server_by_name", {"name": MCP_NAME}))
+        print(tool_call("cancel_mcp_server_by_name", {"name": MCP_NAME})[0])
     elif cmd == "launch":
-        out = tool_call("launch_mcp_server_using_script",
-                        {"mcp_name": MCP_NAME, "wait": False,
-                         "submission_script": build_slurm(), "base64_content": False},
-                        timeout=240)
-        if re.search(r"Error calling tool|Slurm command failed", out):
-            # Nothing was queued. deploy_and_verify.py stops on this message.
+        out, refused = tool_call("launch_mcp_server_using_script",
+                                 {"mcp_name": MCP_NAME, "wait": False,
+                                  "submission_script": build_slurm(), "base64_content": False},
+                                 timeout=240)
+        if refused or re.search(r"Error calling tool|Slurm command failed", out):
+            # An error answer: nothing was queued. deploy_and_verify.py stops on this message.
             asked = ((f"reservation {RESERVATION}" if RESERVATION else "no reservation")
                      + f", partition {PARTITION}, {HOURS} h")
             raise SystemExit(f"the platform did not start your gateway ({asked}): {out[:600]}\n"
@@ -172,7 +199,7 @@ def main():
               "Eastern) or while a colleague's gateway holds the reservation, it waits in the queue and "
               "starts by itself. python3 deploy_and_verify.py --check shows when your gateway is up.")
     else:
-        print(tool_call("check_mcp_server_status_by_name", {"mcp_name": MCP_NAME}))
+        print(tool_call("check_mcp_server_status_by_name", {"mcp_name": MCP_NAME})[0])
 
 
 if __name__ == "__main__":

@@ -26,8 +26,10 @@ if not TOKEN or not gw_auth.USER:
 # Slurm states of a gateway job that is queued or starting: launching again
 # would only queue a second job.
 ACTIVE = ("PENDING", "CONFIGURING", "RUNNING")
-TOKEN_HELP = ("If they show HTTP Error 401 or 403, the dashboard did not accept your token: sign in to the "
-              "dashboard again, copy the new token, export LQCDMCP_TOKEN and run this again.")
+TOKEN_HELP = ("If they show HTTP 401 or 403, the dashboard did not accept your token: sign in to the dashboard "
+              "again, copy the new token, export LQCDMCP_TOKEN and run this again. If they show URLError or "
+              "'timed out', or say the dashboard could not be reached or did not answer, check the network "
+              "connection and try again.")
 
 
 def say(*a):
@@ -67,9 +69,13 @@ def running():
         return None
 
 
-def run(args):
-    """Run one of the other scripts: (exit code, its output without the token)."""
-    p = subprocess.run([sys.executable] + args, cwd=HERE, capture_output=True, text=True, timeout=600)
+def run(args, limit=700):
+    """Run one of the other scripts: (exit code, its output without the token).
+    The limit is above redeploy_jam.py's worst case (180 + 180 + 1 + 240 s)."""
+    try:
+        p = subprocess.run([sys.executable] + args, cwd=HERE, capture_output=True, text=True, timeout=limit)
+    except subprocess.TimeoutExpired:
+        return 1, f"{args[0]} did not finish in {limit} s: the dashboard did not answer"
     return p.returncode, scrub((p.stdout + p.stderr).strip())
 
 
@@ -84,20 +90,34 @@ def job_state():
     return (m.group(1) if m else next((s for s in ACTIVE if s in status), "")), status
 
 
+def queued():
+    """Stop on a gateway job that waits in the queue: it may wait for hours, so
+    waiting here would not help."""
+    say("   your gateway job is waiting in the queue: gateways run one at a time and only in the daily"
+        " window (about 10:00–16:00 US Eastern), so it waits for a colleague's gateway to stop or for"
+        " the window to open, then starts by itself.")
+    sys.exit("the gateway is not up yet: run python3 deploy_and_verify.py --check again later")
+
+
 say(f"gateway: {gw_auth.NAME}\nurl:     {gw_auth.URL}\n")
 launched = False
-if "--check" not in sys.argv and not running():
+up = running()
+if "--check" not in sys.argv and not up:
     state, _ = job_state()
     if state in ACTIVE:
         say(f"1. launch: skipped (your gateway job is already {state})")
+        if state == "PENDING":
+            queued()
     else:
         say("1. launch")
         rc, out = run(["redeploy_jam.py", "launch"])
         say("   " + out.replace("\n", "\n   ")[-1500:])
         if rc and "the platform did not start your gateway" not in out:
-            # The request itself failed (expired token, network), so nothing was queued either.
-            sys.exit("stop: the launch request failed before the platform could queue anything (the lines "
-                     "above). " + TOKEN_HELP)
+            # The request itself failed (expired token, network). After a timeout or a
+            # dropped connection the platform may still have queued the job.
+            sys.exit("stop: the launch request failed (the lines above). If it timed out or the connection "
+                     "dropped, a job may still have been queued: run python3 deploy_and_verify.py --check "
+                     "before launching again. " + TOKEN_HELP)
         if re.search(r"^validate: \{\}\s*$", out, re.M):
             say(f"   note: the dashboard has no MCP record for {gw_auth.USER} (validate_user answered {{}})")
         # redeploy_jam.py's line when the platform refused the launch, with the
@@ -108,11 +128,20 @@ if "--check" not in sys.argv and not running():
                      "The lines just above say why and what to do.")
         launched = True
     say("   waiting for the gateway to register with the proxy (up to 10 min)…")
-    t0 = time.time()
+    t0 = asked = time.time()
     while time.time() - t0 < 600 and not running():
         time.sleep(15)
+        if launched and time.time() - asked >= 60:
+            # About once a minute, ask about the job just launched: one that ended, or
+            # still waits in the queue after two minutes, will not register soon.
+            asked = time.time()
+            state, _ = job_state()
+            if state == "PENDING" and asked - t0 >= 120:
+                queued()
+            if state not in ACTIVE:
+                break   # step 2 reports it
 else:
-    say("1. launch: skipped (already running)" if running() else "1. launch: skipped (--check)")
+    say("1. launch: skipped (already running)" if up else "1. launch: skipped (--check)")
 
 info = running()
 say(f"\n2. reachable through the proxy: {'yes ' + json.dumps(info) if info else 'NO'}")
@@ -120,10 +149,7 @@ if not info:
     state, status = job_state()
     say("   " + status[-800:])
     if state == "PENDING":
-        say("   your gateway job is waiting in the queue: gateways run one at a time and only in the daily"
-            " window (about 10:00–16:00 US Eastern), so it waits for a colleague's gateway to stop or for"
-            " the window to open, then starts by itself.")
-        sys.exit("the gateway is not up yet: run python3 deploy_and_verify.py --check again later")
+        queued()
     if state in ACTIVE:
         sys.exit("the gateway is not up yet: its job runs but the gateway does not answer. Run again with"
                  " --check in a few minutes; if it still does not answer, python3 redeploy_jam.py cancel,"

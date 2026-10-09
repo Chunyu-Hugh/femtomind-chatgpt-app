@@ -115,9 +115,11 @@ running after the window closes.
 python3 deploy_and_verify.py
 ```
 
-It starts your gateway, waits for it (up to 10 minutes) and checks it.
-Running it again is safe: while your gateway job is queued or running it
-starts no second one, and if your gateway is up it only checks it.
+It starts your gateway, waits for it (up to 10 minutes) and checks it. It
+stops waiting early when the job it started ends, or is still in the queue
+after about two minutes. Running it again is safe: while your gateway job
+is queued or running it starts no second one (if that job is still in the
+queue, it says so at once), and if your gateway is up it only checks it.
 
 It succeeds when the last line is `DONE` and you see:
 
@@ -177,14 +179,21 @@ interpolation grids, campaign template (examples/input02.py), campaign runner
 
 A ✕ comes with a hint:
 
-- ✕ on the campaign template or the campaign runner: the checkout is not on
-  the `ai` branch. Press **Switch to the ai branch**, or create a new
-  workspace under a new folder name. (Switching changes the branch of that
-  folder: if you use it for other work, create a new workspace instead. If
-  the switch is refused, for example because the folder has uncommitted
+- ✕ on the campaign runner (often with the campaign template): the checkout
+  is not on the `ai` branch. Press **Switch to the ai branch**, or create a
+  new workspace under a new folder name. (Switching changes the branch of
+  that folder: if you use it for other work, create a new workspace instead.
+  If the switch is refused, for example because the folder has uncommitted
   changes, the panel says why; then create a new workspace.)
+- ✕ on the campaign template only: the file is missing from an `ai`-branch
+  checkout. On ifarm, in your workspace folder, run
+  `git checkout origin/ai -- examples/input02.py` and press **Re-check**; or
+  create a new workspace.
 - ✕ on the interpolation grids: press **Use selected** (your workspace is
   already selected) to link the shared grids again.
+- ✕ on every item: the workspace folder no longer exists (deleted or moved).
+  Select another checkout and press **Use selected**, or create a new
+  workspace.
 
 Already have a checkout of the `ai` branch in `/w/ceph24/JAM/<you>/`? The
 Project tab lists the checkouts it finds there: select yours and press
@@ -278,8 +287,12 @@ Settings start at these values; keep or change each one:
   completed, postprocessed or cancelled) and the Slurm job numbers.
   **Refresh** reloads it.
 - **Analyze** opens the campaign on the Analysis tab.
-- **Stop** appears while the campaign has tasks queued or running. Confirm
-  with **Stop jobs**. Replicas that already finished keep their results.
+- **Stop** appears while the campaign has tasks queued or running, and also
+  when the Slurm queue could not be read: the note above the table then
+  says "Could not read the Slurm queue, so what is still queued is unknown."
+  Confirm with **Stop jobs**. Replicas that already finished keep their
+  results. If nothing of the campaign is queued or running, or the queue
+  still cannot be read, Stop changes nothing and says so.
 - **Delete** removes the campaign from Collections and deletes its folder
   with all its results. Type the confirmation phrase shown and press
   **Delete**. It is refused while tasks are still in the queue: stop the
@@ -433,8 +446,10 @@ platform does not offer. Use Codex (4.2) with your ChatGPT account instead.
 
 | What you see | What to do |
 |---|---|
-| `deploy_and_verify.py` stops with "the LQCDMCP platform could not start your gateway", after lines such as `validate: {}` and `Slurm command failed: sudo sbatch --uid <you> ... (rc=1)` | Your account is not enabled on LQCDMCP yet (step 1.2). Send the report to Jie Chen. Retrying, or using another computer, does not help. |
-| "the dashboard refused this token", or a Python error ending in `HTTP Error 401` or `HTTP Error 403` | The dashboard token expired or was copied incompletely. Sign in to the dashboard again, copy the token, export it (1.5) and run the command again. Ctrl-C stops a script that is still waiting. |
+| `deploy_and_verify.py` stops with "the LQCDMCP platform could not start your gateway", after lines such as `validate: {}` and `Slurm command failed: sudo sbatch --uid <you> ... (rc=1)` | Most often your account is not enabled on LQCDMCP yet (step 1.2); then retrying, or using another computer, does not help. Send the report to Jie Chen. |
+| "the dashboard refused this token" | The dashboard token expired or was copied incompletely. Sign in to the dashboard again, copy the token, export it (1.5) and run the command again. Ctrl-C stops a script that is still waiting. |
+| "could not reach the dashboard", "timed out", "did not answer" or "the connection to the dashboard dropped" | A network problem. Check your network connection, then run the command again (after a failed launch, read the next row first). |
+| "stop: the launch request failed" | The lines above it say why (token or network: see the rows above). If the request timed out or the connection dropped, a job may still have been queued: run `python3 deploy_and_verify.py --check` before launching again. |
 | "your gateway job is waiting in the queue" | Another gateway holds the reservation, or the daily window has not opened yet. Yours starts by itself: run `python3 deploy_and_verify.py --check` later, or ask your colleagues whether one of them can stop theirs. |
 | "the gateway is not up yet: its job runs but the gateway does not answer" | Wait a few minutes, then run `python3 deploy_and_verify.py --check`. If it still does not answer: `python3 redeploy_jam.py cancel`, then `python3 deploy_and_verify.py`. |
 | "the gateway is not up yet, and the job launched above is no longer queued or running" | Gateway jobs end when the daily window closes (about 16:00 US Eastern): start again the next day. Earlier in the day, send the report to Chunyu. |
@@ -446,10 +461,12 @@ platform does not offer. Use Codex (4.2) with your ChatGPT account instead.
 | "the gateway answers without a token" | Stop it at once with `python3 redeploy_jam.py cancel` and send the report to Chunyu. |
 | Connect fails at scilogin | Type the PIN and the code together, no space. Use a fresh code. |
 | Connect fails at ifarm | Check your JLab password. scilogin stays open, so the next try asks only for the password. |
-| Creating the workspace says the repository needs a GitHub token | Paste a GitHub token that can read `QCDHUB/fitpack_legacy` and press **Create and clone** again. |
+| Creating the workspace says "This repository is private", or the assistant says it needs a GitHub token | On the panel's Project tab, paste a GitHub token that can read `QCDHUB/fitpack_legacy` and press **Create and clone** again. |
 | Creating the workspace fails with `mkdir: cannot create directory` … `Permission denied` | Your account is not in the `jam` group, so `/w/ceph24/JAM/<you>` cannot be created (1.1). |
-| Project tab: ✕ on the campaign template or the campaign runner | Press **Switch to the ai branch**, or create a new workspace under a new folder name (2.3). |
+| Project tab: ✕ on the campaign runner | The checkout is not on the `ai` branch. Press **Switch to the ai branch**, or create a new workspace under a new folder name (2.3). |
+| Project tab: ✕ on the campaign template only, "examples/input02.py is missing from this ai-branch checkout" | On ifarm, in your workspace folder, run `git checkout origin/ai -- examples/input02.py`, then press **Re-check**; or create a new workspace (2.3). |
 | Project tab: ✕ on the interpolation grids | Press **Use selected** with your workspace selected. |
+| Project tab: ✕ on every item, or "The workspace folder … no longer exists" | The folder was deleted or moved. Select another checkout and press **Use selected**, or create a new workspace (2.3). |
 | Campaign tab: "Sign in on the Connect tab and choose a workspace first" | Do steps 2.2 and 2.3 (the line below it says what is missing), then open the Campaign tab again. |
 | Delete is refused: "This campaign still has … task(s) in the Slurm queue" | Press **Stop** first, then **Delete**. |
 | "Could not read the Slurm queue" | Slurm did not answer. Press **Refresh** in a minute; Stop and Delete work again once the queue can be read. |
