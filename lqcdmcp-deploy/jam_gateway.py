@@ -1422,10 +1422,13 @@ def _array_script(ws, folder, norm, first, last):
 #SBATCH --output={stage}/logs/stage_%A_%a.out
 set -euo pipefail
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+# fitlib.maxlike clears the screen at every status print; without a terminal
+# that only writes "TERM environment variable not set." on each step.
+export TERM=dumb
 REPLICA_ID="$SLURM_ARRAY_TASK_ID"
 cd {_shq(ws)}
 apptainer exec {binds} \\
-  --env PYTHONPATH={pypath} --env FITPACK={_shq(ws)} \\
+  --env PYTHONPATH={pypath} --env FITPACK={_shq(ws)} --env TERM=dumb \\
   --env JAMAI_MAX_NFEV={norm["job"]["maxIterations"]} --env JAMAI_METHOD={norm["job"]["optimizer"]} \\
   {lhapdf_env}--env MPLCONFIGDIR={qs}/.matplotlib \\
   {c["image"]} \\
@@ -2489,6 +2492,8 @@ def tail(path, n):
         lines.pop()
     if pos > 0:
         lines = lines[1:]               # the first line read may be cut
+    # Older jobs ran without TERM: fitlib's screen clear wrote this line at every step.
+    lines = [l for l in lines if l.strip() != 'TERM environment variable not set.']
     out = []
     for line in lines[-n:]:
         # What a terminal shows of a line that carriage returns rewrote.
