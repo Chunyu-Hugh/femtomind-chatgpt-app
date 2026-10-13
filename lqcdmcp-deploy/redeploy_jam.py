@@ -199,11 +199,12 @@ def main():
                      + (f", account {ACCOUNT}" if ACCOUNT else ", your default Slurm account"))
             raise SystemExit(f"the platform did not start your gateway ({asked}): {out[:600]}\n"
                              f"Most often Jie Chen has not yet enabled your JLab account ({USER}) for MCP "
-                             f"servers and the gateway reservation: ask him, and send him this output. If your "
-                             f"account has access to the LQCD cluster but no default Slurm account for this "
-                             f"partition, name one: export JAM_GW_ACCOUNT=jlablqcd24s (or hadstruc24s) and "
-                             f"run again. If you set JAM_GW_RESERVATION, JAM_GW_PARTITION or JAM_GW_HOURS, "
-                             f"unset them and try again first.")
+                             f"servers and the gateway reservation: ask him, and send him this output. Until you "
+                             f"are on the reservation's user list, you can run on the partition's normal queue "
+                             f"instead: export JAM_GW_RESERVATION= JAM_GW_ACCOUNT=hadstruc24s (the account the "
+                             f"24s partition allows; jlablqcd24s is not) and run again. If you set "
+                             f"JAM_GW_RESERVATION, JAM_GW_PARTITION or JAM_GW_HOURS yourself, unset them and "
+                             f"try again first.")
         print(out)
         print(f"\nyour gateway: {gw_auth.URL}\npanel:        {gw_auth.URL} (in a browser)\n"
               "The job usually starts within minutes; outside the daily window (about 10:00–16:00 US "

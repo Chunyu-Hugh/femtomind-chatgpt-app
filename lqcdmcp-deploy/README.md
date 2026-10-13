@@ -47,6 +47,10 @@ proxy as `jam-gateway-<user>`, at
 - **One at a time.** So far the reservation has run only one gateway job at a
   time; a second one stays PENDING until the first is cancelled
   (`python3 redeploy_jam.py cancel`).
+- **Not on the reservation.** `chen_mcp_daily` has a user list (Jie adds
+  people). Without it, `JAM_GW_RESERVATION= JAM_GW_ACCOUNT=hadstruc24s` runs the
+  job on the `24s` partition's normal queue (that partition allows the
+  `hadstruc24s` account, not `jlablqcd24s`).
 - **Dashboard page instead.** `python3 redeploy_jam.py script` writes
   `jam-gateway-<user>.slurm`; launch an MCP server with that name and file.
 - **Upgrade a running gateway:** `python3 hot_redeploy.py`, then
