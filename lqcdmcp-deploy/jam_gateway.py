@@ -674,10 +674,15 @@ def setup_workspace(repo_url="", github_token="", target_dir="", username="",
         # pipefail: without it the exit status is tail's, and a failed clone
         # was reported as success. GIT_TERMINAL_PROMPT=0 makes a private repo
         # without a token fail at once instead of waiting out the timeout.
+        # The helper starts with "!" and the login shell on the compute host
+        # expands history, so the command travels base64-encoded into a plain
+        # bash (no profile, no history expansion); the token still arrives on stdin.
+        script = (f"set -o pipefail; {read}mkdir -p {_shq(os.path.dirname(target))} && "
+                  f"GIT_TERMINAL_PROMPT=0 git {auth}clone {bflag}{_shq(url)} "
+                  f"{_shq(target)} 2>&1 | tail -3")
+        b64 = base64.b64encode(script.encode()).decode()
         try:
-            out = _remote(u, f"set -o pipefail; {read}mkdir -p {_shq(os.path.dirname(target))} && "
-                          f"GIT_TERMINAL_PROMPT=0 git {auth}clone {bflag}{_shq(url)} "
-                          f"{_shq(target)} 2>&1 | tail -3", timeout=900,
+            out = _remote(u, f'bash -c "$(echo {b64} | base64 -d)"', timeout=900,
                           stdin=tok + "\n" if host else None)
         except subprocess.TimeoutExpired:
             return {"status": "error", "ok": False, "username": u, "reason": "timeout",
