@@ -199,10 +199,11 @@ def main():
                      + (f", account {ACCOUNT}" if ACCOUNT else ", your default Slurm account"))
             raise SystemExit(f"the platform did not start your gateway ({asked}): {out[:600]}\n"
                              f"Most often Jie Chen has not yet enabled your JLab account ({USER}) for MCP "
-                             f"servers and the gateway reservation: ask him, and send him this output. Until you "
-                             f"are on the reservation's user list, the only alternative is the partition's "
-                             f"normal queue (export JAM_GW_RESERVATION= JAM_GW_ACCOUNT=hadstruc24s; the 24s "
-                             f"partition allows that account, not jlablqcd24s), which can wait hours or days. If you set "
+                             f"servers and the gateway reservation: ask him, and send him this output. The "
+                             f"reservation is required: the proxy reaches a gateway only on its reserved node, "
+                             f"so a job without it starts on a node nobody can connect to. Also ask for "
+                             f"hadstruc24s as your default Slurm account (the 24s partition does not allow "
+                             f"jlablqcd24s), or export JAM_GW_ACCOUNT=hadstruc24s. If you set "
                              f"JAM_GW_RESERVATION, JAM_GW_PARTITION or JAM_GW_HOURS yourself, unset them and "
                              f"try again first.")
         print(out)
