@@ -200,9 +200,9 @@ def main():
             raise SystemExit(f"the platform did not start your gateway ({asked}): {out[:600]}\n"
                              f"Most often Jie Chen has not yet enabled your JLab account ({USER}) for MCP "
                              f"servers and the gateway reservation: ask him, and send him this output. Until you "
-                             f"are on the reservation's user list, you can run on the partition's normal queue "
-                             f"instead: export JAM_GW_RESERVATION= JAM_GW_ACCOUNT=hadstruc24s (the account the "
-                             f"24s partition allows; jlablqcd24s is not) and run again. If you set "
+                             f"are on the reservation's user list, the only alternative is the partition's "
+                             f"normal queue (export JAM_GW_RESERVATION= JAM_GW_ACCOUNT=hadstruc24s; the 24s "
+                             f"partition allows that account, not jlablqcd24s), which can wait hours or days. If you set "
                              f"JAM_GW_RESERVATION, JAM_GW_PARTITION or JAM_GW_HOURS yourself, unset them and "
                              f"try again first.")
         print(out)
