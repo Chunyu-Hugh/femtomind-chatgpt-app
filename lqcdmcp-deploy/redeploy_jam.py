@@ -12,7 +12,9 @@ Usage:
   python3 redeploy_jam.py script     # write the job script, to paste into the dashboard page
 
 Optional: JAM_GW_RESERVATION (default chen_mcp_daily, "" for none),
-JAM_GW_PARTITION (default 24s), JAM_GW_HOURS (default 6).
+JAM_GW_PARTITION (default 24s), JAM_GW_HOURS (default 6), JAM_GW_ACCOUNT (a
+Slurm account such as jlablqcd24s, when your default account cannot use the
+partition; default: none, i.e. Slurm's default account for you).
 """
 import base64
 import http.client
@@ -40,6 +42,7 @@ MCP_NAME = gw_auth.NAME
 RESERVATION = os.environ.get("JAM_GW_RESERVATION", "chen_mcp_daily").strip()
 PARTITION = os.environ.get("JAM_GW_PARTITION", "24s").strip()
 HOURS = int(os.environ.get("JAM_GW_HOURS", "6"))
+ACCOUNT = os.environ.get("JAM_GW_ACCOUNT", "").strip()
 ctx = ssl.create_default_context()
 sid = None
 rid = 0
@@ -142,6 +145,8 @@ def build_slurm():
               f"#SBATCH --job-name={MCP_NAME}"]
     if RESERVATION:
         sbatch.insert(2, f"#SBATCH --reservation={RESERVATION}")
+    if ACCOUNT:
+        sbatch.append(f"#SBATCH --account={ACCOUNT}")
     return ("#!/bin/bash\n" + "\n".join(sbatch) + "\n"
             "python3 - <<'PYDEC' > /dev/null\n"
             "import base64, json, os, shutil, zlib\n"
@@ -190,12 +195,15 @@ def main():
         if refused or re.search(r"Error calling tool|Slurm command failed", out):
             # An error answer: nothing was queued. deploy_and_verify.py stops on this message.
             asked = ((f"reservation {RESERVATION}" if RESERVATION else "no reservation")
-                     + f", partition {PARTITION}, {HOURS} h")
+                     + f", partition {PARTITION}, {HOURS} h"
+                     + (f", account {ACCOUNT}" if ACCOUNT else ", your default Slurm account"))
             raise SystemExit(f"the platform did not start your gateway ({asked}): {out[:600]}\n"
                              f"Most often Jie Chen has not yet enabled your JLab account ({USER}) for MCP "
-                             f"servers and the gateway reservation: ask him, and send him this output. If you "
-                             f"set JAM_GW_RESERVATION, JAM_GW_PARTITION or JAM_GW_HOURS, unset them and try "
-                             f"again first.")
+                             f"servers and the gateway reservation: ask him, and send him this output. If your "
+                             f"account has access to the LQCD cluster but no default Slurm account for this "
+                             f"partition, name one: export JAM_GW_ACCOUNT=jlablqcd24s (or hadstruc24s) and "
+                             f"run again. If you set JAM_GW_RESERVATION, JAM_GW_PARTITION or JAM_GW_HOURS, "
+                             f"unset them and try again first.")
         print(out)
         print(f"\nyour gateway: {gw_auth.URL}\npanel:        {gw_auth.URL} (in a browser)\n"
               "The job usually starts within minutes; outside the daily window (about 10:00–16:00 US "
