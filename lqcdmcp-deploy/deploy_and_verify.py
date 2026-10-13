@@ -189,6 +189,8 @@ if missing or "node_diag" in names:
              "python3 hot_redeploy.py (keeps the cluster sign-in), then run python3 deploy_and_verify.py "
              "--check again; or start over with python3 redeploy_jam.py cancel, then python3 deploy_and_verify.py.")
 c = tool("check_hpc_connection")
+if c.get("shared"):
+    say(f"   shared gateway: yes (acts as the user named in each call; owner {c.get('owner')})")
 say(f"   cluster chain: {'open' if c.get('connected') else 'not open yet — sign in on the panel Connect tab'}"
     f"  (site {c.get('site', {}).get('label')}, account {c.get('account', {}).get('username')})")
 if c.get("connected"):

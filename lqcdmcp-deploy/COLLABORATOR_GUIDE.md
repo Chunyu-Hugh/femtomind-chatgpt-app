@@ -221,6 +221,40 @@ affected.
 
 ---
 
+### 2.5 Using a colleague's gateway (shared mode)
+
+If you cannot start a gateway of your own yet (for example you are not on
+the reservation's user list), a colleague can share theirs. The owner starts
+it with one extra setting:
+
+```bash
+export JAM_GW_SHARED=1
+python3 deploy_and_verify.py        # the report then says "shared gateway: yes"
+```
+
+(For a gateway that is already running: put `{"shared": true}` into
+`~/.jam_gateway/site.json` on the gateway node and run
+`python3 hot_redeploy.py`.)
+
+You then use the owner's gateway address with your own accounts:
+
+1. Open `https://lqcdmcp.jlab.org:8000/cloud/jam-gateway-<owner>/mcp` in your
+   browser and paste **your own** dashboard token.
+2. On the Connect tab the **Cluster username** field is editable: type your
+   JLab username and press Tab, then sign in with your own PIN + code and
+   password. From then on every tab shows your chain, your workspace and
+   your campaigns, and jobs run under your account. The username is kept per
+   browser tab, like the token.
+3. With Claude Code or Codex, register the owner's address (4.1, 4.2) and
+   start by telling the assistant your JLab username (*"I am treyand."*); it
+   passes it along with every call.
+
+Two things to know: a shared gateway is one Slurm job, so it stops when the
+owner cancels it; and, as with any gateway (see Access in README.md),
+anyone who knows the address can use a signed-in session, so sign in only
+for as long as you need. Switch back to your own gateway as soon as you can
+start one.
+
 ## Part 3 — The panel
 
 The panel is your gateway's address opened in a browser:

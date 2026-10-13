@@ -212,8 +212,8 @@
         <div class="label" style="margin-bottom:8px">Sign in</div>
         <div class="field" style="margin-bottom:12px">
           <div class="label" style="font-weight:500;font-size:11.5px">Cluster username</div>
-          <input type="text" id="connUser" value="" readonly>
-          <div class="hint">Set by your dashboard token.</div>
+          <input type="text" id="connUser" value="" readonly spellcheck="false" autocomplete="off">
+          <div class="hint" id="connUserHint">Set by your dashboard token.</div>
         </div>
         <div class="note" id="loginOpenNote" style="display:none;margin:0 0 12px"></div>
         <div class="grid2">
@@ -588,8 +588,18 @@
     }
     return v || {};
   }
+  // On a shared gateway every call carries the username typed on the Connect
+  // tab; it is kept per browser tab, like the token.
+  let sharedUser = "";
+  try { sharedUser = (sessionStorage.getItem("jam_gateway_user") || "").trim(); } catch(e){}
+  function setSharedUser(u){
+    sharedUser = (u || "").trim().toLowerCase();
+    try { if (sharedUser) sessionStorage.setItem("jam_gateway_user", sharedUser); else sessionStorage.removeItem("jam_gateway_user"); } catch(e){}
+  }
   async function call(name, args){
-    try { return unwrap(await host.callTool(name, args||{})); }
+    args = args || {};
+    if (sharedUser && !("username" in args)) args = Object.assign({username: sharedUser}, args);
+    try { return unwrap(await host.callTool(name, args)); }
     catch(e){ if (e && e.auth) showTokenGate(); throw e; }
   }
   // A tool refused because the cluster chain is not open says so in words meant
@@ -701,6 +711,14 @@
     $("connectForm").style.display = (!ok && page && acct.username) ? "block" : "none";
     $("signinElsewhere").style.display = (!ok && !page && acct.username) ? "block" : "none";
     $("connUser").value = acct.username || "";
+    // A shared gateway: the username field is the user's own, and switching it
+    // switches whose chain and workspace every tab shows.
+    if (c.shared){
+      $("connUser").readOnly = false;
+      $("connUserHint").textContent = "This gateway is shared: type your own JLab username, then sign in. "
+        + "Everything on every tab is then yours (your chain, workspace and campaigns).";
+      $("connectForm").style.display = (!ok && page) ? "block" : "none";
+    }
     showLoginOpen(!ok && !!c.login_open);
     if (acct.area) $("setupParent").textContent = acct.area+"/";
   }
@@ -723,6 +741,15 @@
     return c;
   }
   $("recheckBtn").onclick = recheck;
+  $("connUser").addEventListener("change", ()=>{
+    if ($("connUser").readOnly) return;
+    const u = $("connUser").value.trim().toLowerCase();
+    if (!/^[a-z0-9._-]{1,32}$/.test(u)){ $("connectErr").textContent = "Type your JLab username (letters, digits, . _ -)."; return; }
+    $("connectErr").textContent = "";
+    setSharedUser(u);
+    entered.project = false; entered.campaign = false;      // every tab now shows this user
+    recheck();
+  });
 
   let secretNames = ["PIN followed by the one-time code", "account password"];
   let hopNames = ["The login host", "compute host"], loginOpen = false;

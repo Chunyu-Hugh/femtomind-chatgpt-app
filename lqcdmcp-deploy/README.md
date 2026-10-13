@@ -47,6 +47,13 @@ proxy as `jam-gateway-<user>`, at
 - **One at a time.** So far the reservation has run only one gateway job at a
   time; a second one stays PENDING until the first is cancelled
   (`python3 redeploy_jam.py cancel`).
+- **Shared mode.** `JAM_GW_SHARED=1` at launch (or `"shared": true` in
+  `~/.jam_gateway/site.json` on the node) makes the gateway act as the
+  user named by `username` in each call, with that user's own chain,
+  area and workspace; without a username it acts as its owner.
+  `node_diag` stays the owner's. The panel then lets the Connect tab's
+  username be typed and sends it with every call. Meant for colleagues
+  who cannot launch a gateway (see the guide, 2.5).
 - **Not on the reservation.** `chen_mcp_daily` has a user list (Jie adds
   people). It is required: the proxy reaches port 8080 only on the reserved node
   (`qcd24s100`); a gateway on another `24s` node starts but is unreachable

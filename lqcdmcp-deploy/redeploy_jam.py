@@ -12,7 +12,9 @@ Usage:
   python3 redeploy_jam.py script     # write the job script, to paste into the dashboard page
 
 Optional: JAM_GW_RESERVATION (default chen_mcp_daily, "" for none),
-JAM_GW_PARTITION (default 24s), JAM_GW_HOURS (default 6), JAM_GW_ACCOUNT (a
+JAM_GW_SHARED=1 (the gateway then acts as the user named in each call: see
+the guide's "Shared gateway"), JAM_GW_PARTITION (default 24s), JAM_GW_HOURS
+(default 6), JAM_GW_ACCOUNT (a
 Slurm account such as jlablqcd24s, when your default account cannot use the
 partition; default: none, i.e. Slurm's default account for you).
 """
@@ -43,6 +45,7 @@ RESERVATION = os.environ.get("JAM_GW_RESERVATION", "chen_mcp_daily").strip()
 PARTITION = os.environ.get("JAM_GW_PARTITION", "24s").strip()
 HOURS = int(os.environ.get("JAM_GW_HOURS", "6"))
 ACCOUNT = os.environ.get("JAM_GW_ACCOUNT", "").strip()
+SHARED = os.environ.get("JAM_GW_SHARED", "").strip() == "1"
 ctx = ssl.create_default_context()
 sid = None
 rid = 0
@@ -159,7 +162,7 @@ def build_slurm():
             "    open(os.path.join(app, rel), 'wb').write(zlib.decompress(base64.b64decode(b)))\n"
             "PYDEC\n"
             f"cd {APP_DIR}\n"
-            f"export JAM_GW_NAME={MCP_NAME}\n"
+            f"export JAM_GW_NAME={MCP_NAME}\n{'export JAM_GW_SHARED=1' + chr(10) if SHARED else ''}"
             "# supervisor: keep the JOB alive for the whole window; the gateway\n"
             "# may crash or be hot-redeployed inside it while the setsid'd\n"
             "# ControlMasters (in ~/fm-cm) persist and get reused without OTP\n"

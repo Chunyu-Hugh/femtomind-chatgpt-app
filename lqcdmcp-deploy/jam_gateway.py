@@ -142,6 +142,14 @@ def _load_site():
 
 SITE = _load_site()
 
+# Shared mode: the gateway acts as the JLab user named in each call (the
+# person who signed in on the panel's Connect tab), not only as its owner.
+# For colleagues who cannot launch a gateway of their own, e.g. while they
+# are not on the reservation's user list. JAM_GW_SHARED=1 at launch, or
+# "shared": true in site.json. Each user has their own chain and workspace.
+SHARED = os.environ.get("JAM_GW_SHARED", "").strip() == "1" or bool(SITE.get("shared"))
+USERNAME_RE = r"[a-z0-9._-]{1,32}"
+
 
 def _area(user):
     return SITE["area"].format(user=user)
@@ -746,6 +754,7 @@ def check_hpc_connection(username=""):
     if alive:
         account["workspace"] = _workspace(u)
     return {"connected": alive, "login_open": login_open, "cluster_reachable": alive,
+            "shared": SHARED, "owner": GATEWAY_OWNER,
             "account": account, "site": _site_public(), "sites": [_site_public()],
             "note": ("Ready to run fits." if alive else
                      "Not signed in to the cluster. Sign in on the Connect tab of the "
@@ -3059,6 +3068,19 @@ INSTRUCTIONS = (
     "runs sbatch --test-only), show the returned script exactly as written, ask the user, "
     "then submit_slurm_job with the phrase.")
 
+if SHARED:
+    for _name, _spec in TOOLS.items():
+        if _name != "node_diag":
+            _spec["schema"].setdefault("properties", {})["username"] = {
+                "type": "string",
+                "description": "The JLab username to act as: the person who signed in on the panel. "
+                               "Shared gateway; without it the gateway acts as its owner."}
+    INSTRUCTIONS += (
+        f"\nThis gateway is SHARED: it acts as the JLab user named in each call. First ask the user for "
+        f"their JLab username and pass it as username in every tool call; without it, every call acts "
+        f"as the gateway's owner ({GATEWAY_OWNER}). Each person signs in on the panel's Connect tab "
+        "with their own username and credentials, and has their own workspace and campaigns.")
+
 # Content-Security-Policy for the browser panel: it talks only to this origin,
 # and it must not be framed elsewhere — it is where cluster credentials are typed.
 PANEL_CSP = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
@@ -3226,10 +3248,25 @@ class H(BaseHTTPRequestHandler):
                 result = _tool_result({"status": "unauthorized", "message": AUTH_HELP},
                                       is_error=True)
             else:
-                try:
-                    result = _tool_result(spec["fn"](args))
-                except Exception as e:
-                    result = _tool_result(f"error: {e}", is_error=True)
+                asked = str(args.get("username") or "").strip().lower() if isinstance(args, dict) else ""
+                if asked and asked != _tls.user and not SHARED:
+                    result = _tool_result({"status": "error", "message":
+                                           f"This gateway is not shared: it acts only as {GATEWAY_OWNER}."},
+                                          is_error=True)
+                elif asked and not re.fullmatch(USERNAME_RE, asked):
+                    result = _tool_result({"status": "error", "message": "username: a JLab username"},
+                                          is_error=True)
+                else:
+                    if asked:
+                        _tls.user = asked
+                    if spec.get("hidden") and _tls.user != GATEWAY_OWNER:
+                        # The node shell is the owner's alone, shared mode or not.
+                        result = _tool_result("unknown tool", is_error=True)
+                    else:
+                        try:
+                            result = _tool_result(spec["fn"](args))
+                        except Exception as e:
+                            result = _tool_result(f"error: {e}", is_error=True)
         else:
             error = {"code": -32601, "message": f"method not found: {method}"}
         payload = {"jsonrpc": "2.0", "id": rid}
