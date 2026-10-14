@@ -75,7 +75,10 @@ def _render_stage_override_block(stage: ResolvedStage) -> str:
                 'value': parameter.get('value'),
                 'min': parameter.get('min'),
                 'max': parameter.get('max'),
-                'fixed': bool(parameter.get('fixed', False)),
+                # FitPack accepts a parameter name in ``fixed`` to tie the
+                # numerical value to that parameter; preserve it instead of
+                # coercing every non-empty value to True.
+                'fixed': parameter.get('fixed', False),
             }
 
     lines = [

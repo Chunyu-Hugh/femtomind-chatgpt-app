@@ -1134,6 +1134,33 @@ out.sort(key=lambda d: int(d['id']))
 print(json.dumps(out))
 '''
 
+_DATASET_NORMS = r'''
+import ast, json, os, re
+path = os.path.join(__WS__, 'examples', 'input02.py')
+out = {}
+try:
+    lines = open(path, encoding='utf-8').read().splitlines()
+except OSError:
+    lines = []
+# FitPack input cards commonly assign normalization rows directly with either
+# integer or string dataset keys. Keep this reader deliberately conservative:
+# an absent or non-literal row means the UI simply has no normalization editor.
+pat = re.compile(r"""conf\[['"]datasets['"]\]\[['"]([^'"]+)['"]\]\[['"]norm['"]\]\[(\d+)\]\s*=\s*(\{.*\})""")
+for line in lines:
+    m = pat.search(line)
+    if not m:
+        continue
+    try:
+        value = ast.literal_eval(m.group(3))
+        if isinstance(value, dict) and 'value' in value:
+            out.setdefault(m.group(1), {})[m.group(2)] = {
+                'value': value.get('value'), 'min': value.get('min'),
+                'max': value.get('max'), 'fixed': value.get('fixed', False)}
+    except (SyntaxError, ValueError):
+        pass
+print(json.dumps(out))
+'''
+
 
 def campaign_datasets(reaction="idis", search="", username=""):
     """The datasets of one reaction, grouped by experiment (DIS from the
@@ -1154,6 +1181,17 @@ def campaign_datasets(reaction="idis", search="", username=""):
         except Exception:
             return {"status": "error", "message": "could not read database/idis/README.md",
                     "detail": (r.get("err") or "")[-300:]}
+    # Normalization defaults come from the same workspace input card as the
+    # PDF library. They are metadata only until the user edits them.
+    norms = {}
+    nr = _run_ifarm_py(u, _fill(_DATASET_NORMS, WS=_workspace(u)), timeout=60, cap=200000)
+    try:
+        norms = json.loads(nr["out"].strip().splitlines()[-1]).get(reaction, {})
+    except (AttributeError, IndexError, json.JSONDecodeError):
+        norms = {}
+    for item in items:
+        if str(item.get("id")) in norms:
+            item["normalization"] = norms[str(item["id"])]
     q = (search or "").strip().lower()
     if q:
         items = [d for d in items if q in " ".join(str(d.get(k, "")) for k in
@@ -1200,14 +1238,28 @@ def _normalize_card(card, library):
     params, changed = [], []
     for name, lib in known.items():
         ov = overrides.get(name, {})
-        fixed = ov.get("fixed", lib["fixed"])
+        equal_to = ov.get("equal_to", ov.get("equalTo"))
+        fixed = equal_to or ov.get("fixed", lib["fixed"])
         if isinstance(fixed, str):
-            # A client may spell the flag out; any other string (a tie, say) is refused.
-            fixed = {"true": True, "fixed": True, "false": False, "free": False}.get(fixed.strip().lower(), fixed)
+            # A string names the parameter whose numerical value this parameter
+            # must share. This is the same representation used by FitPack's
+            # input card for library ties.
+            fixed = {"true": True, "fixed": True, "false": False, "free": False}.get(fixed.strip().lower(), fixed.strip())
         row = {"name": name, "fixed": fixed,
                "value": ov.get("value", lib["value"]), "min": ov.get("min", lib["min"]),
                "max": ov.get("max", lib["max"])}
         params.append(row)
+        if isinstance(fixed, str):
+            if fixed not in known:
+                changed.append(row)
+                errors.append(f"Parameter {name}: equal-to parameter {fixed!r} does not exist.")
+            elif fixed == name:
+                changed.append(row)
+                errors.append(f"Parameter {name}: a parameter cannot be equal to itself.")
+            else:
+                row["equal_to"] = fixed
+                changed.append(row)
+            continue
         if not isinstance(fixed, bool):
             changed.append(row)
             errors.append(f"Parameter {name}: fixed must be true (FIXED) or false (FREE).")
@@ -1246,6 +1298,18 @@ def _normalize_card(card, library):
     for name in overrides:
         if name not in known:
             errors.append(f"Unknown parameter {name!r}.")
+    # Equality links must form a terminating chain. A cycle would leave
+    # FitPack with no source value to copy.
+    equal_links = {p["name"]: p["fixed"] for p in params if isinstance(p["fixed"], str)}
+    for start in equal_links:
+        seen = set()
+        cur = start
+        while cur in equal_links:
+            if cur in seen:
+                errors.append(f"Parameter {start}: equal-to settings contain a cycle.")
+                break
+            seen.add(cur)
+            cur = equal_links[cur]
     # reactions: list or {"idis": true}
     rx = card.get("reactions") or []
     if isinstance(rx, dict):
@@ -1258,7 +1322,8 @@ def _normalize_card(card, library):
             errors.append(f"Reaction {r!r} is not available yet.")
     # datasets: {"idis": ["10010"]} or the app's {"idis": {"selected": [...], "cuts": [...]}}
     ds_in, cuts_in = card.get("datasets") or {}, dict(card.get("cuts") or {})
-    datasets, cuts = {}, {}
+    normalization_in = card.get("normalizations") or {}
+    datasets, cuts, normalizations = {}, {}, {}
     for r in rx:
         entry = ds_in.get(r)
         if isinstance(entry, dict):
@@ -1277,6 +1342,47 @@ def _normalize_card(card, library):
         if not ids:
             errors.append(f'Reaction "{r}" must include at least one dataset.')
         datasets[r] = ids
+        raw_norm = normalization_in.get(r) or {}
+        if not isinstance(raw_norm, dict):
+            errors.append(f'Reaction "{r}" normalization settings must be an object.')
+            raw_norm = {}
+        normalizations[r] = {}
+        for dataset_id, value in raw_norm.items():
+            dataset_id = str(dataset_id)
+            if dataset_id not in ids:
+                errors.append(f'Reaction "{r}" normalization {dataset_id!r} is not selected.')
+                continue
+            if not isinstance(value, dict):
+                errors.append(f'Reaction "{r}" dataset {dataset_id}: normalization must be an object.')
+                continue
+            try:
+                nv = float(value.get("value"))
+                nmin = None if value.get("min") is None else float(value.get("min"))
+                nmax = None if value.get("max") is None else float(value.get("max"))
+            except (TypeError, ValueError):
+                errors.append(f'Reaction "{r}" dataset {dataset_id}: normalization values must be numbers.')
+                continue
+            nfixed = value.get("fixed", False)
+            if isinstance(nfixed, str) and nfixed.strip().lower() in ("true", "fixed"):
+                nfixed = True
+            elif isinstance(nfixed, str) and nfixed.strip().lower() in ("false", "free"):
+                nfixed = False
+            elif isinstance(nfixed, str):
+                nfixed = nfixed.strip()
+                if nfixed not in ids or nfixed == dataset_id:
+                    errors.append(f'Reaction "{r}" dataset {dataset_id}: invalid normalization equal-to dataset.')
+                    continue
+            elif not isinstance(nfixed, bool):
+                errors.append(f'Reaction "{r}" dataset {dataset_id}: fixed must be true, false, or a dataset id.')
+                continue
+            if not all(math.isfinite(x) for x in (nv, nmin, nmax) if x is not None):
+                errors.append(f'Reaction "{r}" dataset {dataset_id}: normalization values must be finite.')
+                continue
+            if isinstance(nfixed, bool) and not nfixed:
+                if nmin is None or nmax is None or not nmin < nmax or not nmin <= nv <= nmax:
+                    errors.append(f'Reaction "{r}" dataset {dataset_id}: FREE normalization needs a valid range.')
+                    continue
+            normalizations[r][dataset_id] = {"value": nv, "min": nmin, "max": nmax, "fixed": nfixed}
         rc = cuts_in.get(r)
         if rc is None:
             rc = CAMPAIGN_DEFAULTS["cuts"].get(r, [])
@@ -1294,6 +1400,17 @@ def _normalize_card(card, library):
         if not any(c["enabled"] for c in clean):
             errors.append(f'Reaction "{r}" must include at least one enabled cut.')
         cuts[r] = clean
+    for reaction, entries in normalizations.items():
+        links = {dataset_id: p["fixed"] for dataset_id, p in entries.items() if isinstance(p["fixed"], str)}
+        for start in links:
+            seen = set()
+            cur = start
+            while cur in links:
+                if cur in seen:
+                    errors.append(f'Reaction "{reaction}" normalization settings contain a cycle.')
+                    break
+                seen.add(cur)
+                cur = links[cur]
     # QCD
     q = {**CAMPAIGN_DEFAULTS["qcd"], **(card.get("qcd") or {})}
     try:
@@ -1364,7 +1481,7 @@ def _normalize_card(card, library):
         errors.append("Invalid partition name.")
     sl["partition_effective"] = sl["partition"] or (_auto_partition_seconds(secs) if secs else "")
     norm = {"object": {"type": "pdf", "label": "Unpolarized PDF"}, "parameters_table": params,
-            "parameters_changed": changed, "reactions": rx, "datasets": datasets, "cuts": cuts,
+            "parameters_changed": changed, "reactions": rx, "datasets": datasets, "normalizations": normalizations, "cuts": cuts,
             "qcd": q, "parameters": pi, "job": j, "slurm": sl}
     return norm, errors
 
@@ -1377,6 +1494,8 @@ def _card_summary(norm):
     return {"object": "Unpolarized PDF", "free_parameters": len(free), "fixed_parameters": len(fixed),
             "fixed": fixed, "changed_parameters": changed, "reactions": norm["reactions"],
             "datasets": {r: len(v) for r, v in norm["datasets"].items()},
+            "normalization_parameters": {
+                r: len(entries) for r, entries in norm.get("normalizations", {}).items() if entries},
             "cuts": {r: [f'{c["variable"]}{c["op"]}{c["value"]:g}' for c in cs if c["enabled"]]
                      for r, cs in norm["cuts"].items()},
             "qcd": norm["qcd"], "initialization": norm["parameters"]["initialization"],
@@ -1399,6 +1518,13 @@ def _campaign_yaml(ws, folder, norm, nreplicas):
     sectors = [{"key": "pdf", "parameters": [
         {"name": p["name"], "value": p["value"], "min": p["min"], "max": p["max"], "fixed": p["fixed"]}
         for p in norm["parameters_changed"]]}]
+    norm_params = []
+    for reaction, entries in norm.get("normalizations", {}).items():
+        for dataset_id, p in entries.items():
+            norm_params.append({"id": f"norm_{reaction}_{dataset_id}", "value": p["value"],
+                                "min": p["min"], "max": p["max"], "fixed": p["fixed"]})
+    if norm_params:
+        sectors.append({"key": "norm", "parameters": norm_params})
     return json.dumps({
         "campaign": {"name": folder, "fitpack_root": ws, "template_path": CAMPAIGN_TEMPLATE,
                      "campaign_root": f"{ws}/{CAMPAIGNS_DIR}/{folder}", "default_qcd": qcd,
@@ -2867,10 +2993,10 @@ TOOLS = {
         "fn": lambda a: use_ai_branch()},
     "validate_campaign": {
         "desc": "Create Input Card: validate the composer card and return the summary (free/fixed "
-                "parameters, the ones changed from the library, datasets, cuts, QCD, job, and "
+                "parameters (including optional equal_to links between PDF parameters), the ones changed from the library, datasets, cuts, QCD, job, and "
                 "points_after_cuts per dataset), the Slurm array script, the confirmation phrase and "
                 "warnings (a dataset with no points left after the cuts, a data file without a column "
-                "FitPack's status report reads); warnings never block submission. " + 'card = {"object": {"type": "pdf", "parameters": {"g1 a": {"value", "min", "max", "fixed": true|false}, ...}}, "reactions": ["idis", "dy"], "datasets": {"idis": ["10010", ...]}, "cuts": {"idis": [{"variable": "Q2", "op": ">", "value": 1.69, "enabled": true}]}, "qcd": {"order", "Q20", "tmc": "off"|"AOT", "higherTwist", "dglapMode", "asMode"}, "parameters": {"initialization": "default"|"random_within_bounds", "randomSeed", "perReplicaSeed"}, "job": {"campaignName", "replicas", "maxIterations", "tolerance", "optimizer", "bootstrap"}, "slurm": {"partition" ("" = auto), "time" (per replica, HH:MM:SS), "mem", "cpus"}}. Only parameters the user changed need to be listed; the rest keep the library values, and only changed rows are written into the card. A parameter switched to FREE needs a min and a max.',
+                "FitPack's status report reads); warnings never block submission. " + 'card = {"object": {"type": "pdf", "parameters": {"g1 a": {"value", "min", "max", "fixed": true|false, "equal_to": "uv1 a"}, ...}}, "reactions": ["idis", "dy"], "datasets": {"idis": ["10010", ...]}, "cuts": {"idis": [{"variable": "Q2", "op": ">", "value": 1.69, "enabled": true}]}, "qcd": {"order", "Q20", "tmc": "off"|"AOT", "higherTwist", "dglapMode", "asMode"}, "parameters": {"initialization": "default"|"random_within_bounds", "randomSeed", "perReplicaSeed"}, "job": {"campaignName", "replicas", "maxIterations", "tolerance", "optimizer", "bootstrap"}, "slurm": {"partition" ("" = auto), "time" (per replica, HH:MM:SS), "mem", "cpus"}}. Only parameters the user changed need to be listed; the rest keep the library values, and only changed rows are written into the card. A parameter switched to FREE needs a min and a max.',
         "schema": {"type": "object", "properties": {"card": {"type": "object"}}, "required": ["card"]},
         "fn": lambda a: validate_campaign(a.get("card"))},
     "submit_campaign": {

@@ -275,6 +275,7 @@ or click a step.
    current `ai` branch): block, parameter, FREE or FIXED, value, min, max.
    - Click a status to switch it between FREE and FIXED. You can edit each
      row's value, and the min and max of FREE rows.
+   - Use **Equal to** to tie one parameter's value to another parameter.
    - Only the rows you change are written into the input card. Every other
      row stays exactly as the library has it.
    - A parameter you switch to FREE needs a min and a max. Where the library
@@ -282,10 +283,13 @@ or click a step.
    - **Reset to library values** undoes all your changes.
 2. **Reactions** — tick *DIS* and/or *Drell-Yan* (the others are BLUEPRINT).
    Each reaction has two sub-tabs:
-   - **Datasets**: grouped by experiment, with a search box, **Select all**
-     and **Clear all**. DIS datasets without a data file in your workspace
+   - **Datasets**: grouped by experiment, with a search box, **Select visible**
+     and **Clear visible**. DIS datasets without a data file in your workspace
      are greyed out (NO DATA FILE). For Drell-Yan, only E866 NuSea pp
-     (10001) can be selected for now; the others are marked BLUEPRINT.
+     (10001) can be selected for now; the others are marked BLUEPRINT. When
+     the workspace input card defines a dataset normalization parameter, its
+     value, range, FREE/FIXED state, and Equal-to dataset control appear below
+     that dataset. These settings are written into the campaign input card.
    - **Cuts**: the kinematic cuts written into the card. Edit, add or remove
      them; at least one must stay enabled.
 3. **QCD settings** — order, Q₀², TMC, DGLAP mode, αS mode, higher twist.

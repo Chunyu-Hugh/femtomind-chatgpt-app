@@ -150,6 +150,10 @@
   .subtabs button.on{background:var(--accent);border-color:var(--accent);color:#fff;}
   .exp{font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:10px 0 4px;}
   .dslist .ds{margin-bottom:4px;} .dslist .ds .id{font-family:var(--mono);font-size:11px;color:var(--muted);margin-left:auto;}
+  .normbox{display:grid;grid-template-columns:auto 110px repeat(3,minmax(70px,1fr)) auto;gap:6px;align-items:center;
+           margin:-2px 0 8px 28px;padding:6px 8px;border:1px dashed var(--line);border-radius:7px;background:var(--surface-2);}
+  .normbox input,.normbox select{font-family:var(--mono);font-size:11px;padding:4px 5px;min-width:0;}
+  @media (max-width:700px){.normbox{grid-template-columns:auto 1fr 1fr 1fr;}.normbox .hint{grid-column:1/-1;}}
   .cutrow{display:grid;grid-template-columns:auto 1fr 70px 1fr auto;gap:8px;align-items:center;margin-bottom:6px;}
   .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}
   @media (max-width:560px){.grid3{grid-template-columns:1fr;}}
@@ -303,7 +307,7 @@
             <div>
               <div class="kv" id="paramCounts"></div>
               <div class="tblwrap"><table class="tbl ptbl"><thead><tr><th>Block</th><th>Parameter</th><th>Status</th>
-                <th>Value</th><th>Min</th><th>Max</th></tr></thead><tbody id="paramRows"></tbody></table></div>
+                <th>Equal to</th><th>Value</th><th>Min</th><th>Max</th></tr></thead><tbody id="paramRows"></tbody></table></div>
               <div class="hint" id="paramHint"></div>
               <div class="actions"><button class="btn sm" id="paramReset">Reset to library values</button></div>
             </div>
@@ -948,7 +952,7 @@
 
   function freshCard(){
     const d = opts.defaults;
-    return {object: {type: "", parameters: {}}, reactions: [], datasets: {},
+    return {object: {type: "", parameters: {}}, reactions: [], datasets: {}, normalizations: {},
             cuts: JSON.parse(JSON.stringify(d.cuts)), qcd: {...d.qcd}, parameters: {...d.parameters},
             job: {...d.job}, slurm: {...d.slurm}};
   }
@@ -962,6 +966,7 @@
   // stays FIXED keeps the tie, so its value is the library's too.
   function cleanEdit(base, ov){
     const cur = {...ov};
+    if (cur.equal_to == null) delete cur.equal_to;
     if (cur.fixed === undefined ? base.fixed : cur.fixed){
       delete cur.min; delete cur.max;
       if (base.tied_to) delete cur.value;
@@ -1014,26 +1019,37 @@
       + '<b>Parametrization form</b>'+esc(p.parametrization)+'<b>Construction note</b>'+esc(p.note);
     const rows = paramRows();
     paintParamCounts(rows);
-    $("paramHint").textContent = "Click a status to switch FREE ↔ FIXED. Values, ranges and FREE/FIXED come from "
-      + (p.source || "examples/input02.py")+" (the library). Only the rows you change are written into the generated card.";
+    $("paramHint").textContent = "Use Equal to when two parameters must share one numerical value. Click a status to switch FREE ↔ FIXED. "
+      + "Values, ranges and FREE/FIXED come from "+(p.source || "examples/input02.py")
+      + " (the library). Only the rows you change are written into the generated card.";
     const num = v=>v == null ? "" : String(v);
     // A freed parameter gets no invented range: its min and max stay empty until the user sets them.
     // A tied parameter takes the value of the one it is tied to, so its value is not edited here.
     $("paramRows").innerHTML = rows.map(r=>{ const tied = r.fixed && r.tied_to;
+      const equalTo = r.equal_to || r.tied_to || "";
+      const candidates = rows.filter(x=>x.name !== r.name).map(x=>'<option value="'+esc(x.name)+'"'+(x.name === equalTo ? " selected" : "")+'>'+esc(x.name)+'</option>').join("");
       return '<tr data-n="'+esc(r.name)+'"><td class="mono">'+esc(r.block)+'</td><td class="mono">'+esc(r.parameter)+'</td>'
-      + '<td><button class="st '+(r.fixed ? "fixed" : "free")+'" data-k="fixed">'+(r.fixed ? "FIXED" : "FREE")+'</button>'
+      + '<td><button class="st '+(r.fixed ? "fixed" : "free")+'" data-k="fixed">'+(equalTo ? "EQUAL" : r.fixed ? "FIXED" : "FREE")+'</button>'
       + (tied ? '<div class="hint" style="margin-top:2px">tied to '+esc(r.tied_to)+' (value follows it)</div>' : '')
-      + '<span class="need"'+(needsRange(r) ? '' : ' style="display:none"')+'>set a min and max</span></td>'
-      + '<td><input data-k="value" value="'+esc(num(r.value))+'"'+(tied ? " disabled" : "")+'></td>'
-      + '<td><input data-k="min" value="'+esc(num(r.min))+'"'+(r.fixed ? " disabled" : "")+'></td>'
-      + '<td><input data-k="max" value="'+esc(num(r.max))+'"'+(r.fixed ? " disabled" : "")+'></td></tr>'; }).join("");
+      + '</td><td><select data-k="equal_to" aria-label="Set '+esc(r.name)+' equal to another parameter"><option value="">— none —</option>'+candidates+'</select></td>'
+      + '<td><span class="need"'+(needsRange(r) ? '' : ' style="display:none"')+'>set a min and max</span></td>'
+      + '<td><input data-k="value" value="'+esc(num(r.value))+'"'+(tied || equalTo ? " disabled" : "")+'></td>'
+      + '<td><input data-k="min" value="'+esc(num(r.min))+'"'+(r.fixed || equalTo ? " disabled" : "")+'></td>'
+      + '<td><input data-k="max" value="'+esc(num(r.max))+'"'+(r.fixed || equalTo ? " disabled" : "")+'></td></tr>'; }).join("");
     $("paramRows").querySelectorAll("tr").forEach(tr=>{
       const name = tr.dataset.n;
       tr.querySelector("button").onclick = ()=>{ const r = paramRows().find(x=>x.name === name);
         setParam(name, {fixed: !r.fixed}); renderParams(); };
       // An edit repaints only its row's hint and the counts: rebuilding the table
       // would drop the field that Tab is moving the focus to.
-      tr.querySelectorAll("input").forEach(inp=>inp.onchange = ()=>{
+      tr.querySelectorAll("input, select").forEach(inp=>inp.onchange = ()=>{
+        if (inp.dataset.k === "equal_to"){
+          const target = inp.value;
+          const base = opts.parameters.pdf.rows.find(x=>x.name === name);
+          setParam(name, target ? {fixed: target, equal_to: target} : {fixed: base.fixed, equal_to: null});
+          renderParams();
+          return;
+        }
         const v = inp.value.trim() === "" ? null : Number(inp.value);
         if (inp.value.trim() !== "" && !isFinite(v)){ inp.style.borderColor = "var(--warn)"; return; }
         inp.style.borderColor = ""; setParam(name, {[inp.dataset.k]: v});
@@ -1087,7 +1103,8 @@
     const q = v.search.toLowerCase();
     const all = [];
     let html = '<div class="plot-controls" style="margin-bottom:6px"><div class="pc" style="flex:1"><input type="text" class="dsq" placeholder="Search '+esc(rk)+' datasets" value="'+esc(v.search)+'"></div>'
-      + '<button class="btn sm" data-a="all">Select all</button><button class="btn sm" data-a="none">Clear all</button></div><div class="dslist">';
+      + '<button class="btn sm" data-a="all">Select visible</button><button class="btn sm" data-a="none">Clear visible</button></div>'
+      + '<div class="hint" style="margin:0 0 8px">Check only the datasets you want in this fit. Selected datasets stay selected while you search.</div><div class="dslist">';
     d.experiments.forEach(g=>{
       const items = g.datasets.filter(x=>!q || (x.id+" "+x.label).toLowerCase().includes(q));
       if (!items.length) return;
@@ -1097,13 +1114,47 @@
         if (usable) all.push(x.id);
         html += '<label class="ds'+(usable ? "" : " disabled")+'"><input type="checkbox" data-id="'+esc(x.id)+'"'+(sel.has(x.id) ? " checked" : "")+(usable ? "" : " disabled")+'> '
           + esc(x.label)+(usable ? "" : ' <span class="bp">'+(x.blueprint ? "BLUEPRINT" : "NO DATA FILE")+'</span>')+'<span class="id">'+esc(x.id)+'</span></label>';
+        if (usable && x.normalization){
+          const n = (card.normalizations[rk] || {})[x.id] || x.normalization;
+          const links = d.experiments.flatMap(g=>g.datasets).filter(y=>y.id !== x.id && y.normalization && sel.has(y.id))
+            .map(y=>'<option value="'+esc(y.id)+'"'+(String(n.fixed) === String(y.id) ? " selected" : "")+'>'+esc(y.id)+'</option>').join("");
+          html += '<div class="normbox" data-norm="'+esc(x.id)+'"><span class="hint">Normalization</span>'
+            + '<select data-nk="fixed" aria-label="Normalization equal to '+esc(x.id)+'"><option value="">Independent</option>'+links+'</select>'
+            + '<input type="number" step="any" data-nk="value" value="'+esc(n.value)+'" aria-label="Normalization value">'
+            + '<input type="number" step="any" data-nk="min" value="'+esc(n.min == null ? "" : n.min)+'" aria-label="Normalization minimum">'
+            + '<input type="number" step="any" data-nk="max" value="'+esc(n.max == null ? "" : n.max)+'" aria-label="Normalization maximum">'
+            + '<button type="button" class="st '+(n.fixed === false ? "free" : "fixed")+'" data-nk="toggle">'+(n.fixed === false ? "FREE" : "FIXED")+'</button></div>';
+        }
       });
     });
     pane.innerHTML = html + '</div>';
     const inp = pane.querySelector(".dsq");
     inp.oninput = ()=>{ v.search = inp.value; clearTimeout(inp._t); inp._t = setTimeout(()=>renderReactionBody(rk, el).then(()=>{ const n = el.querySelector(".dsq"); if (n){ n.focus(); n.setSelectionRange(n.value.length, n.value.length); } }), 250); };
     const apply = ()=>{ card.datasets[rk] = Array.from(sel); saveCard(); renderReactionsCountOnly(); };
-    pane.querySelectorAll("input[data-id]").forEach(cb=>cb.onchange = ()=>{ if (cb.checked) sel.add(cb.dataset.id); else sel.delete(cb.dataset.id); apply(); });
+    pane.querySelectorAll("input[data-id]").forEach(cb=>cb.onchange = ()=>{
+      if (cb.checked) sel.add(cb.dataset.id);
+      else {
+        sel.delete(cb.dataset.id);
+        if (card.normalizations[rk]) delete card.normalizations[rk][cb.dataset.id];
+      }
+      apply();
+    });
+    pane.querySelectorAll(".normbox").forEach(box=>{
+      const id = box.dataset.norm;
+      const source = d.experiments.flatMap(g=>g.datasets).find(x=>x.id === id).normalization;
+      const state = (card.normalizations[rk] || {})[id] || {...source};
+      const put = patch=>{ card.normalizations[rk] = card.normalizations[rk] || {}; card.normalizations[rk][id] = {...state, ...patch}; saveCard(); };
+      box.querySelectorAll("[data-nk]").forEach(input=>input.onchange = ()=>{
+        const k = input.dataset.nk;
+        if (k === "fixed") put({fixed: input.value || false});
+        else put({[k]: input.value.trim() === "" ? null : Number(input.value)});
+      });
+      box.querySelector("[data-nk=toggle]").onclick = ()=>{
+        const current = state.fixed;
+        put({fixed: current === false ? true : false});
+        renderReactionBody(rk, el);
+      };
+    });
     pane.querySelectorAll("button[data-a]").forEach(b=>b.onclick = ()=>{
       if (b.dataset.a === "all") all.forEach(x=>sel.add(x)); else all.forEach(x=>sel.delete(x));
       apply(); renderReactionBody(rk, el); });
