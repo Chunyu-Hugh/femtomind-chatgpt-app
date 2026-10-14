@@ -140,6 +140,7 @@
   .tblwrap{max-height:340px;overflow:auto;border:1px solid var(--line);border-radius:8px;margin-top:6px;}
   .ptbl td{padding:4px 8px;} .ptbl th{position:sticky;top:0;background:var(--surface);}
   .ptbl input{padding:3px 6px;font-family:var(--mono);font-size:12px;width:96px;}
+  .ptbl select{padding:3px 4px;font-family:var(--mono);font-size:12px;width:110px;}
   .ptbl .need{display:block;color:var(--warn);font-size:11px;margin-top:2px;white-space:nowrap;}
   .st{font-family:var(--mono);font-size:10.5px;padding:2px 8px;border-radius:999px;cursor:pointer;border:none;}
   .st.free{background:var(--green-wash);color:var(--green);} .st.fixed{background:var(--surface-2);color:var(--muted);border:1px solid var(--line);}
@@ -1019,7 +1020,7 @@
       + '<b>Parametrization form</b>'+esc(p.parametrization)+'<b>Construction note</b>'+esc(p.note);
     const rows = paramRows();
     paintParamCounts(rows);
-    $("paramHint").textContent = "Use Equal to when two parameters must share one numerical value. Click a status to switch FREE ↔ FIXED. "
+    $("paramHint").textContent = "Tick a parameter to keep it FIXED at its value; untick it to fit it (FREE, within min and max). Use Equal to when two parameters must share one value. "
       + "Values, ranges and FREE/FIXED come from "+(p.source || "examples/input02.py")
       + " (the library). Only the rows you change are written into the generated card.";
     const num = v=>v == null ? "" : String(v);
@@ -1028,21 +1029,23 @@
     $("paramRows").innerHTML = rows.map(r=>{ const tied = r.fixed && r.tied_to;
       const equalTo = r.equal_to || r.tied_to || "";
       const candidates = rows.filter(x=>x.name !== r.name).map(x=>'<option value="'+esc(x.name)+'"'+(x.name === equalTo ? " selected" : "")+'>'+esc(x.name)+'</option>').join("");
+      // Status: a checkbox (ticked = FIXED, the library's value is kept); a row set
+      // equal to another parameter shows EQUAL and is unlinked with "— none —".
       return '<tr data-n="'+esc(r.name)+'"><td class="mono">'+esc(r.block)+'</td><td class="mono">'+esc(r.parameter)+'</td>'
-      + '<td><button class="st '+(r.fixed ? "fixed" : "free")+'" data-k="fixed">'+(equalTo ? "EQUAL" : r.fixed ? "FIXED" : "FREE")+'</button>'
+      + '<td><label class="inline" style="gap:6px"><input type="checkbox" data-k="fixed"'+(r.fixed ? " checked" : "")+(equalTo ? " disabled" : "")
+      + ' aria-label="'+esc(r.name)+' fixed"><span class="st '+(r.fixed ? "fixed" : "free")+'">'+(equalTo ? "EQUAL" : r.fixed ? "FIXED" : "FREE")+'</span></label>'
       + (tied ? '<div class="hint" style="margin-top:2px">tied to '+esc(r.tied_to)+' (value follows it)</div>' : '')
-      + '</td><td><select data-k="equal_to" aria-label="Set '+esc(r.name)+' equal to another parameter"><option value="">— none —</option>'+candidates+'</select></td>'
-      + '<td><span class="need"'+(needsRange(r) ? '' : ' style="display:none"')+'>set a min and max</span></td>'
+      + '<span class="need"'+(needsRange(r) ? '' : ' style="display:none"')+'>set a min and max</span></td>'
+      + '<td><select data-k="equal_to" aria-label="Set '+esc(r.name)+' equal to another parameter"><option value="">— none —</option>'+candidates+'</select></td>'
       + '<td><input data-k="value" value="'+esc(num(r.value))+'"'+(tied || equalTo ? " disabled" : "")+'></td>'
       + '<td><input data-k="min" value="'+esc(num(r.min))+'"'+(r.fixed || equalTo ? " disabled" : "")+'></td>'
       + '<td><input data-k="max" value="'+esc(num(r.max))+'"'+(r.fixed || equalTo ? " disabled" : "")+'></td></tr>'; }).join("");
     $("paramRows").querySelectorAll("tr").forEach(tr=>{
       const name = tr.dataset.n;
-      tr.querySelector("button").onclick = ()=>{ const r = paramRows().find(x=>x.name === name);
-        setParam(name, {fixed: !r.fixed}); renderParams(); };
       // An edit repaints only its row's hint and the counts: rebuilding the table
       // would drop the field that Tab is moving the focus to.
       tr.querySelectorAll("input, select").forEach(inp=>inp.onchange = ()=>{
+        if (inp.dataset.k === "fixed"){ setParam(name, {fixed: inp.checked}); renderParams(); return; }
         if (inp.dataset.k === "equal_to"){
           const target = inp.value;
           const base = opts.parameters.pdf.rows.find(x=>x.name === name);
@@ -1142,21 +1145,24 @@
     pane.querySelectorAll(".normbox").forEach(box=>{
       const id = box.dataset.norm;
       const source = d.experiments.flatMap(g=>g.datasets).find(x=>x.id === id).normalization;
-      const state = (card.normalizations[rk] || {})[id] || {...source};
-      const put = patch=>{ card.normalizations[rk] = card.normalizations[rk] || {}; card.normalizations[rk][id] = {...state, ...patch}; saveCard(); };
+      // Each edit starts from what the card holds now, so editing the value and
+      // then the range keeps both.
+      const current = ()=>(card.normalizations[rk] || {})[id] || {...source};
+      const put = patch=>{ card.normalizations[rk] = card.normalizations[rk] || {}; card.normalizations[rk][id] = {...current(), ...patch}; saveCard(); };
       box.querySelectorAll("[data-nk]").forEach(input=>input.onchange = ()=>{
         const k = input.dataset.nk;
-        if (k === "fixed") put({fixed: input.value || false});
+        // "Independent" goes back to the library's own FREE/FIXED state.
+        if (k === "fixed") put({fixed: input.value || source.fixed});
         else put({[k]: input.value.trim() === "" ? null : Number(input.value)});
       });
       box.querySelector("[data-nk=toggle]").onclick = ()=>{
-        const current = state.fixed;
-        put({fixed: current === false ? true : false});
+        put({fixed: current().fixed === false ? true : false});
         renderReactionBody(rk, el);
       };
     });
     pane.querySelectorAll("button[data-a]").forEach(b=>b.onclick = ()=>{
-      if (b.dataset.a === "all") all.forEach(x=>sel.add(x)); else all.forEach(x=>sel.delete(x));
+      if (b.dataset.a === "all") all.forEach(x=>sel.add(x));
+      else all.forEach(x=>{ sel.delete(x); if (card.normalizations[rk]) delete card.normalizations[rk][x]; });
       apply(); renderReactionBody(rk, el); });
   }
   function renderReactionsCountOnly(){
@@ -1240,6 +1246,8 @@
     const rows = [["Non-perturbative object", s.object], ["Parameters", s.free_parameters+" free · "+s.fixed_parameters+" fixed ("+s.fixed.join(", ")+") · "
         + (changed.length ? "changed: "+changed.join(", ") : "none changed")],
       ["Reactions", s.reactions.join(", ")], ["Datasets", Object.entries(s.datasets).map(([r,n])=>r+": "+n).join(" · "), pts],
+      ["Normalizations", Object.entries(s.normalizations || {}).flatMap(([r,m])=>Object.entries(m).map(([id,n])=>r+":"+id+" = "+n.value
+        +(n.fixed === false ? " FREE ["+n.min+", "+n.max+"]" : n.fixed === true ? " FIXED" : " equal to "+n.fixed))).join(" · ") || "library values"],
       ["Cuts", Object.entries(s.cuts).map(([r,c])=>r+": "+c.join(", ")).join(" · ")],
       ["QCD", s.qcd.order+" · Q₀² "+s.qcd.Q20+" · TMC "+s.qcd.tmc+" · HT "+(s.qcd.higherTwist ? "on" : "off")+" · DGLAP "+s.qcd.dglapMode+" · αS "+s.qcd.asMode],
       ["Initialization", s.initialization], ["Inference mode", s.inference],

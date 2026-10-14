@@ -1496,6 +1496,7 @@ def _card_summary(norm):
             "datasets": {r: len(v) for r, v in norm["datasets"].items()},
             "normalization_parameters": {
                 r: len(entries) for r, entries in norm.get("normalizations", {}).items() if entries},
+            "normalizations": {r: entries for r, entries in norm.get("normalizations", {}).items() if entries},
             "cuts": {r: [f'{c["variable"]}{c["op"]}{c["value"]:g}' for c in cs if c["enabled"]]
                      for r, cs in norm["cuts"].items()},
             "qcd": norm["qcd"], "initialization": norm["parameters"]["initialization"],
@@ -1521,8 +1522,11 @@ def _campaign_yaml(ws, folder, norm, nreplicas):
     norm_params = []
     for reaction, entries in norm.get("normalizations", {}).items():
         for dataset_id, p in entries.items():
+            # A tie to another dataset's normalization: FitPack's parman looks the
+            # reference up by its integer id, so a digit string becomes an int.
+            fixed = int(p["fixed"]) if isinstance(p["fixed"], str) and p["fixed"].isdigit() else p["fixed"]
             norm_params.append({"id": f"norm_{reaction}_{dataset_id}", "value": p["value"],
-                                "min": p["min"], "max": p["max"], "fixed": p["fixed"]})
+                                "min": p["min"], "max": p["max"], "fixed": fixed})
     if norm_params:
         sectors.append({"key": "norm", "parameters": norm_params})
     return json.dumps({
@@ -2996,7 +3000,7 @@ TOOLS = {
                 "parameters (including optional equal_to links between PDF parameters), the ones changed from the library, datasets, cuts, QCD, job, and "
                 "points_after_cuts per dataset), the Slurm array script, the confirmation phrase and "
                 "warnings (a dataset with no points left after the cuts, a data file without a column "
-                "FitPack's status report reads); warnings never block submission. " + 'card = {"object": {"type": "pdf", "parameters": {"g1 a": {"value", "min", "max", "fixed": true|false, "equal_to": "uv1 a"}, ...}}, "reactions": ["idis", "dy"], "datasets": {"idis": ["10010", ...]}, "cuts": {"idis": [{"variable": "Q2", "op": ">", "value": 1.69, "enabled": true}]}, "qcd": {"order", "Q20", "tmc": "off"|"AOT", "higherTwist", "dglapMode", "asMode"}, "parameters": {"initialization": "default"|"random_within_bounds", "randomSeed", "perReplicaSeed"}, "job": {"campaignName", "replicas", "maxIterations", "tolerance", "optimizer", "bootstrap"}, "slurm": {"partition" ("" = auto), "time" (per replica, HH:MM:SS), "mem", "cpus"}}. Only parameters the user changed need to be listed; the rest keep the library values, and only changed rows are written into the card. A parameter switched to FREE needs a min and a max.',
+                "FitPack's status report reads); warnings never block submission. " + 'card = {"object": {"type": "pdf", "parameters": {"g1 a": {"value", "min", "max", "fixed": true|false, "equal_to": "uv1 a"}, ...}}, "reactions": ["idis", "dy"], "datasets": {"idis": ["10010", ...]}, "normalizations": {"idis": {"10010": {"value", "min", "max", "fixed": true|false|"<id of another selected dataset whose normalization this one equals>"}}} (only for datasets campaign_datasets lists with a normalization), "cuts": {"idis": [{"variable": "Q2", "op": ">", "value": 1.69, "enabled": true}]}, "qcd": {"order", "Q20", "tmc": "off"|"AOT", "higherTwist", "dglapMode", "asMode"}, "parameters": {"initialization": "default"|"random_within_bounds", "randomSeed", "perReplicaSeed"}, "job": {"campaignName", "replicas", "maxIterations", "tolerance", "optimizer", "bootstrap"}, "slurm": {"partition" ("" = auto), "time" (per replica, HH:MM:SS), "mem", "cpus"}}. Only parameters the user changed need to be listed; the rest keep the library values, and only changed rows are written into the card. A parameter switched to FREE needs a min and a max.',
         "schema": {"type": "object", "properties": {"card": {"type": "object"}}, "required": ["card"]},
         "fn": lambda a: validate_campaign(a.get("card"))},
     "submit_campaign": {
@@ -3170,10 +3174,14 @@ INSTRUCTIONS = (
     "campaign_options returns the parameter table read from the workspace's "
     "examples/input02.py (the library): FREE/FIXED, value, min, max. Ask which to change; "
     "only changed rows are written into the card. A parameter switched to FREE needs a min "
-    "and max from the user.\n"
+    "and max from the user. A parameter can also be set equal to another PDF parameter "
+    "(equal_to): it then follows that parameter's value and is not fitted on its own.\n"
     "4. Reactions: idis (DIS) or dy (Drell-Yan); the others are not available yet. Ask.\n"
     "5. Datasets and cuts: campaign_datasets per reaction, grouped by experiment; ask which "
-    "ids. Show the reaction's cuts (e.g. Q2>1.69, W2>10) and ask whether to keep them.\n"
+    "ids. A dataset listed with a 'normalization' has a normalization parameter in the library: "
+    "offer to keep it, change its value or range, set it FREE or FIXED, or make it equal to "
+    "another selected dataset's normalization (normalizations in the card). Show the "
+    "reaction's cuts (e.g. Q2>1.69, W2>10) and ask whether to keep them.\n"
     "6. QCD settings: order, Q20, TMC, higher twist, DGLAP mode, alphaS mode.\n"
     "7. Job config: campaign name, replicas, parameter initialization (library values or "
     "random within bounds), inference (ensemble of pseudo-data replicas or central values), "

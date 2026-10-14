@@ -63,7 +63,9 @@ def _render_stage_override_block(stage: ResolvedStage) -> str:
                         'value': parameter.get('value'),
                         'min': parameter.get('min'),
                         'max': parameter.get('max'),
-                        'fixed': bool(parameter.get('fixed', False)),
+                        # True/False, or the integer id of the dataset whose
+                        # normalization this one equals (FitPack's convention).
+                        'fixed': parameter.get('fixed', False),
                     }
                 continue
             parameter_name = str(parameter.get('name') or '').strip()
