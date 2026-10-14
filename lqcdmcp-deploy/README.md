@@ -22,6 +22,115 @@ the FemtoMind JAM app's fitting campaign.
 | `gw_auth.py` | Gateway name, URL and token for the scripts: `JAM_GW_USER`, `LQCDMCP_TOKEN`; `JAM_GW_NAME`, `JAM_GW_URL`, `JAM_GW_TOKEN` for a test gateway. |
 | `COLLABORATOR_GUIDE.md` | The step-by-step guide for collaborators. |
 
+## Architecture and extension guide
+
+This project is a UI and workflow layer around FitPack Legacy. It does not
+replace FitPack's core physics implementation. New physics objects should be
+enabled only after their input-card representation and parameter choices have
+been confirmed by a physicist.
+
+### End-to-end workflow
+
+```text
+User interaction in jam_panel.html
+        ↓
+Campaign input card
+        ↓
+jam_gateway.py validation and normalization
+        ↓
+Campaign manifest
+        ↓
+jamai/input_materializer.py
+        ↓
+Generated input.py
+        ↓
+fitlib/ai.py
+        ↓
+FitPack/JAM RESMAN and MAXLIKE
+        ↓
+Replica outputs, chi2 summaries, and plots
+```
+
+### Component responsibilities
+
+#### `jam_panel.html`
+
+The browser UI shows available objects and reactions, lets users select
+datasets, edits PDF and dataset-normalization parameters, and builds and
+reviews the campaign input card. The UI must not invent physics defaults.
+Parameters should be exposed only after their physical meaning and valid
+configuration have been confirmed.
+
+#### `jam_gateway.py`
+
+The gateway is the backend validation and orchestration layer. It provides
+campaign options, reads the workspace parameter library and dataset catalog,
+validates user selections, rejects invalid values and equality cycles, and
+converts the UI card into a normalized campaign manifest for Slurm.
+
+#### `jamai/input_materializer.py`
+
+The materializer converts the normalized campaign into FitPack-compatible
+`input.py` overrides. Every setting exposed in the UI must be handled here if
+it changes the FitPack input.
+
+#### `fitlib/ai.py`
+
+This is the campaign execution entrypoint in FitPack's `ai` branch. It loads
+the materialized manifest and `input.py`, runs validation or fitting, calls
+FitPack/JAM fitting components, and writes replica outputs and fit summaries.
+
+#### `fitlib/ai_conf.py`
+
+This provides default configuration helpers for AI/JAMAI campaigns. It is
+currently lightweight scaffolding; it is not the sole place where a new
+physics object's parameters should be defined.
+
+#### `fitlib/ai_registry.py`
+
+This maps reactions to the physics objects they require. For example, DIS and
+Drell--Yan require an unpolarized PDF, while SIDIS may require PDFs and pion,
+kaon, and hadron fragmentation functions. The registry describes dependencies;
+it does not implement the physics parameters or prove that an object is ready
+to fit.
+
+### Adding a new physics object
+
+Before changing the UI, provide and verify:
+
+1. The FitPack input-card representation.
+2. Parameter names and default values.
+3. Which parameters are FREE or FIXED by default.
+4. Valid minimum and maximum values.
+5. Which reactions require the object.
+6. Which datasets use the object.
+7. Any equality or normalization constraints.
+8. A minimal working FitPack input and test fit.
+
+After the physics configuration is confirmed, integrate it in this order:
+
+1. Add or verify the reaction/object mapping in `fitlib/ai_registry.py`.
+2. Add the object and parameter configuration to the campaign options.
+3. Update gateway validation in `jam_gateway.py`.
+4. Update `input_materializer.py` so the settings reach `input.py`.
+5. Add the UI controls in `jam_panel.html`.
+6. Add validation and integration tests.
+7. Run a minimal real campaign before enabling the object by default.
+
+### Scope boundary for physicists
+
+Do not enable PION PDFs, kaon PDFs, or fragmentation functions only because
+they appear in `ai_registry.py`. The registry is not proof that an object is
+fully supported. The physics parameter definitions, a working input-card
+configuration, and a minimal test fit must be provided first.
+
+The intended collaboration boundary is:
+
+- **Physicist:** provide the physical parameter definitions, constraints,
+  datasets, input-card example, and plotting rules.
+- **Workflow/UI developer:** connect that confirmed configuration to the
+  gateway, materializer, UI, validation, and campaign execution.
+
 ## Deploy
 
 ```bash
