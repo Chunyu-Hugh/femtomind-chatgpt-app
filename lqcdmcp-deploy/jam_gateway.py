@@ -24,8 +24,9 @@ clients are told never to ask for them. Everything site-specific is in SITE
 
 Fits: a campaign is the JAM app's composer (object and parameter table,
 reactions, datasets and cuts, QCD settings, job config, review). The
-parameter table is the workspace's own examples/input02.py (the library);
-jamai/ copies that file and appends the choices, with only the parameters
+proton parameter table is the workspace's examples/input02.py; pion settings
+come from the trusted final-fit NumPy reference, restricted to one shape.
+jamai/ copies input02.py and composes the choices, with only the parameters
 the user changed, and a Slurm array runs one replica per task through
 fitlib/ai.py (FitPack `ai` branch) inside the site's container. Collections:
 stop or delete a campaign. Analysis: postprocess, fit summary, PDF plots,
@@ -41,6 +42,7 @@ import base64
 import getpass
 import hashlib
 import hmac
+import inspect
 import json
 import math
 import os
@@ -56,6 +58,9 @@ import urllib.parse
 import urllib.request
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from jamai import object_registry
+from jamai.object_registry import OBJECTS, SELECTABLE_OBJECTS
+from jamai.reaction_registry import resolve_object_roles
 
 # ── constants ──────────────────────────────────────────────────────────────
 
@@ -708,7 +713,6 @@ def setup_workspace(repo_url="", github_token="", target_dir="", username="",
     steps.append("workspace marker: " + (out.get("out") or "").strip()[-60:])
     steps.append(_link_grids(u, target))
     _WS_CACHE.pop(u, None)
-    _forget_library(u)
     message = (f"A folder named {os.path.relpath(target, root)} already exists in your area: it was "
                "not cloned again and is now your workspace. The report shows anything it lacks."
                if present else f"Workspace ready at {target}.")
@@ -873,7 +877,6 @@ def use_workspace(path="", username=""):
         return {"ok": False, "message": f"{p} is not a fitpack checkout (no fitlib/ inside)."}
     _link_grids(u, p)
     _WS_CACHE.pop(u, None)
-    _forget_library(u)
     return {"ok": True, "workspace": p, "report": check_project(u)}
 
 
@@ -915,15 +918,14 @@ STAGE = "pdf_stage"
 
 # Shown with the library's parameter table.
 PDF_DETAILS = {
-    "fit_basis_blocks": ["g1", "uv1", "dv1", "sea1", "sea2", "db1", "ub1", "s1", "sb1"],
-    "auxiliary_blocks": ["c1", "cb1", "b1", "bb1", "g2", "uv2", "dv2", "mix"],
     "parametrization": "x f(x, Q0^2) = N x^a (1 - x)^b (1 + c sqrt(x) + d x)",
     "note": "Physical PDFs such as u, d, s, ub, db are derived combinations of these fitted "
             "basis blocks (the PDF set_moms() construction). g1 N, uv1 N and dv1 N are fixed "
             "by the momentum and valence sum rules.",
 }
 CAMPAIGN_OBJECTS = [
-    {"value": "pdf", "label": "Unpolarized PDF", "enabled": True},
+    *[{"value": key, "label": OBJECTS[key]["label"], "enabled": True}
+      for key in SELECTABLE_OBJECTS],
     {"value": "polarized_pdf", "label": "Polarized PDF", "enabled": False},
     {"value": "pion_ff", "label": "Pion FF", "enabled": False},
     {"value": "kaon_ff", "label": "Kaon FF", "enabled": False},
@@ -932,6 +934,8 @@ CAMPAIGN_OBJECTS = [
 CAMPAIGN_REACTIONS = [
     {"key": "idis", "label": "DIS", "enabled": True},
     {"key": "dy", "label": "Drell-Yan", "enabled": True},
+    {"key": "dy-pion", "label": "Pion Drell-Yan", "enabled": True},
+    {"key": "ln", "label": "Leading neutron", "enabled": True},
     {"key": "wasym", "label": "W asymmetry", "enabled": False},
     {"key": "zrap", "label": "Z rapidity", "enabled": False},
     {"key": "wzrv", "label": "WZ rapidity", "enabled": False},
@@ -945,6 +949,13 @@ DY_DATASETS = [
     {"id": "10002", "label": "E866 NuSea DY pd", "experiment": "E866 NuSea", "enabled": False, "blueprint": True},
     {"id": "10003", "label": "E605 DY", "experiment": "E605", "enabled": False, "blueprint": True},
 ]
+PION_DATASETS = {
+    "dy-pion": [{"id": "10001", "label": "E615", "experiment": "E615"},
+                {"id": "10002", "label": "NA10 194 GeV", "experiment": "NA10"},
+                {"id": "10003", "label": "NA10 286 GeV", "experiment": "NA10"}],
+    "ln": [{"id": "1000", "label": "H1", "experiment": "H1"},
+           {"id": "2000", "label": "ZEUS", "experiment": "ZEUS"}],
+}
 CAMPAIGN_DEFAULTS = {
     "cuts": {"idis": [{"variable": "Q2", "op": ">", "value": 1.69, "enabled": True},
                       {"variable": "W2", "op": ">", "value": 10, "enabled": True}],
@@ -990,108 +1001,53 @@ def _auto_partition_seconds(seconds):
 
 # ---- options and the dataset catalog ---------------------------------------
 
-# A parameter line of the library card that is not commented out:
-# conf['params']['pdf']['g1 a'] = {'value': ..., 'min': ..., 'max': ..., 'fixed': False}
-_PDF_PARAM_LINE = r"""^\s*conf\[['"]params['"]\]\[['"]pdf['"]\]\[['"]([^'"]+)['"]\]\s*=\s*(\{.*\})\s*$"""
-
-# The library's parameter table, in file order. A later line for the same
-# parameter replaces the earlier one, as when the card runs. A 'fixed' that
-# names another parameter is a tie: the row is fixed and says to what. When
-# the file cannot be read, it says whether the workspace folder and the ai
-# branch's fitlib/ai.py are there.
-_LIBRARY = r'''
-import ast, json, os, re
-line_re = re.compile(__LINE_RE__)
-try:
-    lines = open(__PATH__, encoding='utf-8').read().splitlines()
-except OSError:
-    print(json.dumps({'found': False, 'rows': [], 'folder': os.path.isdir(__WS__),
-                      'runner': os.path.isfile(os.path.join(__WS__, 'fitlib', 'ai.py'))}))
-    raise SystemExit(0)
-def num(v):
-    return None if v is None else float(v)
-rows, at = [], {}
-for line in lines:
-    m = line_re.match(line)
-    if not m:
-        continue
+def _object_libraries(u, keys):
+    # The shared reader travels as source, so reading options does not deploy modules.
+    code = inspect.getsource(object_registry) + "\nimport json\nprint(json.dumps(load_object_libraries(" \
+        + repr(_workspace(u)) + ", " + repr(list(keys)) + ")))\n"
+    r = _run_ifarm_py(u, code, apptainer=any(key != "pdf" for key in keys), timeout=60, cap=500000)
     try:
-        d = ast.literal_eval(m.group(2))
-        value, lo, hi = float(d['value']), num(d.get('min')), num(d.get('max'))
-    except (ValueError, TypeError, KeyError, SyntaxError):
-        continue
-    name, fixed = m.group(1), d.get('fixed', False)
-    block, _, par = name.partition(' ')
-    row = {'block': block, 'parameter': par, 'name': name,
-           'fixed': True if isinstance(fixed, str) else bool(fixed), 'value': value, 'min': lo, 'max': hi}
-    if isinstance(fixed, str):
-        row['tied_to'] = fixed
-    if name in at:
-        rows[at[name]] = row
-    else:
-        at[name] = len(rows)
-        rows.append(row)
-print(json.dumps({'found': True, 'rows': rows}))
-'''
-_LIB_CACHE = {}                         # user -> (workspace, rows, path, expires at)
-
-
-def _library_parameters(u):
-    """The parameter table of u's workspace library (examples/input02.py):
-    (rows in file order, the file's path). Raises RuntimeError when the file
-    is missing or has no parameter lines."""
-    ws = _workspace(u)
-    hit = _LIB_CACHE.get(u)
-    if hit and hit[0] == ws and hit[3] > time.time():
-        return hit[1], hit[2]
-    path = f"{ws}/{CAMPAIGN_TEMPLATE}"
-    r = _run_ifarm_py(u, _fill(_LIBRARY, LINE_RE=_PDF_PARAM_LINE, PATH=path, WS=ws), timeout=60, cap=200000)
-    try:
-        d = json.loads(r["out"].strip().splitlines()[-1])
-    except Exception:
-        raise RuntimeError(f"Could not read {path}: " + (r.get("err") or r.get("out") or "")[-300:])
-    if not d["found"]:
-        # A folder that is gone, or a checkout already on the ai branch: switching does not help.
-        if not d["folder"]:
-            raise RuntimeError(WORKSPACE_GONE.format(ws))
-        if d["runner"]:
-            raise RuntimeError(TEMPLATE_GONE)
-        raise RuntimeError(f"The workspace has no {CAMPAIGN_TEMPLATE} (FitPack ai branch) to read "
-                           "the parameter table from. Switch it to the FitPack ai branch (the "
-                           "Project tab's 'Switch to the ai branch', or use_ai_branch) or create a "
-                           "new workspace.")
-    if not d["rows"]:
-        # The file is there, so switching branches does not help.
-        raise RuntimeError(f"The workspace's {CAMPAIGN_TEMPLATE} has no conf['params']['pdf'] lines "
-                           "to read the parameter table from. Restore the ai branch's copy (git checkout "
-                           f"origin/ai -- {CAMPAIGN_TEMPLATE} in the workspace) or create a new workspace.")
-    _LIB_CACHE[u] = (ws, d["rows"], path, time.time() + 600)
-    return d["rows"], path
-
-
-def _forget_library(u):
-    """Drop u's cached parameter table (its workspace or branch changed)."""
-    _LIB_CACHE.pop(u, None)
+        if r["rc"]:
+            raise ValueError("remote reader failed")
+        return json.loads(r["out"].strip().splitlines()[-1])
+    except (ValueError, IndexError, KeyError) as exc:
+        raise RuntimeError("Could not read object libraries: "
+                           + (r.get("err") or r.get("out") or str(exc))[-600:]) from exc
 
 
 def campaign_options(username=""):
-    """Everything the composer offers; the parameter table is the workspace's
-    library (examples/input02.py)."""
+    """Composer metadata from the proton library and one-shape pion reference."""
     u, err = _need_user(username)
     if err:
         return err
     try:
-        rows, source = _library_parameters(u)
+        libraries = _object_libraries(u, ["pdf"])
     except RuntimeError as e:
         return {"status": "error", "message": str(e)}
+    objects = [dict(item) for item in CAMPAIGN_OBJECTS]
+    try:
+        libraries.update(_object_libraries(u, ["pdf-pion", "p->pi,n"]))
+    except RuntimeError as e:
+        for item in objects:
+            if item["value"] == "pdf-pion":
+                item.update(enabled=False, reason=str(e))
+    defaults = json.loads(json.dumps(CAMPAIGN_DEFAULTS))
+    for key in ("pdf-pion", "p->pi,n"):
+        for reaction, dataset in libraries.get(key, {}).get("datasets", {}).items():
+            defaults["cuts"][reaction] = object_registry.library_cuts(dataset.get("filters", []))
+    reactions = [dict(r, objects=[key for key in SELECTABLE_OBJECTS
+                                  if r["key"] in OBJECTS[key]["reactions"]])
+                 for r in CAMPAIGN_REACTIONS]
+    parameters = {key: {k: v for k, v in lib.items() if k not in ("params", "datasets", "fixed_companions")}
+                  for key, lib in libraries.items()}
+    parameters["pdf"].update(parametrization=PDF_DETAILS["parametrization"], note=PDF_DETAILS["note"])
     return {"status": "ok",
             "steps": ["Non-perturbative object", "Reactions", "QCD settings", "Job config", "Review"],
-            "objects": CAMPAIGN_OBJECTS,
-            "parameters": {"pdf": {"rows": rows, "source": source, **PDF_DETAILS,
-                                   "free": sum(1 for r in rows if not r["fixed"]),
-                                   "fixed": sum(1 for r in rows if r["fixed"])}},
-            "reactions": CAMPAIGN_REACTIONS,
-            "defaults": CAMPAIGN_DEFAULTS, "choices": CAMPAIGN_CHOICES,
+            "objects": objects, "parameters": parameters,
+            "companions": {"ln": {"fitted": ["p->pi,n"], "fixed_unless_selected": ["pdf"]}},
+            "compatibility": object_registry.DIS_COMPATIBILITY,
+            "reactions": reactions,
+            "defaults": defaults, "choices": CAMPAIGN_CHOICES,
             "partitions": SITE.get("partitions", []),
             "partition_auto": {"short": SITE.get("short_partition"),
                                "short_hours": SITE.get("short_hours"), "long": SITE["partition"]},
@@ -1134,34 +1090,6 @@ out.sort(key=lambda d: int(d['id']))
 print(json.dumps(out))
 '''
 
-_DATASET_NORMS = r'''
-import ast, json, os, re
-path = os.path.join(__WS__, 'examples', 'input02.py')
-out = {}
-try:
-    lines = open(path, encoding='utf-8').read().splitlines()
-except OSError:
-    lines = []
-# FitPack input cards commonly assign normalization rows directly with either
-# integer or string dataset keys. Keep this reader deliberately conservative:
-# an absent or non-literal row means the UI simply has no normalization editor.
-pat = re.compile(r"""conf\[['"]datasets['"]\]\[['"]([^'"]+)['"]\]\[['"]norm['"]\]\[(\d+)\]\s*=\s*(\{.*\})""")
-for line in lines:
-    m = pat.search(line)
-    if not m:
-        continue
-    try:
-        value = ast.literal_eval(m.group(3))
-        if isinstance(value, dict) and 'value' in value:
-            out.setdefault(m.group(1), {})[m.group(2)] = {
-                'value': value.get('value'), 'min': value.get('min'),
-                'max': value.get('max'), 'fixed': value.get('fixed', False)}
-    except (SyntaxError, ValueError):
-        pass
-print(json.dumps(out))
-'''
-
-
 def campaign_datasets(reaction="idis", search="", username=""):
     """The datasets of one reaction, grouped by experiment (DIS from the
     repository's database/idis/README.md, as the JAM app does)."""
@@ -1174,6 +1102,19 @@ def campaign_datasets(reaction="idis", search="", username=""):
                                               f"offers {sorted(ENABLED_REACTIONS)}."}
     if reaction == "dy":
         items = [dict(d) for d in DY_DATASETS]
+    elif reaction in PION_DATASETS:
+        code = ("import json, os\nitems = " + repr(PION_DATASETS[reaction])
+                + "\nfor item in items: item['enabled'] = os.path.isfile(os.path.join("
+                + repr(_workspace(u)) + ", 'database', " + repr(reaction)
+                + ", 'expdata', item['id'] + '.xlsx'))\nprint(json.dumps(items))")
+        r = _run_ifarm_py(u, code, timeout=60)
+        try:
+            if r["rc"]:
+                raise ValueError("catalog reader failed")
+            items = json.loads(r["out"].strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            return {"status": "error", "message": f"Could not read {reaction} datasets.",
+                    "detail": r.get("err", "")}
     else:
         r = _run_ifarm_py(u, _fill(_IDIS_CATALOG, WS=_workspace(u)), timeout=60, cap=200000)
         try:
@@ -1183,12 +1124,15 @@ def campaign_datasets(reaction="idis", search="", username=""):
                     "detail": (r.get("err") or "")[-300:]}
     # Normalization defaults come from the same workspace input card as the
     # PDF library. They are metadata only until the user edits them.
-    norms = {}
-    nr = _run_ifarm_py(u, _fill(_DATASET_NORMS, WS=_workspace(u)), timeout=60, cap=200000)
     try:
-        norms = json.loads(nr["out"].strip().splitlines()[-1]).get(reaction, {})
-    except (AttributeError, IndexError, json.JSONDecodeError):
-        norms = {}
+        key = "pdf-pion" if reaction in PION_DATASETS else "pdf"
+        lib = _object_libraries(u, [key])[key]
+        dataset = lib["datasets"].get(reaction, {})
+        norms = {str(k): v for k, v in dataset.get("norm", {}).items()}
+        default_cuts = (object_registry.library_cuts(dataset.get("filters", []))
+                        if reaction in PION_DATASETS else CAMPAIGN_DEFAULTS["cuts"].get(reaction, []))
+    except (RuntimeError, ValueError) as exc:
+        return {"status": "error", "message": str(exc)}
     for item in items:
         if str(item.get("id")) in norms:
             item["normalization"] = norms[str(item["id"])]
@@ -1201,7 +1145,7 @@ def campaign_datasets(reaction="idis", search="", username=""):
         groups.setdefault(d.get("experiment") or "Other", []).append(d)
     return {"status": "ok", "reaction": reaction, "count": len(items),
             "experiments": [{"experiment": k, "datasets": v} for k, v in groups.items()],
-            "default_cuts": CAMPAIGN_DEFAULTS["cuts"].get(reaction, [])}
+            "default_cuts": default_cuts, "source": lib["source"]}
 
 
 # ---- the input card ---------------------------------------------------------
@@ -1213,21 +1157,8 @@ def _same_number(a, b):
     return abs(a - b) <= 1e-9 * max(abs(a), abs(b))
 
 
-def _normalize_card(card, library):
-    """Accept the composer card (also the JAM app's shape) and return
-    (normalized card, errors). library is the workspace's parameter table
-    (_library_parameters); only the rows the user changed are checked, and
-    only those are written into the card."""
-    card = json.loads(json.dumps(card or {}))
+def _normalize_parameters(obj, library):
     errors = []
-    obj = card.get("object") or {}
-    if isinstance(obj, str):
-        obj = {"type": obj}
-    otype = obj.get("type") or ""
-    if not otype:
-        errors.append("Select a non-perturbative object (Unpolarized PDF) on step 1.")
-    elif otype != "pdf":
-        errors.append("Select a non-perturbative object: only Unpolarized PDF is available.")
     # parameters: {"g1 a": {...}} or the app's parameterBounds {"g1:a": {min,max}}
     known = {r["name"]: r for r in library}
     overrides = {}
@@ -1239,7 +1170,7 @@ def _normalize_card(card, library):
     for name, lib in known.items():
         ov = overrides.get(name, {})
         equal_to = ov.get("equal_to", ov.get("equalTo"))
-        fixed = equal_to or ov.get("fixed", lib["fixed"])
+        fixed = equal_to or ov.get("fixed", lib.get("tied_to", lib["fixed"]))
         if isinstance(fixed, str):
             # A string names the parameter whose numerical value this parameter
             # must share. This is the same representation used by FitPack's
@@ -1249,21 +1180,6 @@ def _normalize_card(card, library):
                "value": ov.get("value", lib["value"]), "min": ov.get("min", lib["min"]),
                "max": ov.get("max", lib["max"])}
         params.append(row)
-        if isinstance(fixed, str):
-            if fixed not in known:
-                changed.append(row)
-                errors.append(f"Parameter {name}: equal-to parameter {fixed!r} does not exist.")
-            elif fixed == name:
-                changed.append(row)
-                errors.append(f"Parameter {name}: a parameter cannot be equal to itself.")
-            else:
-                row["equal_to"] = fixed
-                changed.append(row)
-            continue
-        if not isinstance(fixed, bool):
-            changed.append(row)
-            errors.append(f"Parameter {name}: fixed must be true (FIXED) or false (FREE).")
-            continue
         try:
             row["value"] = float(row["value"])
             row["min"] = None if row["min"] is None else float(row["min"])
@@ -1272,11 +1188,28 @@ def _normalize_card(card, library):
             changed.append(row)
             errors.append(f"Parameter {name}: value, min and max must be numbers.")
             continue
-        # float() also takes inf and nan, which no fit can use; an inf would
-        # even pass as unchanged next to a finite library value.
         if not all(math.isfinite(row[k]) for k in ("value", "min", "max") if row[k] is not None):
             changed.append(row)
             errors.append(f"Parameter {name}: value, min and max must be finite numbers.")
+            continue
+        if isinstance(fixed, str):
+            if any(not _same_number(row[k], lib[k]) for k in ("value", "min", "max")):
+                errors.append(f"Parameter {name} is tied to {fixed}: reset its numerical fields "
+                              "to the library, or switch it to FREE before editing them.")
+            if fixed not in known:
+                changed.append(row)
+                errors.append(f"Parameter {name}: equal-to parameter {fixed!r} does not exist.")
+            elif fixed == name:
+                changed.append(row)
+                errors.append(f"Parameter {name}: a parameter cannot be equal to itself.")
+            else:
+                row["equal_to"] = fixed
+                if fixed != lib.get("tied_to"):
+                    changed.append(row)
+            continue
+        if not isinstance(fixed, bool):
+            changed.append(row)
+            errors.append(f"Parameter {name}: fixed must be true (FIXED) or false (FREE).")
             continue
         if row["fixed"] == lib["fixed"] and all(
                 _same_number(row[k], lib[k]) for k in ("value", "min", "max")):
@@ -1310,6 +1243,72 @@ def _normalize_card(card, library):
                 break
             seen.add(cur)
             cur = equal_links[cur]
+    return params, changed, errors
+
+
+def _card_objects(card):
+    objects = card.get("objects")
+    if objects is None:
+        objects = [card.get("object") or {}]
+    if not isinstance(objects, list):
+        raise ValueError("objects must be a list of object names or cards.")
+    return [{"type": obj} if isinstance(obj, str) else obj for obj in objects]
+
+
+def _normalize_cuts(reaction, raw, dataset_ids):
+    if isinstance(raw, dict):
+        if not dataset_ids:
+            return {}, [f'Reaction {reaction}: dataset cuts must be a list.']
+        clean, errors = {}, []
+        for dataset_id in dataset_ids:
+            if dataset_id not in raw:
+                errors.append(f'Reaction {reaction} dataset {dataset_id}: supply dataset-specific cuts.')
+                continue
+            clean[dataset_id], problems = _normalize_cuts(
+                f'{reaction} dataset {dataset_id}', raw[dataset_id], [])
+            errors.extend(problems)
+        return clean, errors
+    if not isinstance(raw, list):
+        return [], [f'Reaction {reaction}: cuts must be a list or dataset-id mapping.']
+    clean, errors = [], []
+    for cut in raw:
+        try:
+            cut = {"variable": str(cut["variable"]), "op": str(cut.get("op", ">")),
+                   "value": float(cut["value"]), "enabled": bool(cut.get("enabled", True))}
+            object_registry.cut_filters([dict(cut, enabled=True)])
+        except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+            errors.append(f'Reaction {reaction}: invalid cut {cut!r}.')
+            continue
+        clean.append(cut)
+    if not any(c["enabled"] for c in clean):
+        errors.append(f'Reaction {reaction} must include at least one enabled cut.')
+    return clean, errors
+
+
+def _normalize_card(card, library):
+    """Accept legacy object or additive objects[], preserving parameter sectors."""
+    card = json.loads(json.dumps(card or {}))
+    errors, selected, params, changed = [], [], [], []
+    if isinstance(library, list):
+        library = {"pdf": {"rows": library}}
+    try:
+        objects = _card_objects(card)
+    except ValueError as exc:
+        objects = []
+        errors.append(str(exc))
+    for obj in objects:
+        key = obj.get("type") if isinstance(obj, dict) else None
+        if key not in SELECTABLE_OBJECTS:
+            errors.append(f"Select an available non-perturbative object: {key!r}.")
+        elif key in selected:
+            errors.append(f"Object {key!r} was selected more than once.")
+        else:
+            selected.append(key)
+    if not selected:
+        errors.append("Select at least one non-perturbative object.")
+    if ("pdf-pion" in selected and "pionReference" in card
+            and card["pionReference"] != library.get("pdf-pion", {}).get("sha256")):
+        errors.append("Pion reference changed: review and reset the outdated pion draft before validation.")
     # reactions: list or {"idis": true}
     rx = card.get("reactions") or []
     if isinstance(rx, dict):
@@ -1320,6 +1319,31 @@ def _normalize_card(card, library):
     for r in rx:
         if r not in ENABLED_REACTIONS:
             errors.append(f"Reaction {r!r} is not available yet.")
+        elif not any(r in OBJECTS[key]["reactions"] for key in selected):
+            errors.append(f"Reaction {r!r} does not constrain any selected object.")
+    for key in selected:
+        if not any(r in OBJECTS[key]["reactions"] for r in rx):
+            errors.append(f"Select a reaction for {OBJECTS[key]['label']}.")
+    try:
+        fitted, frozen = resolve_object_roles(selected, rx)
+    except ValueError as exc:
+        fitted, frozen = selected[:], []
+        errors.append(str(exc))
+    companions = card.get("companions") or {}
+    for key in companions:
+        if key not in fitted or key in selected:
+            errors.append(f"Companion {key!r} is not active.")
+    for key in fitted:
+        lib = library.get(key)
+        if not lib:
+            errors.append(f"Missing parameter library for {key}.")
+            continue
+        obj = next((obj for obj in objects if isinstance(obj, dict) and obj.get("type") == key),
+                   companions.get(key) or {})
+        rows, edits, problems = _normalize_parameters(obj, lib["rows"])
+        params.extend(dict(row, sector=key) for row in rows)
+        changed.extend(dict(row, sector=key) for row in edits)
+        errors.extend(f"{key}: {problem}" for problem in problems)
     # datasets: {"idis": ["10010"]} or the app's {"idis": {"selected": [...], "cuts": [...]}}
     ds_in, cuts_in = card.get("datasets") or {}, dict(card.get("cuts") or {})
     normalization_in = card.get("normalizations") or {}
@@ -1385,21 +1409,13 @@ def _normalize_card(card, library):
             normalizations[r][dataset_id] = {"value": nv, "min": nmin, "max": nmax, "fixed": nfixed}
         rc = cuts_in.get(r)
         if rc is None:
-            rc = CAMPAIGN_DEFAULTS["cuts"].get(r, [])
-        clean = []
-        for c in rc:
-            try:
-                c = {"variable": str(c["variable"]), "op": str(c.get("op", ">")),
-                     "value": float(c["value"]), "enabled": bool(c.get("enabled", True))}
-            except (KeyError, TypeError, ValueError):
-                errors.append(f'Reaction "{r}" has a cut with a non-numeric value.')
-                continue
-            if not c["variable"].isidentifier() or c["op"] not in (">", ">=", "<", "<="):
-                errors.append(f'Reaction "{r}" has an invalid cut {c["variable"]}{c["op"]}.')
-            clean.append(c)
-        if not any(c["enabled"] for c in clean):
-            errors.append(f'Reaction "{r}" must include at least one enabled cut.')
-        cuts[r] = clean
+            if r in PION_DATASETS and "pdf-pion" in library:
+                rc = object_registry.library_cuts(
+                    library["pdf-pion"]["datasets"][r].get("filters", []))
+            else:
+                rc = CAMPAIGN_DEFAULTS["cuts"].get(r, [])
+        cuts[r], problems = _normalize_cuts(r, rc, ids)
+        errors.extend(problems)
     for reaction, entries in normalizations.items():
         links = {dataset_id: p["fixed"] for dataset_id, p in entries.items() if isinstance(p["fixed"], str)}
         for start in links:
@@ -1412,7 +1428,8 @@ def _normalize_card(card, library):
                 seen.add(cur)
                 cur = links[cur]
     # QCD
-    q = {**CAMPAIGN_DEFAULTS["qcd"], **(card.get("qcd") or {})}
+    profile_defaults = library.get("pdf-pion", {}).get("defaults", {}) if "pdf-pion" in selected else {}
+    q = {**CAMPAIGN_DEFAULTS["qcd"], **profile_defaults.get("qcd", {}), **(card.get("qcd") or {})}
     try:
         q["Q20"] = float(q["Q20"])
         if q["Q20"] <= 0:
@@ -1438,7 +1455,7 @@ def _normalize_card(card, library):
             errors.append("Random seed must be an integer.")
     pi["perReplicaSeed"] = bool(pi.get("perReplicaSeed", True))
     # job
-    j = {**CAMPAIGN_DEFAULTS["job"], **(card.get("job") or {})}
+    j = {**CAMPAIGN_DEFAULTS["job"], **profile_defaults.get("job", {}), **(card.get("job") or {})}
     try:
         j["replicas"] = int(j["replicas"])
         if not 1 <= j["replicas"] <= 2000:
@@ -1480,25 +1497,46 @@ def _normalize_card(card, library):
     if sl["partition"] and not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", sl["partition"]):
         errors.append("Invalid partition name.")
     sl["partition_effective"] = sl["partition"] or (_auto_partition_seconds(secs) if secs else "")
-    norm = {"object": {"type": "pdf", "label": "Unpolarized PDF"}, "parameters_table": params,
+    normalized_objects = [{"type": key, "label": OBJECTS[key]["label"]} for key in selected]
+    norm = {"object": normalized_objects[0] if normalized_objects else {},
+            "objects": normalized_objects, "fit_objects": fitted, "frozen_objects": frozen,
+            "dis_version": object_registry.dis_version_for(fitted),
+            "library_sources": {key: {"source": library[key].get("source"),
+                                      "sha256": library[key].get("sha256")}
+                                for key in dict.fromkeys(fitted + frozen) if key in library},
+            "parameters_table": params,
             "parameters_changed": changed, "reactions": rx, "datasets": datasets, "normalizations": normalizations, "cuts": cuts,
             "qcd": q, "parameters": pi, "job": j, "slurm": sl}
+    if "pdf" in frozen and "pdf-pion" in library:
+        norm["library_sources"]["pdf"] = {key: library["pdf-pion"][key] for key in ("source", "sha256")}
     return norm, errors
 
 
 def _card_summary(norm):
-    free = [p["name"] for p in norm["parameters_table"] if not p["fixed"]]
-    fixed = [p["name"] for p in norm["parameters_table"] if p["fixed"]]
+    label = lambda p: (p.get("sector", "pdf") + ": " if len(norm.get("fit_objects", ["pdf"])) > 1 else "") + p["name"]
+    free = [label(p) for p in norm["parameters_table"] if not p["fixed"]]
+    fixed = [label(p) for p in norm["parameters_table"] if p["fixed"]]
     # Registry entries from before the library table have no parameters_changed.
-    changed = [p["name"] for p in norm.get("parameters_changed") or []]
-    return {"object": "Unpolarized PDF", "free_parameters": len(free), "fixed_parameters": len(fixed),
+    changed = [label(p) for p in norm.get("parameters_changed") or []]
+    objects = norm.get("objects") or [norm.get("object") or {"type": "pdf", "label": "Unpolarized PDF"}]
+    cuts = {}
+    for reaction, rows in norm["cuts"].items():
+        rendered = object_registry.cut_filters(rows)
+        cuts[reaction] = ([f'{dataset_id}: {expression}' for dataset_id, expressions in rendered.items()
+                           for expression in expressions] if isinstance(rendered, dict) else rendered)
+    return {"object": " + ".join(o["label"] for o in objects), "objects": objects,
+            "fit_objects": norm.get("fit_objects", ["pdf"]),
+            "frozen_objects": norm.get("frozen_objects", []),
+            "library_sources": norm.get("library_sources", {}),
+            "dis_version": object_registry.dis_version_for(norm.get("fit_objects", ["pdf"])),
+            "dis_compatibility": object_registry.DIS_COMPATIBILITY,
+            "free_parameters": len(free), "fixed_parameters": len(fixed),
             "fixed": fixed, "changed_parameters": changed, "reactions": norm["reactions"],
             "datasets": {r: len(v) for r, v in norm["datasets"].items()},
             "normalization_parameters": {
                 r: len(entries) for r, entries in norm.get("normalizations", {}).items() if entries},
             "normalizations": {r: entries for r, entries in norm.get("normalizations", {}).items() if entries},
-            "cuts": {r: [f'{c["variable"]}{c["op"]}{c["value"]:g}' for c in cs if c["enabled"]]
-                     for r, cs in norm["cuts"].items()},
+            "cuts": cuts,
             "qcd": norm["qcd"], "initialization": norm["parameters"]["initialization"],
             "inference": "ensemble (pseudo-data replicas)" if norm["job"]["bootstrap"]
                          else "central values only",
@@ -1516,9 +1554,10 @@ def _campaign_yaml(ws, folder, norm, nreplicas):
     init = "random_within_bounds" if pi["initialization"] == "random_within_bounds" else "default_prior"
     seed = pi["randomSeed"] if pi["randomSeed"] is not None else 120000
     # Only the rows the user changed; the card keeps the library's own for the rest.
-    sectors = [{"key": "pdf", "parameters": [
+    sectors = [{"key": key, "parameters": [
         {"name": p["name"], "value": p["value"], "min": p["min"], "max": p["max"], "fixed": p["fixed"]}
-        for p in norm["parameters_changed"]]}]
+        for p in norm["parameters_changed"] if p.get("sector", "pdf") == key]}
+        for key in norm.get("fit_objects", ["pdf"])]
     norm_params = []
     for reaction, entries in norm.get("normalizations", {}).items():
         for dataset_id, p in entries.items():
@@ -1533,14 +1572,18 @@ def _campaign_yaml(ws, folder, norm, nreplicas):
         "campaign": {"name": folder, "fitpack_root": ws, "template_path": CAMPAIGN_TEMPLATE,
                      "campaign_root": f"{ws}/{CAMPAIGNS_DIR}/{folder}", "default_qcd": qcd,
                      "seed_policy": {"mode": "deterministic", "base_seed": 120000}},
-        "stages": [{"name": STAGE, "reactions": norm["reactions"], "fit_objects": ["pdf"],
-                    "frozen_objects": [], "input_template": CAMPAIGN_TEMPLATE,
+        "stages": [{"name": STAGE, "reactions": norm["reactions"],
+                    "fit_objects": norm.get("fit_objects", ["pdf"]),
+                    "frozen_objects": norm.get("frozen_objects", []), "input_template": CAMPAIGN_TEMPLATE,
                     "nreplicas": nreplicas, "previous_stage": None, "output_dir": f"stages/{STAGE}",
                     "datasets": {r: [int(x) for x in ids] for r, ids in norm["datasets"].items()},
                     "cuts": norm["cuts"],
                     "params": {"initializationMode": init, "randomSeed": pi["randomSeed"],
                                "perReplicaSeed": pi["perReplicaSeed"], "baseSeed": seed,
-                               "sectors": sectors},
+                               "sectors": sectors, "selected_objects": norm.get("objects", [norm["object"]]),
+                               "compatibility": {"dis_version": object_registry.dis_version_for(
+                                   norm.get("fit_objects", ["pdf"])), "temporary": True},
+                               "library_sources": norm.get("library_sources", {})},
                     "qcd": qcd,
                     "job": {"replicas": nreplicas, "maxIterations": norm["job"]["maxIterations"],
                             "tolerance": norm["job"]["tolerance"], "optimizer": norm["job"]["optimizer"],
@@ -1661,7 +1704,6 @@ def use_ai_branch(username=""):
     if "SWITCHED" not in out:
         return {"status": "error", "workspace": ws, "message": "Could not check out the ai branch.",
                 "detail": out[-400:]}
-    _forget_library(u)
     return {"status": "ok", "workspace": ws, "message": "Switched the workspace to the FitPack ai branch."}
 
 
@@ -1698,18 +1740,29 @@ def _checked_card(u, card):
     return). validate_campaign and submit_campaign both use it, so the phrase
     and the submitted card come from one reading of the table."""
     try:
-        library, _ = _library_parameters(u)
-    except RuntimeError as e:
+        keys = [obj.get("type") for obj in _card_objects(card or {}) if isinstance(obj, dict)
+                and obj.get("type") in SELECTABLE_OBJECTS]
+        if "pdf-pion" in keys:
+            keys = list(dict.fromkeys(keys + ["p->pi,n", "pdf"]))
+        library = _object_libraries(u, keys)
+    except (RuntimeError, ValueError) as e:
         return None, {"status": "error", "valid": False, "message": str(e)}
     norm, errors = _normalize_card(card, library)
     if not errors:
         ws = _workspace(u)
+        for key, lib in library.items():
+            if key in norm["fit_objects"] + norm["frozen_objects"]:
+                for reaction in OBJECTS[key]["reactions"]:
+                    if reaction in norm["reactions"] and reaction not in lib["datasets"]:
+                        errors.append(f"The {key} library has no {reaction} dataset configuration.")
         checks = " ".join(f"{r}/expdata/{x}.xlsx" for r, ids in norm["datasets"].items() for x in ids)
         r = _remote(u, f"cd {_shq(ws)}/database 2>/dev/null && for f in {checks}; do "
                        f"[ -f \"$f\" ] || echo MISSING $f; done; "
                        f"[ -f {_shq(ws)}/{CAMPAIGN_TEMPLATE} ] || echo NOTEMPLATE; "
                        f"[ -f {_shq(ws)}/fitlib/ai.py ] || echo NOAI", timeout=60)
         out = r.get("out") or ""
+        if r.get("rc"):
+            errors.append("Could not check workspace inputs: " + (r.get("err") or out)[-500:])
         for m in re.findall(r"MISSING (\S+)", out):
             errors.append(f"No data file database/{m} in this workspace.")
         if "NOTEMPLATE" in out:
@@ -1744,7 +1797,7 @@ _DATA_CHECK = r'''
 import json, os
 import numpy as np
 import pandas as pd
-ws = __WS__; datasets = __DATASETS__; cuts = __CUTS__; report = __REPORT__
+ws = __WS__; datasets = __DATASETS__; cuts = __CUTS__; report = __REPORT__; dis_version = __DIS_VERSION__
 M = 0.93891897                      # the nucleon mass of qcdlib/aux.py
 M2 = M * M
 def idis(t):
@@ -1790,12 +1843,24 @@ for r, ids in datasets.items():
         out.append(d)
         try:
             t = pd.read_excel(os.path.join(ws, 'database', r, 'expdata', x + '.xlsx'))
+            if r in ('dy-pion', 'ln') or (r == 'idis' and dis_version == 0):
+                from tools.config import conf
+                from qcdlib.aux import AUX
+                from importlib import import_module
+                conf['aux'] = AUX()
+                conf['datasets'] = {r: {'filters': []}}
+                module = {'dy-pion': 'obslib.dypion.reader', 'ln': 'obslib.LeadingBaryon.reader',
+                          'idis': 'obslib.idis_V0.reader'}[r]
+                reader = import_module(module).READER()
+                reader.reaction, reader.cut_by_dataset = r, int(x)
+                t = reader.modify_table(t)
         except Exception as e:
             d['error'] = ' '.join(('%s: %s' % (type(e).__name__, e)).split())[:300]
             continue
         {'idis': idis, 'dy': dy}.get(r, lambda t: None)(t)
         applied, skipped = [], []
-        for f in cuts.get(r, []):
+        reaction_cuts = cuts.get(r, [])
+        for f in (reaction_cuts.get(str(x), []) if isinstance(reaction_cuts, dict) else reaction_cuts):
             try:
                 t = t.query(f)
                 applied.append(f)
@@ -1815,10 +1880,9 @@ def _data_warnings(u, norm):
     """Warnings about the data a card selects, which never block submission,
     and the points each dataset keeps after the cuts ({"idis:10005": 33});
     one container call for all datasets."""
-    cuts = {r: [f'{c["variable"]}{c["op"]}{c["value"]:g}' for c in cs if c["enabled"]]
-            for r, cs in norm["cuts"].items()}
+    cuts = {r: object_registry.cut_filters(cs) for r, cs in norm["cuts"].items()}
     code = _fill(_DATA_CHECK, WS=_workspace(u), DATASETS=norm["datasets"], CUTS=cuts,
-                 REPORT=_REPORT_COLUMNS)
+                 REPORT=_REPORT_COLUMNS, DIS_VERSION=object_registry.dis_version_for(norm["fit_objects"]))
     r = {}
     try:
         r = _run_ifarm_py(u, code, apptainer=True, timeout=120, cap=200000)
@@ -2091,7 +2155,8 @@ def list_campaigns(username=""):
                     "finished": finished, "succeeded": prog.get("succeeded"),
                     "not_fitted": not_fitted, "failed": prog.get("failed"),
                     "queue": q, "queued": queued, "reactions": e["input_card"]["reactions"],
-                    "datasets": e["input_card"]["datasets"]})
+                    "datasets": e["input_card"]["datasets"],
+                    "objects": e["input_card"].get("objects", [e["input_card"].get("object", {"type": "pdf"})])})
     queue = _slurm_queue(u)
     res = {"status": "ok", "campaigns": out, "count": len(out), "queue": queue}
     if queue is None or any(c["queued"] is None for c in out):
@@ -2259,6 +2324,7 @@ def postprocess_campaign(collection_id="", username=""):
              updated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     _registry(u, {"kind": "upsert", "entry": e})
     out = {"status": "ok", "collection_id": collection_id, "message": "Campaign postprocess completed.",
+           "objects": e["input_card"].get("objects", [e["input_card"].get("object", {"type": "pdf"})]),
            "summary": {k: agg[k] for k in agg if k != "chi2_per_dataset"}}
     if agg.get("not_fitted_replicas"):
         out["note"] = out["not_fitted_note"] = _not_fitted_note(agg["not_fitted_replicas"],
@@ -2290,6 +2356,7 @@ def campaign_summary(collection_id="", username=""):
                      "chi2_per_npt": v.get("chi2_per_npts"), "chi2_min": v.get("min"), "chi2_max": v.get("max")})
     rows.sort(key=lambda x: -(x["chi2_per_npt"] or 0))
     out = {"status": "ok", "collection_id": collection_id,
+           "objects": e["input_card"].get("objects", [e["input_card"].get("object", {"type": "pdf"})]),
            "summary": {k: agg[k] for k in agg if k != "chi2_per_dataset"}, "datasets": rows}
     prog, total, notes = _campaign_progress(u, e), int(e["replicas"]), []
     # A summary from before replicas that did not fit were counted apart may
@@ -2323,6 +2390,7 @@ def campaign_summary(collection_id="", username=""):
 _PDF_PLOTS = r'''
 import glob, json, os, base64
 stage = __STAGE__; flavors = __FLAVORS__; q2 = __Q2__; mean_overlay = __MEAN__
+object_key = __OBJECT__
 plot_dir = os.path.join(os.path.dirname(os.path.dirname(stage)), 'analysis', 'pdf_plots')
 os.makedirs(plot_dir, exist_ok=True)
 os.environ['MPLCONFIGDIR'] = os.path.join(plot_dir, '.matplotlib')
@@ -2342,7 +2410,7 @@ from tools.config import conf, load_config
 from tools.tools import load
 conf.clear(); load_config(os.path.join(stage, 'input.py'))
 resman = RESMAN(nworkers=1, parallel=False, datasets=False)
-pdf = conf['pdf']
+pdf = conf[object_key]
 xs = np.logspace(-3, np.log10(0.9), 120)
 curves = {f: [] for f in flavors}
 for s in records:
@@ -2351,7 +2419,7 @@ for s in records:
     if order is not None: resman.parman.order = order
     resman.parman.set_new_params(params, initial=True)
     for f in flavors:
-        curves[f].append([pdf.get_xF(float(x), q2, f) for x in xs])
+        curves[f].append([distribution_value(pdf, float(x), q2, f, object_key) for x in xs])
 resman.shutdown()
 names = {'ub': r'\bar{u}', 'db': r'\bar{d}', 'sb': r'\bar{s}'}
 out = []
@@ -2365,16 +2433,16 @@ for f in flavors:
         ax.plot(xs, arr.mean(axis=0), color='#111', lw=2.2, ls='--', label='mean'); ax.legend(frameon=False)
     ax.axhline(0, color='#64748b', lw=0.8, ls='--'); ax.set_xscale('log')
     ax.set_xlabel('$x$'); ax.set_ylabel('$x %s$' % names.get(f, f))
-    ax.set_title('%s PDF, %d replicas, $Q^2=%g$ GeV$^2$' % (f, len(arr), q2)); ax.grid(alpha=0.25, which='both')
-    path = os.path.join(plot_dir, 'pdf_%s_q2_%g_replicas.png' % (f, q2))
+    ax.set_title('%s %s, %d replicas, $Q^2=%g$ GeV$^2$' % (object_key, f, len(arr), q2)); ax.grid(alpha=0.25, which='both')
+    path = os.path.join(plot_dir, '%s_%s_q2_%g_replicas.png' % (object_key, f, q2))
     fig.tight_layout(); fig.savefig(path, dpi=110); plt.close(fig)
-    out.append({'flavor': f, 'path': path, 'n_replicas': int(len(arr)),
+    out.append({'object': object_key, 'flavor': f, 'path': path, 'n_replicas': int(len(arr)),
                 'png_b64': base64.b64encode(open(path, 'rb').read()).decode()})
 print(json.dumps({'status': 'success', 'plots': out}))
 '''
 
 
-def campaign_pdf_plots(collection_id="", flavors="u,d,g,s", q2=10.0, mean_overlay=True, username=""):
+def campaign_pdf_plots(collection_id="", flavors="", q2=10.0, mean_overlay=True, username="", object_key=""):
     """Draw the PDFs of every fitted replica at Q2 (View PDF Plots)."""
     u, err = _need_user(username)
     if err:
@@ -2382,15 +2450,21 @@ def campaign_pdf_plots(collection_id="", flavors="u,d,g,s", q2=10.0, mean_overla
     e = _collection(u, collection_id)
     if not e:
         return {"status": "error", "message": f"No campaign {collection_id!r}."}
-    fl = [f.strip() for f in (flavors or "").split(",") if f.strip() in ("g", "u", "d", "s", "ub", "db", "sb")]
-    if not fl:
-        return {"status": "error", "message": "flavors: a comma list of g, u, d, s, ub, db, sb"}
+    selected = [o["type"] for o in e["input_card"].get("objects", [e["input_card"].get("object", {"type": "pdf"})])]
+    object_key = object_key or ("pdf" if "pdf" in selected else selected[0])
+    if object_key not in selected or object_key not in SELECTABLE_OBJECTS:
+        return {"status": "error", "message": f"Select a fitted distribution object from {selected}."}
+    flavors = flavors or ("valence,sea,g" if object_key == "pdf-pion" else "u,d,g,s")
+    fl = list(dict.fromkeys(f.strip() for f in flavors.split(",") if f.strip()))
+    if not fl or any(f not in OBJECTS[object_key]["flavors"] for f in fl):
+        return {"status": "error", "message": f"flavors for {object_key}: {OBJECTS[object_key]['flavors']}"}
     try:
         q2 = float(q2)
-        assert q2 > 0
+        assert math.isfinite(q2) and q2 > 0
     except Exception:
         return {"status": "error", "message": "q2 must be a positive number"}
-    code = _fill(_PDF_PLOTS, STAGE=_stage_root(u, e), FLAVORS=fl, Q2=q2, MEAN=bool(mean_overlay))
+    code = inspect.getsource(object_registry) + _fill(
+        _PDF_PLOTS, STAGE=_stage_root(u, e), FLAVORS=fl, Q2=q2, MEAN=bool(mean_overlay), OBJECT=object_key)
     ws = _workspace(u)
     r = _run_ifarm_py(u, code, apptainer=True, timeout=600, cap=20000000,
                       env={"MPLCONFIGDIR": f"{ws}/{CAMPAIGNS_DIR}/.matplotlib"})
@@ -2400,9 +2474,9 @@ def campaign_pdf_plots(collection_id="", flavors="u,d,g,s", q2=10.0, mean_overla
         return {"status": "error", "message": "plotting failed", "detail": (r.get("err") or r.get("out") or "")[-600:]}
     if d.get("status") != "success":
         return {"status": d.get("status"), "message": d.get("message")}
-    plots = [{"flavor": p["flavor"], "path": p["path"], "n_replicas": p["n_replicas"],
+    plots = [{"object": object_key, "flavor": p["flavor"], "path": p["path"], "n_replicas": p["n_replicas"],
               "data_url": "data:image/png;base64," + p["png_b64"]} for p in d["plots"]]
-    return {"status": "ok", "collection_id": collection_id, "q2": q2,
+    return {"status": "ok", "collection_id": collection_id, "q2": q2, "object": object_key,
             "plots": [{k: v for k, v in p.items() if k != "data_url"} for p in plots],
             "_images": [{"data": p["png_b64"], "mimeType": "image/png"} for p in d["plots"]],
             "_panel_plots": plots}
@@ -2445,7 +2519,8 @@ def first(tab, *keys):
             except Exception: return str(v)
     return ''
 groups, points = {}, {}
-for reac, attr in (('idis', 'idis_res'), ('dy', 'dy_res'), ('wasym', 'wasym_res'), ('zrap', 'zrap_res'),
+for reac, attr in (('idis', 'idis_res'), ('dy', 'dy_res'), ('dy-pion', 'dy_pion_res'), ('ln', 'ln_res'),
+                   ('wasym', 'wasym_res'), ('zrap', 'zrap_res'),
                    ('wzrv', 'wzrv_res'), ('jet', 'jet_res'), ('wc', 'wc_res')):
     res = getattr(resman, attr, None)
     tabs = getattr(res, 'tabs', None)
@@ -2975,18 +3050,20 @@ TOOLS = {
                    "required": ["path"]},
         "fn": lambda a: use_workspace(a.get("path", ""))},
     "campaign_options": {
-        "desc": "The fit composer's choices, as in the JAM app: objects, the Unpolarized PDF "
-                "parameter table read from the workspace's examples/input02.py (the library: "
-                "block, parameter, FIXED/FREE, value, min, max; source names the file), the "
+        "desc": "The fit composer's choices: objects, proton parameters from examples/input02.py, "
+                "one-shape pion and LN parameters from the trusted final-fit input.npy reference "
+                "(block, parameter, FIXED/FREE/tied, value, min, max; source names the file), the "
                 "reactions, default cuts, QCD and job settings with their allowed values, and the "
-                "Slurm partitions. Needs the cluster chain and a workspace. Call it first and walk "
+                "Slurm partitions. Pion metadata also supplies its QCD/job defaults. Temporary "
+                "compatibility selects DIS 0 for fitted pion (including combined), otherwise 1. "
+                "Needs the cluster chain and a workspace. Call it first and walk "
                 "the user through each step.",
         "schema": {"type": "object", "properties": {}},
         "fn": lambda a: campaign_options()},
     "campaign_datasets": {
-        "desc": "The datasets of one reaction (idis or dy), grouped by experiment, with labels "
+        "desc": "The datasets of one reaction (idis, dy, dy-pion or ln), grouped by experiment, with labels "
                 "(experiment, observable, target). Optional search text. Nothing is preselected.",
-        "schema": {"type": "object", "properties": {"reaction": {"type": "string", "enum": ["idis", "dy"]},
+        "schema": {"type": "object", "properties": {"reaction": {"type": "string", "enum": sorted(ENABLED_REACTIONS)},
                                                     "search": {"type": "string"}},
                    "required": ["reaction"]},
         "fn": lambda a: campaign_datasets(a.get("reaction", "idis"), a.get("search", ""))},
@@ -2997,6 +3074,12 @@ TOOLS = {
         "fn": lambda a: use_ai_branch()},
     "validate_campaign": {
         "desc": "Create Input Card: validate the composer card and return the summary (free/fixed "
+                "parameters per object. Additive card.objects=[{type:'pdf',parameters:{}},"
+                "{type:'pdf-pion',parameters:{}}] selects one or both; card.companions={'p->pi,n':"
+                "{parameters:{...}}} edits the fitted leading-neutron companion. Legacy card.object "
+                "remains accepted. Parameter names are scoped to their object; pion second shapes "
+                "are excluded. Each reaction's cuts can be a list or a dataset-ID mapping of lists "
+                "(LN reference defaults: 1000 y<0.3, 2000 y<0.2). Summary reports "
                 "parameters (including optional equal_to links between PDF parameters), the ones changed from the library, datasets, cuts, QCD, job, and "
                 "points_after_cuts per dataset), the Slurm array script, the confirmation phrase and "
                 "warnings (a dataset with no points left after the cuts, a data file without a column "
@@ -3045,14 +3128,17 @@ TOOLS = {
     "campaign_pdf_plots": {
         "desc": "View PDF Plots: draw x f(x, Q2) of every fitted replica (flavors: comma list of "
                 "g, u, d, s, ub, db, sb; q2 in GeV^2; mean_overlay adds the mean and 68% band). "
-                "Returns the images.",
+                "object_key selects pdf or pdf-pion. Pion defaults are valence (ub-u), sea (u), g "
+                "in the native pi- convention. Returns the images.",
         "schema": {"type": "object", "properties": {"collection_id": {"type": "string"},
                                                     "flavors": {"type": "string"},
+                                                    "object_key": {"type": "string", "enum": list(SELECTABLE_OBJECTS)},
                                                     "q2": {"type": "number"},
                                                     "mean_overlay": {"type": "boolean"}},
                    "required": ["collection_id"]},
-        "fn": lambda a: campaign_pdf_plots(a.get("collection_id", ""), a.get("flavors", "u,d,g,s"),
-                                           a.get("q2", 10.0), a.get("mean_overlay", True))},
+        "fn": lambda a: campaign_pdf_plots(a.get("collection_id", ""), a.get("flavors", ""),
+                                           a.get("q2", 10.0), a.get("mean_overlay", True),
+                                           object_key=a.get("object_key", ""))},
     "analyze_by_experiment": {
         "desc": "Analysis by experiment: chi2/N of the best replica grouped by experiment (SLAC, "
                 "BCDMS, NMC, E866 ...) and, for the experiments named, data vs theory plots per "
@@ -3170,18 +3256,22 @@ INSTRUCTIONS = (
     "FitPack ai branch: offer use_ai_branch or a new workspace. A missing item without a fix (for "
     "example a workspace folder that no longer exists, or an ai-branch checkout without "
     "examples/input02.py): give the user its action; use_ai_branch does not help there.\n"
-    "3. Non-perturbative object and parameters: only Unpolarized PDF is available. "
-    "campaign_options returns the parameter table read from the workspace's "
-    "examples/input02.py (the library): FREE/FIXED, value, min, max. Ask which to change; "
+    "3. Non-perturbative objects and parameters: Unpolarized PDF, Pion PDF, or both. "
+    "campaign_options returns each object's library: FREE/FIXED/tied, value, min, max. "
+    "Pion follows its final-fit reference with strictly one shape; never add second-shape pion "
+    "parameters. Fitted pion temporarily selects DIS 0, including combined campaigns; otherwise 1. "
+    "Use objects:[{type,parameters},...] (legacy object is still accepted). Leading neutron adds "
+    "the fitted p->pi,n companion and a fixed proton pdf unless pdf is selected. Ask which to change; "
     "only changed rows are written into the card. A parameter switched to FREE needs a min "
-    "and max from the user. A parameter can also be set equal to another PDF parameter "
+    "and max from the user. A parameter can also be set equal to another parameter in the same object "
     "(equal_to): it then follows that parameter's value and is not fitted on its own.\n"
-    "4. Reactions: idis (DIS) or dy (Drell-Yan); the others are not available yet. Ask.\n"
+    "4. Reactions: idis or dy for proton PDF; dy-pion or ln for Pion PDF. Ask.\n"
     "5. Datasets and cuts: campaign_datasets per reaction, grouped by experiment; ask which "
     "ids. A dataset listed with a 'normalization' has a normalization parameter in the library: "
     "offer to keep it, change its value or range, set it FREE or FIXED, or make it equal to "
     "another selected dataset's normalization (normalizations in the card). Show the "
-    "reaction's cuts (e.g. Q2>1.69, W2>10) and ask whether to keep them.\n"
+    "reaction's cuts (e.g. Q2>1.69, W2>10) and ask whether to keep them. "
+    "Preserve dataset-specific cut mappings, including distinct H1 and ZEUS thresholds.\n"
     "6. QCD settings: order, Q20, TMC, higher twist, DGLAP mode, alphaS mode.\n"
     "7. Job config: campaign name, replicas, parameter initialization (library values or "
     "random within bounds), inference (ensemble of pseudo-data replicas or central values), "

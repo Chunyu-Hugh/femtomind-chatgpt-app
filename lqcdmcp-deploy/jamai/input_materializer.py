@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import shutil
 from pathlib import Path
 
+from .object_registry import cut_filters, dis_version_for, load_object_libraries
 from .stage_resolver import ResolvedStage
 
 
@@ -21,24 +23,23 @@ def copy_stage_input_template(template_path: str | Path, output_path: str | Path
     return str(dst)
 
 
-def _enabled_cuts(stage: ResolvedStage) -> dict[str, list[str]]:
+def _enabled_cuts(stage: ResolvedStage) -> dict:
     # {'idis': [{'variable': 'Q2', 'op': '>', 'value': 1.69, 'enabled': True}]}
     # -> {'idis': ['Q2>1.69']}, the filter strings FitPack readers apply.
     # Only reactions in the stage, only enabled cuts, only plain comparisons.
-    out: dict[str, list[str]] = {}
+    out = {}
     for reaction in stage.reactions:
-        cuts = (stage.cuts or {}).get(reaction) or []
-        filters = []
-        for cut in cuts:
-            if not isinstance(cut, dict) or not cut.get('enabled', True):
+        if reaction in (stage.cuts or {}):
+            filters = cut_filters(stage.cuts[reaction])
+            if isinstance(filters, dict):
+                missing = set(map(str, stage.datasets.get(reaction, []))) - filters.keys()
+                if missing:
+                    raise ValueError(f'{reaction}: missing cuts for datasets {sorted(missing)}')
+            if not filters:
                 continue
-            variable = str(cut.get('variable') or '').strip()
-            op = str(cut.get('op') or '').strip()
-            if not variable.isidentifier() or op not in ('>', '>=', '<', '<='):
-                raise ValueError(f'Invalid cut for {reaction}: {cut!r}')
-            filters.append(f'{variable}{op}{float(cut.get("value")):g}')
-        if filters:
-            out[reaction] = filters
+            out[reaction] = ({int(key): value for key, value in filters.items()
+                              if int(key) in stage.datasets.get(reaction, [])}
+                             if isinstance(filters, dict) else filters)
     return out
 
 
@@ -71,9 +72,10 @@ def _render_stage_override_block(stage: ResolvedStage) -> str:
             parameter_name = str(parameter.get('name') or '').strip()
             if not parameter_name:
                 continue
-            # Regular PDF parameter overrides are keyed by the parameter name as
-            # it appears inside the FitPack input card.
-            parameter_overrides[parameter_name] = {
+            if sector_key == 'pdf-pion' and parameter_name.partition(' ')[0].endswith('2'):
+                raise ValueError(f'Second-shape pion parameter is not allowed: {parameter_name}')
+            # Parameter names are only unique within their FitPack sector.
+            parameter_overrides.setdefault(sector_key, {})[parameter_name] = {
                 'value': parameter.get('value'),
                 'min': parameter.get('min'),
                 'max': parameter.get('max'),
@@ -99,17 +101,20 @@ def _render_stage_override_block(stage: ResolvedStage) -> str:
         "_FREEZE_OBJECT_PARAMS = lambda _params: [(_entry.__setitem__('fixed', True) if isinstance(_entry, dict) and (_entry.get('fixed') is False or 'fixed' not in _entry) else None) for _entry in _params.values()] if isinstance(_params, dict) else None",
         "for _reaction in list(_DATASET_CONF.keys()): _DATASET_CONF.pop(_reaction, None) if _reaction not in _ALLOWED_REACTIONS else None",
         "for _reaction in _ALLOWED_REACTIONS: _dataset_entry = _DATASET_CONF.get(_reaction, {}); _dataset_ids = _STAGE_DATASETS.get(_reaction, []); _allowed_ids = set(_dataset_ids) if isinstance(_dataset_ids, (list, tuple, set)) else set(); _FILTER_STAGE_MAPPING(_dataset_entry.get('xlsx') if isinstance(_dataset_entry, dict) else None, _allowed_ids); _FILTER_STAGE_MAPPING(_dataset_entry.get('norm') if isinstance(_dataset_entry, dict) else None, _allowed_ids)",
+        "assert all(_key in _ACTIVE_FIT_OBJECTS for _key in _PARAMETER_OVERRIDES), 'Cannot override inactive object'",
+        "for _object_name, _overrides in _PARAMETER_OVERRIDES.items(): [conf['params'][_object_name][_param_name].update(_override) for _param_name, _override in _overrides.items()]",
         "for _object_name, _object_params in list(conf.get('params', {}).items()): _FREEZE_OBJECT_PARAMS(_object_params) if _object_name not in _ACTIVE_FIT_OBJECTS else None",
-        "_PDF_PARAMS = conf.get('params', {}).get('pdf', {}) if isinstance(conf.get('params', {}), dict) else {}",
-        "for _param_name, _override in _PARAMETER_OVERRIDES.items(): _entry = _PDF_PARAMS.get(_param_name); _entry.update({'value': _override.get('value'), 'min': _override.get('min'), 'max': _override.get('max'), 'fixed': _override.get('fixed')}) if isinstance(_entry, dict) else None",
-        "for _reaction, _dataset_overrides in _NORM_OVERRIDES.items(): _norm_entries = (_DATASET_CONF.get(_reaction, {}) if isinstance(_DATASET_CONF.get(_reaction, {}), dict) else {}).get('norm', {}); [(_norm_entries.get(int(_dataset_id), {}).update({'value': _override.get('value'), 'min': _override.get('min'), 'max': _override.get('max'), 'fixed': _override.get('fixed')}) if isinstance(_norm_entries.get(int(_dataset_id)), dict) else None) for _dataset_id, _override in _dataset_overrides.items()]",
+        "for _reaction, _dataset_overrides in _NORM_OVERRIDES.items(): _norm_entries = _DATASET_CONF.setdefault(_reaction, {}).setdefault('norm', {}); [_norm_entries.setdefault(int(_dataset_id), {}).update(_override) for _dataset_id, _override in _dataset_overrides.items()]",
         # FemtoMind gateway additions. Upstream only removed datasets from the
         # template, so a dataset the template does not list was silently
         # dropped; selected ids are added here with the repository's data path.
         f'_STAGE_CUTS = {_enabled_cuts(stage)!r}',
         "for _reaction in _ALLOWED_REACTIONS: _dataset_entry = _DATASET_CONF.setdefault(_reaction, {}); _xlsx = _dataset_entry.setdefault('xlsx', {}); [_xlsx.setdefault(int(_dataset_id), '%s/expdata/%d.xlsx' % (_reaction, int(_dataset_id))) for _dataset_id in _STAGE_DATASETS.get(_reaction, [])]",
         # Upstream carried the cuts in the manifest but never wrote them.
-        "for _reaction, _filters in _STAGE_CUTS.items(): _DATASET_CONF.setdefault(_reaction, {})['filters'] = list(_filters)",
+        "for _reaction, _filters in _STAGE_CUTS.items(): _DATASET_CONF.setdefault(_reaction, {})['filters'] = _filters",
+        "# Temporary app compatibility policy; remove when pion PDFs support IDIS v1.",
+        "conf.pop('dis_version', None)",
+        f"conf['dis version'] = {dis_version_for(stage.effective_fit_objects)!r}",
         f"conf['order'] = {stage.qcd.get('order', 'NLO')!r}",
         f"conf['Q20'] = {stage.qcd.get('Q20', 1.6129)!r}",
         f"conf['ftol'] = {stage.qcd.get('ftol', 1.0e-6)!r}",
@@ -131,12 +136,40 @@ def _render_stage_override_block(stage: ResolvedStage) -> str:
     return '\n'.join(lines)
 
 
-def materialize_stage_input(template_path: str | Path, output_path: str | Path, stage: ResolvedStage) -> str:
-    # Copy template first, append overrides second, and return the final input.py
-    # path that Slurm/JAM can execute.
+def materialize_stage_input(template_path: str | Path, output_path: str | Path, stage: ResolvedStage,
+                            fitpack_root: str | Path | None = None) -> str:
+    # Validate sources before copying, then compose the single final input.
+    fragments = []
+    overrides = _render_stage_override_block(stage)
+    for key, source in stage.params.get('library_sources', {}).items():
+        if source.get('source') and source.get('sha256'):
+            actual = hashlib.sha256(Path(source['source']).read_bytes()).hexdigest()
+            if actual != source['sha256']:
+                raise ValueError(f'{key} library changed since validation; validate the card again')
+    additional = [key for key in ('pdf-pion', 'p->pi,n')
+                  if key in stage.fit_objects or key in stage.frozen_objects]
+    if additional:
+        root = fitpack_root or Path(template_path).resolve().parent.parent
+        source = stage.params.get('library_sources', {}).get('pdf-pion', {})
+        libraries = load_object_libraries(root, additional, pion_reference=source.get('source'))
+        for key, library in libraries.items():
+            fragments.extend([
+                f'\n# {key} library: {library["source"]} (sha256 {library["sha256"]})',
+                f"conf['params'][{key!r}] = {library['params']!r}",
+            ])
+            fragments.extend(f'conf[{name!r}] = {value!r}'
+                             for name, value in library['settings'].items())
+            fragments.extend(f"conf['datasets'][{reaction!r}] = {dataset!r}"
+                             for reaction, dataset in library['datasets'].items()
+                             if reaction in stage.reactions)
+        if 'pdf-pion' in libraries and 'pdf' not in stage.effective_fit_objects:
+            fragments.append(f"conf['params']['pdf'] = {libraries['pdf-pion']['fixed_companions']['pdf']!r}")
+        if 'ln' in stage.reactions:
+            fragments.append(f"conf['path2idistab'] = {str(Path(root) / 'grids' / 'grids-idis' / 'distab')!r}")
     output_file = Path(copy_stage_input_template(template_path, output_path))
     with output_file.open('a', encoding='utf-8') as f:
-        f.write(_render_stage_override_block(stage))
+        f.write('\n'.join(fragments))
+        f.write(overrides)
     return str(output_file)
 
 

@@ -299,21 +299,22 @@
       <div class="steps" id="cSteps"></div>
 
       <div class="panel" data-step="object">
-        <div class="label">Non-perturbative object</div>
+        <div class="label">Non-perturbative objects (select one or more)</div>
         <div class="objgrid" id="objectList"></div>
-        <div class="card inner" id="paramCard">
-          <div class="label">Unpolarized PDF parameter details</div>
+        <div id="paramCards"></div>
+        <template id="paramTemplate"><div class="card inner">
+          <div class="label" data-role="title"></div>
           <div class="pgrid2">
-            <div class="pinfo" id="paramInfo"></div>
+            <div class="pinfo" data-role="info"></div>
             <div>
-              <div class="kv" id="paramCounts"></div>
+              <div class="kv" data-role="counts"></div>
               <div class="tblwrap"><table class="tbl ptbl"><thead><tr><th>Block</th><th>Parameter</th><th>Status</th>
-                <th>Equal to</th><th>Value</th><th>Min</th><th>Max</th></tr></thead><tbody id="paramRows"></tbody></table></div>
-              <div class="hint" id="paramHint"></div>
-              <div class="actions"><button class="btn sm" id="paramReset">Reset to library values</button></div>
+                <th>Equal to</th><th>Value</th><th>Min</th><th>Max</th></tr></thead><tbody data-role="rows"></tbody></table></div>
+              <div class="hint" data-role="hint"></div>
+              <div class="actions"><button class="btn sm" data-role="reset">Reset to library values</button></div>
             </div>
           </div>
-        </div>
+        </div></template>
       </div>
 
       <div class="panel" data-step="reactions">
@@ -431,6 +432,7 @@
       </div>
       <div id="caPdfBox" class="subbox" style="display:none">
         <div class="plot-controls">
+          <div class="pc"><span class="label">Distribution object</span><select id="caObject"></select></div>
           <div class="pc"><span class="label">Flavors</span><div class="flavs" id="caFlavs"></div></div>
           <div class="pc"><span class="label">Q² (GeV²)</span><input type="number" step="any" id="caQ2" value="10" style="width:110px"></div>
           <div class="pc"><label class="inline"><input type="checkbox" id="caMean" checked> Mean and 68% band</label></div>
@@ -953,14 +955,43 @@
 
   function freshCard(){
     const d = opts.defaults;
-    return {object: {type: "", parameters: {}}, reactions: [], datasets: {}, normalizations: {},
+    return {objects: [], companions: {}, reactions: [], datasets: {}, normalizations: {},
             cuts: JSON.parse(JSON.stringify(d.cuts)), qcd: {...d.qcd}, parameters: {...d.parameters},
-            job: {...d.job}, slurm: {...d.slurm}};
+            job: {...d.job}, slurm: {...d.slurm}, defaultEdits: {},
+            pionReference: opts.parameters["pdf-pion"]?.sha256};
+  }
+  function applyObjectDefaults(wasPion){
+    const pion = opts.parameters["pdf-pion"]?.defaults || {};
+    const isPion = card.objects.some(o=>o.type === "pdf-pion");
+    ["qcd", "job"].forEach(group=>Object.keys(pion[group] || {}).forEach(key=>{
+      const previous = wasPion ? pion[group][key] : opts.defaults[group][key];
+      const current = card[group][key];
+      if (!card.defaultEdits?.[group+"."+key] && String(current) === String(previous))
+        card[group][key] = isPion ? pion[group][key] : opts.defaults[group][key];
+    }));
+  }
+  function editDefault(group, key, value){
+    card.defaultEdits = card.defaultEdits || {};
+    card.defaultEdits[group+"."+key] = true;
+    card[group][key] = value; saveCard();
+  }
+  function stalePionProfile(){
+    return card.objects.some(o=>o.type === "pdf-pion") &&
+      card.pionReference !== opts.parameters["pdf-pion"]?.sha256;
   }
   function saveCard(){ cardRev++; validated = null; $("submitErr").textContent = ""; paintValidation(); persist(); }
-  function paramRows(){
-    const rows = opts.parameters.pdf.rows;
-    return rows.map(r=>({...r, ...(card.object.parameters[r.name] || {})}));
+  function objectCard(key){
+    return card.objects.find(o=>o.type === key) ||
+      (card.companions[key] = card.companions[key] || {parameters: {}});
+  }
+  function paramRows(key){
+    const edits = objectCard(key).parameters;
+    return opts.parameters[key].rows.map(r=>{
+      const ov = edits[r.name] || {}, row = {...r, ...ov};
+      if (ov.fixed !== undefined) row.tied_to = typeof ov.fixed === "string" ? ov.fixed : null;
+      row.equal_to = row.tied_to || (typeof row.fixed === "string" ? row.fixed : "");
+      return row;
+    });
   }
   // What of a parameter edit still differs from its library row. A FIXED row's
   // min and max cannot be edited, so it keeps the library's; a tied row that
@@ -970,15 +1001,15 @@
     if (cur.equal_to == null) delete cur.equal_to;
     if (cur.fixed === undefined ? base.fixed : cur.fixed){
       delete cur.min; delete cur.max;
-      if (base.tied_to) delete cur.value;
+      if (base.tied_to || typeof cur.fixed === "string") delete cur.value;
     }
     Object.keys(cur).forEach(k=>{ if (cur[k] === base[k]) delete cur[k]; });
     return cur;
   }
-  function setParam(name, patch){
-    const base = opts.parameters.pdf.rows.find(r=>r.name === name);
-    const cur = cleanEdit(base, {...(card.object.parameters[name] || {}), ...patch});
-    if (Object.keys(cur).length) card.object.parameters[name] = cur; else delete card.object.parameters[name];
+  function setParam(key, name, patch){
+    const base = opts.parameters[key].rows.find(r=>r.name === name), edits = objectCard(key).parameters;
+    const cur = cleanEdit(base, {...(edits[name] || {}), ...patch});
+    if (Object.keys(cur).length) edits[name] = cur; else delete edits[name];
     saveCard();
   }
   function renderCSteps(){
@@ -996,37 +1027,74 @@
     opts.objects.forEach(o=>{
       const el = document.createElement("label");
       el.className = "opt"+(o.enabled ? "" : " disabled");
-      el.innerHTML = '<span class="inline"><input type="checkbox" '+(o.value === card.object.type ? "checked " : "")+(o.enabled ? "" : "disabled")+'> '
-        + esc(o.label)+'</span>'+(o.enabled ? "" : '<span class="bp">BLUEPRINT</span>');
-      // nothing is preselected: the user ticks the object (one at a time)
+      el.innerHTML = '<span class="inline"><input type="checkbox" '+(card.objects.some(x=>x.type === o.value) ? "checked " : "")+(o.enabled ? "" : "disabled")+'> '
+        + esc(o.label)+'</span>'+(o.enabled ? "" : '<span class="bp">'+(o.reason ? "UNAVAILABLE" : "BLUEPRINT")+'</span>')
+        + (o.reason ? '<span class="hint">'+esc(o.reason)+'</span>' : '');
       if (o.enabled) el.querySelector("input").onchange = (e)=>{
-        card.object.type = e.target.checked ? o.value : "";
-        saveCard(); renderObjects(); renderParams();
+        const wasPion = card.objects.some(x=>x.type === "pdf-pion");
+        if (e.target.checked) card.objects.push({type: o.value, parameters: {}});
+        else card.objects = card.objects.filter(x=>x.type !== o.value);
+        applyObjectDefaults(wasPion);
+        card.reactions = card.reactions.filter(rk=>reactionAvailable(opts.reactions.find(r=>r.key === rk)));
+        if (!card.reactions.includes("ln")) card.companions = {};
+        saveCard(); renderObjects(); renderParams(); renderReactions(); renderQcd(); renderJob();
       };
       c.appendChild(el);
     });
   }
   const needsRange = r=>!r.fixed && (r.min == null || r.max == null);
-  function paintParamCounts(rows){
+  function paintParamCounts(key, el, rows){
     const free = rows.filter(r=>!r.fixed).length;
-    $("paramCounts").innerHTML = '<span>Free <b>'+free+'</b></span><span>Fixed <b>'+(rows.length - free)+'</b></span>'
-      + '<span>Changed from the library <b>'+Object.keys(card.object.parameters).length+'</b></span>';
+    el.innerHTML = '<span>Free <b>'+free+'</b></span><span>Fixed <b>'+(rows.length - free)+'</b></span>'
+      + '<span>Changed from the library <b>'+Object.keys(objectCard(key).parameters).length+'</b></span>';
   }
   function renderParams(){
-    $("paramCard").style.display = card.object.type === "pdf" ? "" : "none";
-    const p = opts.parameters.pdf;
-    $("paramInfo").innerHTML = '<b>Fit basis parameter blocks</b>'+esc(p.fit_basis_blocks.join(", "))
+    const container = $("paramCards"); container.innerHTML = "";
+    const keys = card.objects.map(o=>o.type);
+    if (stalePionProfile()){
+      container.innerHTML = '<div class="note warn">This draft predates the current one-shape pion reference. Review it before validation. '
+        + '<button class="btn sm" id="resetPionReference">Use current reference (reset pion edits, cuts and defaults)</button></div>';
+      $("resetPionReference").onclick = ()=>{
+        objectCard("pdf-pion").parameters = {}; card.companions = {};
+        ["dy-pion", "ln"].forEach(r=>{
+          card.cuts[r] = JSON.parse(JSON.stringify(opts.defaults.cuts[r]));
+          delete card.normalizations[r];
+        });
+        const defaults = opts.parameters["pdf-pion"].defaults;
+        ["qcd", "job"].forEach(group=>Object.entries(defaults[group]).forEach(([key, value])=>{
+          card[group][key] = value;
+          if (card.defaultEdits) delete card.defaultEdits[group+"."+key];
+        }));
+        card.pionReference = opts.parameters["pdf-pion"].sha256;
+        saveCard(); renderComposer();
+      };
+    }
+    if (keys.includes("pdf-pion") && card.reactions.includes("ln")){
+      keys.push("p->pi,n");
+      if (!keys.includes("pdf")) container.insertAdjacentHTML("beforeend",
+        '<div class="note">Proton PDF is a fixed companion from '+esc(opts.parameters["pdf-pion"].source)+' for leading-neutron data.</div>');
+    }
+    keys.forEach(key=>renderParameterCard(key, container));
+  }
+  function renderParameterCard(key, container){
+    const p = opts.parameters[key];
+    if (!p){ container.insertAdjacentHTML("beforeend", '<div class="note warn">Missing library for '+esc(key)+'</div>'); return; }
+    const el = $("paramTemplate").content.firstElementChild.cloneNode(true);
+    el.dataset.object = key; container.appendChild(el);
+    const part = role=>el.querySelector('[data-role="'+role+'"]');
+    part("title").textContent = (opts.objects.find(o=>o.value === key) || {label: "Leading-neutron companion"}).label+" parameter details";
+    part("info").innerHTML = '<b>Fit basis parameter blocks</b>'+esc(p.fit_basis_blocks.join(", "))
       + '<b>Auxiliary / inactive blocks</b>'+esc(p.auxiliary_blocks.join(", "))
-      + '<b>Parametrization form</b>'+esc(p.parametrization)+'<b>Construction note</b>'+esc(p.note);
-    const rows = paramRows();
-    paintParamCounts(rows);
-    $("paramHint").textContent = "Tick a parameter to keep it FIXED at its value; untick it to fit it (FREE, within min and max). Use Equal to when two parameters must share one value. "
+      + '<b>Library model</b>'+esc(p.parametrization)+'<b>Construction note</b>'+esc(p.note);
+    const rows = paramRows(key);
+    paintParamCounts(key, part("counts"), rows);
+    part("hint").textContent = "Tick a parameter to keep it FIXED at its value; untick it to fit it (FREE, within min and max). Use Equal to when two parameters in this object must share one value. "
       + "Values, ranges and FREE/FIXED come from "+(p.source || "examples/input02.py")
       + " (the library). Only the rows you change are written into the generated card.";
     const num = v=>v == null ? "" : String(v);
     // A freed parameter gets no invented range: its min and max stay empty until the user sets them.
     // A tied parameter takes the value of the one it is tied to, so its value is not edited here.
-    $("paramRows").innerHTML = rows.map(r=>{ const tied = r.fixed && r.tied_to;
+    part("rows").innerHTML = rows.map(r=>{ const tied = r.fixed && r.tied_to;
       const equalTo = r.equal_to || r.tied_to || "";
       const candidates = rows.filter(x=>x.name !== r.name).map(x=>'<option value="'+esc(x.name)+'"'+(x.name === equalTo ? " selected" : "")+'>'+esc(x.name)+'</option>').join("");
       // Status: a checkbox (ticked = FIXED, the library's value is kept); a row set
@@ -1040,28 +1108,32 @@
       + '<td><input data-k="value" value="'+esc(num(r.value))+'"'+(tied || equalTo ? " disabled" : "")+'></td>'
       + '<td><input data-k="min" value="'+esc(num(r.min))+'"'+(r.fixed || equalTo ? " disabled" : "")+'></td>'
       + '<td><input data-k="max" value="'+esc(num(r.max))+'"'+(r.fixed || equalTo ? " disabled" : "")+'></td></tr>'; }).join("");
-    $("paramRows").querySelectorAll("tr").forEach(tr=>{
+    part("rows").querySelectorAll("tr").forEach(tr=>{
       const name = tr.dataset.n;
       // An edit repaints only its row's hint and the counts: rebuilding the table
       // would drop the field that Tab is moving the focus to.
       tr.querySelectorAll("input, select").forEach(inp=>inp.onchange = ()=>{
-        if (inp.dataset.k === "fixed"){ setParam(name, {fixed: inp.checked}); renderParams(); return; }
+        if (inp.dataset.k === "fixed"){ setParam(key, name, {fixed: inp.checked, equal_to: null}); renderParams(); return; }
         if (inp.dataset.k === "equal_to"){
           const target = inp.value;
-          const base = opts.parameters.pdf.rows.find(x=>x.name === name);
-          setParam(name, target ? {fixed: target, equal_to: target} : {fixed: base.fixed, equal_to: null});
+          const base = opts.parameters[key].rows.find(x=>x.name === name);
+          setParam(key, name, target ? {fixed: target, equal_to: target} : {fixed: base.tied_to ? false : base.fixed, equal_to: null});
           renderParams();
           return;
         }
         const v = inp.value.trim() === "" ? null : Number(inp.value);
         if (inp.value.trim() !== "" && !isFinite(v)){ inp.style.borderColor = "var(--warn)"; return; }
-        inp.style.borderColor = ""; setParam(name, {[inp.dataset.k]: v});
-        const now = paramRows();
+        inp.style.borderColor = ""; setParam(key, name, {[inp.dataset.k]: v});
+        const now = paramRows(key);
         tr.querySelector(".need").style.display = needsRange(now.find(x=>x.name === name)) ? "" : "none";
-        paintParamCounts(now); });
+        paintParamCounts(key, part("counts"), now); });
     });
+    part("reset").onclick = ()=>{ objectCard(key).parameters = {}; saveCard(); renderParams(); };
   }
-  $("paramReset").onclick = ()=>{ card.object.parameters = {}; saveCard(); renderParams(); };
+
+  function reactionAvailable(r){
+    return r && r.enabled && (r.objects || ["pdf"]).some(key=>card.objects.some(o=>o.type === key));
+  }
 
   async function loadDatasets(rk){
     if (dsCache[rk]) return dsCache[rk];
@@ -1072,6 +1144,7 @@
   function renderReactions(){
     const c = $("rxList"); c.innerHTML = "";
     opts.reactions.forEach(r=>{
+      r = {...r, needsObject: r.enabled && !reactionAvailable(r), enabled: reactionAvailable(r)};
       const rk = r.key, on = card.reactions.includes(rk);
       const v = rxView[rk] = rxView[rk] || {open: on, tab: "datasets", search: ""};
       const box = document.createElement("div"); box.className = "rx"+(r.enabled ? "" : " off");
@@ -1079,12 +1152,13 @@
       box.innerHTML = '<div class="rxhead"><label class="inline"><input type="checkbox" class="rxon"'+(on ? " checked" : "")+(r.enabled ? "" : " disabled")+'> '
         + '<b>'+esc(r.label)+'</b></label><span class="muted mono" style="font-size:11px">'+esc(rk)+'</span><span class="sp"></span>'
         + (r.enabled ? (on ? '<span class="muted" style="font-size:12px">'+nsel+' selected</span> <button class="btn sm rxopen">'+(v.open ? "Hide" : "Show")+'</button>' : '')
-                     : '<span class="bp">BLUEPRINT</span>')+'</div><div class="rxbody"></div>';
+                     : '<span class="bp">'+(r.needsObject ? "SELECT ITS OBJECT" : "BLUEPRINT")+'</span>')+'</div><div class="rxbody"></div>';
       const cb = box.querySelector(".rxon");
       if (r.enabled) cb.onchange = ()=>{
         if (cb.checked){ card.reactions.push(rk); v.open = true; if (!card.cuts[rk]) card.cuts[rk] = JSON.parse(JSON.stringify(opts.defaults.cuts[rk] || [])); }
         else { card.reactions = card.reactions.filter(x=>x !== rk); delete card.datasets[rk]; }
-        saveCard(); renderReactions();
+        if (!card.reactions.includes("ln")) card.companions = {};
+        saveCard(); renderReactions(); renderParams();
       };
       const ob = box.querySelector(".rxopen"); if (ob) ob.onclick = ()=>{ v.open = !v.open; renderReactions(); };
       c.appendChild(box);
@@ -1173,18 +1247,24 @@
   }
   function renderCuts(rk, pane){
     const cuts = card.cuts[rk] = card.cuts[rk] || [];
-    pane.innerHTML = cuts.map((c,i)=>'<div class="cutrow" data-i="'+i+'"><input type="checkbox" data-k="enabled"'+(c.enabled ? " checked" : "")+'>'
+    const groups = Array.isArray(cuts) ? [["", cuts]] : (card.datasets[rk] || []).map(id=>[id, cuts[id] = cuts[id] || []]);
+    pane.innerHTML = groups.map(([id, rows])=>'<div data-cut-group="'+esc(id)+'">'
+      + (id ? '<b>Dataset '+esc(id)+' '+esc(dsCache[rk]?.experiments.flatMap(g=>g.datasets).find(d=>d.id === id)?.label || "")+'</b>' : "")
+      + rows.map((c,i)=>'<div class="cutrow" data-i="'+i+'"><input type="checkbox" data-k="enabled"'+(c.enabled ? " checked" : "")+'>'
       + '<input type="text" data-k="variable" value="'+esc(c.variable)+'"><select data-k="op">'+[">", ">=", "<", "<="].map(o=>'<option'+(o === c.op ? " selected" : "")+'>'+esc(o)+'</option>').join("")+'</select>'
       + '<input type="number" step="any" data-k="value" value="'+esc(c.value)+'"><button class="btn sm" data-del="1">Remove</button></div>').join("")
-      + '<div class="actions"><button class="btn sm" data-add="1">Add cut</button></div>'
-      + '<div class="hint">Kinematic filters written into the card for '+esc(rk)+', e.g. Q2 &gt; 1.69 and W2 &gt; 10. At least one must be enabled.</div>';
-    pane.querySelectorAll(".cutrow").forEach(row=>{
-      const c = cuts[+row.dataset.i];
-      row.querySelectorAll("[data-k]").forEach(inp=>inp.onchange = ()=>{
-        const k = inp.dataset.k; c[k] = k === "enabled" ? inp.checked : (k === "value" ? Number(inp.value) : inp.value.trim()); saveCard(); });
-      row.querySelector("[data-del]").onclick = ()=>{ cuts.splice(+row.dataset.i, 1); saveCard(); renderCuts(rk, pane); };
+      + '<div class="actions"><button class="btn sm" data-add="1">Add cut</button></div></div>').join("")
+      + '<div class="hint">Kinematic filters for '+esc(rk)+'. At least one must be enabled for each selected dataset.</div>';
+    pane.querySelectorAll("[data-cut-group]").forEach(group=>{
+      const rows = Array.isArray(cuts) ? cuts : cuts[group.dataset.cutGroup];
+      group.querySelectorAll(".cutrow").forEach(row=>{
+        const c = rows[+row.dataset.i];
+        row.querySelectorAll("[data-k]").forEach(inp=>inp.onchange = ()=>{
+          const k = inp.dataset.k; c[k] = k === "enabled" ? inp.checked : (k === "value" ? Number(inp.value) : inp.value.trim()); saveCard(); });
+        row.querySelector("[data-del]").onclick = ()=>{ rows.splice(+row.dataset.i, 1); saveCard(); renderCuts(rk, pane); };
+      });
+      group.querySelector("[data-add]").onclick = ()=>{ rows.push({variable: "Q2", op: ">", value: 1, enabled: true}); saveCard(); renderCuts(rk, pane); };
     });
-    pane.querySelector("[data-add]").onclick = ()=>{ cuts.push({variable: "Q2", op: ">", value: 1, enabled: true}); saveCard(); renderCuts(rk, pane); };
   }
   function fillSelect(id, values, current){
     $(id).innerHTML = values.map(v=>'<option value="'+esc(v)+'"'+(String(v) === String(current) ? " selected" : "")+'>'+esc(v)+'</option>').join("");
@@ -1195,8 +1275,8 @@
     fillSelect("qDglap", ch.dglapMode, q.dglapMode); fillSelect("qAs", ch.asMode, q.asMode);
     $("qQ20").value = q.Q20; $("qHT").checked = !!q.higherTwist;
   }
-  [["qOrder","order"],["qTmc","tmc"],["qDglap","dglapMode"],["qAs","asMode"]].forEach(([id,k])=>$(id).onchange = ()=>{ card.qcd[k] = $(id).value; saveCard(); });
-  $("qQ20").onchange = ()=>{ card.qcd.Q20 = Number($("qQ20").value); saveCard(); };
+  [["qOrder","order"],["qTmc","tmc"],["qDglap","dglapMode"],["qAs","asMode"]].forEach(([id,k])=>$(id).onchange = ()=>editDefault("qcd", k, $(id).value));
+  $("qQ20").onchange = ()=>editDefault("qcd", "Q20", Number($("qQ20").value));
   $("qHT").onchange = ()=>{ card.qcd.higherTwist = $("qHT").checked; saveCard(); };
   function renderJob(){
     const j = card.job, p = card.parameters, s = card.slurm;
@@ -1216,8 +1296,8 @@
   document.querySelectorAll("input[name=pinit]").forEach(r=>r.onchange = ()=>{ card.parameters.initialization = r.value; saveCard(); renderJob(); });
   $("pSeed").onchange = ()=>{ card.parameters.randomSeed = $("pSeed").value === "" ? null : Number($("pSeed").value); saveCard(); };
   $("pPerRep").onchange = ()=>{ card.parameters.perReplicaSeed = $("pPerRep").checked; saveCard(); };
-  document.querySelectorAll("input[name=infer]").forEach(r=>r.onchange = ()=>{ card.job.bootstrap = r.value === "ensemble"; saveCard(); });
-  $("jTol").onchange = ()=>{ card.job.tolerance = $("jTol").value.trim(); saveCard(); };
+  document.querySelectorAll("input[name=infer]").forEach(r=>r.onchange = ()=>editDefault("job", "bootstrap", r.value === "ensemble"));
+  $("jTol").onchange = ()=>editDefault("job", "tolerance", $("jTol").value.trim());
   $("jIter").onchange = ()=>{ card.job.maxIterations = Number($("jIter").value); saveCard(); };
   $("jOpt").onchange = ()=>{ card.job.optimizer = $("jOpt").value; saveCard(); };
   $("sTime").onchange = ()=>{ card.slurm.time = $("sTime").value.trim(); saveCard(); };
@@ -1245,6 +1325,9 @@
       + esc(k.replace(":", " ")+": "+(n == null ? "points after cuts unknown" : n+(n === 1 ? " point" : " points")+" after cuts"))+'</span>').join("");
     const rows = [["Non-perturbative object", s.object], ["Parameters", s.free_parameters+" free · "+s.fixed_parameters+" fixed ("+s.fixed.join(", ")+") · "
         + (changed.length ? "changed: "+changed.join(", ") : "none changed")],
+      ["Fitted objects", (s.fit_objects || ["pdf"]).join(", ")],
+      ["Fixed companions", (s.frozen_objects || []).join(", ") || "None"],
+      ["DIS compatibility", "Version "+s.dis_version+" (temporary: fitted Pion PDF selects 0; otherwise 1)"],
       ["Reactions", s.reactions.join(", ")], ["Datasets", Object.entries(s.datasets).map(([r,n])=>r+": "+n).join(" · "), pts],
       ["Normalizations", Object.entries(s.normalizations || {}).flatMap(([r,m])=>Object.entries(m).map(([id,n])=>r+":"+id+" = "+n.value
         +(n.fixed === false ? " FREE ["+n.min+", "+n.max+"]" : n.fixed === true ? " FIXED" : " equal to "+n.fixed))).join(" · ") || "library values"],
@@ -1261,6 +1344,10 @@
     $("scriptBox").style.display = ""; $("scriptText").textContent = validated.slurm_script || "";
   }
   $("createCard").onclick = async ()=>{
+    if (stalePionProfile()){
+      validated = {valid: false, errors: ["Review and reset the outdated pion reference on the object step before validation."]};
+      paintValidation(); return;
+    }
     // A card edited while it was being validated keeps its draft status: the
     // result is for the card as it was.
     const rev = cardRev;
@@ -1324,7 +1411,7 @@
   // step 1 comes up so the note is seen (step panels stay hidden until synced).
   function composerNote(html){
     $("objectList").innerHTML = '<div class="note warn" style="grid-column:1/-1;margin:0">'+html+'</div>';
-    $("paramCard").style.display = "none";
+    $("paramCards").innerHTML = "";
     $("rxList").innerHTML = '<div class="note warn">'+html+'</div>';
     cStep = 0; cSync();
   }
@@ -1339,20 +1426,28 @@
       const saved = card ? {card, submitted} : ws().campaign2;
       const legacy = !card && !!saved && !saved.library;
       card = saved && saved.card ? {...freshCard(), ...saved.card} : freshCard();
+      if (saved?.card) card.pionReference = saved.card.pionReference || null;
       submitted = saved && saved.submitted || null;
       // Parameter edits only apply to rows this library has, and only where they
       // still differ from it. A draft saved before the table came from the library
       // may hold the -10/10 range the panel then made up for a freed parameter
       // that has none: it goes, so the row asks for a real range.
-      const lib = new Map(opts.parameters.pdf.rows.map(r=>[r.name, r])), kept = {};
-      Object.entries((card.object && card.object.parameters) || {}).forEach(([n, ov])=>{
-        const base = lib.get(n);
-        if (!base) return;
-        const cur = cleanEdit(base, ov);
-        if (legacy && base.min == null && base.max == null && cur.min === -10 && cur.max === 10){ delete cur.min; delete cur.max; }
-        if (Object.keys(cur).length) kept[n] = cur;
+      if (card.object && !saved?.card?.objects){
+        card.objects = card.object.type ? [card.object] : [];
+      }
+      delete card.object;
+      card.companions = card.companions || {};
+      [...card.objects, ...Object.entries(card.companions).map(([type, obj])=>({...obj, type}))].forEach(obj=>{
+        const lib = new Map((opts.parameters[obj.type]?.rows || []).map(r=>[r.name, r])), kept = {};
+        Object.entries(obj.parameters || {}).forEach(([n, ov])=>{
+          const base = lib.get(n);
+          if (!base) return;
+          const cur = cleanEdit(base, ov);
+          if (legacy && base.min == null && base.max == null && cur.min === -10 && cur.max === 10){ delete cur.min; delete cur.max; }
+          if (Object.keys(cur).length) kept[n] = cur;
+        });
+        objectCard(obj.type).parameters = kept;
       });
-      card.object = {type: "", ...card.object, parameters: kept};
       renderComposer(); persist();
       entered.campaign = true;
     } catch(e){ composerNote("Could not load the composer: "+esc(e && e.message || e)); }
@@ -1606,18 +1701,31 @@
     return '<div class="imgs">'+(plots || []).map(p=>'<figure><img alt="'+esc(cap(p))+'" src="'+esc(p.data_url)+'"><figcaption>'+esc(cap(p))+'</figcaption></figure>').join("")+'</div>';
   }
   function renderFlavs(){
-    $("caFlavs").innerHTML = FLAVORS.map(f=>'<span class="fl'+(pdfOn.has(f) ? " on" : "")+'" data-f="'+f+'">'+esc(f)+'</span>').join("");
+    const flavors = $("caObject").value === "pdf-pion" ? ["valence","sea",...FLAVORS] : FLAVORS;
+    $("caFlavs").innerHTML = flavors.map(f=>'<span class="fl'+(pdfOn.has(f) ? " on" : "")+'" data-f="'+f+'">'+esc(f)+'</span>').join("");
     $("caFlavs").querySelectorAll(".fl").forEach(el=>el.onclick = ()=>{ const f = el.dataset.f; if (pdfOn.has(f)) pdfOn.delete(f); else pdfOn.add(f); renderFlavs(); });
   }
-  $("caPdf").onclick = ()=>{ renderFlavs(); showBox("caPdfBox"); };
+  function resetFlavors(){
+    pdfOn.clear();
+    ($("caObject").value === "pdf-pion" ? ["valence","sea","g"] : ["u","d","g","s"]).forEach(f=>pdfOn.add(f));
+    renderFlavs();
+  }
+  $("caObject").onchange = resetFlavors;
+  $("caPdf").onclick = ()=>{
+    const campaign = campaignsCache?.find(c=>c.collection_id === analysisCampaign);
+    const objects = campaign?.objects || [{type:"pdf",label:"Unpolarized PDF"}];
+    $("caObject").innerHTML = objects.map(o=>'<option value="'+esc(o.type)+'">'+esc(o.label || o.type)+'</option>').join("");
+    resetFlavors(); showBox("caPdfBox");
+  };
   $("caPdfGo").onclick = async ()=>{
     if (!analysisCampaign || !pdfOn.size) return; caBusy("Evaluating every finished replica's PDFs on the cluster… this takes a minute.");
     const cid = analysisCampaign;
     try{ const r = await call("campaign_pdf_plots", {collection_id: cid, flavors: Array.from(pdfOn).join(","),
+                                                     object_key: $("caObject").value,
                                                      q2: Number($("caQ2").value) || 10, mean_overlay: $("caMean").checked});
       if (cid !== analysisCampaign) return;
       if (!r || r.status !== "ok"){ caWarn(msgOf(r, "No plots."), r && r.detail); return; }
-      $("caOut").innerHTML = imagesHtml(r._panel_plots, p=>p.flavor+" PDF · "+p.n_replicas+" replicas · Q² = "+r.q2+" GeV² · "+p.path);
+      $("caOut").innerHTML = imagesHtml(r._panel_plots, p=>(p.object || "pdf")+" "+p.flavor+" · "+p.n_replicas+" replicas · Q² = "+r.q2+" GeV² · "+p.path);
     } catch(e){ if (cid === analysisCampaign) caWarn("Plotting failed: "+(e && e.message || e)); }
   };
   $("caExp").onclick = ()=>showBox("caExpBox");

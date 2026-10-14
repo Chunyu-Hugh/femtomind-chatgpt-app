@@ -200,7 +200,8 @@ def materialize_campaign(document: CampaignDocument, resolved_stages: list[Resol
         layout['stage_manifest'].write_text(resolved_manifest)
 
         template_path = _resolve_template_path(document, resolved_stage)
-        materialize_stage_input(template_path, layout['stage_input'], resolved_stage)
+        materialize_stage_input(template_path, layout['stage_input'], resolved_stage,
+                                document.campaign.fitpack_root)
 
         written.append(
             {

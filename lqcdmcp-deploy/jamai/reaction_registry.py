@@ -8,6 +8,8 @@ from __future__ import annotations
 REACTION_OBJECT_MAP: dict[str, tuple[str, ...]] = {
     'idis': ('pdf',),
     'dy': ('pdf',),
+    'dy-pion': ('pdf-pion',),
+    'ln': ('pdf-pion', 'p->pi,n', 'pdf'),
     'zrap': ('pdf',),
     'wasym': ('pdf',),
     'wzrv': ('pdf',),
@@ -40,3 +42,21 @@ def get_required_objects(reactions: list[str]) -> list[str]:
             if obj not in required:
                 required.append(obj)
     return required
+
+
+def resolve_object_roles(fit_objects, reactions, frozen_objects=()):
+    fitted = list(dict.fromkeys(fit_objects))
+    frozen = list(dict.fromkeys(frozen_objects))
+    overlap = set(fitted) & set(frozen)
+    if overlap:
+        raise ValueError(f'Objects cannot be both fitted and frozen: {sorted(overlap)}')
+    required = get_required_objects(reactions)
+    if 'pdf-pion' in fitted and 'ln' in normalize_reactions(reactions):
+        if 'p->pi,n' not in fitted and 'p->pi,n' not in frozen:
+            fitted.append('p->pi,n')
+        if 'pdf' not in fitted and 'pdf' not in frozen:
+            frozen.append('pdf')
+    missing = [key for key in required if key not in fitted and key not in frozen]
+    if missing:
+        raise ValueError(f'Missing required fit coverage for objects: {missing}')
+    return fitted, frozen

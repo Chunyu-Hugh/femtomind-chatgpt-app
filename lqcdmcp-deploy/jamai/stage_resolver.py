@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .reaction_registry import get_required_objects, normalize_reactions
+from .reaction_registry import get_required_objects, normalize_reactions, resolve_object_roles
 from .schemas import CampaignDocument, Stage
 
 
@@ -70,8 +70,8 @@ def resolve_stage(document: CampaignDocument, stage: Stage) -> ResolvedStage:
     # the generated FitPack input card should activate.
     reactions = normalize_reactions(stage.reactions)
     required_objects = get_required_objects(reactions)
-    fit_objects = [item for item in stage.fit_objects]
-    frozen_objects = [item for item in stage.frozen_objects]
+    fit_objects, frozen_objects = resolve_object_roles(
+        stage.fit_objects, reactions, stage.frozen_objects)
 
     # Every object required by the chosen reactions must be accounted for. It can
     # be fitted in this stage or frozen from a previous/default configuration.
