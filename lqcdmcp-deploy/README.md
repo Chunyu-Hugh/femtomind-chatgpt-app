@@ -349,6 +349,16 @@ launched with `deploy_and_verify.py`, then updated in place with
   and gateway servers (Python 3.10, 3.11 and 3.13), 631 of the panel
   (jsdom); the suites are not part of this repository.
 
+- **2026-10-14, equal-to and normalization controls** (commits `ac1c95f`,
+  `c7de6eb`), on the platform with the owner's workspace: `campaign_datasets`
+  lists the normalizations of 10010 and 10016 from `input02.py` and none for
+  10005; a card with `g1 a` equal to `uv1 a` and normalization 10010 equal to
+  10016 produced `input.py` lines `'fixed': 'uv1 a'` and `'fixed': 10016`, the
+  replica really fitted with no error, and its free-parameter count was 35
+  (35 PDF parameters − 1 tied + 1 free normalization). A self-reference is
+  refused. Panel (jsdom, 12 checks): checkbox status, Equal to, normalization
+  editing, Clear visible, Review.
+
 **Not yet verified live:** a workspace clone with a GitHub token, and the
 deploy scripts' queue handling when another gateway holds the reservation.
 In October 2026 the dashboard was found to answer yes for any token (see
