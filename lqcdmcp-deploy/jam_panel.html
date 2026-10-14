@@ -435,9 +435,11 @@
           <div class="pc"><span class="label">Distribution object</span><select id="caObject"></select></div>
           <div class="pc"><span class="label">Flavors</span><div class="flavs" id="caFlavs"></div></div>
           <div class="pc"><span class="label">Q² (GeV²)</span><input type="number" step="any" id="caQ2" value="10" style="width:110px"></div>
-          <div class="pc"><label class="inline"><input type="checkbox" id="caMean" checked> Mean and 68% band</label></div>
+          <div class="pc"><label class="label" for="caInterval">Credible interval (%)</label><input type="number" step="any" max="100" id="caInterval" value="95" required style="width:110px"></div>
+          <div class="pc"><label class="inline"><input type="checkbox" id="caMean" checked> Mean and credible interval</label></div>
           <button class="btn primary" id="caPdfGo">Draw</button>
         </div>
+        <div class="note">Equal-tailed pointwise intervals across fitted replicas, not simultaneous bands over x. Choose a finite percentage greater than 0 and at most 100. At 100%, the band is the full pointwise envelope of available fitted replicas, not a guarantee about the entire underlying posterior distribution. At least two valid fitted replicas are needed for a band.</div>
       </div>
       <div id="caExpBox" class="subbox" style="display:none">
         <div class="plot-controls">
@@ -1717,16 +1719,24 @@
     $("caObject").innerHTML = objects.map(o=>'<option value="'+esc(o.type)+'">'+esc(o.label || o.type)+'</option>').join("");
     resetFlavors(); showBox("caPdfBox");
   };
+  let pdfPlotSeq = 0;
   $("caPdfGo").onclick = async ()=>{
-    if (!analysisCampaign || !pdfOn.size) return; caBusy("Evaluating every finished replica's PDFs on the cluster… this takes a minute.");
+    if (!analysisCampaign || !pdfOn.size) return;
+    const seq = ++pdfPlotSeq, credibleInterval = Number($("caInterval").value);
+    if (!$("caInterval").value.trim() || !Number.isFinite(credibleInterval) || credibleInterval <= 0 || credibleInterval > 100){
+      caWarn("Credible interval (%) must be greater than 0 and at most 100."); return;
+    }
+    caBusy("Evaluating every fitted replica's PDFs on the cluster… this takes a minute.");
     const cid = analysisCampaign;
     try{ const r = await call("campaign_pdf_plots", {collection_id: cid, flavors: Array.from(pdfOn).join(","),
                                                      object_key: $("caObject").value,
+                                                     credible_interval: credibleInterval,
                                                      q2: Number($("caQ2").value) || 10, mean_overlay: $("caMean").checked});
-      if (cid !== analysisCampaign) return;
+      if (cid !== analysisCampaign || seq !== pdfPlotSeq) return;
       if (!r || r.status !== "ok"){ caWarn(msgOf(r, "No plots."), r && r.detail); return; }
-      $("caOut").innerHTML = imagesHtml(r._panel_plots, p=>(p.object || "pdf")+" "+p.flavor+" · "+p.n_replicas+" replicas · Q² = "+r.q2+" GeV² · "+p.path);
-    } catch(e){ if (cid === analysisCampaign) caWarn("Plotting failed: "+(e && e.message || e)); }
+      $("caOut").innerHTML = (r.note ? '<div class="note warn">'+esc(r.note)+'</div>' : "")
+        + imagesHtml(r._panel_plots, p=>(p.object || "pdf")+" "+p.flavor+" · "+p.n_replicas+" replicas · Q² = "+r.q2+" GeV² · "+p.interval_label+" · "+p.path);
+    } catch(e){ if (cid === analysisCampaign && seq === pdfPlotSeq) caWarn("Plotting failed: "+(e && e.message || e)); }
   };
   $("caExp").onclick = ()=>showBox("caExpBox");
   $("caExpGo").onclick = async ()=>{

@@ -2387,21 +2387,47 @@ def campaign_summary(collection_id="", username=""):
     return out
 
 
-_PDF_PLOTS = r'''
-import glob, json, os, base64
+_PDF_PLOTS = _REPLICA_STATE + r'''
+import glob, json, os, base64, uuid
 stage = __STAGE__; flavors = __FLAVORS__; q2 = __Q2__; mean_overlay = __MEAN__
 object_key = __OBJECT__
+credible_interval = validate_credible_interval(__INTERVAL__)
+interval_text = str(credible_interval)
+if interval_text.endswith('.0'): interval_text = interval_text[:-2]
+interval_label = interval_text + '% pointwise credible interval'
+if credible_interval == 100:
+    interval_label += ' (full replica envelope)'
+percentiles = [(100 - credible_interval) / 2, 100 - (100 - credible_interval) / 2]
 plot_dir = os.path.join(os.path.dirname(os.path.dirname(stage)), 'analysis', 'pdf_plots')
 os.makedirs(plot_dir, exist_ok=True)
 os.environ['MPLCONFIGDIR'] = os.path.join(plot_dir, '.matplotlib')
 records = []
+excluded = {'not_fitted': 0, 'failed': 0, 'missing_msr': 0}
 for p in sorted(glob.glob(os.path.join(stage, 'current', 'replica_*', 'fit_summary.json'))):
-    try: s = json.load(open(p))
-    except Exception: continue
-    if s.get('status') == 'success' and s.get('msr_path') and os.path.isfile(s['msr_path']):
-        records.append(s)
+    state, s = replica_state(p)
+    if state != 'fitted':
+        excluded[state or 'failed'] += 1
+    elif not s.get('msr_path') or not os.path.isfile(s['msr_path']):
+        excluded['missing_msr'] += 1
+    else: records.append(s)
+notes = []
+if credible_interval == 100:
+    notes.append('100% covers all available fitted replicas at each x, not the entire underlying posterior distribution.')
+if any(excluded.values()):
+    notes.append('Excluded replicas: %d not fitted, %d failed/unreadable summaries, %d missing .msr files.'
+                 % (excluded['not_fitted'], excluded['failed'], excluded['missing_msr']))
+metadata = {'credible_interval': credible_interval, 'percentiles': percentiles,
+            'interval_kind': 'pointwise_equal_tailed', 'central_estimator': 'mean',
+            'mean_overlay': mean_overlay, 'band_drawn': False,
+            'n_replicas': len(records), 'excluded_replicas': excluded}
 if not records:
-    print(json.dumps({'status': 'missing_inputs', 'message': 'No finished replica with an .msr file yet.'})); raise SystemExit(0)
+    print(json.dumps({'status': 'missing_inputs', **metadata,
+                      'message': 'No valid fitted replicas with .msr files. At least two are required for a credible interval. '
+                                 + ' '.join(notes)})); raise SystemExit(0)
+band_drawn = mean_overlay and len(records) > 1
+if len(records) < 2:
+    notes.append('Only one valid fitted replica is available. At least two are required for a credible interval; no band is drawn.')
+metadata.update(band_drawn=band_drawn, note=' '.join(notes))
 import matplotlib; matplotlib.use('Agg')
 from matplotlib import pyplot as plt
 import numpy as np
@@ -2413,37 +2439,58 @@ resman = RESMAN(nworkers=1, parallel=False, datasets=False)
 pdf = conf[object_key]
 xs = np.logspace(-3, np.log10(0.9), 120)
 curves = {f: [] for f in flavors}
-for s in records:
-    m = load(s['msr_path'])
-    order = m.get('order', {}).get(0); params = m.get('params', {}).get(0)
-    if order is not None: resman.parman.order = order
-    resman.parman.set_new_params(params, initial=True)
-    for f in flavors:
-        curves[f].append([distribution_value(pdf, float(x), q2, f, object_key) for x in xs])
-resman.shutdown()
+try:
+    for s in records:
+        try:
+            m = load(s['msr_path'])
+            order = m['order'][0]; params = m['params'][0]
+            if order is None or params is None or not np.isfinite(np.asarray(params, dtype=float)).all():
+                raise ValueError('Missing or nonfinite fitted parameters/order.')
+            resman.parman.order = order
+            resman.parman.set_new_params(params, initial=True)
+            for f in flavors:
+                values = np.asarray([distribution_value(pdf, float(x), q2, f, object_key) for x in xs], dtype=float)
+                if values.shape != xs.shape or not np.isfinite(values).all():
+                    raise ValueError('Invalid or nonfinite plotted curve for %s %s.' % (object_key, f))
+                curves[f].append(values)
+        except (OSError, KeyError, TypeError, ValueError, ArithmeticError) as exc:
+            print(json.dumps({'status': 'error', **metadata, 'band_drawn': False,
+                              'message': 'Cannot plot fitted replica %s (%s): %s No plots were generated.'
+                                         % (s.get('replica', '?'), s['msr_path'], exc)}))
+            raise SystemExit(0)
+finally:
+    resman.shutdown()
 names = {'ub': r'\bar{u}', 'db': r'\bar{d}', 'sb': r'\bar{s}'}
 out = []
+request_id = uuid.uuid4().hex
 for f in flavors:
     arr = np.array(curves[f], dtype=float)
     fig, ax = plt.subplots(figsize=(6.0, 4.0))
     for c in arr: ax.plot(xs, c, lw=1.0, alpha=0.5)
-    if mean_overlay and len(arr) > 1:
-        ax.fill_between(xs, np.percentile(arr, 16, axis=0), np.percentile(arr, 84, axis=0), color='#0f172a', alpha=0.10, lw=0)
+    if band_drawn:
+        low, high = pointwise_credible_interval(arr, credible_interval)
+        ax.fill_between(xs, low, high, color='#0f172a', alpha=0.10, lw=0, label=interval_label)
     if mean_overlay:
         ax.plot(xs, arr.mean(axis=0), color='#111', lw=2.2, ls='--', label='mean'); ax.legend(frameon=False)
     ax.axhline(0, color='#64748b', lw=0.8, ls='--'); ax.set_xscale('log')
     ax.set_xlabel('$x$'); ax.set_ylabel('$x %s$' % names.get(f, f))
-    ax.set_title('%s %s, %d replicas, $Q^2=%g$ GeV$^2$' % (object_key, f, len(arr), q2)); ax.grid(alpha=0.25, which='both')
-    path = os.path.join(plot_dir, '%s_%s_q2_%g_replicas.png' % (object_key, f, q2))
+    caption = interval_label if band_drawn else interval_label + ' not drawn'
+    ax.set_title('%s %s, %d replicas, $Q^2=%g$ GeV$^2$\n%s' % (object_key, f, len(arr), q2, caption)); ax.grid(alpha=0.25, which='both')
+    path = os.path.join(plot_dir, '%s_%s_q2_%g_ci_%s_%s.png' % (object_key, f, q2, interval_text, request_id))
     fig.tight_layout(); fig.savefig(path, dpi=110); plt.close(fig)
-    out.append({'object': object_key, 'flavor': f, 'path': path, 'n_replicas': int(len(arr)),
+    out.append({'object': object_key, 'flavor': f, 'path': path, **metadata, 'interval_label': caption,
                 'png_b64': base64.b64encode(open(path, 'rb').read()).decode()})
-print(json.dumps({'status': 'success', 'plots': out}))
+print(json.dumps({'status': 'success', **metadata, 'plots': out}))
 '''
 
 
-def campaign_pdf_plots(collection_id="", flavors="", q2=10.0, mean_overlay=True, username="", object_key=""):
-    """Draw the PDFs of every fitted replica at Q2 (View PDF Plots)."""
+def campaign_pdf_plots(collection_id="", flavors="", q2=10.0, mean_overlay=True, username="", object_key="",
+                       credible_interval=95):
+    """Draw fitted replicas, optionally overlaying the mean and a pointwise credible interval."""
+    try:
+        credible_interval = object_registry.validate_credible_interval(credible_interval)
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc)}
     u, err = _need_user(username)
     if err:
         return err
@@ -2464,7 +2511,8 @@ def campaign_pdf_plots(collection_id="", flavors="", q2=10.0, mean_overlay=True,
     except Exception:
         return {"status": "error", "message": "q2 must be a positive number"}
     code = inspect.getsource(object_registry) + _fill(
-        _PDF_PLOTS, STAGE=_stage_root(u, e), FLAVORS=fl, Q2=q2, MEAN=bool(mean_overlay), OBJECT=object_key)
+        _PDF_PLOTS, STAGE=_stage_root(u, e), FLAVORS=fl, Q2=q2, MEAN=bool(mean_overlay), OBJECT=object_key,
+        INTERVAL=credible_interval)
     ws = _workspace(u)
     r = _run_ifarm_py(u, code, apptainer=True, timeout=600, cap=20000000,
                       env={"MPLCONFIGDIR": f"{ws}/{CAMPAIGNS_DIR}/.matplotlib"})
@@ -2473,10 +2521,13 @@ def campaign_pdf_plots(collection_id="", flavors="", q2=10.0, mean_overlay=True,
     except Exception:
         return {"status": "error", "message": "plotting failed", "detail": (r.get("err") or r.get("out") or "")[-600:]}
     if d.get("status") != "success":
-        return {"status": d.get("status"), "message": d.get("message")}
-    plots = [{"object": object_key, "flavor": p["flavor"], "path": p["path"], "n_replicas": p["n_replicas"],
+        return d
+    metadata = {k: d[k] for k in ("credible_interval", "percentiles", "interval_kind", "central_estimator",
+                                  "mean_overlay", "band_drawn", "n_replicas", "excluded_replicas", "note")}
+    plots = [{**{k: v for k, v in p.items() if k != "png_b64"},
               "data_url": "data:image/png;base64," + p["png_b64"]} for p in d["plots"]]
     return {"status": "ok", "collection_id": collection_id, "q2": q2, "object": object_key,
+            **metadata,
             "plots": [{k: v for k, v in p.items() if k != "data_url"} for p in plots],
             "_images": [{"data": p["png_b64"], "mimeType": "image/png"} for p in d["plots"]],
             "_panel_plots": plots}
@@ -3127,18 +3178,26 @@ TOOLS = {
         "fn": lambda a: campaign_summary(a.get("collection_id", ""))},
     "campaign_pdf_plots": {
         "desc": "View PDF Plots: draw x f(x, Q2) of every fitted replica (flavors: comma list of "
-                "g, u, d, s, ub, db, sb; q2 in GeV^2; mean_overlay adds the mean and 68% band). "
+                "g, u, d, s, ub, db, sb; q2 in GeV^2; mean_overlay adds the mean and an equal-tailed "
+                "pointwise credible interval, default 95%). credible_interval is a finite percentage "
+                "greater than 0 and at most 100; at least two valid fitted replicas are needed for a band. "
+                "100% is the full pointwise envelope of available fitted replicas, not a guarantee "
+                "about the entire underlying posterior distribution. "
                 "object_key selects pdf or pdf-pion. Pion defaults are valence (ub-u), sea (u), g "
                 "in the native pi- convention. Returns the images.",
         "schema": {"type": "object", "properties": {"collection_id": {"type": "string"},
                                                     "flavors": {"type": "string"},
                                                     "object_key": {"type": "string", "enum": list(SELECTABLE_OBJECTS)},
                                                     "q2": {"type": "number"},
+                                                    "credible_interval": {"type": "number", "default": 95,
+                                                                          "exclusiveMinimum": 0, "maximum": 100,
+                                                                          "description": "Equal-tailed pointwise credible interval (%)."},
                                                     "mean_overlay": {"type": "boolean"}},
                    "required": ["collection_id"]},
         "fn": lambda a: campaign_pdf_plots(a.get("collection_id", ""), a.get("flavors", ""),
                                            a.get("q2", 10.0), a.get("mean_overlay", True),
-                                           object_key=a.get("object_key", ""))},
+                                           object_key=a.get("object_key", ""),
+                                           credible_interval=a.get("credible_interval", 95))},
     "analyze_by_experiment": {
         "desc": "Analysis by experiment: chi2/N of the best replica grouped by experiment (SLAC, "
                 "BCDMS, NMC, E866 ...) and, for the experiments named, data vs theory plots per "

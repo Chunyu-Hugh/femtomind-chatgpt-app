@@ -172,3 +172,32 @@ def distribution_value(distribution, x, q2, flavor, object_key):
     if object_key == 'pdf-pion' and flavor == 'sea':
         flavor = 'u'
     return distribution.get_xF(x, q2, flavor)
+
+
+def validate_credible_interval(credible_interval=95):
+    """Normalize a percentage without accepting booleans or nonfinite values."""
+    message = 'Credible interval (%) must be greater than 0 and at most 100.'
+    if isinstance(credible_interval, bool) or not isinstance(credible_interval, (int, float, str)):
+        raise ValueError(message)
+    try:
+        value = float(credible_interval)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(message) from exc
+    if not math.isfinite(value) or not 0 < value <= 100:
+        raise ValueError(message)
+    return value
+
+
+def pointwise_credible_interval(replica_curves, credible_interval=95):
+    """Equal-tailed bounds across replicas of the already-transformed plotted quantity."""
+    import numpy as np
+    value = validate_credible_interval(credible_interval)
+    curves = np.asarray(replica_curves, dtype=float)
+    if curves.ndim != 2 or curves.shape[1] == 0:
+        raise ValueError('Replica curves must have shape (n_replicas, n_x) with at least one x.')
+    if curves.shape[0] < 2:
+        raise ValueError('At least two valid fitted replicas are required for a credible interval.')
+    if not np.isfinite(curves).all():
+        raise ValueError('Replica curves contain nonfinite values; no credible interval was calculated.')
+    lower = (100 - value) / 2
+    return np.percentile(curves, [lower, 100 - lower], axis=0)
