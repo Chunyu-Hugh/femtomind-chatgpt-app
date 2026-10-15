@@ -2533,98 +2533,5166 @@ def campaign_pdf_plots(collection_id="", flavors="", q2=10.0, mean_overlay=True,
             "_panel_plots": plots}
 
 
-_BY_EXPERIMENT = r'''
-import glob, json, os, base64
-stage = __STAGE__; want = __WANT__; plot = __PLOT__
-summ = os.path.join(stage, 'current', 'fit_summary.json')
-best = None
-try:
-    best = (json.load(open(summ)).get('best_replica') or {}).get('msr_path')
-except Exception:
-    pass
-if not best:
-    for p in sorted(glob.glob(os.path.join(stage, 'current', 'replica_*', 'fit_summary.json'))):
-        try: s = json.load(open(p))
-        except Exception: continue
-        if s.get('status') == 'success' and s.get('msr_path') and (best is None or s['chi2_total'] < best[1]):
-            best = (s['msr_path'], s['chi2_total'])
-    best = best[0] if best else None
-if not best or not os.path.isfile(best):
-    print(json.dumps({'status': 'missing_inputs', 'message': 'No finished replica yet.'})); raise SystemExit(0)
+_THEORY_PLOTTING = r'''
+
 import numpy as np
-from fitlib.resman import RESMAN
-from tools.config import conf, load_config
-from tools.tools import load
-conf.clear(); load_config(os.path.join(stage, 'input.py')); conf['bootstrap'] = False
-resman = RESMAN(nworkers=1, parallel=False, datasets=True)
-m = load(best)
-if m.get('order', {}).get(0) is not None: resman.parman.order = m['order'][0]
-resman.parman.set_new_params(m['params'][0], initial=True)
-resman.get_residuals(resman.parman.par, initial=True)
-chi2 = resman.get_chi2()
-def first(tab, *keys):
-    for k in keys:
-        if k in tab:
-            v = tab[k]
-            try: return str(v[0]) if hasattr(v, '__len__') and not isinstance(v, str) else str(v)
-            except Exception: return str(v)
-    return ''
-groups, points = {}, {}
-for reac, attr in (('idis', 'idis_res'), ('dy', 'dy_res'), ('dy-pion', 'dy_pion_res'), ('ln', 'ln_res'),
-                   ('wasym', 'wasym_res'), ('zrap', 'zrap_res'),
-                   ('wzrv', 'wzrv_res'), ('jet', 'jet_res'), ('wc', 'wc_res')):
-    res = getattr(resman, attr, None)
-    tabs = getattr(res, 'tabs', None)
-    if not isinstance(tabs, dict): continue
-    for idx, tab in tabs.items():
-        exp = first(tab, 'col') or 'unknown'
-        info = (chi2.get(reac) or {}).get(idx) or {}
-        g = groups.setdefault(exp, {'experiment': exp, 'datasets': [], 'chi2': 0.0, 'npts': 0})
-        n = int(info.get('npts') or len(tab.get('value', [])))
-        c = float(info.get('chi2') or 0.0)
-        g['datasets'].append({'reaction': reac, 'dataset_id': str(idx), 'target': first(tab, 'target', 'reaction'),
-                              'observable': first(tab, 'obs'), 'npts': n, 'chi2': c, 'chi2_per_npt': c / n if n else None})
-        g['chi2'] += c; g['npts'] += n
-        if plot and (not want or exp.lower() in want):
-            xk = next((k for k in ('X', 'xF', 'Y', 'pT', 'eta', 'Q2') if k in tab), None)
-            thy = tab.get('thy', tab.get('prediction'))
-            if thy is None: continue
-            points[(exp, reac, idx)] = {'x': list(np.asarray(tab[xk] if xk else range(len(tab['value'])), float)),
-                                        'xlabel': xk or 'point', 'value': list(np.asarray(tab['value'], float)),
-                                        'alpha': list(np.asarray(tab.get('alpha', np.zeros(len(tab['value']))), float)),
-                                        'thy': list(np.asarray(thy, float)),
-                                        'title': '%s %s %s' % (reac, idx, first(tab, 'obs'))}
-resman.shutdown()
-rows = sorted(groups.values(), key=lambda g: -(g['chi2'] / g['npts'] if g['npts'] else 0))
-for g in rows: g['chi2_per_npt'] = g['chi2'] / g['npts'] if g['npts'] else None
-images = []
-if plot and points:
-    import matplotlib; matplotlib.use('Agg')
-    from matplotlib import pyplot as plt
-    out_dir = os.path.join(os.path.dirname(os.path.dirname(stage)), 'analysis', 'by_experiment')
-    os.makedirs(out_dir, exist_ok=True)
-    keys = list(points)[:12]
-    ncol = 2 if len(keys) > 1 else 1; nrow = (len(keys) + ncol - 1) // ncol
-    fig, axes = plt.subplots(nrow, ncol, figsize=(6.0 * ncol, 3.4 * nrow), squeeze=False)
-    for ax, key in zip(axes.flat, keys):
-        p = points[key]
-        ax.errorbar(p['x'], p['value'], yerr=p['alpha'], fmt='o', ms=3, lw=0.8, color='#111', label='data')
-        ax.plot(p['x'], p['thy'], 's', ms=3, color='#c2410c', alpha=0.85, label='theory (best replica)')
-        if p['xlabel'] in ('X',): ax.set_xscale('log')
-        ax.set_xlabel(p['xlabel']); ax.set_title('%s  ·  %s' % (key[0], p['title']), fontsize=9)
-        ax.grid(alpha=0.25); ax.legend(fontsize=7, frameon=False)
-    for ax in list(axes.flat)[len(keys):]: ax.axis('off')
-    fig.tight_layout()
-    path = os.path.join(out_dir, 'data_vs_theory_%s.png' % ('_'.join(sorted(want))[:60] or 'all'))
-    fig.savefig(path, dpi=100); plt.close(fig)
-    images.append({'path': path, 'png_b64': base64.b64encode(open(path, 'rb').read()).decode(), 'panels': len(keys)})
-print(json.dumps({'status': 'success', 'best_msr': best, 'experiments': rows, 'images': images}))
+
+def theory_statistics(curves, interval, scale=1.0, offset=0.0, transform=None):
+    interval = validate_credible_interval(interval)
+    curves = np.asarray(curves, dtype=float)
+    if curves.ndim != 2 or not all(curves.shape) or not np.isfinite(curves).all():
+        raise ValueError('Theory must be a finite (fitted replicas, experimental points) array.')
+    mean = curves.mean(axis=0)
+    if transform is not None:
+        displayed = np.asarray(transform(curves), dtype=float)
+        central = np.asarray(transform(mean), dtype=float)
+        if displayed.shape != curves.shape or central.shape != mean.shape:
+            raise ValueError('Display transformation changed the experimental point ordering or shape.')
+        if not np.isfinite(displayed).all() or not np.isfinite(central).all():
+            raise ValueError('Nonfinite transformed theory; no interval was calculated.')
+        bounds = pointwise_credible_interval(displayed, interval) if len(curves) > 1 else None
+    else:
+        central = mean
+        bounds = pointwise_credible_interval(curves, interval) if len(curves) > 1 else None
+    central = central * scale + offset
+    if bounds is not None:
+        a, b = bounds * scale + offset
+        bounds = np.array([np.minimum(a, b), np.maximum(a, b)])
+    if not np.isfinite(central).all() or (bounds is not None and not np.isfinite(bounds).all()):
+        raise ValueError('Nonfinite displayed theory or interval.')
+    return central, bounds
+
+def theory_column(tab, key, n=None):
+    if key not in tab:
+        raise ValueError('Missing required dataset column: ' + key)
+    values = np.asarray(tab[key], dtype=float)
+    if values.ndim != 1 or (n is not None and len(values) != n) or not np.isfinite(values).all():
+        raise ValueError('Missing, nonfinite or misaligned dataset column: ' + key)
+    return values
+
+def theory_plot_factors(tab):
+    values = []
+    for value in tab.get('plot-factor', np.ones(len(tab['value']))):
+        parts = str(value).split('^')
+        if len(parts) == 1: factor = float(parts[0])
+        elif len(parts) == 2: factor = float(parts[0]) ** float(parts[1])
+        else: raise ValueError('Invalid jet display factor: ' + str(value))
+        if not np.isfinite(factor) or factor <= 0:
+            raise ValueError('Jet display factors must be finite and positive.')
+        values.append(factor)
+    if len(values) != len(tab['value']): raise ValueError('Misaligned jet display factors.')
+    return np.asarray(values)
+
+def theory_identity(tab):
+    import hashlib
+    dynamic = {'thy', 'prediction', 'shift', 'Shift', 'N', 'residuals', 'r-residuals', 'n-residuals'}
+    original = {str(k): np.asarray(v).tolist() for k, v in tab.items() if k not in dynamic}
+    return hashlib.sha256(json.dumps(original, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+
+# Adapted from thesis/dy.py:plot_ratios, original lines 42-212; SHA256 0b57fc011b0665c41932b73bda163b931174e19b3bd03f69ca960fb0da971231.
+def thesis_dy_plot_ratios(datasets, output_file, interval):
+    _selected_keys = {r + ':' + str(i) for (r, tables) in datasets.items() for i in tables}
+    thy_plot = thy_band = thy_plot0 = thy_band0 = thy_point0 = None
+    istep = 0
+    kc = SimpleNamespace(nc={0: 1})
+    nc = 1
+    predictions = {'reactions': datasets}
+    data = datasets['dy']
+    tabs = data
+    (nrows, ncols) = (3, 1)
+    fig = py.figure(figsize=(ncols * 7, nrows * 2.5))
+    ax11 = py.subplot(nrows, ncols, (1, 2))
+    ax21 = py.subplot(nrows, ncols, 3)
+    tabs = datasets['dy']
+    data = predictions['reactions']['dy']
+    hand = {}
+    thy_plot = {}
+    thy_band = {}
+    for idx in tabs:
+        xt = tabs[idx]['xt']
+        values = tabs[idx]['value']
+        alpha = data[idx]['alpha']
+        if idx == 20001:
+            (color, marker, ms, cs, alp) = ('darkblue', '^', 5, 2.0, 0.8)
+        if idx == 20002:
+            (color, marker, ms, cs, alp) = ('darkred', '.', 10, 3.0, 1.0)
+        hand[idx] = ax11.errorbar(xt, values, yerr=alpha, color=color, linestyle='none', marker=marker, ms=ms, capsize=cs, alpha=alp, zorder=5)
+    for idx in tabs:
+        for ic in range(nc):
+            if idx == 20001:
+                (color, alp) = ('blue', 0.2)
+            if idx == 20002:
+                (color, alp) = ('red', 0.5)
+            xt = tabs[idx]['xt']
+            thy = data[idx]['thy-%d' % ic]
+            std_lower = data[idx]['dthy_lower-%d' % ic]
+            std_upper = data[idx]['dthy_upper-%d' % ic]
+            down = thy - std_lower
+            up = thy + std_upper
+            (thy_plot[idx],) = ax11.plot(xt, thy, color=color, alpha=0.5)
+            thy_band[idx] = ax11.fill_between(xt, np.minimum(down, up), np.maximum(down, up), color=color, alpha=alp, where=thesis_band_mask(xt))
+    for idx in tabs:
+        for ic in range(nc):
+            xt = datasets['dy'][idx]['xt']
+            if nc > 1:
+                color = colors[cluster[ic]]
+            thy = data[idx]['thy-%d' % ic]
+            ratio = thesis_ratio(data[idx]['value'], thy, error=False)
+            alpha = data[idx]['alpha']
+            thy = data[idx]['thy-%d' % ic]
+            std_lower = data[idx]['dthy_lower-%d' % ic]
+            std_upper = data[idx]['dthy_upper-%d' % ic]
+            if idx == 20001:
+                (color, marker, ms, cs, alp) = ('darkblue', '^', 5, 2.0, 0.8)
+            if idx == 20002:
+                (color, marker, ms, cs, alp) = ('darkred', '.', 10, 3.0, 1.0)
+            ax21.errorbar(xt, ratio, yerr=thesis_ratio(alpha, thy, error=True), color=color, fmt=marker, ms=ms, capsize=cs, alpha=alp, zorder=5)
+            if idx == 20001:
+                (color, alp) = ('blue', 0.2)
+            if idx == 20002:
+                (color, alp) = ('red', 0.5)
+            ax21.fill_between(xt, np.minimum(1 - thesis_ratio(std_lower, thy, error=False), 1 + thesis_ratio(std_upper, thy, error=False)), np.maximum(1 - thesis_ratio(std_lower, thy, error=False), 1 + thesis_ratio(std_upper, thy, error=False)), color=color, alpha=alp, where=thesis_band_mask(xt))
+    for ax in [ax11]:
+        ax.tick_params(axis='both', which='both', top=True, right=True, direction='in', labelsize=30, labelbottom=False)
+    for ax in [ax21]:
+        ax.tick_params(axis='both', which='both', top=True, right=True, direction='in', labelsize=30)
+    (handles, labels) = ([], [])
+    handles.append(hand.get(20002))
+    handles.append(hand.get(20001))
+    handles.append((thy_band.get(20002), thy_plot.get(20002)))
+    handles.append((thy_band.get(20001), thy_plot.get(20001)))
+    labels.append('\\textbf{\\textrm{SeaQuest}}')
+    labels.append('\\textbf{\\textrm{NuSea}}')
+    labels.append('\\textbf{\\textrm{JAM (SeaQuest)}}')
+    labels.append('\\textbf{\\textrm{JAM (NuSea)}}')
+    thesis_legend(ax11, handles, labels, frameon=False, fontsize=22, loc='upper left', ncol=2, handletextpad=0.3, handlelength=0.9, columnspacing=0.8)
+    ax21.set_xlabel('\\boldmath$x_2$', size=40)
+    ax11.set_ylim(0.59, 1.6)
+    ax21.set_ylim(0.75, 1.25)
+    ax11.axhline(1, 0, 1, color='black', ls='--', alpha=0.5)
+    ax21.axhline(1, 0, 1, color='black', ls='--')
+    ax11.text(0.05, 0.08, '\\boldmath$\\sigma_{pD}^{\\rm DY}/2\\sigma_{pp}^{\\rm DY}$', transform=ax11.transAxes, size=45)
+    ax21.text(0.05, 0.75, '\\textbf{\\textrm{data/theory}}', transform=ax21.transAxes, size=35)
+    if 20002 in data:
+        ax11.text(0.06, 0.6, '$0.48 < x_1 < 0.69$', transform=ax11.transAxes, size=16, color='darkred')
+    if 20001 in data:
+        ax11.text(0.06, 0.32, '$0.36 < x_1 < 0.56$', transform=ax11.transAxes, size=16, color='darkblue')
+    for ax in [ax11, ax21]:
+        ax.xaxis.set_tick_params(which='major', length=6)
+        ax.xaxis.set_tick_params(which='minor', length=3)
+        ax.yaxis.set_tick_params(which='major', length=6)
+        ax.yaxis.set_tick_params(which='minor', length=3)
+        minorLocator = MultipleLocator(0.05)
+        majorLocator = MultipleLocator(0.1)
+        ax.xaxis.set_minor_locator(minorLocator)
+        ax.xaxis.set_major_locator(majorLocator)
+        ax.set_xticks([0.0, 0.2, 0.4])
+        ax.set_xlim(0.0, 0.42)
+    for ax in [ax11]:
+        majorLocator = MultipleLocator(0.2)
+        minorLocator = MultipleLocator(0.05)
+        ax.yaxis.set_minor_locator(minorLocator)
+        ax.yaxis.set_major_locator(majorLocator)
+    for ax in [ax21]:
+        minorLocator = MultipleLocator(0.05)
+        majorLocator = MultipleLocator(0.1)
+        ax.yaxis.set_minor_locator(minorLocator)
+        ax.yaxis.set_major_locator(majorLocator)
+        ax.yaxis.set_tick_params(which='major', length=6)
+        ax.yaxis.set_tick_params(which='minor', length=3)
+    ax11.set_yticks([0.8, 1, 1.2, 1.4])
+    ax21.set_yticks([0.8, 1.0, 1.2])
+    py.tight_layout()
+    py.subplots_adjust(hspace=0, wspace=0)
+    filename = output_file
+    ax11.set_rasterized(True)
+    ax21.set_rasterized(True)
+    thesis_finish_panels(py.gcf(), 'thesis_dy_plot_ratios', _selected_keys)
+    py.savefig(filename)
+
+# Adapted from thesis/dy.py:plot_xsec, original lines 214-360; SHA256 0b57fc011b0665c41932b73bda163b931174e19b3bd03f69ca960fb0da971231.
+def thesis_dy_plot_xsec(datasets, output_file, interval):
+    _selected_keys = {r + ':' + str(i) for (r, tables) in datasets.items() for i in tables}
+    thy_plot = thy_band = thy_plot0 = thy_band0 = thy_point0 = None
+    istep = 0
+    kc = SimpleNamespace(nc={0: 1})
+    nc = 1
+    predictions = {'reactions': datasets}
+    data = datasets['dy']
+    tabs = data
+    data = predictions['reactions']['dy']
+    Q2_bins = []
+    Q2_bins.append([15, 20])
+    Q2_bins.append([20, 24])
+    Q2_bins.append([24, 28])
+    Q2_bins.append([28, 35])
+    Q2_bins.append([35, 40])
+    Q2_bins.append([40, 45])
+    Q2_bins.append([45, 52])
+    Q2_bins.append([52, 60])
+    Q2_bins.append([60, 68])
+    Q2_bins.append([68, 75])
+    Q2_bins.append([100, 140])
+    Q2_bins.append([140, 160])
+    Q2_bins.append([160, 280])
+    (nrows, ncols) = (1, 1)
+    fig = py.figure(figsize=(ncols * 16.0, nrows * 18.0))
+    ax11 = py.subplot(nrows, ncols, 1)
+    n = 10.0
+    hand = {}
+    for _ in data:
+        if _ != 10001:
+            continue
+        for i in range(len(Q2_bins)):
+            if i == 12:
+                continue
+            (Q2_min, Q2_max) = Q2_bins[i]
+            for ic in range(kc.nc[istep]):
+                if ic != 0:
+                    continue
+                thyk = data[_]['thy-%d' % ic]
+                value = data[_]['value']
+                df = pd.DataFrame(data[_])
+                df = df.query('Q2>%f and Q2<%f' % (Q2_min, Q2_max))
+                xF = df.xF
+                thy = df['thy-%d' % ic] * n ** i
+                dthy_lower = df['dthy_lower-%d' % ic] * n ** i
+                dthy_upper = df['dthy_upper-%d' % ic] * n ** i
+                value = df.value * n ** i
+                alpha = df.alpha * n ** i
+                zt = sorted(zip(xF, thy), key=lambda row: row[0])
+                zv = sorted(zip(xF, value), key=lambda row: row[0])
+                za = sorted(zip(xF, alpha), key=lambda row: row[0])
+                zd_lower = sorted(zip(xF, dthy_lower), key=lambda row: row[0])
+                zd_upper = sorted(zip(xF, dthy_upper), key=lambda row: row[0])
+                thy = np.array([zt[i][1] for i in range(len(zt))])
+                value = np.array([zv[i][1] for i in range(len(zv))])
+                alpha = np.array([za[i][1] for i in range(len(za))])
+                dthy_lower = np.array([zd_lower[i][1] for i in range(len(zd_lower))])
+                dthy_upper = np.array([zd_upper[i][1] for i in range(len(zd_upper))])
+                xF = sorted(xF)
+                up = thy + dthy_upper
+                down = thy - dthy_lower
+                (ax, color, marker, ms) = (ax11, 'firebrick', '.', 10)
+                hand[_] = ax.errorbar(xF, value, alpha, color=color, marker=marker, linestyle='none', ms=ms, capsize=3.0)
+                (thy_plot,) = ax.plot(xF, thy, color='black', linestyle='-')
+                thy_band = ax.fill_between(xF, np.minimum(down, up), np.maximum(down, up), color='gold', where=thesis_band_mask(xF))
+    ax11.tick_params(axis='both', which='both', top=True, right=True, direction='in', labelsize=30)
+    for ax in [ax11]:
+        ax.semilogy()
+        ax.set_xlim(-0.02, 1.15)
+        ax.set_ylim(0.03, 300000000000.0)
+        ax.yaxis.set_tick_params(which='major', length=10)
+        ax.yaxis.set_tick_params(which='minor', length=5)
+        ax.xaxis.set_tick_params(which='major', length=10)
+        ax.xaxis.set_tick_params(which='minor', length=5)
+        minorLocator = MultipleLocator(0.05)
+        majorLocator = MultipleLocator(0.2)
+        ax.xaxis.set_minor_locator(minorLocator)
+        ax.xaxis.set_major_locator(majorLocator)
+        ax.set_xticks([0, 0.2, 0.4, 0.6, 0.8, 1.0])
+        ax.set_xticklabels(['$0$', '$0.2$', '$0.4$', '$0.6$', '$0.8$', '$1.0$'])
+    ax11.text(0.62, 0.08, '$Q^2 \\, \\in \\,[15,20]\\,\\mathrm{GeV^2}$', transform=ax11.transAxes, fontsize=30)
+    ax11.text(0.7, 0.13, '$Q^2 \\, \\in \\,[20,24]$', transform=ax11.transAxes, fontsize=30)
+    ax11.text(0.7, 0.2, '$Q^2 \\, \\in \\,[24,28]$', transform=ax11.transAxes, fontsize=30)
+    ax11.text(0.7, 0.28, '$Q^2 \\, \\in \\,[28,35]$', transform=ax11.transAxes, fontsize=30)
+    ax11.text(0.7, 0.35, '$Q^2 \\, \\in \\,[35,40]$', transform=ax11.transAxes, fontsize=30)
+    ax11.text(0.7, 0.42, '$Q^2 \\, \\in \\,[40,45]$', transform=ax11.transAxes, fontsize=30)
+    ax11.text(0.7, 0.48, '$Q^2 \\, \\in \\,[45,52]$', transform=ax11.transAxes, fontsize=30)
+    ax11.text(0.7, 0.55, '$Q^2 \\, \\in \\,[52,60]$', transform=ax11.transAxes, fontsize=30)
+    ax11.text(0.7, 0.62, '$Q^2 \\, \\in \\,[60,68]$', transform=ax11.transAxes, fontsize=30)
+    ax11.text(0.7, 0.68, '$Q^2 \\, \\in \\,[68,75]$', transform=ax11.transAxes, fontsize=30)
+    ax11.text(0.7, 0.75, '$Q^2 \\, \\in \\,[100,140]$', transform=ax11.transAxes, fontsize=30)
+    ax11.text(0.62, 0.83, '$Q^2 \\, \\in \\,[140,160]\\, (i=11)$', transform=ax11.transAxes, fontsize=30)
+    ax11.text(0.7, 0.05, '$(i=0)$', transform=ax11.transAxes, fontsize=30)
+    ax11.text(0.12, 0.05, '\\boldmath$M_{\\ell \\ell}^3 ~ \\frac{{\\rm d}^2 \\sigma_{pp}^{\\rm DY}}{{\\rm d} M_{\\ell \\ell} {\\rm d} x_F}$', transform=ax11.transAxes, size=60)
+    ax11.text(0.42, 0.07, '$(\\times\\, 10^{\\, i})$', transform=ax11.transAxes, size=40)
+    ax11.set_xlim(-0.02, 1.15)
+    ax11.set_xlabel('\\boldmath$x_{\\rm F}$', size=50)
+    ax11.set_xticks([0, 0.2, 0.4, 0.6, 0.8])
+    ax11.set_xticklabels(['$0$', '$0.2$', '$0.4$', '$0.6$', '$0.8$'])
+    handles = [hand.get(10001), (thy_band, thy_plot)]
+    label1 = '\\textbf{\\textrm{FNAL E866}}'
+    label2 = '\\textbf{\\textrm{JAM}}'
+    labels = [label1, label2]
+    thesis_legend(ax11, handles, labels, loc='upper right', fontsize=35, frameon=0, handletextpad=0.3, handlelength=1.0)
+    py.tight_layout()
+    filename = output_file
+    ax11.set_rasterized(True)
+    thesis_finish_panels(py.gcf(), 'thesis_dy_plot_xsec', _selected_keys)
+    py.savefig(filename)
+
+# Adapted from thesis/idis.py:get_xbins, original lines 33-175; SHA256 92dc40105aa2214d4b8ea863286aad4601f0078010c0f2312ba5a1aabbb3ddcf.
+def thesis_idis_get_xbins(data, kind):
+    query = {}
+    if kind == 'p':
+        query[26] = data.query('X > 4.80e-3 and X <= 5.70e-3')
+        query[25] = data.query('X > 7.20e-3 and X <= 9.30e-3')
+        query[24] = data.query('X > 1.15e-2 and X <= 1.40e-2')
+        query[23] = data.query('X > 1.65e-2 and X <= 1.90e-2')
+        query[22] = data.query('X > 2.30e-2 and X <= 2.90e-2')
+        query[21] = data.query('X > 3.40e-2 and X <= 3.80e-2')
+        query[20] = data.query('X > 4.65e-2 and X <= 5.40e-2')
+        query[19] = data.query('X > 6.50e-2 and X <= 7.30e-2')
+        query[18] = data.query('X > 8.50e-2 and X <= 9.20e-2')
+        query[17] = data.query('X > 9.80e-2 and X <= 10.3e-2')
+        query[16] = data.query('X > 10.8e-2 and X <= 11.3e-2')
+        query[15] = data.query('X > 13.6e-2 and X <= 14.6e-2')
+        query[14] = data.query('X > 17.1e-2 and X <= 18.7e-2')
+        query[13] = data.query('X > 21.7e-2 and X <= 23.7e-2')
+        query[12] = data.query('X > 26.0e-2 and X <= 29.0e-2')
+        query[11] = data.query('X > 33.0e-2 and X <= 36.0e-2')
+        query[10] = data.query('X > 42.0e-2 and X <= 45.0e-2')
+        query[9] = data.query('X > 45.0e-2 and X <= 48.0e-2')
+        query[8] = data.query('X > 48.0e-2 and X <= 52.0e-2')
+        query[7] = data.query('X > 52.0e-2 and X <= 55.0e-2')
+        query[6] = data.query('X > 55.0e-2 and X <= 58.0e-2')
+        query[5] = data.query('X > 58.0e-2 and X <= 60.0e-2')
+        query[4] = data.query('X > 60.0e-2 and X <= 63.0e-2')
+        query[3] = data.query('X > 63.0e-2 and X <= 66.0e-2')
+        query[2] = data.query('X > 73.0e-2 and X <= 76.0e-2')
+        query[1] = data.query('X > 84.0e-2 and X <= 86.0e-2')
+        query[0] = data.query('X > 86.0e-2 and X <= 90.0e-2')
+    if kind == 'd':
+        query[18] = data.query('X > 6.50e-2 and X <= 7.30e-2')
+        query[17] = data.query('X > 8.50e-2 and X <= 9.20e-2')
+        query[16] = data.query('X > 9.80e-2 and X <= 10.3e-2')
+        query[15] = data.query('X > 13.6e-2 and X <= 14.6e-2')
+        query[14] = data.query('X > 17.1e-2 and X <= 18.7e-2')
+        query[13] = data.query('X > 21.7e-2 and X <= 23.7e-2')
+        query[12] = data.query('X > 26.0e-2 and X <= 29.0e-2')
+        query[11] = data.query('X > 33.0e-2 and X <= 36.0e-2')
+        query[10] = data.query('X > 42.0e-2 and X <= 45.0e-2')
+        query[9] = data.query('X > 45.0e-2 and X <= 48.0e-2')
+        query[8] = data.query('X > 48.0e-2 and X <= 52.0e-2')
+        query[7] = data.query('X > 52.0e-2 and X <= 55.0e-2')
+        query[6] = data.query('X > 55.0e-2 and X <= 58.0e-2')
+        query[5] = data.query('X > 58.0e-2 and X <= 60.0e-2')
+        query[4] = data.query('X > 60.0e-2 and X <= 63.0e-2')
+        query[3] = data.query('X > 63.0e-2 and X <= 66.0e-2')
+        query[2] = data.query('X > 73.0e-2 and X <= 76.0e-2')
+        query[1] = data.query('X > 84.0e-2 and X <= 86.0e-2')
+        query[0] = data.query('X > 86.0e-2 and X <= 90.0e-2')
+    if kind == 'd/p':
+        query[17] = data.query('X > 4.80e-3 and X <= 5.70e-3')
+        query[16] = data.query('X > 7.20e-3 and X <= 9.30e-3')
+        query[15] = data.query('X > 1.15e-2 and X <= 1.40e-2')
+        query[14] = data.query('X > 1.65e-2 and X <= 1.90e-2')
+        query[13] = data.query('X > 2.30e-2 and X <= 2.90e-2')
+        query[12] = data.query('X > 2.90e-2 and X <= 3.80e-2')
+        query[11] = data.query('X > 4.60e-2 and X <= 5.40e-2')
+        query[10] = data.query('X > 6.50e-2 and X <= 7.30e-2')
+        query[9] = data.query('X > 8.50e-2 and X <= 9.20e-2')
+        query[8] = data.query('X > 10.7e-2 and X <= 11.3e-2')
+        query[7] = data.query('X > 13.6e-2 and X <= 14.6e-2')
+        query[6] = data.query('X > 14.6e-2 and X <= 18.7e-2')
+        query[5] = data.query('X > 18.7e-2 and X <= 23.7e-2')
+        query[4] = data.query('X > 23.7e-2 and X <= 29.0e-2')
+        query[3] = data.query('X > 29.0e-2 and X <= 36.0e-2')
+        query[2] = data.query('X > 36.0e-2 and X <= 47.6e-2')
+        query[1] = data.query('X > 47.6e-2 and X <= 57.5e-2')
+        query[0] = data.query('X > 57.5e-2 and X <= 70.5e-2')
+    if kind == 'HERA NC':
+        query[24] = data.query('X < 3.50e-5')
+        query[23] = data.query('X > 3.50e-5 and X <= 5.5e-5')
+        query[22] = data.query('X > 5.50e-5 and X <= 9.5e-5')
+        query[21] = data.query('X > 9.50e-5 and X <= 1.5e-4')
+        query[20] = data.query('X > 1.50e-4 and X <= 2.5e-4')
+        query[19] = data.query('X > 2.50e-4 and X <= 3.5e-4')
+        query[18] = data.query('X > 3.50e-4 and X <= 5.5e-4')
+        query[17] = data.query('X > 5.50e-4 and X <= 6.6e-4')
+        query[16] = data.query('X > 7.50e-4 and X <= 8.5e-4')
+        query[15] = data.query('X > 8.50e-4 and X <= 0.98e-3')
+        query[14] = data.query('X > 0.98e-3 and X <= 1.9e-3')
+        query[13] = data.query('X > 0.0019  and X <= 0.0030')
+        query[12] = data.query('X > 0.0030  and X <= 0.0040')
+        query[11] = data.query('X > 4.80e-3 and X <= 5.6e-3')
+        query[10] = data.query('X > 7.90e-3 and X <= 8.6e-3')
+        query[9] = data.query('X > 1.00e-2 and X <= 1.5e-2')
+        query[8] = data.query('X > 1.90e-2 and X <= 2.2e-2')
+        query[7] = data.query('X > 3.00e-2 and X <= 3.4e-2')
+        query[6] = data.query('X > 4.80e-2 and X <= 5.6e-2')
+        query[5] = data.query('X > 7.90e-2 and X <= 8.8e-2')
+        query[4] = data.query('X > 12.0e-2 and X <= 14e-2')
+        query[3] = data.query('X > 17.0e-2 and X <= 19e-2')
+        query[2] = data.query('X > 23.0e-2 and X <= 26e-2')
+        query[1] = data.query('X > 38.0e-2 and X <= 42.0e-2')
+        query[0] = data.query('X > 62.0e-2 and X <= 66e-2')
+    if kind == 'HERA CC':
+        query[7] = data.query('X > 0.0079 and X <= 0.0081')
+        query[6] = data.query('X > 0.010  and X <= 0.015')
+        query[5] = data.query('X > 0.030  and X <= 0.034')
+        query[4] = data.query('X > 0.079  and X <= 0.081')
+        query[3] = data.query('X > 0.120  and X <= 0.14')
+        query[2] = data.query('X > 0.230  and X <= 0.27')
+        query[1] = data.query('X > 0.380  and X <= 0.42')
+        query[0] = data.query('X > 0.630  and X <= 0.66')
+    if kind == 'HERA other':
+        query[29] = data.query('X < 3.50e-5 ')
+        query[28] = data.query('X > 3.50e-5 and X <= 9.5e-5')
+        query[27] = data.query('X > 9.50e-5 and X <= 2.5e-4')
+        query[26] = data.query('X > 2.50e-4 and X <= 3.5e-4')
+        query[25] = data.query('X > 3.50e-4 and X <= 5.5e-4')
+        query[24] = data.query('X > 5.50e-4 and X <= 6.6e-4')
+        query[23] = data.query('X > 6.90e-4 and X <= 8.5e-4')
+        query[22] = data.query('X > 8.50e-4 and X <= 0.98e-3')
+        query[21] = data.query('X > 0.98e-3 and X <= 0.0014')
+        query[20] = data.query('X > 1.3e-3  and X <= 1.9e-03')
+        query[19] = data.query('X > 0.0019  and X <= 0.0029')
+        query[18] = data.query('X > 0.0029  and X <= 0.0040')
+        query[17] = data.query('X > 4.0e-3  and X <= 5.55e-3')
+        query[16] = data.query('X > 5.55e-3 and X <= 7.95e-3')
+        query[15] = data.query('X > 7.95e-3 and X <= 8.9e-3')
+        query[14] = data.query('X > 9.00e-3 and X <= 9.9e-3')
+        query[13] = data.query('X > 9.90e-3 and X <= 1.25e-2')
+        query[12] = data.query('X > 1.25e-2 and X <= 1.5e-2')
+        query[11] = data.query('X > 1.50e-2 and X <= 1.7e-2')
+        query[10] = data.query('X > 1.70e-2 and X <= 1.99e-2')
+        query[9] = data.query('X > 1.99e-2 and X <= 2.2e-2')
+        query[8] = data.query('X > 2.30e-2 and X <= 2.7e-2')
+        query[7] = data.query('X > 3.00e-2 and X <= 3.4e-2')
+        query[6] = data.query('X > 4.80e-2 and X <= 5.6e-2')
+        query[5] = data.query('X > 7.90e-2 and X <= 8.8e-2')
+        query[4] = data.query('X > 12.0e-2 and X <= 14e-2')
+        query[3] = data.query('X > 17.0e-2 and X <= 19e-2')
+        query[2] = data.query('X > 23.0e-2 and X <= 26e-2')
+        query[1] = data.query('X > 30.0e-2 and X <= 45e-2')
+        query[0] = data.query('X > 60.0e-2 and X <= 70e-2')
+    return query
+
+# Adapted from thesis/idis.py:get_Q2bins, original lines 177-189; SHA256 92dc40105aa2214d4b8ea863286aad4601f0078010c0f2312ba5a1aabbb3ddcf.
+def thesis_idis_get_Q2bins(data, kind):
+    query = {}
+    if kind == 'BONuS':
+        query[5] = data.query('Q2 > 3.7')
+        query[4] = data.query('Q2 > 3.2 and Q2 <= 3.7')
+        query[3] = data.query('Q2 > 2.7 and Q2 <= 3.2')
+        query[2] = data.query('Q2 > 2.3 and Q2 <= 2.7')
+        query[1] = data.query('Q2 > 1.9 and Q2 <= 2.3')
+        query[0] = data.query('Q2 > 1.5 and Q2 <= 1.9')
+    if kind == 'MARATHON' or kind == 'JLab':
+        query[0] = data.query('Q2 > 1.5 and Q2 <= 20')
+    return query
+
+# Adapted from thesis/idis.py:get_thetabins, original lines 191-201; SHA256 92dc40105aa2214d4b8ea863286aad4601f0078010c0f2312ba5a1aabbb3ddcf.
+def thesis_idis_get_thetabins(data, kind):
+    query = {}
+    if kind == 'JLab':
+        query[5] = data.query('theta > 65 and theta <= 75')
+        query[4] = data.query('theta > 57 and theta <= 65')
+        query[3] = data.query('theta > 50 and theta <= 57')
+        query[2] = data.query('theta > 43 and theta <= 50')
+        query[1] = data.query('theta > 40 and theta <= 43')
+        query[0] = data.query('theta > 35 and theta <= 40')
+    return query
+
+# Adapted from thesis/idis.py:get_plot, original lines 203-228; SHA256 92dc40105aa2214d4b8ea863286aad4601f0078010c0f2312ba5a1aabbb3ddcf.
+def thesis_idis_get_plot(query, cluster_i=0):
+    plot = {_: {} for _ in ['theory', 'X', 'Q2', 'value', 'alpha', 'std_lower', 'std_upper']}
+    for key in query:
+        theory = query[key]['thy-%d' % cluster_i]
+        std_lower = query[key]['dthy_lower-%d' % cluster_i]
+        std_upper = query[key]['dthy_upper-%d' % cluster_i]
+        X = query[key]['X']
+        Q2 = query[key]['Q2']
+        value = query[key]['value']
+        alpha = query[key]['alpha']
+        zx = sorted(zip(Q2, X), key=lambda row: row[0])
+        zt = sorted(zip(Q2, theory), key=lambda row: row[0])
+        zv = sorted(zip(Q2, value), key=lambda row: row[0])
+        za = sorted(zip(Q2, alpha), key=lambda row: row[0])
+        zs_lower = sorted(zip(Q2, std_lower), key=lambda row: row[0])
+        zs_upper = sorted(zip(Q2, std_upper), key=lambda row: row[0])
+        plot['X'][key] = np.array([zx[i][1] for i in range(len(zx))])
+        plot['theory'][key] = np.array([zt[i][1] for i in range(len(zt))])
+        plot['value'][key] = np.array([zv[i][1] for i in range(len(zv))])
+        plot['alpha'][key] = np.array([za[i][1] for i in range(len(za))])
+        plot['std_lower'][key] = np.array([zs_lower[i][1] for i in range(len(zs_lower))])
+        plot['std_upper'][key] = np.array([zs_upper[i][1] for i in range(len(zs_upper))])
+        plot['Q2'][key] = np.array(sorted(Q2))
+    return plot
+
+# Adapted from thesis/idis.py:get_theory, original lines 230-272; SHA256 92dc40105aa2214d4b8ea863286aad4601f0078010c0f2312ba5a1aabbb3ddcf.
+def thesis_idis_get_theory(PLOT, nbins, loop=True, funcQ2=True, funcX=False):
+    theory = {}
+    if funcQ2:
+        svar = 'Q2'
+    if funcX:
+        svar = 'X'
+    theory = {_: {} for _ in [svar, 'value', 'std_lower', 'std_upper']}
+    for key in range(nbins):
+        var = []
+        thy = []
+        std_lower = []
+        std_upper = []
+        if loop:
+            for exp in PLOT:
+                var.extend(PLOT[exp][svar][key])
+                thy.extend(PLOT[exp]['theory'][key])
+                std_lower.extend(PLOT[exp]['std_lower'][key])
+                std_upper.extend(PLOT[exp]['std_upper'][key])
+        else:
+            var.extend(PLOT[svar][key])
+            thy.extend(PLOT['theory'][key])
+            std_lower.extend(PLOT['std_lower'][key])
+            std_upper.extend(PLOT['std_upper'][key])
+        if len(var) == 0:
+            continue
+        vmin = np.min(var)
+        vmax = np.max(var)
+        theory[svar][key] = np.geomspace(vmin, vmax, 100)
+        if len(var) > 1:
+            theory['value'][key] = griddata(np.array(var), np.array(thy), theory[svar][key], method='linear')
+            theory['std_lower'][key] = griddata(np.array(var), np.array(std_lower), theory[svar][key], method='linear')
+            theory['std_upper'][key] = griddata(np.array(var), np.array(std_upper), theory[svar][key], method='linear')
+        else:
+            theory['value'][key] = np.ones(100) * thy
+            theory['std_lower'][key] = np.ones(100) * std_lower
+            theory['std_upper'][key] = np.ones(100) * std_upper
+    return theory
+
+# Adapted from thesis/idis.py:get_details, original lines 274-299; SHA256 92dc40105aa2214d4b8ea863286aad4601f0078010c0f2312ba5a1aabbb3ddcf.
+def thesis_idis_get_details(exp):
+    if exp == 'NMC':
+        (color, marker, ms) = ('firebrick', '*', 8)
+    if exp == 'SLAC':
+        (color, marker, ms) = ('darkgreen', '^', 6)
+    if exp == 'BCDMS':
+        (color, marker, ms) = ('blue', 'o', 6)
+    if exp == 'HERA 10026':
+        (color, marker, ms) = ('black', '.', 8)
+    if exp == 'HERA 10030':
+        (color, marker, ms) = ('firebrick', 'D', 8)
+    if exp == 'HERA 10031':
+        (color, marker, ms) = ('blue', '^', 6)
+    if exp == 'HERA 10032':
+        (color, marker, ms) = ('darkgreen', 's', 6)
+    if exp == 'HERA 10027':
+        (color, marker, ms) = ('darkgreen', 's', 6)
+    if exp == 'HERA 10028':
+        (color, marker, ms) = ('firebrick', '.', 8)
+    if exp == 'HERA 10029':
+        (color, marker, ms) = ('blue', '^', 8)
+    if exp == 'JLab d':
+        (color, marker, ms) = ('firebrick', '*', 8)
+    if exp == 'JLab p':
+        (color, marker, ms) = ('darkgreen', '^', 8)
+    if exp == 'BONuS':
+        (color, marker, ms) = ('blue', 'o', 6)
+    if exp == 'MARATHON dp':
+        (color, marker, ms) = ('darkgreen', 'o', 6)
+    if exp == 'MARATHON ht':
+        (color, marker, ms) = ('darkgreen', '^', 5)
+    if exp == 'JLab hd':
+        (color, marker, ms) = ('firebrick', 'o', 5)
+    return (color, marker, ms)
+
+# Adapted from thesis/idis.py:plot_proton, original lines 301-777; SHA256 92dc40105aa2214d4b8ea863286aad4601f0078010c0f2312ba5a1aabbb3ddcf.
+def thesis_idis_plot_proton(datasets, output_file, interval):
+    _selected_keys = {r + ':' + str(i) for (r, tables) in datasets.items() for i in tables}
+    thy_plot = thy_band = thy_plot0 = thy_band0 = thy_point0 = None
+    istep = 0
+    kc = SimpleNamespace(nc={0: 1})
+    nc = 1
+    predictions = {'reactions': datasets}
+    data = datasets['idis']
+    tabs = data
+    (nrows, ncols) = (2, 2)
+    py.figure(figsize=(ncols * 12.0, nrows * 14.0))
+    ax11 = py.subplot(nrows, ncols, 1)
+    ax12 = py.subplot(nrows, ncols, 2)
+    ax21 = py.subplot(nrows, ncols, 3)
+    ax22 = py.subplot(nrows, ncols, 4)
+    if any((i in data for i in [10010, 10016, 10020])):
+        nbins = 27
+        DATA = {}
+        if 10020 in data:
+            DATA['NMC'] = pd.DataFrame(data[10020])
+        if 10010 in data:
+            DATA['SLAC'] = pd.DataFrame(data[10010])
+        if 10016 in data:
+            DATA['BCDMS'] = pd.DataFrame(data[10016])
+        PLOT = {}
+        for cluster_i in range(kc.nc[istep]):
+            if cluster_i != 0:
+                continue
+            for exp in DATA:
+                query = thesis_idis_get_xbins(DATA[exp], 'p')
+                PLOT[exp] = thesis_idis_get_plot(query)
+            theory = thesis_idis_get_theory(PLOT, nbins)
+        hand = {}
+        for exp in PLOT:
+            for key in range(nbins):
+                Q2 = PLOT[exp]['Q2'][key]
+                val = PLOT[exp]['value'][key] * 2.0 ** float(key)
+                alpha = PLOT[exp]['alpha'][key] * 2.0 ** float(key)
+                (color, marker, ms) = thesis_idis_get_details(exp)
+                hand[exp] = ax11.errorbar(Q2, val, alpha, marker=marker, color=color, ms=ms, capsize=3, linestyle='none')
+        for key in theory['value']:
+            Q2 = theory['Q2'][key]
+            mean = theory['value'][key] * 2.0 ** float(key)
+            std_lower = theory['std_lower'][key] * 2.0 ** float(key)
+            std_upper = theory['std_upper'][key] * 2.0 ** float(key)
+            down = mean - std_lower
+            up = mean + std_upper
+            (thy_plot,) = ax11.plot(Q2, mean, linestyle='solid', color='black')
+            thy_band = ax11.fill_between(Q2, np.minimum(down, up), np.maximum(down, up), color='gold', alpha=1.0, where=thesis_band_mask(Q2))
+        if any((len(v['value'].get(26, [])) for v in PLOT.values())):
+            ax11.text(2.4, 30000000.0, '$x=0.005\\, (i=24)$', fontsize=22)
+        if any((len(v['value'].get(25, [])) for v in PLOT.values())):
+            ax11.text(3.7, 12000000.0, '$x=0.008$', fontsize=22)
+        if any((len(v['value'].get(24, [])) for v in PLOT.values())):
+            ax11.text(5.8, 6000000.0, '$x=0.013$', fontsize=22)
+        if any((len(v['value'].get(23, [])) for v in PLOT.values())):
+            ax11.text(7.5, 3000000.0, '$x=0.018$', fontsize=22)
+        if any((len(v['value'].get(22, [])) for v in PLOT.values())):
+            ax11.text(12.0, 1500000.0, '$x=0.026$', fontsize=22)
+        if any((len(v['value'].get(21, [])) for v in PLOT.values())):
+            ax11.text(15.0, 800000.0, '$x=0.036$', fontsize=22)
+        if any((len(v['value'].get(20, [])) for v in PLOT.values())):
+            ax11.text(21.0, 400000.0, '$x=0.05$', fontsize=22)
+        if any((len(v['value'].get(19, [])) for v in PLOT.values())):
+            ax11.text(28.0, 200000.0, '$x=0.07$', fontsize=22)
+        if any((len(v['value'].get(18, [])) for v in PLOT.values())):
+            ax11.text(28.0, 100000.0, '$x=0.09$', fontsize=22)
+        if any((len(v['value'].get(17, [])) for v in PLOT.values())):
+            ax11.text(41.0, 50000.0, '$x=0.10$', fontsize=22)
+        if any((len(v['value'].get(16, [])) for v in PLOT.values())):
+            ax11.text(38.0, 25000.0, '$x=0.11$', fontsize=22)
+        if any((len(v['value'].get(15, [])) for v in PLOT.values())):
+            ax11.text(62.0, 10000.0, '$x=0.14$', fontsize=22)
+        if any((len(v['value'].get(14, [])) for v in PLOT.values())):
+            ax11.text(70.0, 5000.0, '$x=0.18$', fontsize=22)
+        if any((len(v['value'].get(13, [])) for v in PLOT.values())):
+            ax11.text(93.0, 2500.0, '$x=0.23$', fontsize=22)
+        if any((len(v['value'].get(12, [])) for v in PLOT.values())):
+            ax11.text(125.0, 1100.0, '$x=0.28$', fontsize=22)
+        if any((len(v['value'].get(11, [])) for v in PLOT.values())):
+            ax11.text(150.0, 400.0, '$x=0.35$', fontsize=22)
+        if any((len(v['value'].get(10, [])) for v in PLOT.values())):
+            ax11.text(200.0, 100.0, '$x=0.43$', fontsize=22)
+        if any((len(v['value'].get(9, [])) for v in PLOT.values())):
+            ax11.text(65.0, 60.0, '$x=0.46$', fontsize=22)
+        if any((len(v['value'].get(8, [])) for v in PLOT.values())):
+            ax11.text(15.0, 30.0, '$x=0.50$', fontsize=22)
+        if any((len(v['value'].get(7, [])) for v in PLOT.values())):
+            ax11.text(250.0, 8.0, '$x=0.53$', fontsize=22)
+        if any((len(v['value'].get(6, [])) for v in PLOT.values())):
+            ax11.text(22.0, 5.0, '$x=0.56$', fontsize=22)
+        if any((len(v['value'].get(5, [])) for v in PLOT.values())):
+            ax11.text(23.0, 2.5, '$x=0.59$', fontsize=22)
+        if any((len(v['value'].get(4, [])) for v in PLOT.values())):
+            ax11.text(24.0, 1.0, '$x=0.61$', fontsize=22)
+        if any((len(v['value'].get(3, [])) for v in PLOT.values())):
+            ax11.text(250.0, 0.2, '$x=0.65$', fontsize=22)
+        if any((len(v['value'].get(2, [])) for v in PLOT.values())):
+            ax11.text(250.0, 0.03, '$x=0.75$', fontsize=22)
+        if any((len(v['value'].get(1, [])) for v in PLOT.values())):
+            ax11.text(30.0, 0.008, '$x=0.85$', fontsize=22)
+        if any((len(v['value'].get(0, [])) for v in PLOT.values())):
+            ax11.text(30.0, 0.002, '$x=0.88\\, (i=0)$', fontsize=22)
+        ax11.semilogy()
+        ax11.semilogx()
+        ax11.set_xlim(1.5, 500.0)
+        ax11.set_ylim(0.0005, 100000000.0)
+        ax11.tick_params(axis='both', labelsize=30)
+        ax11.yaxis.set_tick_params(which='major', length=10)
+        ax11.set_yticks([0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0, 1000000.0, 10000000.0, 100000000.0])
+        ax11.set_yticklabels(['$10^{-3}$', '$10^{-2}$', '$10^{-1}$', '$1$', '$10$', '$10^2$', '$10^3$', '$10^4$', '$10^5$', '$10^6$', '$10^7$', '$10^8$'])
+        locmin = matplotlib.ticker.LogLocator(base=10.0, subs=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9), numticks=12)
+        ax11.yaxis.set_minor_locator(locmin)
+        ax11.yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+        ax11.yaxis.set_tick_params(which='minor', length=5)
+        ax11.xaxis.set_tick_params(which='major', length=10)
+        ax11.xaxis.set_tick_params(which='minor', length=5)
+        ax11.set_xticks([2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0])
+        xtick_labels = [2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0]
+        ax11.set_xticklabels(['$%0.0f$' % x for x in xtick_labels])
+        ax11.text(0.05, 0.05, '\\boldmath$F_2^p$', transform=ax11.transAxes, size=60)
+        ax11.text(0.15, 0.05, '$(\\times\\, 2^{\\, i})$', transform=ax11.transAxes, size=40)
+        ax11.set_xlabel('\\boldmath$Q^2$' + '  ' + '\\textbf{\\textrm{(GeV}}' + '\\boldmath$^2)$', size=40)
+        ax11.yaxis.set_ticks_position('both')
+        ax11.xaxis.set_ticks_position('both')
+        ax11.tick_params(axis='y', which='both', labelleft=True, labelright=False, direction='in')
+        ax11.tick_params(axis='x', which='both', labeltop=False, labelbottom=True, direction='in')
+        handles = [hand.get('BCDMS'), hand.get('NMC'), hand.get('SLAC'), (thy_band, thy_plot)]
+        label1 = '\\textbf{\\textrm{BCDMS}}'
+        label2 = '\\textbf{\\textrm{NMC}}'
+        label3 = '\\textbf{\\textrm{SLAC}}'
+        label4 = '\\textbf{\\textrm{JAM}}'
+        labels = [label1, label2, label3, label4]
+        thesis_legend(ax11, handles, labels, loc='upper right', fontsize=35, frameon=0, handletextpad=0.3, handlelength=1.0)
+    if any((i in data for i in [10003])):
+        E = 5.5
+        Mp = 0.939
+        theta = lambda X, Q2, M: np.arcsin(np.sqrt(Q2 / (4 * E ** 2 - 2 * E * Q2 / M / X))) * 2 * 180 / np.pi
+        data[10003]['theta'] = theta(data[10003]['X'], data[10003]['Q2'], Mp)
+        nbins = 6
+        DATA = {}
+        if 10003 in data:
+            DATA['JLab p'] = pd.DataFrame(data[10003])
+        theory = {}
+        PLOT = {}
+        for cluster_i in range(kc.nc[istep]):
+            if cluster_i != 0:
+                continue
+            for exp in DATA:
+                query = thesis_idis_get_thetabins(DATA[exp], 'JLab')
+                PLOT[exp] = thesis_idis_get_plot(query)
+                theory[exp] = thesis_idis_get_theory(PLOT[exp], nbins, loop=False)
+        hand = {}
+        for exp in PLOT:
+            for key in range(nbins):
+                Q2 = PLOT[exp]['Q2'][key]
+                val = PLOT[exp]['value'][key] * 2.0 ** float(key)
+                alpha = PLOT[exp]['alpha'][key] * 2.0 ** float(key)
+                (color, marker, ms) = thesis_idis_get_details(exp)
+                hand[exp] = ax12.errorbar(Q2, val, alpha, marker=marker, color=color, ms=ms, capsize=3, linestyle='none')
+            for key in theory[exp]['value']:
+                Q2 = theory[exp]['Q2'][key]
+                mean = theory[exp]['value'][key] * 2.0 ** float(key)
+                std_lower = theory[exp]['std_lower'][key] * 2.0 ** float(key)
+                std_upper = theory[exp]['std_upper'][key] * 2.0 ** float(key)
+                down = mean - std_lower
+                up = mean + std_upper
+                (thy_plot,) = ax12.plot(Q2, mean, linestyle='solid', color='black')
+                thy_band = ax12.fill_between(Q2, np.minimum(down, up), np.maximum(down, up), color='gold', alpha=1.0, where=thesis_band_mask(Q2))
+        if any((len(v['value'].get(5, [])) for v in PLOT.values())):
+            ax12.text(6.55, 0.9, '$\\theta=70^{\\circ} \\, (i=5)$', fontsize=30)
+        if any((len(v['value'].get(4, [])) for v in PLOT.values())):
+            ax12.text(6.2, 0.5, '$\\theta=60^{\\circ} $', fontsize=30)
+        if any((len(v['value'].get(3, [])) for v in PLOT.values())):
+            ax12.text(5.9, 0.28, '$\\theta=55^{\\circ} $', fontsize=30)
+        if any((len(v['value'].get(2, [])) for v in PLOT.values())):
+            ax12.text(5.2, 0.18, '$\\theta=45^{\\circ} $', fontsize=30)
+        if any((len(v['value'].get(1, [])) for v in PLOT.values())):
+            ax12.text(4.9, 0.1, '$\\theta=41^{\\circ} $', fontsize=30)
+        if any((len(v['value'].get(0, [])) for v in PLOT.values())):
+            ax12.text(4.6, 0.055, '$\\theta=38^{\\circ}  \\, (i=0)$', fontsize=30)
+        ax12.semilogy()
+        ax12.set_xlim(3.5, 7.5)
+        ax12.set_ylim(0.04, 3.5)
+        ax12.set_xticks([4, 5, 6, 7])
+        ax12.set_xticklabels(['$4$', '$5$', '$6$', '$7$'])
+        lo12cmin = matplotlib.ticker.LogLocator(base=10.0, subs=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9), numticks=12)
+        ax12.yaxis.set_minor_locator(lo12cmin)
+        ax12.yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+        ax12.yaxis.set_tick_params(which='minor', length=5)
+        ax12.set_yticks([0.1, 1.0])
+        ax12.set_yticklabels(['$10^{-1}$', '$10^{0}$'])
+        ax12.tick_params(axis='both', labelsize=30)
+        ax12.set_xlabel('\\boldmath$Q^2$' + '  ' + '\\textbf{\\textrm{(GeV}}' + '\\boldmath$^2)$', size=40)
+        ax12.text(0.05, 0.7, '\\boldmath$F_2^p$', transform=ax12.transAxes, size=60)
+        ax12.text(0.15, 0.7, '$(\\, \\times\\, 2^{\\, i})$', transform=ax12.transAxes, size=40)
+        ax12.xaxis.set_tick_params(which='major', length=10)
+        ax12.xaxis.set_tick_params(which='minor', length=5)
+        ax12.yaxis.set_tick_params(which='major', length=10)
+        ax12.yaxis.set_tick_params(which='minor', length=5)
+        ax12.yaxis.set_ticks_position('both')
+        ax12.xaxis.set_ticks_position('both')
+        ax12.tick_params(axis='y', which='both', labelleft=True, labelright=False, direction='in')
+        ax12.tick_params(axis='x', which='both', labeltop=False, labelbottom=True, direction='in')
+        minorLocator = MultipleLocator(0.2)
+        ax12.xaxis.set_minor_locator(minorLocator)
+        handles = [hand.get('JLab p')]
+        label1 = '\\textbf{\\textrm{Hall C}}'
+        labels = [label1]
+        thesis_legend(ax12, handles, labels, loc='upper right', fontsize=35, frameon=0, handletextpad=0.3, handlelength=1.0)
+    if any((i in data for i in [10026, 10030])):
+        nbins = 25
+        DATA = {}
+        if 10026 in data:
+            DATA['HERA 10026'] = pd.DataFrame(data[10026])
+        if 10030 in data:
+            DATA['HERA 10030'] = pd.DataFrame(data[10030])
+        theory = {}
+        PLOT = {}
+        for cluster_i in range(kc.nc[istep]):
+            if cluster_i != 0:
+                continue
+            for exp in DATA:
+                query = thesis_idis_get_xbins(DATA[exp], 'HERA NC')
+                PLOT[exp] = thesis_idis_get_plot(query)
+                theory[exp] = thesis_idis_get_theory(PLOT[exp], nbins, loop=False)
+        hand = {}
+        for exp in PLOT:
+            for key in range(nbins):
+                Q2 = PLOT[exp]['Q2'][key]
+                val = PLOT[exp]['value'][key] * 2.0 ** float(key)
+                alpha = PLOT[exp]['alpha'][key] * 2.0 ** float(key)
+                (color, marker, ms) = thesis_idis_get_details(exp)
+                hand[exp] = ax21.errorbar(Q2, val, alpha, marker=marker, color=color, ms=ms, capsize=3, linestyle='none')
+            for key in theory[exp]['value']:
+                Q2 = theory[exp]['Q2'][key]
+                mean = theory[exp]['value'][key] * 2.0 ** float(key)
+                std_lower = theory[exp]['std_lower'][key] * 2.0 ** float(key)
+                std_upper = theory[exp]['std_upper'][key] * 2.0 ** float(key)
+                down = mean - std_lower
+                up = mean + std_upper
+                (thy_plot,) = ax21.plot(Q2, mean, linestyle='solid', color='black')
+                thy_band = ax21.fill_between(Q2, np.minimum(down, up), np.maximum(down, up), color='gold', alpha=1.0, where=thesis_band_mask(Q2))
+        if any((len(v['value'].get(24, [])) for v in PLOT.values())):
+            ax21.text(3.4, 16500000.0, '$x=2.8\\cdot 10^{-5}\\, (i=24)$', fontsize=22)
+        if any((len(v['value'].get(23, [])) for v in PLOT.values())):
+            ax21.text(5.5, 8650000.0, '$x=4.6\\cdot 10^{-5}$', fontsize=22)
+        if any((len(v['value'].get(22, [])) for v in PLOT.values())):
+            ax21.text(8.0, 4600000.0, '$x=7.3\\cdot 10^{-5}$', fontsize=22)
+        if any((len(v['value'].get(21, [])) for v in PLOT.values())):
+            ax21.text(15.0, 2700000.0, '$x=1.2\\cdot 10^{-4}$', fontsize=22)
+        if any((len(v['value'].get(20, [])) for v in PLOT.values())):
+            ax21.text(22.0, 1400000.0, '$x=1.9\\cdot 10^{-4}$', fontsize=22)
+        if any((len(v['value'].get(19, [])) for v in PLOT.values())):
+            ax21.text(35.0, 750000.0, '$x=3.1\\cdot 10^{-4}$', fontsize=22)
+        if any((len(v['value'].get(18, [])) for v in PLOT.values())):
+            ax21.text(45.0, 390000.0, '$x=4.4\\cdot 10^{-4}$', fontsize=22)
+        if any((len(v['value'].get(17, [])) for v in PLOT.values())):
+            ax21.text(60.0, 180000.0, '$x=6.2\\cdot 10^{-4}$', fontsize=22)
+        if any((len(v['value'].get(16, [])) for v in PLOT.values())):
+            ax21.text(80.0, 85000.0, '$x=7.7\\cdot 10^{-4}$', fontsize=22)
+        if any((len(v['value'].get(15, [])) for v in PLOT.values())):
+            ax21.text(86.0, 40000.0, '$x=9.1 \\cdot 10^{-4}$', fontsize=22)
+        if any((len(v['value'].get(14, [])) for v in PLOT.values())):
+            ax21.text(160.0, 20000.0, '$x=0.0014$', fontsize=22)
+        if any((len(v['value'].get(13, [])) for v in PLOT.values())):
+            ax21.text(260.0, 10000.0, '$x=0.0024$', fontsize=22)
+        if any((len(v['value'].get(12, [])) for v in PLOT.values())):
+            ax21.text(440.0, 4500, '$x=0.0035$', fontsize=22)
+        if any((len(v['value'].get(11, [])) for v in PLOT.values())):
+            ax21.text(740.0, 2000, '$x=0.0056$', fontsize=22)
+        if any((len(v['value'].get(10, [])) for v in PLOT.values())):
+            ax21.text(1500.0, 970, '$x=0.0083$', fontsize=22)
+        if any((len(v['value'].get(9, [])) for v in PLOT.values())):
+            ax21.text(1700.0, 410, '$x=0.013$', fontsize=22)
+        if any((len(v['value'].get(8, [])) for v in PLOT.values())):
+            ax21.text(2700.0, 190, '$x=0.021$', fontsize=22)
+        if any((len(v['value'].get(7, [])) for v in PLOT.values())):
+            ax21.text(3900.0, 77, '$x=0.032$', fontsize=22)
+        if any((len(v['value'].get(6, [])) for v in PLOT.values())):
+            ax21.text(6500.0, 35, '$x=0.052$', fontsize=22)
+        if any((len(v['value'].get(5, [])) for v in PLOT.values())):
+            ax21.text(11500.0, 19, '$x=0.084$', fontsize=22)
+        if any((len(v['value'].get(4, [])) for v in PLOT.values())):
+            ax21.text(12.0, 5.5, '$x=0.13$', fontsize=22)
+        if any((len(v['value'].get(3, [])) for v in PLOT.values())):
+            ax21.text(18.0, 2.25, '$x=0.18$', fontsize=22)
+        if any((len(v['value'].get(2, [])) for v in PLOT.values())):
+            ax21.text(36.0, 0.97, '$x=0.25$', fontsize=22)
+        if any((len(v['value'].get(1, [])) for v in PLOT.values())):
+            ax21.text(43.0, 0.25, '$x=0.40$', fontsize=22)
+        if any((len(v['value'].get(0, [])) for v in PLOT.values())):
+            ax21.text(30.0, 0.02, '$x=0.65 \\, (i=0)$', fontsize=22)
+        ax21.semilogy()
+        ax21.semilogx()
+        ax21.set_xlim(1.0, 200000.0)
+        ax21.set_ylim(0.004, 40000000.0)
+        ax21.set_xticks([1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0])
+        ax21.set_xticklabels(['$1$', '$10$', '$10^2$', '$10^3$', '$10^4$', '$10^5$'])
+        locmin = matplotlib.ticker.LogLocator(base=10.0, subs=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9), numticks=12)
+        ax21.yaxis.set_minor_locator(locmin)
+        ax21.yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+        ax21.yaxis.set_tick_params(which='minor', length=5)
+        ax21.set_yticks([0.01, 0.1, 1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0, 1000000.0, 10000000.0])
+        ax21.set_yticklabels(['$10^{-2}$', '$10^{-1}$', '$1$', '$10$', '$10^2$', '$10^3$', '$10^4$', '$10^5$', '$10^6$', '$10^7$'])
+        ax21.tick_params(axis='both', labelsize=30, pad=10)
+        ax21.set_xlabel('\\boldmath$Q^2$' + '  ' + '\\textbf{\\textrm{(GeV}}' + '\\boldmath$^2)$', size=40)
+        ax21.text(0.7, 0.75, '\\textrm{\\textbf{HERA}}', transform=ax21.transAxes, size=50)
+        ax21.text(0.05, 0.12, '\\boldmath$\\sigma_{\\rm red}^{\\rm NC}$', transform=ax21.transAxes, size=60)
+        ax21.text(0.05, 0.04, '$(\\, \\times\\, 2^{\\, i})$', transform=ax21.transAxes, size=40)
+        ax21.text(2000.0, 30000.0, '$\\sqrt{s}=318 \\,\\rm{GeV}$', fontsize=40)
+        ax21.xaxis.set_tick_params(which='major', length=10)
+        ax21.xaxis.set_tick_params(which='minor', length=5)
+        ax21.yaxis.set_tick_params(which='major', length=10)
+        ax21.yaxis.set_tick_params(which='minor', length=5)
+        ax21.yaxis.set_ticks_position('both')
+        ax21.xaxis.set_ticks_position('both')
+        ax21.tick_params(axis='y', which='both', labelleft=True, labelright=False, direction='in')
+        ax21.tick_params(axis='x', which='both', labeltop=False, labelbottom=True, direction='in')
+        handles = [hand.get('HERA 10026'), hand.get('HERA 10030')]
+        label1 = '\\boldmath$e^+p$'
+        label2 = '\\boldmath$e^-p$'
+        labels = [label1, label2]
+        thesis_legend(ax21, handles, labels, loc='upper right', fontsize=35, frameon=0, handletextpad=0.3, handlelength=1.0)
+    if any((i in data for i in [10027, 10028, 10029])):
+        nbins = 30
+        DATA = {}
+        if 10027 in data:
+            DATA['HERA 10027'] = pd.DataFrame(data[10027])
+        if 10028 in data:
+            DATA['HERA 10028'] = pd.DataFrame(data[10028])
+        if 10029 in data:
+            DATA['HERA 10029'] = pd.DataFrame(data[10029])
+        theory = {}
+        PLOT = {}
+        for cluster_i in range(kc.nc[istep]):
+            if cluster_i != 0:
+                continue
+            for exp in DATA:
+                query = thesis_idis_get_xbins(DATA[exp], 'HERA other')
+                PLOT[exp] = thesis_idis_get_plot(query)
+                theory[exp] = thesis_idis_get_theory(PLOT[exp], nbins, loop=False)
+        hand = {}
+        for exp in PLOT:
+            for key in range(nbins):
+                Q2 = PLOT[exp]['Q2'][key]
+                val = PLOT[exp]['value'][key] * 2.0 ** float(key)
+                alpha = PLOT[exp]['alpha'][key] * 2.0 ** float(key)
+                (color, marker, ms) = thesis_idis_get_details(exp)
+                hand[exp] = ax22.errorbar(Q2, val, alpha, marker=marker, color=color, ms=ms, capsize=3, linestyle='none')
+            for key in theory[exp]['value']:
+                Q2 = theory[exp]['Q2'][key]
+                mean = theory[exp]['value'][key] * 2.0 ** float(key)
+                std_lower = theory[exp]['std_lower'][key] * 2.0 ** float(key)
+                std_upper = theory[exp]['std_upper'][key] * 2.0 ** float(key)
+                down = mean - std_lower
+                up = mean + std_upper
+                (thy_plot,) = ax22.plot(Q2, mean, linestyle='solid', color=color)
+                thy_band = ax22.fill_between(Q2, np.minimum(down, up), np.maximum(down, up), color='gold', alpha=1.0, where=thesis_band_mask(Q2))
+        if any((len(v['value'].get(29, [])) for v in PLOT.values())):
+            ax22.text(2.5, 450000000.0, '$x=3.3 \\cdot 10^{-5}\\, (i=29)$', fontsize=20)
+        if any((len(v['value'].get(28, [])) for v in PLOT.values())):
+            ax22.text(5.7, 250000000.0, '$x=5.9 \\cdot 10^{-5}$', fontsize=20)
+        if any((len(v['value'].get(27, [])) for v in PLOT.values())):
+            ax22.text(19.0, 170000000.0, '$x=1.6 \\cdot 10^{-4}$', fontsize=20)
+        if any((len(v['value'].get(26, [])) for v in PLOT.values())):
+            ax22.text(35.0, 80000000.0, '$x=3.1 \\cdot 10^{-4}$', fontsize=20)
+        if any((len(v['value'].get(25, [])) for v in PLOT.values())):
+            ax22.text(35.0, 44000000.0, '$x=4.5 \\cdot 10^{-4}$', fontsize=20)
+        if any((len(v['value'].get(24, [])) for v in PLOT.values())):
+            ax22.text(45.0, 21000000.0, '$x=6.2 \\cdot 10^{-4}$', fontsize=20)
+        if any((len(v['value'].get(23, [])) for v in PLOT.values())):
+            ax22.text(57.0, 11000000.0, '$x=7.8 \\cdot 10^{-4}$', fontsize=20)
+        if any((len(v['value'].get(22, [])) for v in PLOT.values())):
+            ax22.text(50.0, 5000000.0, '$x=9.1 \\cdot 10^{-4}$', fontsize=20)
+        if any((len(v['value'].get(21, [])) for v in PLOT.values())):
+            ax22.text(90.0, 2700000.0, '$x=0.0011$', fontsize=20)
+        if any((len(v['value'].get(20, [])) for v in PLOT.values())):
+            ax22.text(100.0, 1150000.0, '$x=0.0015$', fontsize=20)
+        if any((len(v['value'].get(19, [])) for v in PLOT.values())):
+            ax22.text(170.0, 600000.0, '$x=0.0022$', fontsize=20)
+        if any((len(v['value'].get(18, [])) for v in PLOT.values())):
+            ax22.text(250.0, 290000.0, '$x=0.0034$', fontsize=20)
+        if any((len(v['value'].get(17, [])) for v in PLOT.values())):
+            ax22.text(370.0, 120000.0, '$x=0.0046$', fontsize=20)
+        if any((len(v['value'].get(16, [])) for v in PLOT.values())):
+            ax22.text(450.0, 56000.0, '$x=0.0064$', fontsize=20)
+        if any((len(v['value'].get(15, [])) for v in PLOT.values())):
+            ax22.text(800.0, 28000.0, '$x=0.0085$', fontsize=20)
+        if any((len(v['value'].get(14, [])) for v in PLOT.values())):
+            ax22.text(600.0, 12000.0, '$x=0.0094$', fontsize=20)
+        if any((len(v['value'].get(13, [])) for v in PLOT.values())):
+            ax22.text(800.0, 6200.0, '$x=0.011$', fontsize=20)
+        if any((len(v['value'].get(12, [])) for v in PLOT.values())):
+            ax22.text(1500.0, 3200.0, '$x=0.0138$', fontsize=20)
+        if any((len(v['value'].get(11, [])) for v in PLOT.values())):
+            ax22.text(1000.0, 1400.0, '$x=0.0156$', fontsize=20)
+        if any((len(v['value'].get(10, [])) for v in PLOT.values())):
+            ax22.text(1000.0, 700.0, '$x=0.0183$', fontsize=20)
+        if any((len(v['value'].get(9, [])) for v in PLOT.values())):
+            ax22.text(1900.0, 320.0, '$x=0.020$', fontsize=20)
+        if any((len(v['value'].get(8, [])) for v in PLOT.values())):
+            ax22.text(1100.0, 150.0, '$x=0.025$', fontsize=20)
+        if any((len(v['value'].get(7, [])) for v in PLOT.values())):
+            ax22.text(2500.0, 67.0, '$x=0.032$', fontsize=20)
+        if any((len(v['value'].get(6, [])) for v in (v for (name, v) in PLOT.items() if name in ['HERA 10028', 'HERA 10029']))):
+            ax22.text(60.0, 28.0, '$x=0.05$', fontsize=20)
+        if any((len(v['value'].get(5, [])) for v in (v for (name, v) in PLOT.items() if name in ['HERA 10028', 'HERA 10029']))):
+            ax22.text(60.0, 12.0, '$x=0.08$', fontsize=20)
+        if any((len(v['value'].get(4, [])) for v in (v for (name, v) in PLOT.items() if name in ['HERA 10028', 'HERA 10029']))):
+            ax22.text(60.0, 5.3, '$x=0.13$', fontsize=20)
+        if any((len(v['value'].get(3, [])) for v in (v for (name, v) in PLOT.items() if name in ['HERA 10028', 'HERA 10029']))):
+            ax22.text(60.0, 2.15, '$x=0.18$', fontsize=20)
+        if any((len(v['value'].get(2, [])) for v in (v for (name, v) in PLOT.items() if name in ['HERA 10028', 'HERA 10029']))):
+            ax22.text(160.0, 0.85, '$x=0.25$', fontsize=20)
+        if any((len(v['value'].get(1, [])) for v in (v for (name, v) in PLOT.items() if name in ['HERA 10028', 'HERA 10029']))):
+            ax22.text(60.0, 0.3, '$x=0.40$', fontsize=20)
+        if any((len(v['value'].get(0, [])) for v in PLOT.values())):
+            ax22.text(70.0, 0.022, '$x=0.65 \\, (i=0)$', fontsize=20)
+        if any((len(v['value'].get(6, [])) for v in (v for (name, v) in PLOT.items() if name in ['HERA 10027']))):
+            ax22.text(4000.0, 28.0, '$x=0.05$', fontsize=20, color='darkgreen')
+        if any((len(v['value'].get(5, [])) for v in (v for (name, v) in PLOT.items() if name in ['HERA 10027']))):
+            ax22.text(6000.0, 11.0, '$x=0.08$', fontsize=20, color='darkgreen')
+        if any((len(v['value'].get(4, [])) for v in (v for (name, v) in PLOT.items() if name in ['HERA 10027']))):
+            ax22.text(1600.0, 4.6, '$x=0.13$', fontsize=20, color='darkgreen')
+        if any((len(v['value'].get(3, [])) for v in (v for (name, v) in PLOT.items() if name in ['HERA 10027']))):
+            ax22.text(2300.0, 2.0, '$x=0.18$', fontsize=20, color='darkgreen')
+        if any((len(v['value'].get(2, [])) for v in (v for (name, v) in PLOT.items() if name in ['HERA 10027']))):
+            ax22.text(2800.0, 0.8, '$x=0.25$', fontsize=20, color='darkgreen')
+        if any((len(v['value'].get(1, [])) for v in (v for (name, v) in PLOT.items() if name in ['HERA 10027']))):
+            ax22.text(3000.0, 0.2, '$x=0.40\\, (i=1)$', fontsize=20, color='darkgreen')
+        ax22.semilogy()
+        ax22.semilogx()
+        ax22.set_xlim(1.0, 40000.0)
+        ax22.set_ylim(0.01, 2000000000.0)
+        ax22.set_xlabel('\\boldmath$Q^2$' + '  ' + '\\textbf{\\textrm{(GeV}}' + '\\boldmath$^2)$', size=40)
+        ax22.text(0.62, 0.75, '\\textrm{\\textbf{HERA}}' + ' ' + '\\boldmath$e^-p$', transform=ax22.transAxes, size=50)
+        ax22.text(0.05, 0.12, '\\boldmath$\\sigma_{\\rm red}^{\\rm NC}$', transform=ax22.transAxes, size=60)
+        ax22.text(0.05, 0.04, '$(\\, \\times\\, 2^{\\, i})$', transform=ax22.transAxes, size=40)
+        ax22.set_xticks([1.0, 10.0, 100.0, 1000.0, 10000.0])
+        ax22.set_xticklabels(['$1$', '$10$', '$10^2$', '$10^3$', '$10^4$'])
+        locmin = matplotlib.ticker.LogLocator(base=10.0, subs=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9), numticks=12)
+        ax22.yaxis.set_minor_locator(locmin)
+        ax22.yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+        ax22.yaxis.set_tick_params(which='minor', length=3)
+        ax22.set_yticks([0.01, 0.1, 1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0, 1000000.0, 10000000.0, 100000000.0, 1000000000.0])
+        ax22.set_yticklabels(['$10^{-2}$', '$10^{-1}$', '$1$', '$10$', '$10^2$', '$10^3$', '$10^4$', '$10^5$', '$10^6$', '$10^7$', '$10^8$', '$10^9$'])
+        ax22.yaxis.set_ticks_position('both')
+        ax22.xaxis.set_ticks_position('both')
+        ax22.tick_params(axis='y', which='both', labelleft=True, labelright=False, direction='in')
+        ax22.tick_params(axis='x', which='both', labeltop=False, labelbottom=True, direction='in')
+        ax22.xaxis.set_tick_params(which='major', length=10)
+        ax22.xaxis.set_tick_params(which='minor', length=5)
+        ax22.yaxis.set_tick_params(which='major', length=10)
+        ax22.yaxis.set_tick_params(which='minor', length=5)
+        ax22.yaxis.set_ticks_position('both')
+        ax22.xaxis.set_ticks_position('both')
+        ax22.tick_params(axis='y', which='both', labelleft=True, labelright=False, direction='in')
+        ax22.tick_params(axis='x', which='both', labeltop=False, labelbottom=True, direction='in')
+        ax22.tick_params(axis='both', labelsize=30, pad=10)
+        handles = [hand.get('HERA 10027'), hand.get('HERA 10028'), hand.get('HERA 10029')]
+        label1 = '\\boldmath$\\sqrt{s}=300$' + ' ' + '\\textrm{\\textbf{GeV}}'
+        label2 = '\\boldmath$\\sqrt{s}=251$' + ' ' + '\\textrm{\\textbf{GeV}}'
+        label3 = '\\boldmath$\\sqrt{s}=225$' + ' ' + '\\textrm{\\textbf{GeV}}'
+        labels = [label1, label2, label3]
+        thesis_legend(ax22, handles, labels, loc='upper right', fontsize=30, frameon=0, handletextpad=0.3, handlelength=1.0)
+    py.tight_layout()
+    py.subplots_adjust(right=0.99)
+    filename = output_file
+    ax11.set_rasterized(True)
+    ax12.set_rasterized(True)
+    ax21.set_rasterized(True)
+    ax22.set_rasterized(True)
+    thesis_finish_panels(py.gcf(), 'thesis_idis_plot_proton', _selected_keys)
+    py.savefig(filename)
+
+# Adapted from thesis/idis.py:plot_deuteron, original lines 779-1186; SHA256 92dc40105aa2214d4b8ea863286aad4601f0078010c0f2312ba5a1aabbb3ddcf.
+def thesis_idis_plot_deuteron(datasets, output_file, interval):
+    _selected_keys = {r + ':' + str(i) for (r, tables) in datasets.items() for i in tables}
+    thy_plot = thy_band = thy_plot0 = thy_band0 = thy_point0 = None
+    istep = 0
+    kc = SimpleNamespace(nc={0: 1})
+    nc = 1
+    predictions = {'reactions': datasets}
+    data = datasets['idis']
+    tabs = data
+    (nrows, ncols) = (2, 2)
+    py.figure(figsize=(ncols * 12, nrows * 14))
+    ax11 = py.subplot(nrows, ncols, 1)
+    ax12 = py.subplot(nrows, ncols, 2)
+    ax21 = py.subplot(nrows, ncols, 3)
+    ax22 = py.subplot(nrows, ncols, 4)
+    if any((i in data for i in [10011, 10017])):
+        nbins = 19
+        DATA = {}
+        if 10011 in data:
+            DATA['SLAC'] = pd.DataFrame(data[10011])
+        if 10017 in data:
+            DATA['BCDMS'] = pd.DataFrame(data[10017])
+        PLOT = {}
+        for cluster_i in range(kc.nc[istep]):
+            if cluster_i != 0:
+                continue
+            for exp in DATA:
+                query = thesis_idis_get_xbins(DATA[exp], 'd')
+                PLOT[exp] = thesis_idis_get_plot(query)
+            theory = thesis_idis_get_theory(PLOT, nbins)
+        hand = {}
+        for exp in PLOT:
+            for key in range(nbins):
+                Q2 = PLOT[exp]['Q2'][key]
+                val = PLOT[exp]['value'][key] * 2.0 ** float(key)
+                alpha = PLOT[exp]['alpha'][key] * 2.0 ** float(key)
+                (color, marker, ms) = thesis_idis_get_details(exp)
+                hand[exp] = ax11.errorbar(Q2, val, alpha, marker=marker, color=color, ms=ms, capsize=3, linestyle='none')
+        for key in theory['value']:
+            Q2 = theory['Q2'][key]
+            mean = theory['value'][key] * 2.0 ** float(key)
+            std_lower = theory['std_lower'][key] * 2.0 ** float(key)
+            std_upper = theory['std_upper'][key] * 2.0 ** float(key)
+            down = mean - std_lower
+            up = mean + std_upper
+            (thy_plot,) = ax11.plot(Q2, mean, linestyle='solid', color='black')
+            thy_band = ax11.fill_between(Q2, np.minimum(down, up), np.maximum(down, up), color='gold', alpha=1.0, where=thesis_band_mask(Q2))
+        if any((len(v['value'].get(18, [])) for v in PLOT.values())):
+            ax11.text(21.0, 90000.0, '$x=0.07 \\,(i=15)$', fontsize=26)
+        if any((len(v['value'].get(17, [])) for v in PLOT.values())):
+            ax11.text(3.0, 40000.0, '$x=0.09$', fontsize=26)
+        if any((len(v['value'].get(16, [])) for v in PLOT.values())):
+            ax11.text(45.0, 20000.0, '$x=0.10$', fontsize=26)
+        if any((len(v['value'].get(15, [])) for v in PLOT.values())):
+            ax11.text(70.0, 10000.0, '$x=0.14$', fontsize=26)
+        if any((len(v['value'].get(14, [])) for v in PLOT.values())):
+            ax11.text(75.0, 4500.0, '$x=0.18$', fontsize=26)
+        if any((len(v['value'].get(13, [])) for v in PLOT.values())):
+            ax11.text(100.0, 2000.0, '$x=0.23$', fontsize=26)
+        if any((len(v['value'].get(12, [])) for v in PLOT.values())):
+            ax11.text(140.0, 900.0, '$x=0.28$', fontsize=26)
+        if any((len(v['value'].get(11, [])) for v in PLOT.values())):
+            ax11.text(170.0, 300.0, '$x=0.35$', fontsize=26)
+        if any((len(v['value'].get(10, [])) for v in PLOT.values())):
+            ax11.text(190.0, 100.0, '$x=0.43$', fontsize=26)
+        if any((len(v['value'].get(9, [])) for v in PLOT.values())):
+            ax11.text(19.0, 58.0, '$x=0.46$', fontsize=26)
+        if any((len(v['value'].get(8, [])) for v in PLOT.values())):
+            ax11.text(17.0, 20.0, '$x=0.50$', fontsize=26)
+        if any((len(v['value'].get(7, [])) for v in PLOT.values())):
+            ax11.text(255.0, 4.0, '$x=0.53$', fontsize=26)
+        if any((len(v['value'].get(6, [])) for v in PLOT.values())):
+            ax11.text(22.0, 3.0, '$x=0.56$', fontsize=26)
+        if any((len(v['value'].get(5, [])) for v in PLOT.values())):
+            ax11.text(23.0, 1.5, '$x=0.59$', fontsize=26)
+        if any((len(v['value'].get(4, [])) for v in PLOT.values())):
+            ax11.text(25.0, 0.6, '$x=0.61$', fontsize=26)
+        if any((len(v['value'].get(3, [])) for v in PLOT.values())):
+            ax11.text(250.0, 0.14, '$x=0.65$', fontsize=26)
+        if any((len(v['value'].get(2, [])) for v in PLOT.values())):
+            ax11.text(250.0, 0.02, '$x=0.75$', fontsize=26)
+        if any((len(v['value'].get(1, [])) for v in PLOT.values())):
+            ax11.text(35.0, 0.005, '$x=0.85$', fontsize=26)
+        if any((len(v['value'].get(0, [])) for v in PLOT.values())):
+            ax11.text(35.0, 0.0015, '$x=0.88 \\,(i=0)$', fontsize=26)
+        ax11.semilogy()
+        ax11.semilogx()
+        ax11.set_xlim(1.5, 1000.0)
+        ax11.set_ylim(0.001, 200000.0)
+        ax11.tick_params(axis='both', labelsize=30)
+        ax11.yaxis.set_tick_params(which='major', length=10)
+        ax11.yaxis.set_tick_params(which='minor', length=5)
+        ax11.set_yticks([0.01, 0.1, 1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0])
+        ax11.set_yticklabels(['$10^{-2}$', '$10^{-1}$', '$1$', '$10$', '$10^2$', '$10^3$', '$10^4$', '$10^5$'])
+        locmin = matplotlib.ticker.LogLocator(base=10.0, subs=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9), numticks=12)
+        ax11.yaxis.set_minor_locator(locmin)
+        ax11.yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+        ax11.yaxis.set_tick_params(which='minor', length=5)
+        ax11.xaxis.set_tick_params(which='major', length=10)
+        ax11.xaxis.set_tick_params(which='minor', length=5)
+        ax11.set_xticks([2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0])
+        xticklabels = [2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0]
+        ax11.set_xticklabels(['$%0.0f$' % x for x in xticklabels])
+        ax11.set_xlabel('\\boldmath$Q^2$' + '  ' + '\\textbf{\\textrm{(GeV}}' + '\\boldmath$^2)$', size=40)
+        ax11.text(0.05, 0.05, '\\boldmath$F_2^D$', transform=ax11.transAxes, size=60)
+        ax11.text(0.17, 0.05, '$(\\times\\, 2^{\\, i})$', transform=ax11.transAxes, size=40)
+        ax11.yaxis.set_ticks_position('both')
+        ax11.xaxis.set_ticks_position('both')
+        ax11.tick_params(axis='y', which='both', labelleft=True, labelright=False, direction='in')
+        ax11.tick_params(axis='x', which='both', labeltop=False, labelbottom=True, direction='in')
+        handles = [hand.get('BCDMS'), hand.get('SLAC')]
+        label1 = '\\textbf{\\textrm{BCDMS}}'
+        label2 = '\\textbf{\\textrm{SLAC}}'
+        labels = [label1, label2]
+        thesis_legend(ax11, handles, labels, loc='upper right', fontsize=35, frameon=0, handletextpad=0.3, handlelength=1.0)
+    if any((i in data for i in [10002])):
+        E = 5.5
+        Mp = 0.939
+        theta = lambda X, Q2, M: np.arcsin(np.sqrt(Q2 / (4 * E ** 2 - 2 * E * Q2 / M / X))) * 2 * 180 / np.pi
+        data[10002]['theta'] = theta(data[10002]['X'], data[10002]['Q2'], Mp)
+        nbins = 6
+        DATA = {}
+        if 10002 in data:
+            DATA['JLab d'] = pd.DataFrame(data[10002])
+        theory = {}
+        PLOT = {}
+        for cluster_i in range(kc.nc[istep]):
+            if cluster_i != 0:
+                continue
+            for exp in DATA:
+                query = thesis_idis_get_thetabins(DATA[exp], 'JLab')
+                PLOT[exp] = thesis_idis_get_plot(query)
+                theory[exp] = thesis_idis_get_theory(PLOT[exp], nbins, loop=False)
+        hand = {}
+        for exp in PLOT:
+            for key in range(nbins):
+                Q2 = PLOT[exp]['Q2'][key]
+                val = PLOT[exp]['value'][key] * 2.0 ** float(key)
+                alpha = PLOT[exp]['alpha'][key] * 2.0 ** float(key)
+                (color, marker, ms) = thesis_idis_get_details(exp)
+                hand[exp] = ax12.errorbar(Q2, val, alpha, marker=marker, color=color, ms=ms, capsize=3, linestyle='none')
+            for key in theory[exp]['value']:
+                Q2 = theory[exp]['Q2'][key]
+                mean = theory[exp]['value'][key] * 2.0 ** float(key)
+                std_lower = theory[exp]['std_lower'][key] * 2.0 ** float(key)
+                std_upper = theory[exp]['std_upper'][key] * 2.0 ** float(key)
+                down = mean - std_lower
+                up = mean + std_upper
+                (thy_plot,) = ax12.plot(Q2, mean, linestyle='solid', color='black')
+                thy_band = ax12.fill_between(Q2, np.minimum(down, up), np.maximum(down, up), color='gold', alpha=1.0, where=thesis_band_mask(Q2))
+        if any((len(v['value'].get(5, [])) for v in PLOT.values())):
+            ax12.text(6.55, 0.8, '$\\theta=70^{\\circ} \\, (i=5)$', fontsize=30)
+        if any((len(v['value'].get(4, [])) for v in PLOT.values())):
+            ax12.text(6.2, 0.45, '$\\theta=60^{\\circ} $', fontsize=30)
+        if any((len(v['value'].get(3, [])) for v in PLOT.values())):
+            ax12.text(5.9, 0.24, '$\\theta=55^{\\circ} $', fontsize=30)
+        if any((len(v['value'].get(2, [])) for v in PLOT.values())):
+            ax12.text(5.2, 0.16, '$\\theta=45^{\\circ} $', fontsize=30)
+        if any((len(v['value'].get(1, [])) for v in PLOT.values())):
+            ax12.text(4.9, 0.09, '$\\theta=41^{\\circ} $', fontsize=30)
+        if any((len(v['value'].get(0, [])) for v in PLOT.values())):
+            ax12.text(4.6, 0.05, '$\\theta=38^{\\circ}  \\, (i=0)$', fontsize=30)
+        ax12.semilogy()
+        ax12.set_xlim(3.5, 7.5)
+        ax12.set_ylim(0.04, 3.5)
+        ax12.set_xticks([4, 5, 6, 7])
+        ax12.set_xticklabels(['$4$', '$5$', '$6$', '$7$'])
+        locmin = matplotlib.ticker.LogLocator(base=10.0, subs=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9), numticks=12)
+        ax12.yaxis.set_minor_locator(locmin)
+        ax12.yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+        ax12.yaxis.set_tick_params(which='minor', length=5)
+        ax12.set_yticks([0.1, 1.0])
+        ax12.set_yticklabels(['$10^{-1}$', '$10^{0}$'])
+        ax12.tick_params(axis='both', labelsize=30)
+        ax12.set_xlabel('\\boldmath$Q^2$' + '  ' + '\\textbf{\\textrm{(GeV}}' + '\\boldmath$^2)$', size=40)
+        ax12.text(0.05, 0.7, '\\boldmath$F_2^D$', transform=ax12.transAxes, size=60)
+        ax12.text(0.17, 0.7, '$(\\, \\times\\, 2^{\\, i})$', transform=ax12.transAxes, size=40)
+        ax12.xaxis.set_tick_params(which='major', length=10)
+        ax12.xaxis.set_tick_params(which='minor', length=5)
+        ax12.yaxis.set_tick_params(which='major', length=10)
+        ax12.yaxis.set_tick_params(which='minor', length=5)
+        ax12.yaxis.set_ticks_position('both')
+        ax12.xaxis.set_ticks_position('both')
+        ax12.tick_params(axis='y', which='both', labelleft=True, labelright=False, direction='in')
+        ax12.tick_params(axis='x', which='both', labeltop=False, labelbottom=True, direction='in')
+        minorLocator = MultipleLocator(0.2)
+        ax12.xaxis.set_minor_locator(minorLocator)
+        handles = [hand.get('JLab d'), (thy_band, thy_plot)]
+        label1 = '\\textbf{\\textrm{Hall C}}'
+        label2 = '\\textbf{\\textrm{JAM}}'
+        labels = [label1, label2]
+        thesis_legend(ax12, handles, labels, loc='upper right', fontsize=35, frameon=0, handletextpad=0.3, handlelength=1.0)
+    if any((i in data for i in [10021, 10050])):
+        nbins = 18
+        DATA = {}
+        if 10021 in data:
+            DATA['NMC'] = pd.DataFrame(data[10021])
+        if 10050 in data:
+            DATA['MARATHON dp'] = pd.DataFrame(data[10050])
+        PLOT = {}
+        for cluster_i in range(kc.nc[istep]):
+            if cluster_i != 0:
+                continue
+            for exp in DATA:
+                query = thesis_idis_get_xbins(DATA[exp], 'd/p')
+                PLOT[exp] = thesis_idis_get_plot(query)
+            theory = thesis_idis_get_theory(PLOT, nbins)
+        hand = {}
+        for exp in PLOT:
+            for key in range(nbins):
+                Q2 = PLOT[exp]['Q2'][key]
+                val = PLOT[exp]['value'][key] * 2.0 ** float(key)
+                alpha = PLOT[exp]['alpha'][key] * 2.0 ** float(key)
+                (color, marker, ms) = thesis_idis_get_details(exp)
+                hand[exp] = ax21.errorbar(Q2, val, alpha, marker=marker, color=color, ms=ms, capsize=3, linestyle='none')
+        for key in theory['value']:
+            Q2 = theory['Q2'][key]
+            mean = theory['value'][key] * 2.0 ** float(key)
+            std_lower = theory['std_lower'][key] * 2.0 ** float(key)
+            std_upper = theory['std_upper'][key] * 2.0 ** float(key)
+            down = mean - std_lower
+            up = mean + std_upper
+            (thy_plot,) = ax21.plot(Q2, mean, linestyle='solid', color='black')
+            thy_band = ax21.fill_between(Q2, np.minimum(down, up), np.maximum(down, up), color='gold', alpha=1.0, where=thesis_band_mask(Q2))
+        if any((len(v['value'].get(17, [])) for v in PLOT.values())):
+            ax21.text(2.0, 120000.0, '$x=0.005 \\, (i=17)$', fontsize=26)
+        if any((len(v['value'].get(16, [])) for v in PLOT.values())):
+            ax21.text(4.0, 63000.0, '$x=0.008$', fontsize=26)
+        if any((len(v['value'].get(15, [])) for v in PLOT.values())):
+            ax21.text(6.3, 31000.0, '$x=0.013$', fontsize=26)
+        if any((len(v['value'].get(14, [])) for v in PLOT.values())):
+            ax21.text(8.2, 15000.0, '$x=0.018$', fontsize=26)
+        if any((len(v['value'].get(13, [])) for v in PLOT.values())):
+            ax21.text(10.5, 7800.0, '$x=0.025$', fontsize=26)
+        if any((len(v['value'].get(12, [])) for v in PLOT.values())):
+            ax21.text(16.5, 3600.0, '$x=0.035$', fontsize=26)
+        if any((len(v['value'].get(11, [])) for v in PLOT.values())):
+            ax21.text(22.0, 1900.0, '$x=0.05$', fontsize=26)
+        if any((len(v['value'].get(10, [])) for v in PLOT.values())):
+            ax21.text(30.0, 900.0, '$x=0.07$', fontsize=26)
+        if any((len(v['value'].get(9, [])) for v in PLOT.values())):
+            ax21.text(40, 470.0, '$x=0.09$', fontsize=26)
+        if any((len(v['value'].get(8, [])) for v in PLOT.values())):
+            ax21.text(52.0, 220.0, '$x=0.11$', fontsize=26)
+        if any((len(v['value'].get(7, [])) for v in PLOT.values())):
+            ax21.text(56.0, 110.0, '$x=0.14$', fontsize=26)
+        if any((len(v['value'].get(6, [])) for v in PLOT.values())):
+            ax21.text(74.0, 54.0, '$x=0.18$', fontsize=26)
+        if any((len(v['value'].get(5, [])) for v in PLOT.values())):
+            ax21.text(75.0, 25.0, '$x=0.23$', fontsize=26)
+        if any((len(v['value'].get(4, [])) for v in PLOT.values())):
+            ax21.text(108, 12.2, '$x=0.28$', fontsize=26)
+        if any((len(v['value'].get(3, [])) for v in PLOT.values())):
+            ax21.text(110, 6.0, '$x=0.35$', fontsize=26)
+        if any((len(v['value'].get(2, [])) for v in PLOT.values())):
+            ax21.text(110, 2.9, '$x=0.45$', fontsize=26)
+        if any((len(v['value'].get(1, [])) for v in PLOT.values())):
+            ax21.text(110, 1.35, '$x=0.55$', fontsize=26)
+        if any((len(v['value'].get(0, [])) for v in PLOT.values())):
+            ax21.text(110, 0.7, '$x=0.68 \\,(i=0)$', fontsize=26)
+        ax21.semilogy()
+        ax21.semilogx()
+        ax21.set_xlim(1.5, 385.0)
+        ax21.set_ylim(0.5, 200000.0)
+        ax21.tick_params(axis='both', labelsize=30)
+        ax21.yaxis.set_tick_params(which='major', length=10)
+        ax21.yaxis.set_tick_params(which='minor', length=5)
+        ax21.set_yticks([1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0])
+        ax21.set_yticklabels(['$1$', '$10$', '$10^2$', '$10^3$', '$10^4$', '$10^5$'])
+        locmin = matplotlib.ticker.LogLocator(base=10.0, subs=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9), numticks=12)
+        ax21.yaxis.set_minor_locator(locmin)
+        ax21.yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+        ax21.yaxis.set_tick_params(which='minor', length=5)
+        ax21.xaxis.set_tick_params(which='major', length=10)
+        ax21.xaxis.set_tick_params(which='minor', length=5)
+        ax21.set_xticks([2.0, 5.0, 10.0, 20.0, 50.0, 100.0])
+        xticklabels = [2.0, 5.0, 10.0, 20.0, 50.0, 100.0]
+        ax21.set_xticklabels(['$%0.0f$' % x for x in xticklabels])
+        ax21.set_xlabel('\\boldmath$Q^2$' + '  ' + '\\textbf{\\textrm{(GeV}}' + '\\boldmath$^2)$', size=40)
+        ax21.text(0.57, 0.78, '\\boldmath$F_2^D/F_2^p$', transform=ax21.transAxes, size=60)
+        ax21.text(0.84, 0.78, '$(\\, \\times\\, 2^{\\, i})$', transform=ax21.transAxes, size=40)
+        ax21.yaxis.set_ticks_position('both')
+        ax21.xaxis.set_ticks_position('both')
+        ax21.tick_params(axis='y', which='both', labelleft=True, labelright=False, direction='in')
+        ax21.tick_params(axis='x', which='both', labeltop=False, labelbottom=True, direction='in')
+        handles = [hand.get('NMC'), hand.get('MARATHON dp')]
+        label1 = '\\textbf{\\textrm{NMC}}'
+        label2 = '\\textbf{\\textrm{MARATHON}}'
+        labels = [label1, label2]
+        thesis_legend(ax21, handles, labels, loc='upper right', fontsize=35, frameon=0, handletextpad=0.3, handlelength=1.0)
+    if any((i in data for i in [10033])):
+        nbins = 6
+        DATA = {}
+        if 10033 in data:
+            DATA['BONuS'] = pd.DataFrame(data[10033])
+        PLOT = {}
+        theory = {}
+        for cluster_i in range(kc.nc[istep]):
+            if cluster_i != 0:
+                continue
+            for exp in DATA:
+                query = thesis_idis_get_Q2bins(DATA[exp], 'BONuS')
+                PLOT[exp] = thesis_idis_get_plot(query)
+                theory[exp] = thesis_idis_get_theory(PLOT[exp], nbins, loop=False, funcX=True)
+        hand = {}
+        for exp in PLOT:
+            for key in range(nbins):
+                X = PLOT[exp]['X'][key]
+                val = PLOT[exp]['value'][key] * 4.0 ** float(key)
+                alpha = PLOT[exp]['alpha'][key] * 4.0 ** float(key)
+                (color, marker, ms) = thesis_idis_get_details(exp)
+                hand[exp] = ax22.errorbar(X, val, alpha, marker=marker, color=color, ms=ms, capsize=3, linestyle='none')
+            for key in theory[exp]['value']:
+                X = theory[exp]['X'][key]
+                mean = theory[exp]['value'][key] * 4.0 ** float(key)
+                std_lower = theory[exp]['std_lower'][key] * 4.0 ** float(key)
+                std_upper = theory[exp]['std_upper'][key] * 4.0 ** float(key)
+                down = mean - std_lower
+                up = mean + std_upper
+                (thy_plot,) = ax22.plot(X, mean, linestyle='solid', color=color)
+                thy_band = ax22.fill_between(X, np.minimum(down, up), np.maximum(down, up), color='gold', alpha=1.0, where=thesis_band_mask(X))
+        if any((len(v['value'].get(5, [])) for v in PLOT.values())):
+            ax22.text(0.47, 0.05, '$Q^2 = 4.0 $' + '$\\, (i=5)$', transform=ax22.transAxes, fontsize=30)
+        if any((len(v['value'].get(4, [])) for v in PLOT.values())):
+            ax22.text(0.55, 0.2, '$Q^2 = 3.4 $', transform=ax22.transAxes, fontsize=30)
+        if any((len(v['value'].get(3, [])) for v in PLOT.values())):
+            ax22.text(0.62, 0.35, '$Q^2 = 2.9 $', transform=ax22.transAxes, fontsize=30)
+        if any((len(v['value'].get(2, [])) for v in PLOT.values())):
+            ax22.text(0.74, 0.5, '$Q^2 = 2.4 $', transform=ax22.transAxes, fontsize=30)
+        if any((len(v['value'].get(1, [])) for v in PLOT.values())):
+            ax22.text(0.78, 0.64, '$Q^2 = 2.0 $', transform=ax22.transAxes, fontsize=30)
+        if any((len(v['value'].get(0, [])) for v in PLOT.values())):
+            ax22.text(0.3, 0.8, '$Q^2 = 1.7 \\: \\rm{GeV^2}$' + '$\\, (i=0)$', transform=ax22.transAxes, fontsize=30)
+        ax22.semilogy()
+        ax22.set_xlim(0.2, 0.75)
+        ax22.set_ylim(0.5, 4000.0)
+        ax22.set_xticks([0.2, 0.3, 0.4, 0.5, 0.6, 0.7])
+        ax22.set_xticklabels(['$0.2$', '$0.3$', '$0.4$', '$0.5$', '$0.6$', '$0.7$'])
+        ax22.set_yticks([1.0, 10.0, 100.0, 1000.0])
+        ax22.set_yticklabels(['$1$', '$10$', '$10^2$', '$10^3$'])
+        ax22.tick_params(axis='both', labelsize=30)
+        ax22.set_xlabel('\\boldmath$x$', size=40)
+        ax22.text(0.05, 0.9, '\\boldmath$F_2^n/F_2^D$', transform=ax22.transAxes, size=60)
+        ax22.text(0.32, 0.9, '$(\\, \\times\\, 4^{\\, i})$', transform=ax22.transAxes, size=40)
+        ax22.xaxis.set_tick_params(which='major', length=10)
+        ax22.xaxis.set_tick_params(which='minor', length=5)
+        ax22.yaxis.set_tick_params(which='major', length=10)
+        ax22.yaxis.set_tick_params(which='minor', length=5)
+        ax22.yaxis.set_ticks_position('both')
+        ax22.xaxis.set_ticks_position('both')
+        ax22.tick_params(axis='y', which='both', labelleft=True, labelright=False, direction='in')
+        ax22.tick_params(axis='x', which='both', labeltop=False, labelbottom=True, direction='in')
+        minorLocator = MultipleLocator(0.02)
+        ax22.xaxis.set_minor_locator(minorLocator)
+        handles = [hand.get('BONuS')]
+        label1 = '\\textbf{\\textrm{BONuS}}'
+        labels = [label1]
+        thesis_legend(ax22, handles, labels, loc='upper right', fontsize=35, frameon=0, handletextpad=0.1, handlelength=1.0)
+    py.tight_layout()
+    filename = output_file
+    ax11.set_rasterized(True)
+    ax12.set_rasterized(True)
+    ax21.set_rasterized(True)
+    ax22.set_rasterized(True)
+    thesis_finish_panels(py.gcf(), 'thesis_idis_plot_deuteron', _selected_keys)
+    py.savefig(filename)
+
+# Adapted from thesis/idis.py:plot_CC, original lines 1188-1301; SHA256 92dc40105aa2214d4b8ea863286aad4601f0078010c0f2312ba5a1aabbb3ddcf.
+def thesis_idis_plot_CC(datasets, output_file, interval):
+    _selected_keys = {r + ':' + str(i) for (r, tables) in datasets.items() for i in tables}
+    thy_plot = thy_band = thy_plot0 = thy_band0 = thy_point0 = None
+    istep = 0
+    kc = SimpleNamespace(nc={0: 1})
+    nc = 1
+    predictions = {'reactions': datasets}
+    data = datasets['idis']
+    tabs = data
+    (nrows, ncols) = (1, 1)
+    fig = py.figure(figsize=(ncols * 12, nrows * 14))
+    ax = {}
+    ax = fig.add_subplot(nrows, ncols, 1)
+    if any((i in data for i in [10031, 10032])):
+        nbins = 8
+        DATA = {}
+        if 10031 in data:
+            DATA['HERA 10031'] = pd.DataFrame(data[10031])
+        if 10032 in data:
+            DATA['HERA 10032'] = pd.DataFrame(data[10032])
+        PLOT = {}
+        theory = {}
+        for cluster_i in range(kc.nc[istep]):
+            if cluster_i != 0:
+                continue
+            for exp in DATA:
+                query = thesis_idis_get_xbins(DATA[exp], 'HERA CC')
+                PLOT[exp] = thesis_idis_get_plot(query)
+                theory[exp] = thesis_idis_get_theory(PLOT[exp], nbins, loop=False)
+        hand = {}
+        for exp in PLOT:
+            for key in range(nbins):
+                Q2 = PLOT[exp]['Q2'][key]
+                val = PLOT[exp]['value'][key] * 5.0 ** float(key)
+                alpha = PLOT[exp]['alpha'][key] * 5.0 ** float(key)
+                (color, marker, ms) = thesis_idis_get_details(exp)
+                hand[exp] = ax.errorbar(Q2, val, alpha, marker=marker, color=color, ms=ms, capsize=3, linestyle='none')
+            for key in theory[exp]['value']:
+                Q2 = theory[exp]['Q2'][key]
+                mean = theory[exp]['value'][key] * 5.0 ** float(key)
+                std_lower = theory[exp]['std_lower'][key] * 5.0 ** float(key)
+                std_upper = theory[exp]['std_upper'][key] * 5.0 ** float(key)
+                down = mean - std_lower
+                up = mean + std_upper
+                (thy_plot,) = ax.plot(Q2, mean, linestyle='solid', color='black')
+                thy_band = ax.fill_between(Q2, np.minimum(down, up), np.maximum(down, up), color='gold', alpha=1.0, where=thesis_band_mask(Q2))
+        if any((len(v['value'].get(7, [])) for v in (v for (name, v) in PLOT.items() if name in ['HERA 10032']))):
+            ax.text(370.0, 140000.0, '$x=0.008 \\, (i=7)$', fontsize=28, color='darkgreen')
+        if any((len(v['value'].get(6, [])) for v in (v for (name, v) in PLOT.items() if name in ['HERA 10032']))):
+            ax.text(1200.0, 13000.0, '$x=0.013$', fontsize=28, color='darkgreen')
+        if any((len(v['value'].get(5, [])) for v in (v for (name, v) in PLOT.items() if name in ['HERA 10032']))):
+            ax.text(3700.0, 2000.0, '$x=0.032$', fontsize=28, color='darkgreen')
+        if any((len(v['value'].get(4, [])) for v in (v for (name, v) in PLOT.items() if name in ['HERA 10032']))):
+            ax.text(6000.0, 400, '$x=0.08$', fontsize=28, color='darkgreen')
+        if any((len(v['value'].get(3, [])) for v in (v for (name, v) in PLOT.items() if name in ['HERA 10032']))):
+            ax.text(9800.0, 70, '$x=0.13$', fontsize=28, color='darkgreen')
+        if any((len(v['value'].get(2, [])) for v in (v for (name, v) in PLOT.items() if name in ['HERA 10032']))):
+            ax.text(400.0, 11.5, '$x=0.25$', fontsize=28, color='darkgreen')
+        if any((len(v['value'].get(1, [])) for v in (v for (name, v) in PLOT.items() if name in ['HERA 10032']))):
+            ax.text(600.0, 1.4, '$x=0.40$', fontsize=28, color='darkgreen')
+        if any((len(v['value'].get(0, [])) for v in (v for (name, v) in PLOT.items() if name in ['HERA 10032']))):
+            ax.text(1300.0, 0.035, '$x=0.65 \\, (i=0) $', fontsize=28, color='darkgreen')
+        if any((len(v['value'].get(7, [])) for v in (v for (name, v) in PLOT.items() if name in ['HERA 10031']))):
+            ax.text(550.0, 60000.0, '$x=0.008 \\, (i=7)$', fontsize=28, color='blue')
+        if any((len(v['value'].get(6, [])) for v in (v for (name, v) in PLOT.items() if name in ['HERA 10031']))):
+            ax.text(1200.0, 8000.0, '$x=0.013$', fontsize=28, color='blue')
+        if any((len(v['value'].get(5, [])) for v in (v for (name, v) in PLOT.items() if name in ['HERA 10031']))):
+            ax.text(3700.0, 1000, '$x=0.032$', fontsize=28, color='blue')
+        if any((len(v['value'].get(4, [])) for v in (v for (name, v) in PLOT.items() if name in ['HERA 10031']))):
+            ax.text(4300.0, 180, '$x=0.08$', fontsize=28, color='blue')
+        if any((len(v['value'].get(3, [])) for v in (v for (name, v) in PLOT.items() if name in ['HERA 10031']))):
+            ax.text(8000.0, 23, '$x=0.13$', fontsize=28, color='blue')
+        if any((len(v['value'].get(2, [])) for v in (v for (name, v) in PLOT.items() if name in ['HERA 10031']))):
+            ax.text(400.0, 5.2, '$x=0.25$', fontsize=28, color='blue')
+        if any((len(v['value'].get(1, [])) for v in (v for (name, v) in PLOT.items() if name in ['HERA 10031']))):
+            ax.text(370.0, 0.3, '$x=0.40 \\, (i=1)$', fontsize=28, color='blue')
+        ax.semilogy()
+        ax.semilogx()
+        ax.set_xlim(150.0, 40000.0)
+        ax.set_ylim(0.01, 800000.0)
+        ax.set_xticks([200.0, 1000.0, 10000.0])
+        ax.set_xticklabels(['$200$', '$10^3$', '$10^4$'])
+        ax.set_yticks([0.01, 0.1, 1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0])
+        ax.set_yticklabels(['$10^{-2}$', '$10^{-1}$', '$1$', '$10$', '$10^2$', '$10^3$', '$10^4$', '$10^5$'])
+        ax.tick_params(axis='x', pad=10)
+        ax.tick_params(axis='both', labelsize=30)
+        ax.set_xlabel('\\boldmath$Q^2$' + '  ' + '\\textbf{\\textrm{(GeV}}' + '\\boldmath$^2)$', size=40)
+        ax.text(0.05, 0.1, '\\boldmath$\\sigma_{\\rm red}^{\\rm CC}$', transform=ax.transAxes, size=60)
+        ax.text(0.05, 0.03, '$(\\, \\times\\, 5^{\\, i})$', transform=ax.transAxes, size=40)
+        ax.xaxis.set_tick_params(which='major', length=10)
+        ax.xaxis.set_tick_params(which='minor', length=5)
+        ax.yaxis.set_tick_params(which='major', length=10)
+        ax.yaxis.set_tick_params(which='minor', length=5)
+        ax.yaxis.set_ticks_position('both')
+        ax.xaxis.set_ticks_position('both')
+        ax.tick_params(axis='y', which='both', labelleft=True, labelright=False, direction='in')
+        ax.tick_params(axis='x', which='both', labeltop=False, labelbottom=True, direction='in')
+        handles = [hand.get('HERA 10031'), hand.get('HERA 10032'), (thy_band, thy_plot)]
+        label1 = '\\textbf{\\textrm{HERA}} \\boldmath$e^+p$'
+        label2 = '\\textbf{\\textrm{HERA}} \\boldmath$e^-p$'
+        label3 = '\\textbf{\\textrm{JAM}}'
+        labels = [label1, label2, label3]
+        thesis_legend(ax, handles, labels, loc='upper right', fontsize=35, frameon=0, handletextpad=0.3, handlelength=1.0)
+    py.tight_layout()
+    filename = output_file
+    ax.set_rasterized(True)
+    thesis_finish_panels(py.gcf(), 'thesis_idis_plot_CC', _selected_keys)
+    py.savefig(filename)
+
+# Adapted from thesis/idis.py:plot_A3, original lines 1303-1468; SHA256 92dc40105aa2214d4b8ea863286aad4601f0078010c0f2312ba5a1aabbb3ddcf.
+def thesis_idis_plot_A3(datasets, output_file, interval):
+    _selected_keys = {r + ':' + str(i) for (r, tables) in datasets.items() for i in tables}
+    thy_plot = thy_band = thy_plot0 = thy_band0 = thy_point0 = None
+    istep = 0
+    kc = SimpleNamespace(nc={0: 1})
+    nc = 1
+    predictions = {'reactions': datasets}
+    data = datasets['idis']
+    tabs = data
+    (nrows, ncols) = (1, 2)
+    py.figure(figsize=(ncols * 5, nrows * 6))
+    ax11 = py.subplot(nrows, ncols, 1)
+    ax12 = py.subplot(nrows, ncols, 2)
+    if any((i in data for i in [10041])):
+        DATA = {}
+        if 10041 in data:
+            DATA['JLab hd'] = pd.DataFrame(data[10041])
+        PLOT = {}
+        theory = {}
+        for cluster_i in range(kc.nc[istep]):
+            if cluster_i != 0:
+                continue
+            for exp in DATA:
+                query = thesis_idis_get_Q2bins(DATA[exp], 'JLab')
+                nbins = len(query)
+                PLOT[exp] = thesis_idis_get_plot(query)
+                theory[exp] = thesis_idis_get_theory(PLOT[exp], nbins, loop=False, funcX=True)
+        hand = {}
+        for exp in PLOT:
+            for key in range(nbins):
+                X = PLOT[exp]['X'][key]
+                val = PLOT[exp]['value'][key] * 2.0 ** float(key)
+                alpha = PLOT[exp]['alpha'][key] * 2.0 ** float(key)
+                (color, marker, ms) = thesis_idis_get_details(exp)
+                hand[exp] = ax11.errorbar(X, val, alpha, marker=marker, color=color, ms=ms, capsize=2.5, linestyle='none')
+            for key in theory[exp]['value']:
+                X = theory[exp]['X'][key]
+                mean = theory[exp]['value'][key] * 2.0 ** float(key)
+                std_lower = theory[exp]['std_lower'][key] * 2.0 ** float(key)
+                std_upper = theory[exp]['std_upper'][key] * 2.0 ** float(key)
+                down = mean - std_lower
+                up = mean + std_upper
+                (thy_plot,) = ax11.plot(X, mean, linestyle='solid', color='black')
+                thy_band = ax11.fill_between(X, np.minimum(down, up), np.maximum(down, up), color='gold', alpha=1.0, where=thesis_band_mask(X))
+        ax11.set_xlim(0.28, 0.78)
+        ax11.set_ylim(1.02, 1.09)
+        ax11.tick_params(axis='both', which='both', direction='in', top=True, right=True, labelsize=20)
+        ax11.yaxis.set_tick_params(which='major', length=5)
+        ax11.yaxis.set_tick_params(which='minor', length=2.5)
+        ax11.xaxis.set_tick_params(which='major', length=5)
+        ax11.xaxis.set_tick_params(which='minor', length=2.5)
+        ax11.set_xlabel('\\boldmath$x_{\\rm bj}$', size=30)
+        ax11.text(0.05, 0.85, '\\boldmath$F_2^{^3\\rm{He}}/F_2^{D}$', transform=ax11.transAxes, size=40)
+        minorLocator = MultipleLocator(0.02)
+        majorLocator = MultipleLocator(0.1)
+        ax11.xaxis.set_minor_locator(minorLocator)
+        ax11.xaxis.set_major_locator(majorLocator)
+        minorLocator = MultipleLocator(0.004)
+        majorLocator = MultipleLocator(0.02)
+        ax11.yaxis.set_minor_locator(minorLocator)
+        ax11.yaxis.set_major_locator(majorLocator)
+        ax11.set_xticks([0.3, 0.4, 0.5, 0.6, 0.7])
+        ax11.set_yticks([1.04, 1.06, 1.08])
+        (handles, labels) = ([], [])
+        handles.append(hand.get('JLab hd'))
+        handles.append((thy_band, thy_plot))
+        labels.append('\\textbf{\\textrm{JLab Hall C}}')
+        labels.append('\\textbf{\\textrm{JAM}}')
+        thesis_legend(ax11, handles, labels, loc='lower right', fontsize=25, frameon=0, handletextpad=0.3, handlelength=1.0)
+    if any((i in data for i in [10051])):
+        DATA = {}
+        if 10051 in data:
+            DATA['MARATHON ht'] = pd.DataFrame(data[10051])
+        PLOT = {}
+        theory = {}
+        for cluster_i in range(kc.nc[istep]):
+            if cluster_i != 0:
+                continue
+            for exp in DATA:
+                query = thesis_idis_get_Q2bins(DATA[exp], 'MARATHON')
+                nbins = len(query)
+                PLOT[exp] = thesis_idis_get_plot(query)
+                theory[exp] = thesis_idis_get_theory(PLOT[exp], nbins, loop=False, funcX=True)
+        hand = {}
+        for exp in PLOT:
+            for key in range(nbins):
+                X = PLOT[exp]['X'][key]
+                val = PLOT[exp]['value'][key] * 2.0 ** float(key)
+                alpha = PLOT[exp]['alpha'][key] * 2.0 ** float(key)
+                (color, marker, ms) = thesis_idis_get_details(exp)
+                hand[exp] = ax12.errorbar(X, val, alpha, marker=marker, color=color, ms=ms, capsize=2.5, linestyle='none')
+            for key in theory[exp]['value']:
+                X = theory[exp]['X'][key]
+                mean = theory[exp]['value'][key] * 2.0 ** float(key)
+                std_lower = theory[exp]['std_lower'][key] * 2.0 ** float(key)
+                std_upper = theory[exp]['std_upper'][key] * 2.0 ** float(key)
+                down = mean - std_lower
+                up = mean + std_upper
+                (thy_plot,) = ax12.plot(X, mean, linestyle='solid', color='black')
+                thy_band = ax12.fill_between(X, np.minimum(down, up), np.maximum(down, up), color='gold', alpha=1.0, where=thesis_band_mask(X))
+        ax12.set_xlim(0.1, 0.95)
+        ax12.set_ylim(1.05, 1.32)
+        ax12.tick_params(axis='both', which='both', direction='in', top=True, right=True, labelsize=20)
+        ax12.yaxis.set_tick_params(which='major', length=5)
+        ax12.yaxis.set_tick_params(which='minor', length=2.5)
+        ax12.xaxis.set_tick_params(which='major', length=5)
+        ax12.xaxis.set_tick_params(which='minor', length=2.5)
+        ax12.set_xlabel('\\boldmath$x_{\\rm bj}$', size=30)
+        ax12.text(0.05, 0.85, '\\boldmath$F_2^{^3\\rm{He}}/F_2^{^3\\rm{H}}$', transform=ax12.transAxes, size=40)
+        minorLocator = MultipleLocator(0.04)
+        majorLocator = MultipleLocator(0.2)
+        ax12.xaxis.set_minor_locator(minorLocator)
+        ax12.xaxis.set_major_locator(majorLocator)
+        minorLocator = MultipleLocator(0.02)
+        majorLocator = MultipleLocator(0.1)
+        ax12.yaxis.set_minor_locator(minorLocator)
+        ax12.yaxis.set_major_locator(majorLocator)
+        ax12.set_xticks([0.2, 0.4, 0.6, 0.8])
+        (handles, labels) = ([], [])
+        handles.append(hand.get('MARATHON ht'))
+        labels.append('\\textrm{\\textbf{MARATHON}}')
+        thesis_legend(ax12, handles, labels, loc='lower right', fontsize=25, frameon=0, handletextpad=0.3, handlelength=1.0)
+    py.tight_layout()
+    filename = output_file
+    ax11.set_rasterized(True)
+    ax12.set_rasterized(True)
+    thesis_finish_panels(py.gcf(), 'thesis_idis_plot_A3', _selected_keys)
+    py.savefig(filename)
+
+# Adapted from thesis/marathon.py:get_Q2bins, original lines 34-53; SHA256 9284146d2eee085e89cc2bd0e708ec392cf4d554449bf85cb99e066372872efa.
+def thesis_marathon_get_Q2bins(data, kind):
+    query = {}
+    if kind == 'MARATHON':
+        query[0] = data.query('Q2 > 1.5 and Q2 <= 20')
+    if kind == 'NMC':
+        query[0] = data.query('X > 0.15 and X <= 0.40')
+    return query
+
+# Adapted from thesis/marathon.py:get_plot, original lines 55-83; SHA256 9284146d2eee085e89cc2bd0e708ec392cf4d554449bf85cb99e066372872efa.
+def thesis_marathon_get_plot(query, cluster_i=0):
+    plot = {_: {} for _ in ['theory', 'X', 'Q2', 'value', 'alpha', 'std_lower', 'std_upper', 'shifts']}
+    for key in query:
+        theory = query[key]['thy-%d' % cluster_i]
+        std_lower = query[key]['dthy_lower-%d' % cluster_i]
+        std_upper = query[key]['dthy_upper-%d' % cluster_i]
+        X = query[key]['X']
+        Q2 = query[key]['Q2']
+        value = query[key]['value']
+        alpha = query[key]['alpha']
+        shifts = query[key]['shifts']
+        zx = sorted(zip(Q2, X), key=lambda row: row[0])
+        zt = sorted(zip(Q2, theory), key=lambda row: row[0])
+        zv = sorted(zip(Q2, value), key=lambda row: row[0])
+        za = sorted(zip(Q2, alpha), key=lambda row: row[0])
+        zs_lower = sorted(zip(Q2, std_lower), key=lambda row: row[0])
+        zs_upper = sorted(zip(Q2, std_upper), key=lambda row: row[0])
+        zsh = sorted(zip(Q2, shifts), key=lambda row: row[0])
+        plot['X'][key] = np.array([zx[i][1] for i in range(len(zx))])
+        plot['theory'][key] = np.array([zt[i][1] for i in range(len(zt))])
+        plot['value'][key] = np.array([zv[i][1] for i in range(len(zv))])
+        plot['alpha'][key] = np.array([za[i][1] for i in range(len(za))])
+        plot['std_lower'][key] = np.array([zs_lower[i][1] for i in range(len(zs_lower))])
+        plot['std_upper'][key] = np.array([zs_upper[i][1] for i in range(len(zs_upper))])
+        plot['shifts'][key] = np.array([zsh[i][1] for i in range(len(zsh))])
+        plot['Q2'][key] = np.array(sorted(Q2))
+    return plot
+
+# Adapted from thesis/marathon.py:get_theory, original lines 85-128; SHA256 9284146d2eee085e89cc2bd0e708ec392cf4d554449bf85cb99e066372872efa.
+def thesis_marathon_get_theory(PLOT, nbins, loop=True, funcQ2=True, funcX=False):
+    theory = {}
+    if funcQ2:
+        svar = 'Q2'
+    if funcX:
+        svar = 'X'
+    theory = {_: {} for _ in [svar, 'value', 'std_lower', 'std_upper']}
+    for key in range(nbins):
+        var = []
+        thy = []
+        std_lower = []
+        std_upper = []
+        if loop:
+            for exp in PLOT:
+                var.extend(PLOT[exp][svar][key])
+                thy.extend(PLOT[exp]['theory'][key])
+                std_lower.extend(PLOT[exp]['std_lower'][key])
+                std_upper.extend(PLOT[exp]['std_upper'][key])
+        else:
+            var.extend(PLOT[svar][key])
+            thy.extend(PLOT['theory'][key])
+            std_lower.extend(PLOT['std_lower'][key])
+            std_upper.extend(PLOT['std_upper'][key])
+        if len(var) == 0:
+            continue
+        vmin = np.min(var)
+        vmax = np.max(var)
+        theory[svar][key] = np.geomspace(vmin, vmax, 100)
+        if len(var) > 1:
+            theory['value'][key] = griddata(np.array(var), np.array(thy), theory[svar][key], method='linear')
+            theory['std_lower'][key] = griddata(np.array(var), np.array(std_lower), theory[svar][key], method='linear')
+            theory['std_upper'][key] = griddata(np.array(var), np.array(std_upper), theory[svar][key], method='linear')
+        else:
+            theory['value'][key] = np.ones(100) * thy
+            theory['std_lower'][key] = np.ones(100) * std_lower
+            theory['std_upper'][key] = np.ones(100) * std_upper
+    return theory
+
+# Adapted from thesis/marathon.py:get_details, original lines 130-136; SHA256 9284146d2eee085e89cc2bd0e708ec392cf4d554449bf85cb99e066372872efa.
+def thesis_marathon_get_details(exp):
+    if exp == 'MARATHON dp':
+        (color, marker, ms) = ('black', 'o', 4)
+    if exp == 'MARATHON ht':
+        (color, marker, ms) = ('black', 'o', 4)
+    return (color, marker, ms)
+
+# Adapted from thesis/marathon.py:plot_main, original lines 138-383; SHA256 9284146d2eee085e89cc2bd0e708ec392cf4d554449bf85cb99e066372872efa.
+def thesis_marathon_plot_main(datasets, output_file, interval):
+    _selected_keys = {r + ':' + str(i) for (r, tables) in datasets.items() for i in tables}
+    thy_plot = thy_band = thy_plot0 = thy_band0 = thy_point0 = None
+    istep = 0
+    kc = SimpleNamespace(nc={0: 1})
+    nc = 1
+    predictions = {'reactions': datasets}
+    data = datasets['idis']
+    tabs = data
+    (nrows, ncols) = (1, 2)
+    py.figure(figsize=(ncols * 5, nrows * 6))
+    ax11 = py.subplot(nrows, ncols, 1)
+    ax12 = py.subplot(nrows, ncols, 2)
+    j = 0
+    JAMcolor = 'red'
+    JAMlw = 2
+    for data in [datasets['idis']]:
+        DATA = {}
+        if 10050 in data:
+            DATA['MARATHON dp'] = pd.DataFrame(data[10050])
+        PLOT = {}
+        theory = {}
+        for cluster_i in range(kc.nc[istep]):
+            if cluster_i != 0:
+                continue
+            for exp in DATA:
+                query = thesis_marathon_get_Q2bins(DATA[exp], 'MARATHON')
+                nbins = len(query)
+                PLOT[exp] = thesis_marathon_get_plot(query)
+                theory[exp] = thesis_marathon_get_theory(PLOT[exp], nbins, loop=False, funcX=True)
+        hand = {}
+        for exp in PLOT:
+            for key in PLOT[exp]['X']:
+                X = PLOT[exp]['X'][key]
+                val = PLOT[exp]['value'][key]
+                alpha = PLOT[exp]['alpha'][key]
+                (color, marker, ms) = thesis_marathon_get_details(exp)
+                hand[exp] = ax11.errorbar(X, val, alpha, marker=marker, color=color, ms=ms, capsize=2.5, linestyle='none', zorder=4)
+                if j == 0:
+                    center = 0.77
+                    shifts = PLOT[exp]['shifts'][key]
+                    (pos, neg) = (np.zeros(len(alpha)), np.zeros(len(alpha)))
+                    for i in range(len(shifts)):
+                        if shifts[i] > 0.0:
+                            pos[i] = shifts[i]
+                        else:
+                            neg[i] = shifts[i]
+            for key in theory[exp]['value']:
+                X = theory[exp]['X'][key]
+                mean = theory[exp]['value'][key]
+                std_lower = theory[exp]['std_lower'][key]
+                std_upper = theory[exp]['std_upper'][key]
+                down = mean - std_lower
+                up = mean + std_upper
+                if j == 0:
+                    (thy_plot,) = ax11.plot(X, mean, linestyle='solid', lw=JAMlw, color=JAMcolor, zorder=3)
+                    thy_band = ax11.fill_between(X, np.minimum(down, up), np.maximum(down, up), color=JAMcolor, alpha=0.2, zorder=3, where=thesis_band_mask(X))
+                if j == 1:
+                    (nooff_plot,) = ax11.plot(X, mean, linestyle='dashed', color='green', zorder=2, lw=2)
+                    nooff_band = ax11.fill_between(X, np.minimum(down, up), np.maximum(down, up), color='gold', alpha=0.0, zorder=2, where=thesis_band_mask(X))
+        DATA = {}
+        if 10051 in data:
+            DATA['MARATHON ht'] = pd.DataFrame(data[10051])
+        PLOT = {}
+        theory = {}
+        for cluster_i in range(kc.nc[istep]):
+            if cluster_i != 0:
+                continue
+            for exp in DATA:
+                query = thesis_marathon_get_Q2bins(DATA[exp], 'MARATHON')
+                nbins = len(query)
+                PLOT[exp] = thesis_marathon_get_plot(query)
+                theory[exp] = thesis_marathon_get_theory(PLOT[exp], nbins, loop=False, funcX=True)
+        for exp in PLOT:
+            for key in range(nbins):
+                X = PLOT[exp]['X'][key]
+                val = PLOT[exp]['value'][key] * 2.0 ** float(key)
+                alpha = PLOT[exp]['alpha'][key] * 2.0 ** float(key)
+                (color, marker, ms) = thesis_marathon_get_details(exp)
+                hand[exp] = ax12.errorbar(X, val, alpha, marker=marker, color=color, ms=ms, capsize=2.5, linestyle='none', zorder=4)
+                if j == 0:
+                    center = 1.1
+                    shifts = PLOT[exp]['shifts'][key]
+                    (pos, neg) = (np.zeros(len(alpha)), np.zeros(len(alpha)))
+                    for i in range(len(shifts)):
+                        if shifts[i] > 0.0:
+                            pos[i] = shifts[i]
+                        else:
+                            neg[i] = shifts[i]
+            for key in theory[exp]['value']:
+                X = theory[exp]['X'][key]
+                mean = theory[exp]['value'][key] * 2.0 ** float(key)
+                std_lower = theory[exp]['std_lower'][key] * 2.0 ** float(key)
+                std_upper = theory[exp]['std_upper'][key] * 2.0 ** float(key)
+                down = mean - std_lower
+                up = mean + std_upper
+                if j == 0:
+                    (thy_plot,) = ax12.plot(X, mean, linestyle='solid', color=JAMcolor, lw=JAMlw, zorder=3)
+                    thy_band = ax12.fill_between(X, np.minimum(down, up), np.maximum(down, up), color='red', alpha=0.2, zorder=3, where=thesis_band_mask(X))
+                if j == 1:
+                    (nooff_plot,) = ax12.plot(X, mean, linestyle='dashed', color='green', zorder=2, lw=2)
+                    nooff_band = ax12.fill_between(X, np.minimum(down, up), np.maximum(down, up), color='gold', alpha=0.0, zorder=2, where=thesis_band_mask(X))
+        j += 1
+    ax11.set_xlim(0.15, 0.44)
+    ax11.set_ylim(0.74, 0.88)
+    ax11.tick_params(axis='both', which='both', direction='in', top=True, right=True, labelsize=20)
+    ax11.yaxis.set_tick_params(which='major', length=5)
+    ax11.yaxis.set_tick_params(which='minor', length=2.5)
+    ax11.xaxis.set_tick_params(which='major', length=5)
+    ax11.xaxis.set_tick_params(which='minor', length=2.5)
+    ax11.set_xlabel('\\boldmath$x_{\\rm bj}$', size=30)
+    minorLocator = MultipleLocator(0.02)
+    majorLocator = MultipleLocator(0.1)
+    ax11.xaxis.set_minor_locator(minorLocator)
+    ax11.xaxis.set_major_locator(majorLocator)
+    minorLocator = MultipleLocator(0.01)
+    majorLocator = MultipleLocator(0.05)
+    ax11.yaxis.set_minor_locator(minorLocator)
+    ax11.yaxis.set_major_locator(majorLocator)
+    ax12.set_xlim(0.1, 0.95)
+    ax12.set_ylim(1.07, 1.33)
+    ax12.tick_params(axis='both', which='both', direction='in', top=True, right=True, labelsize=20)
+    ax12.yaxis.set_tick_params(which='major', length=5)
+    ax12.yaxis.set_tick_params(which='minor', length=2.5)
+    ax12.xaxis.set_tick_params(which='major', length=5)
+    ax12.xaxis.set_tick_params(which='minor', length=2.5)
+    ax12.set_xlabel('\\boldmath$x_{\\rm bj}$', size=30)
+    ax12.text(0.37, 0.05, '$Q^2 = 14 x_{\\rm bj} ~ {\\rm GeV^2}$', transform=ax12.transAxes, size=25)
+    minorLocator = MultipleLocator(0.04)
+    majorLocator = MultipleLocator(0.2)
+    ax12.xaxis.set_minor_locator(minorLocator)
+    ax12.xaxis.set_major_locator(majorLocator)
+    minorLocator = MultipleLocator(0.02)
+    majorLocator = MultipleLocator(0.1)
+    ax12.yaxis.set_minor_locator(minorLocator)
+    ax12.yaxis.set_major_locator(majorLocator)
+    ax12.set_xticks([0.2, 0.4, 0.6, 0.8])
+    ax11.text(0.53, 0.85, '\\boldmath$F_2^D/F_2^p$', transform=ax11.transAxes, size=35)
+    ax12.text(0.07, 0.85, '\\boldmath$F_2^{^3\\rm{He}}/F_2^{^3\\rm{H}}$', transform=ax12.transAxes, size=35)
+    (handles, labels) = ([], [])
+    handles.append(hand.get('MARATHON ht', hand.get('MARATHON dp')))
+    handles.append((thy_band, thy_plot))
+    labels.append('\\textbf{\\textrm{{\\huge MARATHON}}}')
+    labels.append('\\textbf{\\textrm{JAM}}')
+    thesis_legend(ax11, handles, labels, loc='lower left', fontsize=20, frameon=0, handletextpad=0.3, handlelength=1.4)
+    py.tight_layout()
+    filename = output_file
+    ax11.set_rasterized(True)
+    ax12.set_rasterized(True)
+    thesis_finish_panels(py.gcf(), 'thesis_marathon_plot_main', _selected_keys)
+    py.savefig(filename)
+
+# Adapted from thesis/jets.py:find_eta_bins, original lines 31-52; SHA256 9ecd1644972d1c2f270cbc3a1dc61e7655f8c0e0c68a1fe17a0fab396f741943.
+def thesis_jets_find_eta_bins(table):
+    eta_headers = [_ for _ in table if 'eta' in _]
+    absolute_eta = False
+    for _ in eta_headers:
+        if 'abs' in _:
+            absolute_eta = True
+            break
+    eta_bin_indices = []
+    eta_bin_indices.append([0])
+    if absolute_eta:
+        eta_key = 'eta-abs-min'
+    else:
+        eta_key = 'eta-min'
+    for i in range(len(table[eta_key]) - 1):
+        if table[eta_key][i] != table[eta_key][i + 1]:
+            eta_bin_indices[-1].append(i + 1)
+            eta_bin_indices.append([i + 1])
+    eta_bin_indices[-1].append(len(table[eta_key]))
+    return (eta_headers, absolute_eta, eta_bin_indices)
+
+# Adapted from thesis/jets.py:get_eta_label, original lines 54-91; SHA256 9ecd1644972d1c2f270cbc3a1dc61e7655f8c0e0c68a1fe17a0fab396f741943.
+def thesis_jets_get_eta_label(data, absolute_eta, eta_bins, i_bin, plot_factor_base, combined=True):
+    if plot_factor_base == 1.0:
+        if absolute_eta:
+            eta_min = str(data['eta-abs-min'][eta_bins[i_bin][0]])
+            eta_max = str(data['eta-abs-max'][eta_bins[i_bin][0]])
+            if combined:
+                eta_label = '|\\eta_{\\rm jet}| \\in [%s, %s]' % (eta_min, eta_max)
+            else:
+                eta_label = ('|\\eta_{\\rm jet}|~\\textrm{range}', '[%s, %s]' % (eta_min, eta_max))
+        else:
+            eta_min = str(data['eta-min'][eta_bins[i_bin][0]])
+            eta_max = str(data['eta-max'][eta_bins[i_bin][0]])
+            if combined:
+                eta_label = '\\eta_{\\rm jet} \\in [%s, %s]' % (eta_min, eta_max)
+            else:
+                eta_label = ('\\eta_{\\rm jet}~\\textrm{range}', '[%s, %s]' % (eta_min, eta_max))
+    elif absolute_eta:
+        eta_min = str(data['eta-abs-min'][eta_bins[i_bin][0]])
+        eta_max = str(data['eta-abs-max'][eta_bins[i_bin][0]])
+        plot_factor_power = round(np.log(data['plot-factor'][eta_bins[i_bin][0]]) / np.log(plot_factor_base))
+        if combined:
+            eta_label = '|\\eta_{\\rm jet}| \\in [%s, %s] \\, (\\times %i^{%i})' % (eta_min, eta_max, plot_factor_base, plot_factor_power)
+        else:
+            eta_label = ('|\\eta_{\\rm jet}|~\\textrm{range}', '[%s, %s]' % (eta_min, eta_max), '\\times %i^{%i}' % (plot_factor_base, plot_factor_power))
+    else:
+        eta_min = str(data['eta-min'][eta_bins[i_bin][0]])
+        eta_max = str(data['eta-max'][eta_bins[i_bin][0]])
+        plot_factor_power = round(np.log(data['plot-factor'][eta_bins[i_bin][0]]) / np.log(plot_factor_base))
+        if combined:
+            eta_label = '\\eta_{\\rm jet} \\in [%s, %s] \\, (\\times %i^{%i})' % (eta_min, eta_max, plot_factor_base, plot_factor_power)
+        else:
+            eta_label = ('\\eta_{\\rm jet}~\\textrm{range}', '[%s, %s]' % (eta_min, eta_max), '\\times %i^{%i}' % (plot_factor_base, plot_factor_power))
+    return eta_label
+
+# Adapted from thesis/jets.py:get_extra_label, original lines 93-103; SHA256 9ecd1644972d1c2f270cbc3a1dc61e7655f8c0e0c68a1fe17a0fab396f741943.
+def thesis_jets_get_extra_label(dataset):
+    if dataset == 10001:
+        text = ''
+    elif dataset == 10002:
+        text = ''
+    elif dataset == 10003:
+        text = '2003'
+    elif dataset == 10004:
+        text = '2004'
+    return text
+
+# Adapted from thesis/jets.py:find_plot_factor_base, original lines 105-123; SHA256 9ecd1644972d1c2f270cbc3a1dc61e7655f8c0e0c68a1fe17a0fab396f741943.
+def thesis_jets_find_plot_factor_base(plot_factors):
+    if all((_ == 1.0 for _ in plot_factors)):
+        return (False, 1.0)
+    for _ in plot_factors:
+        if _ != 1.0:
+            plot_factor = _
+            break
+    bases = [2, 3, 5, 6, 7, 10]
+    power_differences = {}
+    for base in bases:
+        plot_factor_power = np.log(plot_factor) / np.log(base)
+        power_differences[base] = abs(round(plot_factor_power) - plot_factor_power)
+    difference_min = np.inf
+    for base in bases:
+        if power_differences[base] < difference_min:
+            difference_min = power_differences[base]
+            true_base = base
+    return (True, true_base)
+
+# Adapted from thesis/jets.py:plot_replicas, original lines 125-134; SHA256 9ecd1644972d1c2f270cbc3a1dc61e7655f8c0e0c68a1fe17a0fab396f741943.
+def thesis_jets_plot_replicas(ax, pt, data, eta_bins, i_bin, factor, z_order=1, interval=95):
+    cluster = list(data)[0]
+    theory_replicas = data[cluster]
+    thy = [theory_replicas[j][eta_bins[i_bin][0]:eta_bins[i_bin][1]] for j in range(len(theory_replicas))]
+    ys = np.mean(thy, axis=0)
+    ys_d_lower = thesis_deviation(thy, interval, 'lower')
+    ys_d_upper = thesis_deviation(thy, interval, 'upper')
+    ax.fill_between(pt, np.minimum((ys - ys_d_lower) * factor, (ys + ys_d_upper) * factor), np.maximum((ys - ys_d_lower) * factor, (ys + ys_d_upper) * factor), color='gold', alpha=0.8, zorder=z_order, where=thesis_band_mask(pt))
+    return ax
+
+# Adapted from thesis/jets.py:plot_data, original lines 136-362; SHA256 9ecd1644972d1c2f270cbc3a1dc61e7655f8c0e0c68a1fe17a0fab396f741943.
+def thesis_jets_plot_data(datasets, output_file, interval):
+    _selected_keys = {r + ':' + str(i) for (r, tables) in datasets.items() for i in tables}
+    thy_plot = thy_band = thy_plot0 = thy_band0 = thy_point0 = None
+    istep = 0
+    kc = SimpleNamespace(nc={0: 1})
+    nc = 1
+    predictions = {'reactions': datasets}
+    data = datasets['jet']
+    tabs = data
+    datasets = sorted(list(data))
+    (n_rows, n_columns) = (2, 2)
+    figure = pyplot.figure(figsize=(n_columns * 7.5, n_rows * 5.0), constrained_layout=True)
+    gs = figure.add_gridspec(4, 2)
+    axs = {}
+    axs[0] = figure.add_subplot(gs[0:2, 0])
+    axs[1] = figure.add_subplot(gs[0:2, 1])
+    axs[2] = figure.add_subplot(gs[2:4, 0])
+    axs[3] = figure.add_subplot(gs[2, 1])
+    axs[4] = figure.add_subplot(gs[3, 1])
+    i_last_row = range(len(axs) - 1, len(axs) - 1 - n_columns, -1)
+    eta_size = 20
+    collaboration_size = 30
+    styles = ['-']
+    colors = ['b', 'g', 'm', 'darkorange', 'c', 'r']
+    rhic_colors = {10003: 'b', 10004: 'g'}
+    (handle_left, label_left) = ([], [])
+    (handle_right, label_right) = ([], [])
+    for i in range(len(datasets)):
+        dataset = datasets[i]
+        i = {10001: 0, 10002: 1, 10003: 2, 10004: 2}[dataset]
+        (_, absolute_eta, eta_bins) = thesis_jets_find_eta_bins(data[dataset])
+        if 'plot-factor' not in data[dataset]:
+            data[dataset]['plot-factor'] = np.ones(len(data[dataset]['value']))
+        (plot_with_factor, plot_factor_base) = thesis_jets_find_plot_factor_base(data[dataset]['plot-factor'])
+        for j in range(len(eta_bins)):
+            eta_range = thesis_jets_get_eta_label(data[dataset], absolute_eta, eta_bins, j, plot_factor_base)
+            pt = np.array(data[dataset]['pT'][eta_bins[j][0]:eta_bins[j][1]])
+            plot_factor = np.array(data[dataset]['plot-factor'][eta_bins[j][0]:eta_bins[j][1]])
+            value = np.array(data[dataset]['value'][eta_bins[j][0]:eta_bins[j][1]]) * plot_factor
+            alpha = np.array(data[dataset]['alpha'][eta_bins[j][0]:eta_bins[j][1]]) * plot_factor
+            theory = np.array(data[dataset]['thy'][eta_bins[j][0]:eta_bins[j][1]]) * plot_factor
+            if dataset in list(rhic_colors):
+                if dataset == 10003:
+                    z_order = 4
+                else:
+                    z_order = 3
+                axs[i].errorbar(pt, value, alpha, fmt='.', color=rhic_colors[dataset], ms=5.0, capsize=0.0, zorder=z_order)
+            else:
+                axs[i].errorbar(pt, value, alpha, fmt='.', color=colors[j], ms=5.0, capsize=0.0, zorder=3)
+            if dataset in list(rhic_colors):
+                if dataset == 10003:
+                    z_order = 2.5
+                    style = 'dashed'
+                else:
+                    z_order = 2
+                    style = 'solid'
+                label = '%s' % data[dataset]['col'][0].upper()
+                label += '~' + thesis_jets_get_extra_label(dataset).replace(' ', '~')
+                axs[i].plot(pt, theory, color=rhic_colors[dataset], linestyle=style, zorder=z_order, label='\\boldmath{$\\mathrm{%s}$}' % label)
+            elif dataset == 10002:
+                (_, eta_label, _) = thesis_jets_get_eta_label(data[dataset], absolute_eta, eta_bins, j, plot_factor_base, combined=False)
+                if j in [0, 1]:
+                    (handle,) = axs[i].plot(pt, theory, color=colors[j], zorder=2)
+                    handle_left.append(handle)
+                    label_left.append('$%s$' % eta_label)
+                else:
+                    (handle,) = axs[i].plot(pt, theory, color=colors[j], zorder=2)
+                    handle_right.append(handle)
+                    label_right.append('$%s$' % eta_label)
+            else:
+                (_, eta_label, _) = thesis_jets_get_eta_label(data[dataset], absolute_eta, eta_bins, j, plot_factor_base, combined=False)
+                axs[i].plot(pt, theory, color=colors[j], zorder=2, label='$%s$' % eta_label)
+            if dataset == 10003:
+                axs[i] = thesis_jets_plot_replicas(axs[i], pt, data[dataset]['thy-rep'], eta_bins, j, plot_factor, z_order=2, interval=interval)
+            else:
+                axs[i] = thesis_jets_plot_replicas(axs[i], pt, data[dataset]['thy-rep'], eta_bins, j, plot_factor, interval=interval)
+        if dataset == 10002:
+            legends_left = thesis_legend(axs[i], handle_left, label_left, fontsize=eta_size, frameon=False, handlelength=0.7, loc='upper center', bbox_to_anchor=(0.6, 1.0))
+            legends_right = thesis_legend(axs[i], handle_right, label_right, fontsize=eta_size, frameon=False, handlelength=0.7, loc='upper right')
+            axs[i].add_artist(legends_left)
+            for line in legends_left.get_lines():
+                line.set_linewidth(3.0)
+            for line in legends_right.get_lines():
+                line.set_linewidth(3.0)
+        elif dataset == 10001:
+            legends = axs[i].legend(fontsize=eta_size, frameon=False, handlelength=0.7, loc='upper right')
+            for line in legends.get_lines():
+                line.set_linewidth(3.0)
+        else:
+            legends = axs[i].legend(fontsize=collaboration_size, loc='best', frameon=False, handlelength=1.5)
+            for line in legends.get_lines():
+                line.set_linewidth(3.0)
+        axs[i].set_yscale('log')
+        unit = data[dataset]['units'][0]
+        if data[dataset]['obs'][0].replace('<', '').replace('>', '') == 'd2_sigma_over_d_y_d_pt':
+            y_label = '\\boldmath{$\\frac{\\mathrm{d}^2\\sigma^{\\rm jet}}{\\mathrm{d}\\eta_{\\rm jet} \\, \\mathrm{d} p_T^{\\rm jet}}~{\\scriptstyle \\left(\\frac{\\mathrm{%s}}{\\mathrm{GeV}} \\right)}$}' % unit
+        elif data[dataset]['obs'][0].replace('<', '').replace('>', '') == 'd2_sigma_over_2_pi_d_y_d_pt':
+            y_label = '\\boldmath{$\\frac{\\mathrm{d}^2\\sigma^{\\rm jet}}{2 \\pi \\, \\mathrm{d}\\eta_{\\rm jet} \\, \\mathrm{d} p_T^{\\rm jet}}~{\\scriptstyle \\left(\\frac{\\mathrm{%s}}{\\mathrm{GeV}} \\right)}$}' % unit
+        if i % n_columns == 0:
+            axs[i].set_ylabel(y_label, size=40)
+        if dataset == 10003:
+            axs[i].text(0.05, 0.1, '$%s$' % eta_range, color='k', transform=axs[i].transAxes, size=23)
+        elif dataset == 10004:
+            pass
+        else:
+            text = '%s' % data[dataset]['col'][0].upper()
+            text += '~' + thesis_jets_get_extra_label(dataset).replace(' ', '~')
+            if dataset == 10001:
+                (x_, y_) = (0.2, 0.85)
+            elif dataset == 10002:
+                (x_, y_) = (0.8, 0.1)
+            axs[i].text(x_, y_, '\\boldmath{$\\mathrm{%s}$}' % text, color='k', transform=axs[i].transAxes, size=collaboration_size)
+    for i in range(len(rhic_colors)):
+        dataset = list(rhic_colors)[i]
+        if dataset not in data:
+            continue
+        (_, absolute_eta, eta_bins) = thesis_jets_find_eta_bins(data[dataset])
+        for j in range(len(eta_bins)):
+            pt = data[dataset]['pT'][eta_bins[j][0]:eta_bins[j][1]]
+            plot_factor_base = 1.0
+            eta_range = thesis_jets_get_eta_label(data[dataset], absolute_eta, eta_bins, j, plot_factor_base)
+            theory = data[dataset]['thy'][eta_bins[j][0]:eta_bins[j][1]]
+            value = data[dataset]['value'][eta_bins[j][0]:eta_bins[j][1]]
+            alpha = data[dataset]['alpha'][eta_bins[j][0]:eta_bins[j][1]]
+            axs[i + 3].errorbar(pt, thesis_ratio(value, theory, error=False), thesis_ratio(alpha, theory, error=True), fmt='.', color=rhic_colors[dataset], ms=5.0, capsize=3.5, zorder=2)
+            axs[i + 3].axhline(1.0, color='black', ls='dashdot', linewidth=0.5, zorder=0)
+            axs[i + 3] = thesis_jets_plot_replicas(axs[i + 3], pt, data[dataset]['thy-rep'], eta_bins, j, thesis_ratio(1.0, theory, error=False), interval=interval)
+    for i in range(len(axs)):
+        axs[i].tick_params(axis='both', which='both', right=True, top=True, direction='in', labelsize=21)
+        axs[i].tick_params(axis='x', pad=10)
+        axs[i].yaxis.set_tick_params(which='major', length=7.5)
+        axs[i].xaxis.set_tick_params(which='major', length=7.5)
+        axs[i].minorticks_off()
+    for i in [2, 4]:
+        axs[i].set_xlabel('\\boldmath$p_T^{\\rm jet}~(\\mathrm{GeV})$', size=30)
+    axs[3].set_ylim(0.6, 1.2)
+    axs[4].set_ylim(0.8, 1.2)
+    axs[3].text(0.05, 0.2, '\\boldmath{$\\mathrm{data/theory}$}', color='k', transform=axs[3].transAxes, size=23)
+    axs[4].text(0.3, 0.14, '\\boldmath{$\\mathrm{data/theory}$}', color='k', transform=axs[4].transAxes, size=23)
+    axs[3].text(0.52, 0.25, '\\boldmath{$\\mathrm{STAR~2003}$}', color='k', transform=axs[3].transAxes, size=collaboration_size)
+    axs[4].text(0.25, 0.74, '\\boldmath{$\\mathrm{STAR~2004}$}', color='k', transform=axs[4].transAxes, size=collaboration_size)
+    if 10001 in data:
+        dataset = 10001
+        (_, absolute_eta, eta_bins) = thesis_jets_find_eta_bins(data[dataset])
+        (plot_with_factor, plot_factor_base) = thesis_jets_find_plot_factor_base(data[dataset]['plot-factor'])
+        (eta_name, _, factor) = thesis_jets_get_eta_label(data[dataset], absolute_eta, eta_bins, 5, plot_factor_base, combined=False)
+        axs[0].text(0.7, 0.875, '$%s$' % eta_name, color='k', transform=axs[0].transAxes, size=23, horizontalalignment='right', verticalalignment='bottom')
+        axs[0].text(0.29, 0.03, '$%s$' % factor, color=colors[5], transform=axs[0].transAxes, size=23, horizontalalignment='right', verticalalignment='bottom')
+        (_, _, factor) = thesis_jets_get_eta_label(data[dataset], absolute_eta, eta_bins, 4, plot_factor_base, combined=False)
+        axs[0].text(0.4, 0.015, '$%s$' % factor, color=colors[4], transform=axs[0].transAxes, size=23, horizontalalignment='left', verticalalignment='bottom')
+        (_, _, factor) = thesis_jets_get_eta_label(data[dataset], absolute_eta, eta_bins, 3, plot_factor_base, combined=False)
+        axs[0].text(0.54, 0.03, '$%s$' % factor, color=colors[3], transform=axs[0].transAxes, size=23, horizontalalignment='left', verticalalignment='bottom')
+        (_, _, factor) = thesis_jets_get_eta_label(data[dataset], absolute_eta, eta_bins, 2, plot_factor_base, combined=False)
+        axs[0].text(0.7, 0.03, '$%s$' % factor, color=colors[2], transform=axs[0].transAxes, size=23, horizontalalignment='left', verticalalignment='bottom')
+        (_, _, factor) = thesis_jets_get_eta_label(data[dataset], absolute_eta, eta_bins, 1, plot_factor_base, combined=False)
+        axs[0].text(0.86, 0.01, '$%s$' % factor, color=colors[1], transform=axs[0].transAxes, size=23, horizontalalignment='left', verticalalignment='bottom')
+        (_, _, factor) = thesis_jets_get_eta_label(data[dataset], absolute_eta, eta_bins, 0, plot_factor_base, combined=False)
+        axs[0].text(0.99, 0.18, '$%s$' % factor, color=colors[0], transform=axs[0].transAxes, size=23, horizontalalignment='right', verticalalignment='bottom')
+    if 10002 in data:
+        dataset = 10002
+        (_, absolute_eta, eta_bins) = thesis_jets_find_eta_bins(data[dataset])
+        (plot_with_factor, plot_factor_base) = thesis_jets_find_plot_factor_base(data[dataset]['plot-factor'])
+        (eta_name, _, factor) = thesis_jets_get_eta_label(data[dataset], absolute_eta, eta_bins, 4, plot_factor_base, combined=False)
+        axs[1].text(0.45, 0.875, '$%s$' % eta_name, color='k', transform=axs[1].transAxes, size=23, horizontalalignment='right', verticalalignment='bottom')
+        axs[1].text(0.32, 0.03, '$%s$' % factor, color=colors[4], transform=axs[1].transAxes, size=23, horizontalalignment='right', verticalalignment='bottom')
+        (_, _, factor) = thesis_jets_get_eta_label(data[dataset], absolute_eta, eta_bins, 3, plot_factor_base, combined=False)
+        axs[1].text(0.41, 0.12, '$%s$' % factor, color=colors[3], transform=axs[1].transAxes, size=23, horizontalalignment='left', verticalalignment='bottom')
+        (_, _, factor) = thesis_jets_get_eta_label(data[dataset], absolute_eta, eta_bins, 2, plot_factor_base, combined=False)
+        axs[1].text(0.62, 0.23, '$%s$' % factor, color=colors[2], transform=axs[1].transAxes, size=23, horizontalalignment='left', verticalalignment='bottom')
+        (_, _, factor) = thesis_jets_get_eta_label(data[dataset], absolute_eta, eta_bins, 1, plot_factor_base, combined=False)
+        axs[1].text(0.8, 0.34, '$%s$' % factor, color=colors[1], transform=axs[1].transAxes, size=23, horizontalalignment='left', verticalalignment='bottom')
+        (_, _, factor) = thesis_jets_get_eta_label(data[dataset], absolute_eta, eta_bins, 0, plot_factor_base, combined=False)
+        axs[1].text(0.8, 0.5, '$%s$' % factor, color=colors[0], transform=axs[1].transAxes, size=23, horizontalalignment='left', verticalalignment='bottom')
+    pyplot.tight_layout()
+    filename = output_file
+    axs[0].set_rasterized(True)
+    axs[1].set_rasterized(True)
+    axs[2].set_rasterized(True)
+    axs[3].set_rasterized(True)
+    axs[4].set_rasterized(True)
+    thesis_finish_panels(py.gcf(), 'thesis_jets_plot_data', _selected_keys)
+    pyplot.savefig(filename)
+
+# Adapted from thesis/lepton.py:plot_asym, original lines 40-319; SHA256 26ca48c0cb3cf5831916f162eb1644c98d2dba5cd0c2c8dbc9555fcf942ab760.
+def thesis_lepton_plot_asym(datasets, output_file, interval):
+    _selected_keys = {r + ':' + str(i) for (r, tables) in datasets.items() for i in tables}
+    thy_plot = thy_band = thy_plot0 = thy_band0 = thy_point0 = None
+    istep = 0
+    kc = SimpleNamespace(nc={0: 1})
+    nc = 1
+    predictions = {'reactions': datasets}
+    data = datasets['wzrv']
+    tabs = data
+    (nrows, ncols) = (4, 2)
+    gridspec = dict(hspace=0, height_ratios=[0.7, 0.4, 0.4, 0.4])
+    (fig, axs) = py.subplots(nrows=nrows, ncols=ncols, gridspec_kw=gridspec, figsize=(ncols * 7, nrows * 3))
+    ax11 = axs[0][0]
+    ax12 = axs[0][1]
+    ax21 = axs[1][0]
+    ax22 = axs[1][1]
+    ax31 = axs[2][0]
+    ax32 = axs[2][1]
+    ax41 = axs[3][0]
+    axs[3][1].axis('off')
+    tabs = datasets['wzrv']
+    data = predictions['reactions']['wzrv']
+    hand = {}
+    axes = {}
+    axes['ax'] = {}
+    axes['ax'][2010] = ax11
+    axes['ax'][2011] = ax11
+    axes['ax'][2012] = ax11
+    axes['ax'][2013] = ax11
+    axes['ax'][2014] = ax11
+    axes['ax'][2016] = ax12
+    axes['ax'][2017] = ax12
+    axes['color'] = {}
+    axes['color'][2010] = 'firebrick'
+    axes['color'][2011] = 'darkturquoise'
+    axes['color'][2012] = 'darkmagenta'
+    axes['color'][2013] = 'darkturquoise'
+    axes['color'][2014] = 'darkturquoise'
+    axes['color'][2016] = 'firebrick'
+    axes['color'][2017] = 'darkgreen'
+    axes['marker'] = {}
+    axes['marker'][2010] = '*'
+    axes['marker'][2011] = '^'
+    axes['marker'][2012] = '.'
+    axes['marker'][2013] = '^'
+    axes['marker'][2014] = '^'
+    axes['marker'][2016] = 'o'
+    axes['marker'][2017] = '*'
+    for idx in tabs:
+        if idx not in data:
+            continue
+        if idx not in axes['ax']:
+            continue
+        values = tabs[idx]['value']
+        alpha = data[idx]['alpha']
+        ax = axes['ax'][idx]
+        color = axes['color'][idx]
+        marker = axes['marker'][idx]
+        if 'eta' in tabs[idx]:
+            eta = tabs[idx]['eta']
+            hand[idx] = ax.errorbar(eta, values, yerr=alpha, color=color, linestyle='none', marker=marker, ms=6.0, capsize=3.0)
+        else:
+            eta = (tabs[idx]['eta_min'] + tabs[idx]['eta_max']) / 2.0
+            eta_min = tabs[idx]['eta_min']
+            eta_max = tabs[idx]['eta_max']
+            xerr = np.zeros((2, len(eta)))
+            hand[idx] = ax.errorbar(eta, values, yerr=alpha, color=color, linestyle='none', marker=marker, ms=6.0, capsize=3.0)
+    for idx in [2010, 2011, 2012, 2016, 2017]:
+        if idx not in data:
+            continue
+        if idx not in data:
+            continue
+        for ic in range(nc):
+            ax = axes['ax'][idx]
+            color = axes['color'][idx]
+            marker = axes['marker'][idx]
+            if 'eta' in tabs[idx]:
+                eta = tabs[idx]['eta']
+            else:
+                eta = (tabs[idx]['eta_min'] + tabs[idx]['eta_max']) / 2.0
+            thy = data[idx]['thy-%d' % ic]
+            std_lower = data[idx]['dthy_lower-%d' % ic]
+            std_upper = data[idx]['dthy_upper-%d' % ic]
+            down = thy - std_lower
+            up = thy + std_upper
+            (thy_plot,) = ax.plot(eta, thy, color='black')
+            thy_band = ax.fill_between(eta, np.minimum(down, up), np.maximum(down, up), color='gold', alpha=1.0, where=thesis_band_mask(eta))
+    for ax in [ax11, ax12]:
+        ax.tick_params(axis='both', which='both', top=True, right=True, direction='in', labelsize=30, labelbottom=False)
+    ax12.axhline(0, 0, 3, alpha=0.5, color='black', ls='--')
+    for ax in [ax11, ax21, ax31, ax41]:
+        ax.set_xlim(0.0, 2.6)
+    for ax in [ax12, ax22, ax32]:
+        ax.set_xlim(2.0, 4.6)
+    ax11.text(0.05, 0.05, '\\boldmath$A_l$', transform=ax11.transAxes, fontsize=40)
+    ax11.text(0.05, 0.82, '\\textrm{\\textbf{CMS}}', transform=ax11.transAxes, fontsize=40)
+    ax12.text(0.7, 0.82, '\\textrm{\\textbf{LHCb}}', transform=ax12.transAxes, fontsize=40)
+    ax11.set_ylim(0.0, 0.3)
+    ax12.set_ylim(-0.55, 0.3)
+    majorLocator = MultipleLocator(0.1)
+    minorLocator = MultipleLocator(0.025)
+    ax11.yaxis.set_minor_locator(minorLocator)
+    ax11.yaxis.set_major_locator(majorLocator)
+    majorLocator = MultipleLocator(0.2)
+    minorLocator = MultipleLocator(0.05)
+    ax12.yaxis.set_minor_locator(minorLocator)
+    ax12.yaxis.set_major_locator(majorLocator)
+    ax11.set_yticks([0.1, 0.2])
+    for ax in [ax11, ax12]:
+        minorLocator = MultipleLocator(0.1)
+        majorLocator = MultipleLocator(0.5)
+        ax.xaxis.set_minor_locator(minorLocator)
+        ax.xaxis.set_major_locator(majorLocator)
+        ax.xaxis.set_tick_params(which='major', length=6)
+        ax.xaxis.set_tick_params(which='minor', length=3)
+        ax.yaxis.set_tick_params(which='major', length=6)
+        ax.yaxis.set_tick_params(which='minor', length=3)
+    axes['ax'] = {}
+    axes['ax'][2010] = ax31
+    axes['ax'][2011] = ax21
+    axes['ax'][2012] = ax41
+    axes['ax'][2013] = ax21
+    axes['ax'][2014] = ax21
+    axes['ax'][2016] = ax22
+    axes['ax'][2017] = ax32
+    for idx in data:
+        if idx not in axes['ax']:
+            continue
+        ax = axes['ax'][idx]
+        color = axes['color'][idx]
+        marker = axes['marker'][idx]
+        ms = 8
+        for ic in range(nc):
+            (eta0, eta1) = ([], [])
+            (thy0, thy1, ratio0, ratio1, alpha0, alpha1) = ([], [], [], [], [], [])
+            boson = datasets['wzrv'][idx]['boson']
+            if 'eta' in datasets['wzrv'][idx]:
+                eta = datasets['wzrv'][idx]['eta']
+            else:
+                eta = (datasets['wzrv'][idx]['eta_min'] + datasets['wzrv'][idx]['eta_max']) / 2.0
+            thy = data[idx]['thy-%d' % ic]
+            value = data[idx]['value']
+            alpha = data[idx]['alpha']
+            std_lower = data[idx]['dthy_lower-%d' % ic]
+            std_upper = data[idx]['dthy_upper-%d' % ic]
+            if ax in [ax21, ax31, ax41]:
+                measure = thesis_ratio(value, thy, error=False)
+            if ax in [ax21, ax31, ax41]:
+                yerr = alpha / np.abs(thy)
+            if ax in [ax21, ax31, ax41]:
+                thyerr_lower = thesis_ratio(std_lower, thy, error=False)
+                thyerr_upper = thesis_ratio(std_upper, thy, error=False)
+            if ax in [ax22, ax32]:
+                measure = value - thy
+            if ax in [ax22, ax32]:
+                yerr = alpha
+            if ax in [ax22, ax32]:
+                thyerr_lower = std_lower
+                thyerr_upper = std_upper
+            ax.errorbar(eta, measure, yerr=yerr, color=color, linestyle='none', marker=marker, ms=ms, capsize=3.0)
+            if ax in [ax21, ax31, ax41]:
+                ax.fill_between(eta, np.minimum(1 - thyerr_lower, 1 + thyerr_upper), np.maximum(1 - thyerr_lower, 1 + thyerr_upper), color='gold', alpha=1.0, where=thesis_band_mask(eta))
+            if ax in [ax22, ax32]:
+                ax.fill_between(eta, np.minimum(0 - thyerr_lower, 0 + thyerr_upper), np.maximum(0 - thyerr_lower, 0 + thyerr_upper), color='gold', alpha=1.0, where=thesis_band_mask(eta))
+    for ax in [ax21, ax22, ax31, ax32, ax41]:
+        ax.tick_params(axis='both', which='both', top=True, right=True, direction='in', labelsize=30)
+    for ax in [ax21, ax22, ax31]:
+        ax.tick_params(labelbottom=False)
+    for ax in [ax32, ax41]:
+        ax.set_xlabel('\\boldmath$|\\eta_{\\ell}|$', size=30)
+    for ax in [ax21, ax22, ax31, ax32, ax41]:
+        minorLocator = MultipleLocator(0.1)
+        majorLocator = MultipleLocator(1.0)
+        ax.xaxis.set_minor_locator(minorLocator)
+        ax.xaxis.set_major_locator(majorLocator)
+        ax.xaxis.set_tick_params(which='major', length=6)
+        ax.xaxis.set_tick_params(which='minor', length=3)
+        ax.yaxis.set_tick_params(which='major', length=6)
+        ax.yaxis.set_tick_params(which='minor', length=3)
+    for ax in [ax21, ax31, ax41]:
+        ax.set_ylim(0.85, 1.15)
+        ax.axhline(1, 0, 3, alpha=1.0, color='black', ls='--')
+        minorLocator = MultipleLocator(0.025)
+        majorLocator = MultipleLocator(0.1)
+        ax.yaxis.set_minor_locator(minorLocator)
+        ax.yaxis.set_major_locator(majorLocator)
+        ax.set_yticks([0.9, 1.0, 1.1])
+    for ax in [ax22, ax32]:
+        ax.set_ylim(-0.05, 0.05)
+        ax.axhline(0, 0, 3, alpha=1.0, color='black', ls='--')
+        minorLocator = MultipleLocator(0.01)
+        majorLocator = MultipleLocator(0.04)
+        ax.yaxis.set_minor_locator(minorLocator)
+        ax.yaxis.set_major_locator(majorLocator)
+    for ax in [ax21, ax31, ax41]:
+        ax.set_xticks([1, 2])
+    for ax in [ax22, ax32]:
+        ax.set_xticks([3, 4])
+    (handles, labels) = ([], [])
+    handles.append(hand.get(2011))
+    handles.append(hand.get(2012))
+    handles.append(hand.get(2010))
+    labels.append('\\boldmath$\\sqrt{s}=7,p_T^{\\ell}>25$')
+    labels.append('\\boldmath$\\sqrt{s}=7,p_T^{\\ell}>35$')
+    labels.append('\\boldmath$\\sqrt{s}=8,p_T^{\\ell}>25$')
+    thesis_legend(ax11, handles, labels, frameon=False, fontsize=22, loc='lower right', ncol=1, handletextpad=0.3, handlelength=1.0)
+    (handles, labels) = ([], [])
+    handles.append((thy_band, thy_plot))
+    handles.append(hand.get(2016))
+    handles.append(hand.get(2017))
+    labels.append('\\textbf{\\textrm{JAM}}')
+    labels.append('\\boldmath$\\sqrt{s}=7,p_T^{\\ell}>20$')
+    labels.append('\\boldmath$\\sqrt{s}=8,p_T^{\\ell}>20$')
+    thesis_legend(ax12, handles, labels, frameon=False, fontsize=22, loc='lower left', ncol=1, handletextpad=0.3, handlelength=1.0)
+    ax21.text(0.05, 0.8, '\\textrm{\\textbf{data/theory}}', transform=ax21.transAxes, fontsize=25)
+    ax31.text(0.05, 0.8, '\\textrm{\\textbf{data/theory}}', transform=ax31.transAxes, fontsize=25)
+    ax41.text(0.05, 0.8, '\\textrm{\\textbf{data/theory}}', transform=ax41.transAxes, fontsize=25)
+    ax22.text(0.05, 0.8, '\\textrm{\\textbf{data-theory}}', transform=ax22.transAxes, fontsize=25)
+    ax32.text(0.05, 0.8, '\\textrm{\\textbf{data-theory}}', transform=ax32.transAxes, fontsize=25)
+    py.tight_layout()
+    py.subplots_adjust(hspace=0.0, wspace=0.2)
+    filename = output_file
+    ax11.set_rasterized(True)
+    ax12.set_rasterized(True)
+    ax21.set_rasterized(True)
+    ax22.set_rasterized(True)
+    thesis_finish_panels(py.gcf(), 'thesis_lepton_plot_asym', _selected_keys)
+    py.savefig(filename)
+
+# Adapted from thesis/lepton.py:plot_star, original lines 321-469; SHA256 26ca48c0cb3cf5831916f162eb1644c98d2dba5cd0c2c8dbc9555fcf942ab760.
+def thesis_lepton_plot_star(datasets, output_file, interval):
+    _selected_keys = {r + ':' + str(i) for (r, tables) in datasets.items() for i in tables}
+    thy_plot = thy_band = thy_plot0 = thy_band0 = thy_point0 = None
+    istep = 0
+    kc = SimpleNamespace(nc={0: 1})
+    nc = 1
+    predictions = {'reactions': datasets}
+    data = datasets['wzrv']
+    tabs = data
+    (nrows, ncols) = (3, 1)
+    fig = py.figure(figsize=(ncols * 7, nrows * 2.5))
+    ax11 = py.subplot(nrows, ncols, (1, 2))
+    ax21 = py.subplot(nrows, ncols, 3)
+    tabs = datasets['wzrv']
+    data = predictions['reactions']['wzrv']
+    hand = {}
+    for idx in tabs:
+        values = tabs[idx]['value']
+        alpha = data[idx]['alpha']
+        if idx == 2020:
+            (ax, color, marker) = (ax11, 'black', '.')
+        eta = tabs[idx]['eta']
+        xerr = np.zeros((2, len(eta)))
+        hand[idx] = ax.errorbar(eta, values, yerr=alpha, color=color, linestyle='none', marker=marker, ms=10, capsize=3.0, zorder=5)
+    for idx in [2020]:
+        if idx not in data:
+            continue
+        for ic in range(nc):
+            if idx == 2020:
+                ax = ax11
+            (eta0, eta1) = ([], [])
+            (thy0, thy1) = ([], [])
+            (std0, std1) = ([], [])
+            (up0, up1) = ([], [])
+            (down0, down1) = ([], [])
+            boson = datasets['wzrv'][idx]['boson']
+            eta = tabs[idx]['eta']
+            thy = data[idx]['thy-%d' % ic]
+            std_lower = data[idx]['dthy_lower-%d' % ic]
+            std_upper = data[idx]['dthy_upper-%d' % ic]
+            down = thy - std_lower
+            up = thy + std_upper
+            (thy_plot,) = ax.plot(eta, thy, color='red')
+            thy_band = ax.fill_between(eta, np.minimum(down, up), np.maximum(down, up), color='red', alpha=0.5, where=thesis_band_mask(eta))
+    for idx in [2020]:
+        if idx not in data:
+            continue
+        if idx == 2020:
+            (ax, color) = (ax21, 'black')
+        for ic in range(nc):
+            if nc > 1:
+                color = colors[cluster[ic]]
+            eta = tabs[idx]['eta']
+            thy = data[idx]['thy-%d' % ic]
+            ratio = thesis_ratio(data[idx]['value'], thy, error=False)
+            alpha = data[idx]['alpha']
+            ax.errorbar(eta, ratio, yerr=thesis_ratio(alpha, thy, error=True), color=color, fmt='.', ms=10, capsize=3.0, zorder=5)
+            ax.fill_between(eta, np.minimum(1 - thesis_ratio(std_lower, thy, error=False), 1 + thesis_ratio(std_upper, thy, error=False)), np.maximum(1 - thesis_ratio(std_lower, thy, error=False), 1 + thesis_ratio(std_upper, thy, error=False)), color='red', alpha=0.5, where=thesis_band_mask(eta))
+            ax.axhline(1, 0, 3, color='black', ls='--')
+    for ax in [ax11]:
+        ax.tick_params(axis='both', which='both', top=True, right=True, direction='in', labelsize=30, labelbottom=False)
+    for ax in [ax21]:
+        ax.tick_params(axis='both', which='both', top=True, right=True, direction='in', labelsize=30)
+    handles = [hand.get(2020), (thy_band, thy_plot)]
+    label1 = '\\textbf{\\textrm{STAR}}'
+    label2 = '\\textbf{\\textrm{JAM}}'
+    labels = [label1, label2]
+    thesis_legend(ax11, handles, labels, frameon=False, fontsize=25, loc='upper right', ncol=1, handletextpad=0.3, handlelength=1.0)
+    ax21.set_xlabel('\\boldmath$\\eta_{\\ell}$', size=40)
+    ax11.set_ylim(0.5, 9.5)
+    ax21.set_ylim(0.5, 1.5)
+    ax11.text(0.05, 0.75, '\\boldmath$\\sigma_{pp}^{W^+}/\\sigma_{pp}^{W^-}$', transform=ax11.transAxes, size=50)
+    ax11.text(0.35, 0.17, '$\\sqrt{s} = 510$' + ' ' + '\\textrm{GeV}', transform=ax11.transAxes, size=23)
+    ax11.text(0.35, 0.05, '\\rm{$p_T^{\\ell}$ $>$ 25 GeV}', transform=ax11.transAxes, size=23)
+    ax21.text(0.02, 0.8, '\\textbf{\\textrm{data/theory}}', transform=ax21.transAxes, size=35)
+    for ax in [ax11, ax21]:
+        ax.xaxis.set_tick_params(which='major', length=6)
+        ax.xaxis.set_tick_params(which='minor', length=3)
+        ax.yaxis.set_tick_params(which='major', length=6)
+        ax.yaxis.set_tick_params(which='minor', length=3)
+        majorLocator = MultipleLocator(0.5)
+        minorLocator = MultipleLocator(0.1)
+        ax.xaxis.set_minor_locator(minorLocator)
+        ax.xaxis.set_major_locator(majorLocator)
+        ax.set_xlim(-1.4, 1.4)
+    for ax in [ax11]:
+        majorLocator = MultipleLocator(2)
+        minorLocator = MultipleLocator(0.5)
+        ax.yaxis.set_minor_locator(minorLocator)
+        ax.yaxis.set_major_locator(majorLocator)
+    for ax in [ax21]:
+        majorLocator = MultipleLocator(0.3)
+        minorLocator = MultipleLocator(0.1)
+        ax.yaxis.set_minor_locator(minorLocator)
+        ax.yaxis.set_major_locator(majorLocator)
+        ax.yaxis.set_tick_params(which='major', length=6)
+        ax.yaxis.set_tick_params(which='minor', length=3)
+        ax.set_yticks([0.6, 1.0, 1.4])
+    py.tight_layout()
+    py.subplots_adjust(hspace=0.0, wspace=0.0)
+    filename = output_file
+    ax11.set_rasterized(True)
+    ax21.set_rasterized(True)
+    thesis_finish_panels(py.gcf(), 'thesis_lepton_plot_star', _selected_keys)
+    py.savefig(filename)
+
+# Adapted from thesis/wz.py:integrate, original lines 46-54; SHA256 9d102977864f0dd8f8e6903bddca2eb554a4553d87d8c77f8a65a86ce6c76531.
+def thesis_wz_integrate(dsig, Y):
+    (Ymin, Ymax) = (np.min(Y), np.max(Y))
+    gauss_Y = 99
+    (x, w) = np.polynomial.legendre.leggauss(gauss_Y)
+    Y_int = 0.5 * (x * (Ymax - Ymin) + Ymin + Ymax)
+    jac = 0.5 * (Ymax - Ymin)
+    integrand = griddata(Y, dsig, Y_int, method='cubic')
+    return np.sum(w * integrand * jac)
+
+# Adapted from thesis/wz.py:plot_main, original lines 57-376; SHA256 9d102977864f0dd8f8e6903bddca2eb554a4553d87d8c77f8a65a86ce6c76531.
+def thesis_wz_plot_main(datasets, output_file, interval):
+    _selected_keys = {r + ':' + str(i) for (r, tables) in datasets.items() for i in tables}
+    thy_plot = thy_band = thy_plot0 = thy_band0 = thy_point0 = None
+    istep = 0
+    kc = SimpleNamespace(nc={0: 1})
+    nc = 1
+    predictions = {'reactions': datasets}
+    (nrows, ncols) = (4, 2)
+    fig = py.figure(figsize=(ncols * 7, nrows * 2))
+    gs = gridspec.GridSpec(4, 2)
+    ax11 = fig.add_subplot(gs[0:2, 0])
+    ax21 = fig.add_subplot(gs[2, 0])
+    ax31 = fig.add_subplot(gs[3, 0])
+    tabs = datasets.get('zrap', {})
+    data = predictions['reactions'].get('zrap', {})
+    hand = {}
+    for idx in tabs:
+        Y = tabs[idx]['Y']
+        values = tabs[idx]['value']
+        alpha = data[idx]['alpha']
+        if 'normalization' in tabs[idx]:
+            norm = tabs[idx]['normalization'][0]
+        else:
+            norm = 2 * thesis_wz_integrate(tabs[idx]['value'], Y)
+        if idx == 1000:
+            color = 'darkgreen'
+        if idx == 1001:
+            color = 'firebrick'
+        hand[idx] = ax11.errorbar(Y, values / norm, yerr=alpha / norm, color=color, fmt='o', ms=2, capsize=3.0)
+    for idx in data:
+        for ic in range(nc):
+            Y = datasets.get('zrap', {})[idx]['Y']
+            if 'normalization' in tabs[idx]:
+                norm = tabs[idx]['normalization'][0]
+            else:
+                norm = 2 * thesis_wz_integrate(tabs[idx]['value'], Y)
+            if nc > 1:
+                color = colors[cluster[ic]]
+            thy = data[idx]['thy-%d' % ic] / norm
+            std_lower = data[idx]['dthy_lower-%d' % ic] / norm
+            std_upper = data[idx]['dthy_upper-%d' % ic] / norm
+            down = thy - std_lower
+            up = thy + std_upper
+            (thy_plot,) = ax11.plot(Y, thy, color='black')
+            thy_band = ax11.fill_between(Y, np.minimum(down, up), np.maximum(down, up), color='gold', alpha=1.0, where=thesis_band_mask(Y))
+    for idx in data:
+        if idx == 1000:
+            (ax, color, label) = (ax21, 'darkgreen', '\\textbf{\\textrm{CDF(Z)}}')
+        if idx == 1001:
+            (ax, color, label) = (ax31, 'firebrick', '\\textbf{\\textrm{D0(Z)}}')
+        for ic in range(nc):
+            Y = datasets.get('zrap', {})[idx]['Y']
+            if nc > 1:
+                color = colors[cluster[ic]]
+            if 'normalization' in tabs[idx]:
+                norm = tabs[idx]['normalization'][0]
+            else:
+                norm = 2 * thesis_wz_integrate(tabs[idx]['value'], Y)
+            thy = data[idx]['thy-%d' % ic]
+            std_lower = data[idx]['dthy_lower-%d' % ic]
+            std_upper = data[idx]['dthy_upper-%d' % ic]
+            ratio = thesis_ratio(data[idx]['value'], thy, error=False)
+            alpha = data[idx]['alpha']
+            ax.errorbar(Y, ratio, yerr=thesis_ratio(alpha, thy, error=True), color=color, fmt='.', ms=10, capsize=3.0)
+            ax.fill_between(Y, np.minimum(1 - thesis_ratio(std_lower, thy, error=False), 1 + thesis_ratio(std_upper, thy, error=False)), np.maximum(1 - thesis_ratio(std_lower, thy, error=False), 1 + thesis_ratio(std_upper, thy, error=False)), color='gold', alpha=1.0, where=thesis_band_mask(Y))
+            ax.text(0.02, 0.78, label, fontsize=25, transform=ax.transAxes)
+            ax.axhline(1, 0, 3, color='black', ls='--')
+    for ax in [ax11, ax21]:
+        ax.tick_params(axis='both', which='both', top=True, right=True, labelbottom=False, direction='in', labelsize=30)
+        ax.set_xlim(0, 3)
+    for ax in [ax31]:
+        ax.tick_params(axis='both', which='both', top=True, right=True, direction='in', labelsize=30)
+        ax.set_xlim(0, 3)
+    for ax in [ax11]:
+        ax.set_ylim(0, 0.32)
+        minorLocator = MultipleLocator(0.1)
+        majorLocator = MultipleLocator(1.0)
+        ax.xaxis.set_minor_locator(minorLocator)
+        ax.xaxis.set_major_locator(majorLocator)
+        ax.xaxis.set_tick_params(which='major', length=6)
+        ax.xaxis.set_tick_params(which='minor', length=3)
+        minorLocator = MultipleLocator(0.02)
+        majorLocator = MultipleLocator(0.1)
+        ax.yaxis.set_minor_locator(minorLocator)
+        ax.yaxis.set_major_locator(majorLocator)
+        ax.yaxis.set_tick_params(which='major', length=6)
+        ax.yaxis.set_tick_params(which='minor', length=3)
+        ax.set_yticks([0, 0.1, 0.2, 0.3])
+        ax.set_yticklabels(['', '$0.1$', '$0.2$', '$0.3$'])
+    for ax in [ax21, ax31]:
+        ax.set_ylim(0.75, 1.25)
+        minorLocator = MultipleLocator(0.1)
+        majorLocator = MultipleLocator(1.0)
+        ax.xaxis.set_minor_locator(minorLocator)
+        ax.xaxis.set_major_locator(majorLocator)
+        ax.xaxis.set_tick_params(which='major', length=6)
+        ax.xaxis.set_tick_params(which='minor', length=3)
+        minorLocator = MultipleLocator(0.04)
+        majorLocator = MultipleLocator(0.2)
+        ax.yaxis.set_minor_locator(minorLocator)
+        ax.yaxis.set_major_locator(majorLocator)
+        ax.yaxis.set_tick_params(which='major', length=6)
+        ax.yaxis.set_tick_params(which='minor', length=3)
+    ax31.set_xlabel('\\boldmath$Y_Z$', size=30)
+    ax11.text(0.1, 0.045, '\\boldmath$\\frac{1}{\\sigma} \\frac{d\\sigma(Z/\\gamma^*)}{dy}$', size=50)
+    ax21.text(0.1, 0.8, '\\textbf{\\textrm{data/theory}}', size=30)
+    ax11.text(0.1, 0.15, '$\\sqrt{s} = 1.96$' + ' ' + '\\textrm{TeV}', fontsize=25)
+    handles = [hand.get(1000), hand.get(1001), (thy_band, thy_plot)]
+    label1 = '\\textbf{\\textrm{CDF(Z)}}'
+    label2 = '\\textbf{\\textrm{D0(Z)}}'
+    label3 = '\\textbf{\\textrm{JAM}}'
+    labels = [label1, label2, label3]
+    thesis_legend(ax11, handles, labels, frameon=False, fontsize=22, loc='upper right', handletextpad=0.5, handlelength=1.5)
+    ax11.set_rasterized(True)
+    ax21.set_rasterized(True)
+    ax31.set_rasterized(True)
+    ax11 = fig.add_subplot(gs[0:2, 1])
+    ax21 = fig.add_subplot(gs[2, 1])
+    ax31 = fig.add_subplot(gs[3, 1])
+    tabs = datasets.get('wasym', {})
+    data = predictions['reactions'].get('wasym', {})
+    hand = {}
+    for idx in tabs:
+        Y = tabs[idx]['Y']
+        values = tabs[idx]['value']
+        alpha = data[idx]['alpha']
+        if idx == 1000:
+            color = 'darkgreen'
+        if idx == 1001:
+            color = 'firebrick'
+        hand[idx] = ax11.errorbar(Y, values, yerr=alpha, color=color, fmt='o', ms=2.0, capsize=3.0)
+    for idx in data:
+        for ic in range(nc):
+            Y = tabs[idx]['Y']
+            if nc > 1:
+                color = colors[cluster[ic]]
+            thy = data[idx]['thy-%d' % ic]
+            std_lower = data[idx]['dthy_lower-%d' % ic]
+            std_upper = data[idx]['dthy_upper-%d' % ic]
+            down = thy - std_lower
+            up = thy + std_upper
+            (thy_plot,) = ax11.plot(Y, thy, color='black')
+            thy_band = ax11.fill_between(Y, np.minimum(down, up), np.maximum(down, up), color='gold', alpha=1.0, where=thesis_band_mask(Y))
+    for idx in data:
+        if idx == 1000:
+            (ax, color, label) = (ax21, 'darkgreen', '\\textbf{\\textrm{CDF(W)}}')
+        if idx == 1001:
+            (ax, color, label) = (ax31, 'firebrick', '\\textbf{\\textrm{D0(W)}}')
+        for ic in range(nc):
+            Y = datasets.get('wasym', {})[idx]['Y']
+            if nc > 1:
+                color = colors[cluster[ic]]
+            thy = data[idx]['thy-%d' % ic]
+            std_lower = data[idx]['dthy_lower-%d' % ic]
+            std_upper = data[idx]['dthy_upper-%d' % ic]
+            ratio = thesis_ratio(data[idx]['value'], thy, error=False)
+            alpha = data[idx]['alpha']
+            ax.errorbar(Y, ratio, yerr=thesis_ratio(alpha, thy, error=True), color=color, fmt='.', ms=10, capsize=3.0)
+            ax.fill_between(Y, np.minimum(1 - thesis_ratio(std_lower, thy, error=False), 1 + thesis_ratio(std_upper, thy, error=False)), np.maximum(1 - thesis_ratio(std_lower, thy, error=False), 1 + thesis_ratio(std_upper, thy, error=False)), color='gold', alpha=1.0, where=thesis_band_mask(Y))
+            if idx == 1000:
+                ax.text(0.74, 0.78, label, fontsize=25, transform=ax.transAxes)
+            if idx == 1001:
+                ax.text(0.79, 0.78, label, fontsize=25, transform=ax.transAxes)
+            ax.axhline(1, 0, 3, color='black', ls='--')
+    for ax in [ax11, ax21]:
+        ax.tick_params(axis='both', which='both', top=True, right=True, labelbottom=False, direction='in', labelsize=30)
+        ax.set_xlim(0, 3)
+    for ax in [ax31]:
+        ax.tick_params(axis='both', which='both', top=True, right=True, direction='in', labelsize=30)
+        ax.set_xlim(0, 3)
+    for ax in [ax11]:
+        ax.set_ylim(0, 0.85)
+        minorLocator = MultipleLocator(0.1)
+        majorLocator = MultipleLocator(1.0)
+        ax.xaxis.set_minor_locator(minorLocator)
+        ax.xaxis.set_major_locator(majorLocator)
+        ax.xaxis.set_tick_params(which='major', length=6)
+        ax.xaxis.set_tick_params(which='minor', length=3)
+        minorLocator = MultipleLocator(0.02)
+        majorLocator = MultipleLocator(0.2)
+        ax.yaxis.set_minor_locator(minorLocator)
+        ax.yaxis.set_major_locator(majorLocator)
+        ax.yaxis.set_tick_params(which='major', length=6)
+        ax.yaxis.set_tick_params(which='minor', length=3)
+        ax.set_yticks([0.2, 0.4, 0.6, 0.8])
+        ax.set_yticklabels(['$0.2$', '$0.4$', '$0.6$', '$0.8$'])
+    for ax in [ax21, ax31]:
+        ax.set_ylim(0.75, 1.25)
+        minorLocator = MultipleLocator(0.1)
+        majorLocator = MultipleLocator(1.0)
+        ax.xaxis.set_minor_locator(minorLocator)
+        ax.xaxis.set_major_locator(majorLocator)
+        ax.xaxis.set_tick_params(which='major', length=6)
+        ax.xaxis.set_tick_params(which='minor', length=3)
+        minorLocator = MultipleLocator(0.04)
+        majorLocator = MultipleLocator(0.2)
+        ax.yaxis.set_minor_locator(minorLocator)
+        ax.yaxis.set_major_locator(majorLocator)
+        ax.yaxis.set_tick_params(which='major', length=6)
+        ax.yaxis.set_tick_params(which='minor', length=3)
+    ax31.set_xlabel('\\boldmath$Y_W$', size=30)
+    ax11.text(2.2, 0.04, '\\boldmath$A_W$', size=50)
+    ax21.text(0.1, 0.8, '\\textbf{\\textrm{data/theory}}', size=30)
+    ax11.text(0.1, 0.3, '$\\sqrt{s} = 1.96$' + ' ' + '\\textrm{TeV}', fontsize=25)
+    (handles, labels) = ([], [])
+    handles.append(hand.get(1000))
+    handles.append(hand.get(1001))
+    labels.append('\\textbf{\\textrm{CDF(W)}}')
+    labels.append('\\textbf{\\textrm{D0(W)}}')
+    thesis_legend(ax11, handles, labels, frameon=False, fontsize=22, loc='upper left', handletextpad=0.5, handlelength=1.5)
+    py.tight_layout()
+    py.subplots_adjust(hspace=0)
+    filename = output_file
+    ax11.set_rasterized(True)
+    ax21.set_rasterized(True)
+    ax31.set_rasterized(True)
+    thesis_finish_panels(py.gcf(), 'thesis_wz_plot_main', _selected_keys)
+    py.savefig(filename)
+
+# Adapted from thesis/pidis.py:get_Q2bins, original lines 36-173; SHA256 c6447a2b83bfa2d4b5008b0a926c14cde97718d4e7f25b5c45ae59e148c5ee72.
+def thesis_pidis_get_Q2bins(data, kind):
+    query = {}
+    if kind == 'p A1':
+        query[6] = data.query('Q2 > 60.0')
+        query[5] = data.query('Q2 > 40.0 and Q2 <= 60.0')
+        query[4] = data.query('Q2 > 20.0 and Q2 <= 40.0')
+        query[3] = data.query('Q2 > 10.0 and Q2 <= 20.0')
+        query[2] = data.query('Q2 > 5.00 and Q2 <= 10.0')
+        query[1] = data.query('Q2 > 2.00 and Q2 <= 5.00')
+        query[0] = data.query('Q2 > 1.00 and Q2 <= 2.00')
+    if kind == 'p Apa':
+        query[8] = data.query('Q2 > 20.0')
+        query[7] = data.query('Q2 > 15.0 and Q2 <= 20.0')
+        query[6] = data.query('Q2 > 10.0 and Q2 <= 15.0')
+        query[5] = data.query('Q2 > 7.00 and Q2 <= 10.0')
+        query[4] = data.query('Q2 > 5.00 and Q2 <= 7.00')
+        query[3] = data.query('Q2 > 4.00 and Q2 <= 5.00')
+        query[2] = data.query('Q2 > 3.00 and Q2 <= 4.00')
+        query[1] = data.query('Q2 > 2.00 and Q2 <= 3.00')
+        query[0] = data.query('Q2 > 1.00 and Q2 <= 2.00')
+    if kind == 'p Apa EG1b':
+        query[8] = data.query('Q2 > 4.50')
+        query[7] = data.query('Q2 > 4.00 and Q2 <= 4.50')
+        query[6] = data.query('Q2 > 3.50 and Q2 <= 4.00')
+        query[5] = data.query('Q2 > 3.00 and Q2 <= 3.50')
+        query[4] = data.query('Q2 > 2.50 and Q2 <= 3.00')
+        query[3] = data.query('Q2 > 2.20 and Q2 <= 2.50')
+        query[2] = data.query('Q2 > 2.00 and Q2 <= 2.20')
+        query[1] = data.query('Q2 > 1.80 and Q2 <= 2.00')
+        query[0] = data.query('Q2 > 1.00 and Q2 <= 1.80')
+    if kind == 'p Apa DVCS':
+        query[6] = data.query('Q2 > 4.50')
+        query[5] = data.query('Q2 > 3.50 and Q2 <= 4.50')
+        query[4] = data.query('Q2 > 3.00 and Q2 <= 3.50')
+        query[3] = data.query('Q2 > 2.50 and Q2 <= 3.00')
+        query[2] = data.query('Q2 > 2.20 and Q2 <= 2.50')
+        query[1] = data.query('Q2 > 2.00 and Q2 <= 2.20')
+        query[0] = data.query('Q2 > 1.00 and Q2 <= 2.00')
+    if kind == 'd A1':
+        query[4] = data.query('Q2 > 40.0')
+        query[3] = data.query('Q2 > 20.0 and Q2 <= 40.0')
+        query[2] = data.query('Q2 > 10.0 and Q2 <= 20.0')
+        query[1] = data.query('Q2 > 5.00 and Q2 <= 10.0')
+        query[0] = data.query('Q2 > 1.00 and Q2 <= 5.00')
+    if kind == 'd Apa':
+        query[8] = data.query('Q2 > 20.0')
+        query[7] = data.query('Q2 > 15.0 and Q2 <= 20.0')
+        query[6] = data.query('Q2 > 10.0 and Q2 <= 15.0')
+        query[5] = data.query('Q2 > 7.00 and Q2 <= 10.0')
+        query[4] = data.query('Q2 > 5.00 and Q2 <= 7.00')
+        query[3] = data.query('Q2 > 4.00 and Q2 <= 5.00')
+        query[2] = data.query('Q2 > 3.00 and Q2 <= 4.00')
+        query[1] = data.query('Q2 > 2.00 and Q2 <= 3.00')
+        query[0] = data.query('Q2 > 1.00 and Q2 <= 2.00')
+    if kind == 'd Apa EG1b':
+        query[8] = data.query('Q2 > 4.50')
+        query[7] = data.query('Q2 > 4.00 and Q2 <= 4.50')
+        query[6] = data.query('Q2 > 3.50 and Q2 <= 4.00')
+        query[5] = data.query('Q2 > 3.00 and Q2 <= 3.50')
+        query[4] = data.query('Q2 > 2.50 and Q2 <= 3.00')
+        query[3] = data.query('Q2 > 2.20 and Q2 <= 2.50')
+        query[2] = data.query('Q2 > 2.00 and Q2 <= 2.20')
+        query[1] = data.query('Q2 > 1.80 and Q2 <= 2.00')
+        query[0] = data.query('Q2 > 1.60 and Q2 <= 1.80')
+    if kind == 'd Apa DVCS':
+        query[5] = data.query('Q2 > 3.50')
+        query[4] = data.query('Q2 > 3.00 and Q2 <= 3.50')
+        query[3] = data.query('Q2 > 2.50 and Q2 <= 3.00')
+        query[2] = data.query('Q2 > 2.20 and Q2 <= 2.50')
+        query[1] = data.query('Q2 > 2.00 and Q2 <= 2.20')
+        query[0] = data.query('Q2 > 1.60 and Q2 <= 2.00')
+    if kind == 'p A2':
+        query[2] = data.query('Q2 > 5.00')
+        query[1] = data.query('Q2 > 2.00 and Q2 <= 5.00')
+        query[0] = data.query('Q2 > 1.00 and Q2 <= 2.00')
+    if kind == 'p Ape':
+        query[8] = data.query('Q2 > 20.0')
+        query[7] = data.query('Q2 > 15.0 and Q2 <= 20.0')
+        query[6] = data.query('Q2 > 10.0 and Q2 <= 15.0')
+        query[5] = data.query('Q2 > 7.00 and Q2 <= 10.0')
+        query[4] = data.query('Q2 > 5.00 and Q2 <= 7.00')
+        query[3] = data.query('Q2 > 4.00 and Q2 <= 5.00')
+        query[2] = data.query('Q2 > 3.00 and Q2 <= 4.00')
+        query[1] = data.query('Q2 > 2.00 and Q2 <= 3.00')
+        query[0] = data.query('Q2 > 1.00 and Q2 <= 2.00')
+    if kind == 'p Atpe':
+        query[7] = data.query('Q2 > 15.0')
+        query[6] = data.query('Q2 > 10.0 and Q2 <= 15.0')
+        query[5] = data.query('Q2 > 7.00 and Q2 <= 10.0')
+        query[4] = data.query('Q2 > 5.00 and Q2 <= 7.00')
+        query[3] = data.query('Q2 > 4.00 and Q2 <= 5.00')
+        query[2] = data.query('Q2 > 3.00 and Q2 <= 4.00')
+        query[1] = data.query('Q2 > 2.00 and Q2 <= 3.00')
+        query[0] = data.query('Q2 > 1.00 and Q2 <= 2.00')
+    if kind == 'd Ape':
+        query[8] = data.query('Q2 > 20.0')
+        query[7] = data.query('Q2 > 15.0 and Q2 <= 20.0')
+        query[6] = data.query('Q2 > 10.0 and Q2 <= 15.0')
+        query[5] = data.query('Q2 > 7.00 and Q2 <= 10.0')
+        query[4] = data.query('Q2 > 5.00 and Q2 <= 7.00')
+        query[3] = data.query('Q2 > 4.00 and Q2 <= 5.00')
+        query[2] = data.query('Q2 > 3.00 and Q2 <= 4.00')
+        query[1] = data.query('Q2 > 2.00 and Q2 <= 3.00')
+        query[0] = data.query('Q2 > 1.00 and Q2 <= 2.00')
+    if kind == 'd Atpe':
+        query[7] = data.query('Q2 > 15.0')
+        query[6] = data.query('Q2 > 10.0 and Q2 <= 15.0')
+        query[5] = data.query('Q2 > 7.00 and Q2 <= 10.0')
+        query[4] = data.query('Q2 > 5.00 and Q2 <= 7.00')
+        query[3] = data.query('Q2 > 4.00 and Q2 <= 5.00')
+        query[2] = data.query('Q2 > 3.00 and Q2 <= 4.00')
+        query[1] = data.query('Q2 > 2.00 and Q2 <= 3.00')
+        query[0] = data.query('Q2 > 1.00 and Q2 <= 2.00')
+    if kind == 'h A1':
+        query[0] = data.query('Q2 > 1.00')
+    if kind == 'h Apa':
+        query[3] = data.query('Q2 > 10.0')
+        query[2] = data.query('Q2 > 5.00 and Q2 <= 10.0')
+        query[1] = data.query('Q2 > 3.00 and Q2 <= 5.00')
+        query[0] = data.query('Q2 > 1.00 and Q2 <= 3.00')
+    if kind == 'h A2':
+        query[0] = data.query('Q2 > 1.00')
+    if kind == 'h Ape':
+        query[3] = data.query('Q2 > 10.0')
+        query[2] = data.query('Q2 > 5.00 and Q2 <= 10.0')
+        query[1] = data.query('Q2 > 3.00 and Q2 <= 5.00')
+        query[0] = data.query('Q2 > 1.00 and Q2 <= 3.00')
+    return query
+
+# Adapted from thesis/pidis.py:get_plot, original lines 175-200; SHA256 c6447a2b83bfa2d4b5008b0a926c14cde97718d4e7f25b5c45ae59e148c5ee72.
+def thesis_pidis_get_plot(query, cluster_i=0):
+    plot = {_: {} for _ in ['theory', 'X', 'Q2', 'value', 'alpha', 'std_lower', 'std_upper']}
+    for key in query:
+        theory = query[key]['thy-%d' % cluster_i]
+        std_lower = query[key]['dthy_lower-%d' % cluster_i]
+        std_upper = query[key]['dthy_upper-%d' % cluster_i]
+        X = query[key]['X']
+        Q2 = query[key]['Q2']
+        value = query[key]['value']
+        alpha = query[key]['alpha']
+        zx = sorted(zip(Q2, X), key=lambda row: row[0])
+        zt = sorted(zip(Q2, theory), key=lambda row: row[0])
+        zv = sorted(zip(Q2, value), key=lambda row: row[0])
+        za = sorted(zip(Q2, alpha), key=lambda row: row[0])
+        zs_lower = sorted(zip(Q2, std_lower), key=lambda row: row[0])
+        zs_upper = sorted(zip(Q2, std_upper), key=lambda row: row[0])
+        plot['X'][key] = np.array([zx[i][1] for i in range(len(zx))])
+        plot['theory'][key] = np.array([zt[i][1] for i in range(len(zt))])
+        plot['value'][key] = np.array([zv[i][1] for i in range(len(zv))])
+        plot['alpha'][key] = np.array([za[i][1] for i in range(len(za))])
+        plot['std_lower'][key] = np.array([zs_lower[i][1] for i in range(len(zs_lower))])
+        plot['std_upper'][key] = np.array([zs_upper[i][1] for i in range(len(zs_upper))])
+        plot['Q2'][key] = np.array(sorted(Q2))
+    return plot
+
+# Adapted from thesis/pidis.py:get_theory, original lines 202-244; SHA256 c6447a2b83bfa2d4b5008b0a926c14cde97718d4e7f25b5c45ae59e148c5ee72.
+def thesis_pidis_get_theory(PLOT, nbins, loop=True, funcQ2=True, funcX=False):
+    theory = {}
+    if funcQ2:
+        svar = 'Q2'
+    if funcX:
+        svar = 'X'
+    theory = {_: {} for _ in [svar, 'value', 'std_lower', 'std_upper']}
+    for key in range(nbins):
+        var = []
+        thy = []
+        std_lower = []
+        std_upper = []
+        if loop:
+            for exp in PLOT:
+                var.extend(PLOT[exp][svar][key])
+                thy.extend(PLOT[exp]['theory'][key])
+                std_lower.extend(PLOT[exp]['std_lower'][key])
+                std_upper.extend(PLOT[exp]['std_upper'][key])
+        else:
+            var.extend(PLOT[svar][key])
+            thy.extend(PLOT['theory'][key])
+            std_lower.extend(PLOT['std_lower'][key])
+            std_upper.extend(PLOT['std_upper'][key])
+        if len(var) == 0:
+            continue
+        vmin = np.min(var)
+        vmax = np.max(var)
+        theory[svar][key] = np.geomspace(vmin, vmax, 100)
+        if len(var) > 1:
+            theory['value'][key] = griddata(np.array(var), np.array(thy), theory[svar][key], method='linear')
+            theory['std_lower'][key] = griddata(np.array(var), np.array(std_lower), theory[svar][key], method='linear')
+            theory['std_upper'][key] = griddata(np.array(var), np.array(std_upper), theory[svar][key], method='linear')
+        else:
+            theory['value'][key] = np.ones(100) * thy
+            theory['std_lower'][key] = np.ones(100) * std_lower
+            theory['std_upper'][key] = np.ones(100) * std_upper
+    return theory
+
+# Adapted from thesis/pidis.py:get_details, original lines 246-277; SHA256 c6447a2b83bfa2d4b5008b0a926c14cde97718d4e7f25b5c45ae59e148c5ee72.
+def thesis_pidis_get_details(exp):
+    if exp == 'COMPASS1':
+        (color, marker, ms) = ('firebrick', '*', 6)
+    if exp == 'COMPASS2':
+        (color, marker, ms) = ('firebrick', '*', 6)
+    if exp == 'EMC':
+        (color, marker, ms) = ('darkgreen', '^', 6)
+    if exp == 'SMC1':
+        (color, marker, ms) = ('blue', 'o', 6)
+    if exp == 'SMC2':
+        (color, marker, ms) = ('blue', 'o', 6)
+    if exp == 'HERMES':
+        (color, marker, ms) = ('firebrick', '*', 6)
+    if exp == 'SLACE143':
+        (color, marker, ms) = ('darkgreen', '^', 6)
+    if exp == 'SLACE155':
+        (color, marker, ms) = ('blue', 'o', 6)
+    if exp == 'SLACE80E130':
+        (color, marker, ms) = ('black', 'o', 6)
+    if exp == 'EG1b4.2':
+        (color, marker, ms) = ('firebrick', '*', 6)
+    if exp == 'EG1b5.7':
+        (color, marker, ms) = ('blue', 'o', 6)
+    if exp == 'DVCS4.8':
+        (color, marker, ms) = ('firebrick', '*', 6)
+    if exp == 'DVCS6.0':
+        (color, marker, ms) = ('blue', '^', 6)
+    if exp == 'DVCS5.7':
+        (color, marker, ms) = ('firebrick', '*', 6)
+    if exp == 'SLAC E155x':
+        (color, marker, ms) = ('firebrick', '*', 6)
+    if exp == 'SLACE142':
+        (color, marker, ms) = ('darkgreen', '^', 6)
+    if exp == 'SLACE154':
+        (color, marker, ms) = ('firebrick', '*', 6)
+    if exp == 'JLabE06E014':
+        (color, marker, ms) = ('darkgreen', '^', 6)
+    if exp == 'JLabE99E117':
+        (color, marker, ms) = ('blue', 'o', 6)
+    return (color, marker, ms)
+
+# Adapted from thesis/pidis.py:plot_proton_A1_Apa, original lines 279-496; SHA256 c6447a2b83bfa2d4b5008b0a926c14cde97718d4e7f25b5c45ae59e148c5ee72.
+def thesis_pidis_plot_proton_A1_Apa(datasets, output_file, interval):
+    _selected_keys = {r + ':' + str(i) for (r, tables) in datasets.items() for i in tables}
+    thy_plot = thy_band = thy_plot0 = thy_band0 = thy_point0 = None
+    istep = 0
+    kc = SimpleNamespace(nc={0: 1})
+    nc = 1
+    predictions = {'reactions': datasets}
+    data = datasets['pidis']
+    tabs = data
+    (nrows, ncols) = (1, 2)
+    py.figure(figsize=(ncols * 12.0, nrows * 14.0))
+    ax11 = py.subplot(nrows, ncols, 1)
+    ax12 = py.subplot(nrows, ncols, 2)
+    if any((i in data for i in [10002, 10003, 10004, 10035, 10036])):
+        DATA = {}
+        if 10002 in data:
+            DATA['COMPASS1'] = pd.DataFrame(data[10002])
+        if 10003 in data:
+            DATA['COMPASS2'] = pd.DataFrame(data[10003])
+        if 10004 in data:
+            DATA['EMC'] = pd.DataFrame(data[10004])
+        if 10035 in data:
+            DATA['SMC1'] = pd.DataFrame(data[10035])
+        if 10036 in data:
+            DATA['SMC2'] = pd.DataFrame(data[10036])
+        PLOT = {}
+        for cluster_i in range(kc.nc[istep]):
+            if cluster_i != 0:
+                continue
+            for exp in DATA:
+                query = thesis_pidis_get_Q2bins(DATA[exp], 'p A1')
+                PLOT[exp] = thesis_pidis_get_plot(query)
+            nbins = len(query)
+            theory = thesis_pidis_get_theory(PLOT, nbins, funcX=True, funcQ2=False)
+        N = 1.0
+        hand = {}
+        for exp in PLOT:
+            for key in range(nbins):
+                X = PLOT[exp]['X'][key]
+                val = PLOT[exp]['value'][key] + N * float(key)
+                alpha = PLOT[exp]['alpha'][key]
+                (color, marker, ms) = thesis_pidis_get_details(exp)
+                hand[exp] = ax11.errorbar(X, val, alpha, marker=marker, color=color, ms=ms, capsize=3, linestyle='none')
+        for key in theory['value']:
+            X = theory['X'][key]
+            mean = theory['value'][key] + N * float(key)
+            std_lower = theory['std_lower'][key]
+            std_upper = theory['std_upper'][key]
+            down = mean - std_lower
+            up = mean + std_upper
+            (thy_plot,) = ax11.plot(X, mean, linestyle='solid', color='black')
+            thy_band = ax11.fill_between(X, np.minimum(down, up), np.maximum(down, up), color='gold', alpha=1.0, where=thesis_band_mask(X))
+            ax11.plot(np.linspace(np.min(X), np.max(X), 10), np.ones(10) * float(N * key), color='purple', ls=':')
+        if any((len(v['value'].get(6, [])) for v in PLOT.values())):
+            ax11.text(0.52, 0.89, '$Q^2 > 60~{\\rm GeV^2} \\, (i=6)$', transform=ax11.transAxes, fontsize=25)
+        if any((len(v['value'].get(5, [])) for v in PLOT.values())):
+            ax11.text(0.51, 0.75, '$40 < Q^2 < 60$', transform=ax11.transAxes, fontsize=25)
+        if any((len(v['value'].get(4, [])) for v in PLOT.values())):
+            ax11.text(0.44, 0.59, '$20 < Q^2 < 40$', transform=ax11.transAxes, fontsize=25)
+        if any((len(v['value'].get(3, [])) for v in PLOT.values())):
+            ax11.text(0.27, 0.44, '$10 < Q^2 < 20$', transform=ax11.transAxes, fontsize=25)
+        if any((len(v['value'].get(2, [])) for v in PLOT.values())):
+            ax11.text(0.68, 0.32, '$5 < Q^2 < 10$', transform=ax11.transAxes, fontsize=25)
+        if any((len(v['value'].get(1, [])) for v in PLOT.values())):
+            ax11.text(0.57, 0.17, '$2 < Q^2 < 5$', transform=ax11.transAxes, fontsize=25)
+        if any((len(v['value'].get(0, [])) for v in PLOT.values())):
+            ax11.text(0.27, 0.03, '$1 < Q^2 < 2\\, (i=0)$', transform=ax11.transAxes, fontsize=25)
+        ax11.semilogx()
+        ax11.set_xlim(0.005, 0.7)
+        ax11.set_ylim(-0.2, 7.2)
+        ax11.tick_params(axis='both', labelsize=30)
+        ax11.yaxis.set_tick_params(which='major', length=10)
+        ax11.yaxis.set_tick_params(which='minor', length=5)
+        ax11.xaxis.set_tick_params(which='major', length=10)
+        ax11.xaxis.set_tick_params(which='minor', length=5)
+        ax11.set_xticks([0.01, 0.1])
+        ax11.set_xticklabels(['$0.01$', '$0.1$'])
+        ax11.text(0.05, 0.65, '\\boldmath$A_1^p$', transform=ax11.transAxes, size=60)
+        ax11.text(0.16, 0.68, '$(+\\, i)$', transform=ax11.transAxes, size=40)
+        ax11.set_xlabel('\\boldmath$x_{\\rm bj}$', size=40)
+        ax11.yaxis.set_ticks_position('both')
+        ax11.xaxis.set_ticks_position('both')
+        ax11.tick_params(axis='y', which='both', labelleft=True, labelright=False, direction='in')
+        ax11.tick_params(axis='x', which='both', labeltop=False, labelbottom=True, direction='in')
+        majorLocator = MultipleLocator(2.0)
+        minorLocator = MultipleLocator(0.4)
+        ax11.yaxis.set_major_locator(majorLocator)
+        ax11.yaxis.set_minor_locator(minorLocator)
+        handles = [hand.get('COMPASS1'), hand.get('EMC'), hand.get('SMC1'), (thy_band, thy_plot)]
+        label1 = '\\textbf{\\textrm{COMPASS}}'
+        label2 = '\\textbf{\\textrm{EMC}}'
+        label3 = '\\textbf{\\textrm{SMC}}'
+        label4 = '\\textbf{\\textrm{JAM}}'
+        labels = [label1, label2, label3, label4]
+        thesis_legend(ax11, handles, labels, loc='upper left', fontsize=35, frameon=0, handletextpad=0.3, handlelength=1.0)
+    if any((i in data for i in [10007, 10022, 10029, 10032])):
+        DATA = {}
+        if 10007 in data:
+            DATA['HERMES'] = pd.DataFrame(data[10007])
+        if 10022 in data:
+            DATA['SLACE143'] = pd.DataFrame(data[10022])
+        if 10029 in data:
+            DATA['SLACE155'] = pd.DataFrame(data[10029])
+        if 10032 in data:
+            DATA['SLACE80E130'] = pd.DataFrame(data[10032])
+        PLOT = {}
+        theory = {}
+        for cluster_i in range(kc.nc[istep]):
+            if cluster_i != 0:
+                continue
+            for exp in DATA:
+                query = thesis_pidis_get_Q2bins(DATA[exp], 'p Apa')
+                PLOT[exp] = thesis_pidis_get_plot(query)
+                nbins = len(query)
+                theory[exp] = thesis_pidis_get_theory(PLOT[exp], nbins, funcX=True, funcQ2=False, loop=False)
+        N = 1.0
+        hand = {}
+        x = {}
+        for exp in PLOT:
+            for key in range(nbins):
+                X = PLOT[exp]['X'][key]
+                val = PLOT[exp]['value'][key] + N * float(key)
+                alpha = PLOT[exp]['alpha'][key]
+                (color, marker, ms) = thesis_pidis_get_details(exp)
+                hand[exp] = ax12.errorbar(X, val, alpha, marker=marker, color=color, ms=ms, capsize=3, linestyle='none')
+            for key in theory[exp]['value']:
+                X = theory[exp]['X'][key]
+                mean = theory[exp]['value'][key] + N * float(key)
+                std_lower = theory[exp]['std_lower'][key]
+                std_upper = theory[exp]['std_upper'][key]
+                down = mean - std_lower
+                up = mean + std_upper
+                (thy_plot,) = ax12.plot(X, mean, linestyle='solid', color=color)
+                thy_band = ax12.fill_between(X, np.minimum(down, up), np.maximum(down, up), color='gold', alpha=1.0, where=thesis_band_mask(X))
+                if key not in x:
+                    x[key] = []
+                x[key].extend(X)
+        for key in x:
+            ax12.plot(np.linspace(np.min(x[key]), np.max(x[key]), 10), np.ones(10) * float(N * key), color='purple', ls=':')
+        if any((len(v['value'].get(8, [])) for v in PLOT.values())):
+            ax12.text(0.46, 0.92, '$Q^2 > 20~{\\rm GeV^2} \\, (i=9)$', transform=ax12.transAxes, fontsize=25)
+        if any((len(v['value'].get(7, [])) for v in PLOT.values())):
+            ax12.text(0.46, 0.81, '$15 < Q^2 < 20$', transform=ax12.transAxes, fontsize=25)
+        if any((len(v['value'].get(6, [])) for v in PLOT.values())):
+            ax12.text(0.36, 0.69, '$10 < Q^2 < 15$', transform=ax12.transAxes, fontsize=25)
+        if any((len(v['value'].get(5, [])) for v in PLOT.values())):
+            ax12.text(0.36, 0.57, '$7 < Q^2 < 10$', transform=ax12.transAxes, fontsize=25)
+        if any((len(v['value'].get(4, [])) for v in PLOT.values())):
+            ax12.text(0.28, 0.47, '$5 < Q^2 < 7$', transform=ax12.transAxes, fontsize=25)
+        if any((len(v['value'].get(3, [])) for v in PLOT.values())):
+            ax12.text(0.19, 0.36, '$4 < Q^2 < 5$', transform=ax12.transAxes, fontsize=25)
+        if any((len(v['value'].get(2, [])) for v in PLOT.values())):
+            ax12.text(0.26, 0.25, '$3 < Q^2 < 4$', transform=ax12.transAxes, fontsize=25)
+        if any((len(v['value'].get(1, [])) for v in PLOT.values())):
+            ax12.text(0.1, 0.13, '$2 < Q^2 < 3$', transform=ax12.transAxes, fontsize=25)
+        if any((len(v['value'].get(0, [])) for v in PLOT.values())):
+            ax12.text(0.6, 0.03, '$1 < Q^2 < 2\\, (i=0)$', transform=ax12.transAxes, fontsize=25)
+        ax12.semilogx()
+        ax12.set_xlim(0.01, 0.9)
+        ax12.set_ylim(-0.2, 9.0)
+        ax12.set_xlabel('\\boldmath$x_{\\rm bj}$', size=40)
+        ax12.tick_params(axis='both', labelsize=30)
+        ax12.yaxis.set_tick_params(which='major', length=10)
+        ax12.yaxis.set_tick_params(which='minor', length=5)
+        ax12.xaxis.set_tick_params(which='major', length=10)
+        ax12.xaxis.set_tick_params(which='minor', length=5)
+        ax12.set_xticks([0.02, 0.1, 0.5])
+        ax12.set_xticklabels(['$0.02$', '$0.1$', '$0.5$'])
+        ax12.text(0.05, 0.65, '\\boldmath$A_{\\parallel}^p$', transform=ax12.transAxes, size=60)
+        ax12.text(0.16, 0.68, '$(+\\, i)$', transform=ax12.transAxes, size=40)
+        ax12.yaxis.set_ticks_position('both')
+        ax12.xaxis.set_ticks_position('both')
+        ax12.tick_params(axis='y', which='both', labelleft=True, labelright=False, direction='in')
+        ax12.tick_params(axis='x', which='both', labeltop=False, labelbottom=True, direction='in')
+        majorLocator = MultipleLocator(2.0)
+        minorLocator = MultipleLocator(0.4)
+        ax12.yaxis.set_major_locator(majorLocator)
+        ax12.yaxis.set_minor_locator(minorLocator)
+        handles = [hand.get('HERMES'), hand.get('SLACE143'), hand.get('SLACE155'), hand.get('SLACE80E130')]
+        label1 = '\\textbf{\\textrm{HERMES}}'
+        label2 = '\\textbf{\\textrm{SLAC E143}}'
+        label3 = '\\textbf{\\textrm{SLAC E155}}'
+        label4 = '\\textbf{\\textrm{SLAC E80E130}}'
+        labels = [label1, label2, label3, label4]
+        thesis_legend(ax12, handles, labels, loc='upper left', fontsize=35, frameon=0, handletextpad=0.3, handlelength=1.0)
+    py.tight_layout()
+    filename = output_file
+    ax11.set_rasterized(True)
+    ax12.set_rasterized(True)
+    thesis_finish_panels(py.gcf(), 'thesis_pidis_plot_proton_A1_Apa', _selected_keys)
+    py.savefig(filename)
+
+# Adapted from thesis/pidis.py:plot_deuteron_A1_Apa, original lines 498-708; SHA256 c6447a2b83bfa2d4b5008b0a926c14cde97718d4e7f25b5c45ae59e148c5ee72.
+def thesis_pidis_plot_deuteron_A1_Apa(datasets, output_file, interval):
+    _selected_keys = {r + ':' + str(i) for (r, tables) in datasets.items() for i in tables}
+    thy_plot = thy_band = thy_plot0 = thy_band0 = thy_point0 = None
+    istep = 0
+    kc = SimpleNamespace(nc={0: 1})
+    nc = 1
+    predictions = {'reactions': datasets}
+    data = datasets['pidis']
+    tabs = data
+    (nrows, ncols) = (1, 2)
+    py.figure(figsize=(ncols * 12.0, nrows * 14.0))
+    ax11 = py.subplot(nrows, ncols, 1)
+    ax12 = py.subplot(nrows, ncols, 2)
+    if any((i in data for i in [10001, 10033, 10034])):
+        DATA = {}
+        if 10001 in data:
+            DATA['COMPASS1'] = pd.DataFrame(data[10001])
+        if 10033 in data:
+            DATA['SMC1'] = pd.DataFrame(data[10033])
+        if 10034 in data:
+            DATA['SMC2'] = pd.DataFrame(data[10034])
+        PLOT = {}
+        for cluster_i in range(kc.nc[istep]):
+            if cluster_i != 0:
+                continue
+            for exp in DATA:
+                query = thesis_pidis_get_Q2bins(DATA[exp], 'd A1')
+                PLOT[exp] = thesis_pidis_get_plot(query)
+            nbins = len(query)
+            theory = thesis_pidis_get_theory(PLOT, nbins, funcX=True, funcQ2=False)
+        N = 1.0
+        hand = {}
+        for exp in PLOT:
+            for key in range(nbins):
+                X = PLOT[exp]['X'][key]
+                val = PLOT[exp]['value'][key] + N * float(key)
+                alpha = PLOT[exp]['alpha'][key]
+                (color, marker, ms) = thesis_pidis_get_details(exp)
+                hand[exp] = ax11.errorbar(X, val, alpha, marker=marker, color=color, ms=ms, capsize=3, linestyle='none')
+        for key in theory['value']:
+            X = theory['X'][key]
+            mean = theory['value'][key] + N * float(key)
+            std_lower = theory['std_lower'][key]
+            std_upper = theory['std_upper'][key]
+            down = mean - std_lower
+            up = mean + std_upper
+            (thy_plot,) = ax11.plot(X, mean, linestyle='solid', color='black')
+            thy_band = ax11.fill_between(X, np.minimum(down, up), np.maximum(down, up), color='gold', alpha=1.0, where=thesis_band_mask(X))
+            ax11.plot(np.linspace(np.min(X), np.max(X), 10), np.ones(10) * float(N * key), color='purple', ls=':')
+        if any((len(v['value'].get(4, [])) for v in PLOT.values())):
+            ax11.text(0.56, 0.86, '$Q^2 > 40~{\\rm GeV^2} \\, (i=4)$', transform=ax11.transAxes, fontsize=25)
+        if any((len(v['value'].get(3, [])) for v in PLOT.values())):
+            ax11.text(0.44, 0.62, '$20 < Q^2 < 40$', transform=ax11.transAxes, fontsize=25)
+        if any((len(v['value'].get(2, [])) for v in PLOT.values())):
+            ax11.text(0.35, 0.43, '$10 < Q^2 < 20$', transform=ax11.transAxes, fontsize=25)
+        if any((len(v['value'].get(1, [])) for v in PLOT.values())):
+            ax11.text(0.57, 0.25, '$5 < Q^2 < 10$', transform=ax11.transAxes, fontsize=25)
+        if any((len(v['value'].get(0, [])) for v in PLOT.values())):
+            ax11.text(0.41, 0.03, '$m_c^2 < Q^2 < 5\\, (i=0)$', transform=ax11.transAxes, fontsize=25)
+        ax11.semilogx()
+        ax11.set_xlim(0.005, 0.7)
+        ax11.set_ylim(-0.2, 4.8)
+        ax11.tick_params(axis='both', labelsize=30)
+        ax11.yaxis.set_tick_params(which='major', length=10)
+        ax11.yaxis.set_tick_params(which='minor', length=5)
+        ax11.xaxis.set_tick_params(which='major', length=10)
+        ax11.xaxis.set_tick_params(which='minor', length=5)
+        ax11.set_xticks([0.01, 0.1])
+        ax11.set_xticklabels(['$0.01$', '$0.1$'])
+        ax11.text(0.05, 0.65, '\\boldmath$A_1^D$', transform=ax11.transAxes, size=60)
+        ax11.text(0.16, 0.68, '$(+\\, i)$', transform=ax11.transAxes, size=40)
+        ax11.set_xlabel('\\boldmath$x_{\\rm bj}$', size=40)
+        ax11.yaxis.set_ticks_position('both')
+        ax11.xaxis.set_ticks_position('both')
+        ax11.tick_params(axis='y', which='both', labelleft=True, labelright=False, direction='in')
+        ax11.tick_params(axis='x', which='both', labeltop=False, labelbottom=True, direction='in')
+        majorLocator = MultipleLocator(1.0)
+        minorLocator = MultipleLocator(0.25)
+        ax11.yaxis.set_major_locator(majorLocator)
+        ax11.yaxis.set_minor_locator(minorLocator)
+        handles = [hand.get('COMPASS1'), hand.get('SMC1'), (thy_band, thy_plot)]
+        label1 = '\\textbf{\\textrm{COMPASS}}'
+        label2 = '\\textbf{\\textrm{SMC}}'
+        label3 = '\\textbf{\\textrm{JAM}}'
+        labels = [label1, label2, label3]
+        thesis_legend(ax11, handles, labels, loc='upper left', fontsize=35, frameon=0, handletextpad=0.3, handlelength=1.0)
+    if any((i in data for i in [10006, 10021, 10027])):
+        DATA = {}
+        if 10006 in data:
+            DATA['HERMES'] = pd.DataFrame(data[10006])
+        if 10021 in data:
+            DATA['SLACE143'] = pd.DataFrame(data[10021])
+        if 10027 in data:
+            DATA['SLACE155'] = pd.DataFrame(data[10027])
+        PLOT = {}
+        theory = {}
+        for cluster_i in range(kc.nc[istep]):
+            if cluster_i != 0:
+                continue
+            for exp in DATA:
+                query = thesis_pidis_get_Q2bins(DATA[exp], 'd Apa')
+                PLOT[exp] = thesis_pidis_get_plot(query)
+                nbins = len(query)
+                theory[exp] = thesis_pidis_get_theory(PLOT[exp], nbins, funcX=True, funcQ2=False, loop=False)
+        N = 1.0
+        hand = {}
+        x = {}
+        for exp in PLOT:
+            for key in range(nbins):
+                X = PLOT[exp]['X'][key]
+                val = PLOT[exp]['value'][key] + N * float(key)
+                alpha = PLOT[exp]['alpha'][key]
+                (color, marker, ms) = thesis_pidis_get_details(exp)
+                hand[exp] = ax12.errorbar(X, val, alpha, marker=marker, color=color, ms=ms, capsize=3, linestyle='none')
+            for key in theory[exp]['value']:
+                X = theory[exp]['X'][key]
+                mean = theory[exp]['value'][key] + N * float(key)
+                std_lower = theory[exp]['std_lower'][key]
+                std_upper = theory[exp]['std_upper'][key]
+                down = mean - std_lower
+                up = mean + std_upper
+                (thy_plot,) = ax12.plot(X, mean, linestyle='solid', color=color)
+                thy_band = ax12.fill_between(X, np.minimum(down, up), np.maximum(down, up), color='gold', alpha=1.0, where=thesis_band_mask(X))
+                if key not in x:
+                    x[key] = []
+                x[key].extend(X)
+        for key in x:
+            ax12.plot(np.linspace(np.min(x[key]), np.max(x[key]), 10), np.ones(10) * float(N * key), color='purple', ls=':')
+        if any((len(v['value'].get(8, [])) for v in PLOT.values())):
+            ax12.text(0.46, 0.92, '$Q^2 > 20~{\\rm GeV^2} \\, (i=9)$', transform=ax12.transAxes, fontsize=25)
+        if any((len(v['value'].get(7, [])) for v in PLOT.values())):
+            ax12.text(0.46, 0.8, '$15 < Q^2 < 20$', transform=ax12.transAxes, fontsize=25)
+        if any((len(v['value'].get(6, [])) for v in PLOT.values())):
+            ax12.text(0.36, 0.68, '$10 < Q^2 < 15$', transform=ax12.transAxes, fontsize=25)
+        if any((len(v['value'].get(5, [])) for v in PLOT.values())):
+            ax12.text(0.36, 0.57, '$7 < Q^2 < 10$', transform=ax12.transAxes, fontsize=25)
+        if any((len(v['value'].get(4, [])) for v in PLOT.values())):
+            ax12.text(0.29, 0.46, '$5 < Q^2 < 7$', transform=ax12.transAxes, fontsize=25)
+        if any((len(v['value'].get(3, [])) for v in PLOT.values())):
+            ax12.text(0.22, 0.35, '$4 < Q^2 < 5$', transform=ax12.transAxes, fontsize=25)
+        if any((len(v['value'].get(2, [])) for v in PLOT.values())):
+            ax12.text(0.23, 0.24, '$3 < Q^2 < 4$', transform=ax12.transAxes, fontsize=25)
+        if any((len(v['value'].get(1, [])) for v in PLOT.values())):
+            ax12.text(0.1, 0.13, '$2 < Q^2 < 3$', transform=ax12.transAxes, fontsize=25)
+        if any((len(v['value'].get(0, [])) for v in PLOT.values())):
+            ax12.text(0.6, 0.03, '$m_c^2 < Q^2 < 2\\, (i=0)$', transform=ax12.transAxes, fontsize=25)
+        ax12.semilogx()
+        ax12.set_xlim(0.01, 0.9)
+        ax12.set_ylim(-0.2, 9.0)
+        ax12.set_xlabel('\\boldmath$x_{\\rm bj}$', size=40)
+        ax12.tick_params(axis='both', labelsize=30)
+        ax12.yaxis.set_tick_params(which='major', length=10)
+        ax12.yaxis.set_tick_params(which='minor', length=5)
+        ax12.xaxis.set_tick_params(which='major', length=10)
+        ax12.xaxis.set_tick_params(which='minor', length=5)
+        ax12.set_xticks([0.02, 0.1, 0.5])
+        ax12.set_xticklabels(['$0.02$', '$0.1$', '$0.5$'])
+        ax12.text(0.05, 0.65, '\\boldmath$A_{\\parallel}^D$', transform=ax12.transAxes, size=60)
+        ax12.text(0.16, 0.68, '$(+\\, i)$', transform=ax12.transAxes, size=40)
+        ax12.yaxis.set_ticks_position('both')
+        ax12.xaxis.set_ticks_position('both')
+        ax12.tick_params(axis='y', which='both', labelleft=True, labelright=False, direction='in')
+        ax12.tick_params(axis='x', which='both', labeltop=False, labelbottom=True, direction='in')
+        majorLocator = MultipleLocator(2.0)
+        minorLocator = MultipleLocator(0.4)
+        ax12.yaxis.set_major_locator(majorLocator)
+        ax12.yaxis.set_minor_locator(minorLocator)
+        handles = [hand.get('HERMES'), hand.get('SLACE143'), hand.get('SLACE155')]
+        label1 = '\\textbf{\\textrm{HERMES}}'
+        label2 = '\\textbf{\\textrm{SLAC E143}}'
+        label3 = '\\textbf{\\textrm{SLAC E155}}'
+        labels = [label1, label2, label3]
+        thesis_legend(ax12, handles, labels, loc='upper left', fontsize=35, frameon=0, handletextpad=0.3, handlelength=1.0)
+    py.tight_layout()
+    filename = output_file
+    ax11.set_rasterized(True)
+    ax12.set_rasterized(True)
+    thesis_finish_panels(py.gcf(), 'thesis_pidis_plot_deuteron_A1_Apa', _selected_keys)
+    py.savefig(filename)
+
+# Adapted from thesis/pidis.py:plot_helium_neutron, original lines 710-912; SHA256 c6447a2b83bfa2d4b5008b0a926c14cde97718d4e7f25b5c45ae59e148c5ee72.
+def thesis_pidis_plot_helium_neutron(datasets, output_file, interval):
+    _selected_keys = {r + ':' + str(i) for (r, tables) in datasets.items() for i in tables}
+    thy_plot = thy_band = thy_plot0 = thy_band0 = thy_point0 = None
+    istep = 0
+    kc = SimpleNamespace(nc={0: 1})
+    nc = 1
+    predictions = {'reactions': datasets}
+    data = datasets['pidis']
+    tabs = data
+    (nrows, ncols) = (1, 2)
+    py.figure(figsize=(ncols * 6.0, nrows * 7.0))
+    ax11 = py.subplot(nrows, ncols, 1)
+    ax12 = py.subplot(nrows, ncols, 2)
+    if any((i in data for i in [10005, 10018])):
+        DATA = {}
+        if 10018 in data:
+            DATA['SLACE142'] = pd.DataFrame(data[10018])
+        if 10005 in data:
+            DATA['HERMES'] = pd.DataFrame(data[10005])
+        Q2 = np.concatenate([frame['Q2'] for frame in DATA.values()])
+        (Q2min, Q2max) = (np.round(np.min(Q2), 1), np.round(np.max(Q2), 1))
+        theory = {}
+        PLOT = {}
+        for cluster_i in range(kc.nc[istep]):
+            if cluster_i != 0:
+                continue
+            for exp in DATA:
+                query = thesis_pidis_get_Q2bins(DATA[exp], 'h A1')
+                PLOT[exp] = thesis_pidis_get_plot(query)
+                nbins = len(query)
+                theory[exp] = thesis_pidis_get_theory(PLOT[exp], nbins, funcX=True, funcQ2=False, loop=False)
+        N = 1.0
+        hand = {}
+        x = {}
+        for exp in PLOT:
+            for key in range(nbins):
+                X = PLOT[exp]['X'][key]
+                val = PLOT[exp]['value'][key] + N * float(key)
+                alpha = PLOT[exp]['alpha'][key]
+                (color, marker, ms) = thesis_pidis_get_details(exp)
+                hand[exp] = ax11.errorbar(X, val, alpha, marker=marker, color=color, ms=ms, capsize=3, linestyle='none')
+            for key in theory[exp]['value']:
+                X = theory[exp]['X'][key]
+                mean = theory[exp]['value'][key] + N * float(key)
+                std_lower = theory[exp]['std_lower'][key]
+                std_upper = theory[exp]['std_upper'][key]
+                down = mean - std_lower
+                up = mean + std_upper
+                (thy_plot,) = ax11.plot(X, mean, linestyle='solid', color=color)
+                thy_band = ax11.fill_between(X, np.minimum(down, up), np.maximum(down, up), color='gold', alpha=1.0, where=thesis_band_mask(X))
+                if key not in x:
+                    x[key] = []
+                x[key].extend(X)
+        for key in x:
+            ax11.plot(np.linspace(np.min(x[key]), np.max(x[key]), 10), np.ones(10) * float(N * key), color='purple', ls=':')
+        if any((len(v['value'].get(0, [])) for v in PLOT.values())):
+            ax11.text(0.05, 0.05, '$m_c^2 < Q^2 < 5.5 ~ {\\rm GeV}^2$', transform=ax11.transAxes, fontsize=30)
+        ax11.semilogx()
+        ax11.set_xlim(0.05, 0.6)
+        ax11.set_ylim(-0.5, 0.5)
+        ax11.tick_params(axis='both', labelsize=20)
+        ax11.yaxis.set_tick_params(which='major', length=5)
+        ax11.yaxis.set_tick_params(which='minor', length=3)
+        ax11.xaxis.set_tick_params(which='major', length=5)
+        ax11.xaxis.set_tick_params(which='minor', length=3)
+        ax11.set_xticks([0.1, 0.4])
+        ax11.set_xticklabels(['$0.1$', '$0.4$'])
+        ax11.text(0.05, 0.65, '\\boldmath$A_1$', transform=ax11.transAxes, size=40)
+        ax11.set_xlabel('\\boldmath$x_{\\rm bj}$', size=30)
+        ax11.yaxis.set_ticks_position('both')
+        ax11.xaxis.set_ticks_position('both')
+        ax11.tick_params(axis='y', which='both', labelleft=True, labelright=False, direction='in')
+        ax11.tick_params(axis='x', which='both', labeltop=False, labelbottom=True, direction='in')
+        majorLocator = MultipleLocator(0.2)
+        minorLocator = MultipleLocator(0.05)
+        ax11.yaxis.set_major_locator(majorLocator)
+        ax11.yaxis.set_minor_locator(minorLocator)
+        (thy_plot,) = ax11.plot(0, 0, linestyle='solid', color='black')
+        handles = [hand.get('HERMES'), hand.get('SLACE142'), (thy_band, thy_plot)]
+        label1 = '\\textbf{\\textrm{HERMES (``\\boldmath$n$")}}'
+        label2 = '\\textbf{\\textrm{SLAC E142 (\\boldmath$^3$He)}}'
+        label3 = '\\textbf{\\textrm{JAM}}'
+        labels = [label1, label2, label3]
+        thesis_legend(ax11, handles, labels, loc='upper left', fontsize=20, frameon=0, handletextpad=0.3, handlelength=1.0)
+    if any((i in data for i in [10025])):
+        DATA = {}
+        if 10025 in data:
+            DATA['SLACE154'] = pd.DataFrame(data[10025])
+        PLOT = {}
+        theory = {}
+        for cluster_i in range(kc.nc[istep]):
+            if cluster_i != 0:
+                continue
+            for exp in DATA:
+                query = thesis_pidis_get_Q2bins(DATA[exp], 'h Apa')
+                PLOT[exp] = thesis_pidis_get_plot(query)
+                nbins = len(query)
+                theory[exp] = thesis_pidis_get_theory(PLOT[exp], nbins, funcX=True, funcQ2=False, loop=False)
+        N = 1.0
+        hand = {}
+        x = {}
+        for exp in PLOT:
+            for key in range(nbins):
+                X = PLOT[exp]['X'][key]
+                val = PLOT[exp]['value'][key] + N * float(key)
+                alpha = PLOT[exp]['alpha'][key]
+                (color, marker, ms) = thesis_pidis_get_details(exp)
+                hand[exp] = ax12.errorbar(X, val, alpha, marker=marker, color=color, ms=ms, capsize=3, linestyle='none')
+            for key in theory[exp]['value']:
+                X = theory[exp]['X'][key]
+                mean = theory[exp]['value'][key] + N * float(key)
+                std_lower = theory[exp]['std_lower'][key]
+                std_upper = theory[exp]['std_upper'][key]
+                down = mean - std_lower
+                up = mean + std_upper
+                (thy_plot,) = ax12.plot(X, mean, linestyle='solid', color=color)
+                thy_band = ax12.fill_between(X, np.minimum(down, up), np.maximum(down, up), color='gold', alpha=1.0, where=thesis_band_mask(X))
+                if key not in x:
+                    x[key] = []
+                x[key].extend(X)
+        for key in x:
+            ax12.plot(np.linspace(np.min(x[key]), np.max(x[key]), 10), np.ones(10) * float(N * key), color='purple', ls=':')
+        if any((len(v['value'].get(3, [])) for v in PLOT.values())):
+            ax12.text(0.55, 0.87, '$Q^2 > 10~{\\rm GeV^2} \\, (i=3)$', transform=ax12.transAxes, fontsize=15)
+        if any((len(v['value'].get(2, [])) for v in PLOT.values())):
+            ax12.text(0.05, 0.57, '$5 < Q^2 < 10$', transform=ax12.transAxes, fontsize=15)
+        if any((len(v['value'].get(1, [])) for v in PLOT.values())):
+            ax12.text(0.55, 0.3, '$3 < Q^2 < 5$', transform=ax12.transAxes, fontsize=15)
+        if any((len(v['value'].get(0, [])) for v in PLOT.values())):
+            ax12.text(0.2, 0.04, '$m_c^2 < Q^2 < 3\\, (i=0)$', transform=ax12.transAxes, fontsize=15)
+        ax12.semilogx()
+        ax12.set_xlim(0.03, 0.9)
+        ax12.set_ylim(-0.2, 3.6)
+        ax12.set_xlabel('\\boldmath$x_{\\rm bj}$', size=30)
+        ax12.tick_params(axis='both', labelsize=20)
+        ax12.yaxis.set_tick_params(which='major', length=5)
+        ax12.yaxis.set_tick_params(which='minor', length=3)
+        ax12.xaxis.set_tick_params(which='major', length=5)
+        ax12.xaxis.set_tick_params(which='minor', length=3)
+        ax12.set_xticks([0.1, 0.5])
+        ax12.set_xticklabels(['$0.1$', '$0.5$'])
+        ax12.text(0.05, 0.7, '\\boldmath$A_{\\parallel}^{^3{\\rm He}}$', transform=ax12.transAxes, size=40)
+        ax12.text(0.27, 0.73, '$(+\\, i)$', transform=ax12.transAxes, size=30)
+        ax12.yaxis.set_ticks_position('both')
+        ax12.xaxis.set_ticks_position('both')
+        ax12.tick_params(axis='y', which='both', labelleft=True, labelright=False, direction='in')
+        ax12.tick_params(axis='x', which='both', labeltop=False, labelbottom=True, direction='in')
+        majorLocator = MultipleLocator(1.0)
+        minorLocator = MultipleLocator(0.5)
+        ax12.yaxis.set_major_locator(majorLocator)
+        ax12.yaxis.set_minor_locator(minorLocator)
+        handles = [hand.get('SLACE154')]
+        label1 = '\\textbf{\\textrm{SLAC E154}}'
+        labels = [label1]
+        thesis_legend(ax12, handles, labels, loc='upper left', fontsize=20, frameon=0, handletextpad=0.3, handlelength=1.0)
+    py.tight_layout()
+    filename = output_file
+    ax11.set_rasterized(True)
+    ax12.set_rasterized(True)
+    thesis_finish_panels(py.gcf(), 'thesis_pidis_plot_helium_neutron', _selected_keys)
+    py.savefig(filename)
+
+# Adapted from thesis/pjets.py:plot_pjets, original lines 40-283; SHA256 7334930a2eeb0be34ed427b33c30f5fb418d68a66bd80381389c0fb88f85b747.
+def thesis_pjets_plot_pjets(datasets, output_file, interval):
+    _selected_keys = {r + ':' + str(i) for (r, tables) in datasets.items() for i in tables}
+    thy_plot = thy_band = thy_plot0 = thy_band0 = thy_point0 = None
+    istep = 0
+    kc = SimpleNamespace(nc={0: 1})
+    nc = 1
+    predictions = {'reactions': datasets}
+    data = datasets['pjet']
+    tabs = data
+    (nrows, ncols) = (3, 3)
+    fig = py.figure(figsize=(ncols * 7, nrows * 4))
+    ax11 = py.subplot(nrows, ncols, 1)
+    ax12 = py.subplot(nrows, ncols, 2)
+    ax13 = py.subplot(nrows, ncols, 3)
+    ax21 = py.subplot(nrows, ncols, 4)
+    ax22 = py.subplot(nrows, ncols, 5)
+    ax23 = py.subplot(nrows, ncols, 6)
+    ax31 = py.subplot(nrows, ncols, 7)
+    ax32 = py.subplot(nrows, ncols, 8)
+    ax33 = py.subplot(nrows, ncols, 9)
+    tabs = datasets['pjet']
+    data = predictions['reactions']['pjet']
+    hand = {}
+    thy_band = {}
+    for idx in tabs:
+        pT = data[idx]['pT']
+        values = data[idx]['value']
+        alpha = data[idx]['alpha']
+        if idx == 20001:
+            ax = ax11
+        if idx == 20002:
+            ax = ax12
+        if idx == 20003:
+            ax = ax13
+        if idx == 20005:
+            continue
+        if idx == 20006:
+            ax = ax23
+        if idx == 20008:
+            ax = ax31
+        if idx in [20005]:
+            color = 'darkblue'
+        else:
+            color = 'black'
+        ts = 30
+        if idx in [20004]:
+            idx1 = [i for i in range(len(pT)) if data[idx]['eta-abs-min'][i] == 0.0]
+            idx2 = [i for i in range(len(pT)) if data[idx]['eta-abs-min'][i] == 0.5]
+            hand[idx] = ax21.errorbar(pT[idx1], values[idx1], yerr=alpha[idx1], color=color, fmt='o', ms=2, capsize=3.0)
+            hand[idx] = ax22.errorbar(pT[idx2], values[idx2], yerr=alpha[idx2], color=color, fmt='o', ms=2, capsize=3.0)
+        elif idx in [20007]:
+            idx1 = [i for i in range(len(pT)) if data[idx]['eta-abs-min'][i] == 0.0]
+            idx2 = [i for i in range(len(pT)) if data[idx]['eta-abs-min'][i] == 0.5]
+            hand[idx] = ax32.errorbar(pT[idx1], values[idx1], yerr=alpha[idx1], color=color, fmt='o', ms=2, capsize=3.0)
+            hand[idx] = ax33.errorbar(pT[idx2], values[idx2], yerr=alpha[idx2], color=color, fmt='o', ms=2, capsize=3.0)
+        else:
+            hand[idx] = ax.errorbar(pT, values, yerr=alpha, color=color, fmt='o', ms=2, capsize=3.0)
+        xpos = 0.55
+        if idx in [20004]:
+            etamin = data[idx]['eta-abs-min'][idx1][0]
+            etamax = data[idx]['eta-abs-max'][idx1][0]
+            ax21.text(xpos, 0.05, '$|\\eta_{\\rm jet}| \\in [%2.1f,%2.1f]$' % (etamin, etamax), transform=ax21.transAxes, size=ts)
+            etamin = data[idx]['eta-abs-min'][idx2][0]
+            etamax = data[idx]['eta-abs-max'][idx2][0]
+            ax22.text(xpos, 0.05, '$|\\eta_{\\rm jet}| \\in [%2.1f,%2.1f]$' % (etamin, etamax), transform=ax22.transAxes, size=ts)
+        elif idx in [20007]:
+            etamin = data[idx]['eta-abs-min'][idx1][0]
+            etamax = data[idx]['eta-abs-max'][idx1][0]
+            ax32.text(xpos, 0.05, '$|\\eta_{\\rm jet}| \\in [%2.1f,%2.1f]$' % (etamin, etamax), transform=ax32.transAxes, size=ts)
+            etamin = data[idx]['eta-abs-min'][idx2][0]
+            etamax = data[idx]['eta-abs-max'][idx2][0]
+            ax33.text(xpos, 0.05, '$|\\eta_{\\rm jet}| \\in [%2.1f,%2.1f]$' % (etamin, etamax), transform=ax33.transAxes, size=ts)
+        else:
+            if 'eta-abs-min' in data[idx]:
+                etamin = data[idx]['eta-abs-min'][0]
+                etamax = data[idx]['eta-abs-max'][0]
+                ax.text(xpos, 0.05, '$|\\eta_{\\rm jet}| \\in [%2.1f,%2.1f]$' % (etamin, etamax), transform=ax.transAxes, size=ts)
+            if 'eta-min' in data[idx]:
+                etamin = data[idx]['eta-min'][0]
+                etamax = data[idx]['eta-max'][0]
+                ax.text(xpos, 0.05, '$\\eta_{\\rm jet}   \\in [%2.1f,%2.1f]$' % (etamin, etamax), transform=ax.transAxes, size=ts)
+        for ic in range(nc):
+            if nc > 1:
+                color = colors[cluster[ic]]
+            thy = data[idx]['thy-%d' % ic]
+            std_lower = data[idx]['dthy_lower-%d' % ic]
+            std_upper = data[idx]['dthy_upper-%d' % ic]
+            down = thy - std_lower
+            up = thy + std_upper
+            if idx in [20005]:
+                color = 'blue'
+            else:
+                color = 'red'
+            if idx in [20004]:
+                idx1 = [i for i in range(len(pT)) if data[idx]['eta-abs-min'][i] == 0.0]
+                idx2 = [i for i in range(len(pT)) if data[idx]['eta-abs-min'][i] == 0.5]
+                thy_band[idx] = ax21.fill_between(pT[idx1], np.minimum(down[idx1], up[idx1]), np.maximum(down[idx1], up[idx1]), color=color, alpha=0.8, where=thesis_band_mask(pT[idx1]))
+                ax21.plot(pT[idx1], thy[idx1], color=color)
+                thy_band[idx] = ax22.fill_between(pT[idx2], np.minimum(down[idx2], up[idx2]), np.maximum(down[idx2], up[idx2]), color=color, alpha=0.8, where=thesis_band_mask(pT[idx2]))
+                ax22.plot(pT[idx2], thy[idx2], color=color)
+            elif idx in [20007]:
+                idx1 = [i for i in range(len(pT)) if data[idx]['eta-abs-min'][i] == 0.0]
+                idx2 = [i for i in range(len(pT)) if data[idx]['eta-abs-min'][i] == 0.5]
+                thy_band[idx] = ax32.fill_between(pT[idx1], np.minimum(down[idx1], up[idx1]), np.maximum(down[idx1], up[idx1]), color=color, alpha=0.8, where=thesis_band_mask(pT[idx1]))
+                ax32.plot(pT[idx1], thy[idx1], color=color)
+                thy_band[idx] = ax33.fill_between(pT[idx2], np.minimum(down[idx2], up[idx2]), np.maximum(down[idx2], up[idx2]), color=color, alpha=0.8, where=thesis_band_mask(pT[idx2]))
+                ax33.plot(pT[idx2], thy[idx2], color=color)
+            else:
+                thy_band[idx] = ax.fill_between(pT, np.minimum(down, up), np.maximum(down, up), color=color, alpha=0.8, where=thesis_band_mask(pT))
+                ax.plot(pT, thy, color=color)
+    for ax in [ax11, ax12, ax13, ax21, ax22, ax23]:
+        ax.tick_params(axis='both', which='both', top=True, right=True, labelbottom=False, direction='in', labelsize=30)
+    for ax in [ax31, ax32, ax33]:
+        ax.tick_params(axis='both', which='both', top=True, right=True, direction='in', labelsize=30)
+    for ax in [ax11, ax12, ax13, ax21, ax22, ax23, ax31, ax32, ax33]:
+        ax.set_xlim(5, 65)
+        ax.set_xticks([10, 20, 30, 40, 50, 60])
+        minorLocator = MultipleLocator(2)
+        majorLocator = MultipleLocator(10)
+        ax.xaxis.set_minor_locator(minorLocator)
+        ax.xaxis.set_major_locator(majorLocator)
+        ax.xaxis.set_tick_params(which='major', length=6)
+        ax.xaxis.set_tick_params(which='minor', length=3)
+        ax.yaxis.set_tick_params(which='major', length=6)
+        ax.yaxis.set_tick_params(which='minor', length=3)
+        ax.axhline(0, 0, 1, color='black', alpha=0.2)
+    for ax in [ax31, ax32, ax33]:
+        ax.set_xlabel('\\boldmath$p_T^{\\rm jet}~({\\rm GeV})$', size=35)
+    for ax in [ax12, ax13, ax22, ax23, ax32, ax33]:
+        ax.tick_params(axis='both', which='both', labelleft=False)
+    for ax in [ax11, ax12, ax13]:
+        ax.set_ylim(-0.1, 0.33)
+        minorLocator = MultipleLocator(0.05)
+        majorLocator = MultipleLocator(0.1)
+        ax.yaxis.set_minor_locator(minorLocator)
+        ax.yaxis.set_major_locator(majorLocator)
+        ax.set_yticks([0, 0.1, 0.2, 0.3])
+    for ax in [ax21, ax22, ax23]:
+        ax.set_ylim(-0.05, 0.08)
+        minorLocator = MultipleLocator(0.01)
+        majorLocator = MultipleLocator(0.02)
+        ax.yaxis.set_minor_locator(minorLocator)
+        ax.yaxis.set_major_locator(majorLocator)
+        ax.set_yticks([-0.04, -0.02, 0, 0.02, 0.04, 0.06])
+    for ax in [ax31, ax32, ax33]:
+        ax.set_ylim(-0.03, 0.08)
+        minorLocator = MultipleLocator(0.01)
+        majorLocator = MultipleLocator(0.02)
+        ax.yaxis.set_minor_locator(minorLocator)
+        ax.yaxis.set_major_locator(majorLocator)
+        ax.set_yticks([-0.02, 0, 0.02, 0.04, 0.06])
+    ax13.text(0.05, 0.7, '\\boldmath$A_{LL}^{\\rm jet}$', transform=ax13.transAxes, size=50)
+    ax11.text(0.8, 0.85, '\\textrm{\\textbf{2003}}', transform=ax11.transAxes, size=40)
+    ax12.text(0.8, 0.85, '\\textrm{\\textbf{2005}}', transform=ax12.transAxes, size=40)
+    ax13.text(0.8, 0.85, '\\textrm{\\textbf{2006}}', transform=ax13.transAxes, size=40)
+    ax21.text(0.8, 0.85, '\\textrm{\\textbf{2009}}', transform=ax21.transAxes, size=40)
+    ax22.text(0.8, 0.85, '\\textrm{\\textbf{2009}}', transform=ax22.transAxes, size=40)
+    ax23.text(0.8, 0.85, '\\textrm{\\textbf{2012}}', transform=ax23.transAxes, size=40)
+    ax31.text(0.8, 0.85, '\\textrm{\\textbf{2013}}', transform=ax31.transAxes, size=40)
+    ax32.text(0.8, 0.85, '\\textrm{\\textbf{2015}}', transform=ax32.transAxes, size=40)
+    ax33.text(0.8, 0.85, '\\textrm{\\textbf{2015}}', transform=ax33.transAxes, size=40)
+    (handles, labels) = ([], [])
+    handles.append(hand.get(20001))
+    handles.append(thy_band.get(20001))
+    labels.append('\\textbf{\\textrm{STAR}}')
+    labels.append('\\textbf{\\textrm{JAM}}')
+    thesis_legend(ax11, handles, labels, frameon=False, fontsize=30, loc='upper left', handletextpad=0.5, handlelength=1.0)
+    py.tight_layout()
+    py.subplots_adjust(hspace=0.02, wspace=0.02)
+    filename = output_file
+    thesis_finish_panels(py.gcf(), 'thesis_pjets_plot_pjets', _selected_keys)
+    py.savefig(filename)
+
+# Adapted from thesis/polWlep.py:plot_main, original lines 35-226; SHA256 77d5facf64909124b521966f4fd5cd057eba18b622678ff85a1d6a160f5922a9.
+def thesis_polWlep_plot_main(datasets, output_file, interval):
+    _selected_keys = {r + ':' + str(i) for (r, tables) in datasets.items() for i in tables}
+    thy_plot = thy_band = thy_plot0 = thy_band0 = thy_point0 = None
+    istep = 0
+    kc = SimpleNamespace(nc={0: 1})
+    nc = 1
+    predictions = {'reactions': datasets}
+    data = datasets['wzrv']
+    tabs = data
+    (nrows, ncols) = (1, 2)
+    fig = py.figure(figsize=(ncols * 7, nrows * 6))
+    ax11 = py.subplot(nrows, ncols, 1)
+    ax12 = py.subplot(nrows, ncols, 2)
+    tabs = datasets['wzrv']
+    hand = {}
+    for idx in tabs:
+        if idx == 1000:
+            (ax, color) = (ax11, 'black')
+        elif idx == 1020:
+            (ax, color) = (ax12, 'blue')
+        elif idx == 1021:
+            (ax, color) = (ax12, 'purple')
+        values = tabs[idx]['value']
+        alpha = np.sqrt(np.array(tabs[idx]['stat_u']) ** 2 + np.array(tabs[idx]['syst_u']) ** 2)
+        if 'eta' in tabs[idx]:
+            eta = tabs[idx]['eta']
+        else:
+            eta = (tabs[idx]['eta_min'] + tabs[idx]['eta_max']) / 2.0
+            eta_min = tabs[idx]['eta_min']
+            eta_max = tabs[idx]['eta_max']
+        n = int(len(eta) / 2)
+        if idx == 1000:
+            X = 0
+        elif idx == 1020:
+            X = 0.08
+        elif idx == 1021:
+            X = 0.08
+        if idx in [1000]:
+            hand[idx] = ax.errorbar(eta[:n] + X, values[:n], yerr=alpha[:n], color=color, fmt='o', ms=5.0, capsize=3.0)
+            ax.errorbar(eta[n:] - X, values[n:], yerr=alpha[n:], color=color, fmt='o', ms=5.0, capsize=3.0)
+        elif idx in [1020, 1021]:
+            hand[idx] = {}
+            hand[idx]['+'] = ax.errorbar(eta[:n] + X, values[:n], yerr=alpha[:n], color=color, fmt='o', ms=5.0, capsize=3.0)
+            hand[idx]['-'] = ax.errorbar(eta[n:] - X, values[n:], yerr=alpha[n:], color=color, fmt='s', ms=6.0, capsize=3.0)
+    j = 0
+    for data in [datasets['wzrv']]:
+        for idx in tabs:
+            if idx == 1000:
+                (ax, color) = (ax11, 'black')
+            elif idx == 1020:
+                (ax, color) = (ax12, 'blue')
+            elif idx == 1021:
+                (ax, color) = (ax12, 'purple')
+            if 'eta' in tabs[idx]:
+                eta = tabs[idx]['eta']
+            else:
+                eta = (tabs[idx]['eta_min'] + tabs[idx]['eta_max']) / 2.0
+                eta_min = tabs[idx]['eta_min']
+                eta_max = tabs[idx]['eta_max']
+            n = int(len(eta) / 2)
+            thy = data[idx]['thy-0']
+            dthy_lower = data[idx]['dthy_lower-0']
+            dthy_upper = data[idx]['dthy_upper-0']
+            up = thy + dthy_upper
+            down = thy - dthy_lower
+            if j == 0:
+                if idx in [1000]:
+                    (thy_plot0,) = ax.plot(eta[:n], thy[:n], color='red', alpha=1.0, lw=2)
+                    ax.plot(eta[n:], thy[n:], color='red', alpha=1.0, lw=2)
+                    thy_band0 = ax.fill_between(eta[:n], np.minimum(down[:n], up[:n]), np.maximum(down[:n], up[:n]), color='red', alpha=0.2, where=thesis_band_mask(eta[:n]))
+                    ax.fill_between(eta[n:], np.minimum(down[n:], up[n:]), np.maximum(down[n:], up[n:]), color='red', alpha=0.2, where=thesis_band_mask(eta[n:]))
+                elif idx in [1020, 1021]:
+                    if idx == 1020:
+                        X = 0
+                    elif idx == 1021:
+                        X = 0.12
+                    thy_point0 = ax.errorbar(eta[:n] + X, thy[:n], yerr=thesis_error_extents(dthy_lower[:n], dthy_upper[:n]), color='red', fmt='o', ms=5.0, capsize=3.0)
+                    ax.errorbar(eta[n:] - X, thy[n:], yerr=thesis_error_extents(dthy_lower[n:], dthy_upper[n:]), color='red', fmt='s', ms=6.0, capsize=3.0)
+            if j == 1:
+                if idx in [1000]:
+                    (thy_plot1,) = ax.plot(eta[:n], thy[:n], color='green', alpha=1.0, ls='--', lw=2)
+                    ax.plot(eta[n:], thy[n:], color='green', alpha=1.0, ls='--', lw=2)
+        j += 1
+    for ax in [ax11, ax12]:
+        ax.set_xlim(-1.9, 1.9)
+        minorLocator = MultipleLocator(0.25)
+        majorLocator = MultipleLocator(1.0)
+        ax.xaxis.set_minor_locator(minorLocator)
+        ax.xaxis.set_major_locator(majorLocator)
+        ax.xaxis.set_tick_params(which='major', length=6)
+        ax.xaxis.set_tick_params(which='minor', length=3)
+        minorLocator = MultipleLocator(0.1)
+        majorLocator = MultipleLocator(0.5)
+        ax.yaxis.set_minor_locator(minorLocator)
+        ax.yaxis.set_major_locator(majorLocator)
+        ax.yaxis.set_tick_params(which='major', length=6)
+        ax.yaxis.set_tick_params(which='minor', length=3)
+        ax.axhline(0, 0, 1, ls='-', color='black', alpha=0.2, lw=1.0)
+        ax.set_xlabel('\\boldmath$\\eta_\\ell$', size=40)
+        ax.set_xticks([-1.0, 0.0, 1.0])
+        ax.tick_params(axis='both', which='both', top=True, right=True, direction='in', labelsize=30)
+        ax.set_ylim(-0.9, 0.9)
+        ax.set_yticks([-0.5, 0, 0.5])
+        ax.set_yticklabels(['$-0.5$', '$0$', '$0.5$'])
+    ax12.tick_params(labelleft=False)
+    ax11.text(0.08, 0.11, '\\boldmath$A_L^{W}$', transform=ax11.transAxes, size=50)
+    ax11.text(0.25, 0.16, '\\textrm{\\textbf{(STAR)}}', transform=ax11.transAxes, size=30)
+    ax11.text(0.65, 0.43, '$\\sqrt{s}=510~$' + '\\textrm{GeV}', transform=ax11.transAxes, size=20)
+    ax11.text(0.67, 0.34, '$p_T^\\ell > 25~$' + '\\hspace{0.00cm}\\textrm{GeV}', transform=ax11.transAxes, size=20)
+    ax11.text(0.04, 0.61, '$W^-$', transform=ax11.transAxes, size=25)
+    ax11.text(0.04, 0.3, '$W^+$', transform=ax11.transAxes, size=25)
+    ax12.text(0.3, 0.8, '\\boldmath$A_L^{W/Z}$', transform=ax12.transAxes, size=50)
+    ax12.text(0.57, 0.85, '\\textrm{\\textbf{(PHENIX)}}', transform=ax12.transAxes, size=30)
+    (handles, labels) = ([], [])
+    handles.append((thy_band0, thy_plot0))
+    labels.append('\\textrm{\\textbf{JAM}}')
+    thesis_legend(ax11, handles, labels, frameon=False, fontsize=25, loc='upper left', handletextpad=0.3, handlelength=1.2, ncol=1, columnspacing=2.3)
+    (handles, labels) = ([], [])
+    handles.append(hand.get(1020, {}).get('+'))
+    handles.append(hand.get(1020, {}).get('-'))
+    handles.append(hand.get(1021, {}).get('+'))
+    handles.append(hand.get(1021, {}).get('-'))
+    labels.append('\\textrm{$W^+, p_T^{\\ell} > 16$}')
+    labels.append('\\textrm{$W^-, p_T^{\\ell} > 16$}')
+    labels.append('\\textrm{$W^+, p_T^{\\ell} > 30$}')
+    labels.append('\\textrm{$W^-, p_T^{\\ell} > 30$}')
+    thesis_legend(ax12, handles, labels, frameon=False, fontsize=20, loc='lower left', handletextpad=0.3, handlelength=1.2, ncol=2, columnspacing=2.3, handleheight=1.5)
+    if 1020 in tabs or 1021 in tabs:
+        ax12.errorbar(-1.68, -0.4, yerr=0.06, color='red', fmt='o', ms=5.0, capsize=3.0)
+    if 1020 in tabs or 1021 in tabs:
+        ax12.errorbar(-1.61, -0.4, yerr=0.06, color='red', fmt='s', ms=6.0, capsize=3.0)
+    ax12.text(0.1, 0.25, '\\textrm{\\textbf{JAM}}', transform=ax12.transAxes, size=25)
+    py.tight_layout()
+    py.subplots_adjust(hspace=0, wspace=0.02, top=0.99, right=0.99)
+    filename = output_file
+    ax11.set_rasterized(True)
+    thesis_finish_panels(py.gcf(), 'thesis_polWlep_plot_main', _selected_keys)
+    py.savefig(filename)
+
+# Adapted from thesis/sidis.py:plot_pion, original lines 39-168; SHA256 bbf6969bd9db5719e86594f1a733e14be49ad78d72116e40058a0841b72d868e.
+def thesis_sidis_plot_pion(datasets, output_file, interval):
+    _selected_keys = {r + ':' + str(i) for (r, tables) in datasets.items() for i in tables}
+    thy_plot = thy_band = thy_plot0 = thy_band0 = thy_point0 = None
+    istep = 0
+    kc = SimpleNamespace(nc={0: 1})
+    nc = 1
+    predictions = {'reactions': datasets}
+    data = datasets['sidis']
+    tabs = data
+    if 'sidis' not in predictions['reactions']:
+        return
+    data = predictions['reactions']['sidis']
+    X = [[0.004, 0.01], [0.01, 0.02], [0.02, 0.03], [0.03, 0.04], [0.04, 0.06], [0.06, 0.1], [0.1, 0.14], [0.14, 0.18], [0.18, 0.4]]
+    Y = [[0.1, 0.15], [0.15, 0.2], [0.2, 0.3], [0.3, 0.5], [0.5, 0.7]]
+    (nrows, ncols) = (2, 4)
+    fig = py.figure(figsize=(ncols * 4, nrows * 5))
+    cnt = 0
+    ax1 = None
+    H = {}
+    for tab in data.values():
+        if np.any((tab['X'] > 0.004) & (tab['X'] < 0.01)):
+            raise ValueError('Selected SIDIS points occupy the source-unrepresented first x window; eight-panel design retained without silently cutting those points.')
+    for (slot, xrange) in enumerate(X[1:], 1):
+        (xmin, xmax) = xrange
+        frames = [pd.DataFrame(data[idx]).query('X>%f and X<%f' % (xmin, xmax)) for idx in [1005, 1006] if idx in data]
+        if not any((len(frame) for frame in frames)):
+            continue
+        cnt = slot
+        ax = py.subplot(nrows, ncols, cnt)
+        alpha = -1
+        for yrange in Y:
+            alpha += 1
+            (ymin, ymax) = yrange
+            for D in frames:
+                d = D.query('Y>%f  and Y<%f' % (ymin, ymax))
+                if len(d) <= 1:
+                    continue
+                f = 2 ** alpha
+                if ymin == 0.1:
+                    color = 'r'
+                elif ymin == 0.15:
+                    color = 'darkorange'
+                elif ymin == 0.2:
+                    color = 'g'
+                elif ymin == 0.3:
+                    color = 'c'
+                elif ymin == 0.5:
+                    color = 'm'
+                else:
+                    color = 'k'
+                ax.fill_between(d.Z, np.minimum((d.thy - d.dthy_lower) * f, (d.thy + d.dthy_upper) * f), np.maximum((d.thy - d.dthy_lower) * f, (d.thy + d.dthy_upper) * f), color=color, where=thesis_band_mask(d.Z))
+                if '+' in d['hadron'].values[0]:
+                    ax.plot(d.Z, d.thy * f, color=color, ls='--')
+                if '-' in d['hadron'].values[0]:
+                    ax.plot(d.Z, d.thy * f, color=color, ls=':')
+                p = ax.errorbar(d.Z, d.value * f, d.alpha * f, fmt='.', color=color)
+                H[ymin] = p
+        ax.set_ylim(0.03, 50.5)
+        ax.set_xlim(0.1, 0.95)
+        ax.semilogy()
+        minorLocator = MultipleLocator(0.05)
+        majorLocator = MultipleLocator(0.2)
+        ax.xaxis.set_minor_locator(minorLocator)
+        ax.xaxis.set_major_locator(majorLocator)
+        ax.tick_params(axis='both', which='both', top=True, right=True, direction='in', labelsize=20)
+        if any([cnt == _ for _ in [2, 3, 4, 6, 7, 8]]):
+            ax.set_yticklabels([])
+        if any([cnt == _ for _ in [1, 2, 3, 4]]):
+            ax.set_xticklabels([])
+        if cnt in [5, 6, 7, 8]:
+            ax.set_xlabel('\\boldmath$z_H$', size=30)
+            ax.set_xticks([0.2, 0.4, 0.6, 0.8])
+            ax.set_xticklabels(['$0.2$', '$0.4$', '$0.6$', '$0.8$'])
+        if cnt == 1:
+            ax.set_ylabel('\\boldmath${\\rm d} M^{h}/{\\rm d} z_H\\times 2^i$', size=30)
+            ax.yaxis.set_label_coords(-0.15, -0.05)
+        if cnt == 1 or cnt == 5:
+            ax.set_yticks([0.1, 1, 10])
+            ax.set_yticklabels(['$0.1$', '$1$', '$10$'])
+        if cnt == 1:
+            msg = '\\boldmath{$x_{\\rm Bj}\\in[0.01,0.02]$}'
+        if cnt == 2:
+            msg = '\\boldmath{$x_{\\rm Bj}\\in[0.02,0.03]$}'
+        if cnt == 3:
+            msg = '\\boldmath{$x_{\\rm Bj}\\in[0.03,0.04]$}'
+        if cnt == 4:
+            msg = '\\boldmath{$x_{\\rm Bj}\\in[0.04,0.06]$}'
+        if cnt == 5:
+            msg = '\\boldmath{$x_{\\rm Bj}\\in[0.06,0.10]$}'
+        if cnt == 6:
+            msg = '\\boldmath{$x_{\\rm Bj}\\in[0.10,0.14]$}'
+        if cnt == 7:
+            msg = '\\boldmath{$x_{\\rm Bj}\\in[0.14,0.18]$}'
+        if cnt == 8:
+            msg = '\\boldmath{$x_{\\rm Bj}\\in[0.18,0.40]$}'
+        ax.text(0.3, 0.9, msg, transform=ax.transAxes, size=20)
+        if cnt == 1:
+            ax1 = ax
+        if cnt == 2:
+            from matplotlib.lines import Line2D
+            h = [Line2D([0], [0], color='k', lw=5, ls='--'), Line2D([0], [0], color='k', lw=5, ls=':')]
+            l = ['\\boldmath{$\\pi^+$}', '\\boldmath{$\\pi^-$}']
+            h = [handle for (idx, handle) in zip([1005, 1006], h) if idx in data]
+            l = [label for (idx, label) in zip([1005, 1006], l) if idx in data]
+            thesis_legend(ax, h, l, fontsize=30, loc=3, frameon=0, handlelength=2.5, handletextpad=0.4)
+    H = [H.get(_) for _ in [0.1, 0.15, 0.2, 0.3, 0.5]]
+    L = ['$0.1~<y<0.15~(i=0)$', '$0.15<y<0.2~~(i=1)$', '$0.2~<y<0.3~~(i=2)$', '$0.3~<y<0.5~~(i=3)$', '$0.5~<y<0.7~~(i=4)$']
+    if ax1 is not None:
+        thesis_legend(ax1, H, L, loc=3, fontsize=20, frameon=0, handletextpad=0)
+    py.subplots_adjust(left=0.08, bottom=0.05, right=0.98, top=0.98, wspace=0, hspace=0)
+    filename = output_file
+    thesis_save_labels(py.gcf(), filename)
+
+# Adapted from thesis/sidis.py:plot_kaon, original lines 170-299; SHA256 bbf6969bd9db5719e86594f1a733e14be49ad78d72116e40058a0841b72d868e.
+def thesis_sidis_plot_kaon(datasets, output_file, interval):
+    _selected_keys = {r + ':' + str(i) for (r, tables) in datasets.items() for i in tables}
+    thy_plot = thy_band = thy_plot0 = thy_band0 = thy_point0 = None
+    istep = 0
+    kc = SimpleNamespace(nc={0: 1})
+    nc = 1
+    predictions = {'reactions': datasets}
+    data = datasets['sidis']
+    tabs = data
+    if 'sidis' not in predictions['reactions']:
+        return
+    data = predictions['reactions']['sidis']
+    X = [[0.004, 0.01], [0.01, 0.02], [0.02, 0.03], [0.03, 0.04], [0.04, 0.06], [0.06, 0.1], [0.1, 0.14], [0.14, 0.18], [0.18, 0.4]]
+    Y = [[0.1, 0.15], [0.15, 0.2], [0.2, 0.3], [0.3, 0.5], [0.5, 0.7]]
+    (nrows, ncols) = (2, 4)
+    fig = py.figure(figsize=(ncols * 4, nrows * 5))
+    cnt = 0
+    ax1 = None
+    H = {}
+    for tab in data.values():
+        if np.any((tab['X'] > 0.004) & (tab['X'] < 0.01)):
+            raise ValueError('Selected SIDIS points occupy the source-unrepresented first x window; eight-panel design retained without silently cutting those points.')
+    for (slot, xrange) in enumerate(X[1:], 1):
+        (xmin, xmax) = xrange
+        frames = [pd.DataFrame(data[idx]).query('X>%f and X<%f' % (xmin, xmax)) for idx in [2005, 2006] if idx in data]
+        if not any((len(frame) for frame in frames)):
+            continue
+        cnt = slot
+        ax = py.subplot(nrows, ncols, cnt)
+        alpha = -1
+        for yrange in Y:
+            alpha += 1
+            (ymin, ymax) = yrange
+            for D in frames:
+                d = D.query('Y>%f  and Y<%f' % (ymin, ymax))
+                if len(d) <= 1:
+                    continue
+                f = 2 ** alpha
+                if ymin == 0.1:
+                    color = 'r'
+                elif ymin == 0.15:
+                    color = 'darkorange'
+                elif ymin == 0.2:
+                    color = 'g'
+                elif ymin == 0.3:
+                    color = 'c'
+                elif ymin == 0.5:
+                    color = 'm'
+                else:
+                    color = 'k'
+                ax.fill_between(d.Z, np.minimum((d.thy - d.dthy_lower) * f, (d.thy + d.dthy_upper) * f), np.maximum((d.thy - d.dthy_lower) * f, (d.thy + d.dthy_upper) * f), color=color, where=thesis_band_mask(d.Z))
+                if '+' in d['hadron'].values[0]:
+                    ax.plot(d.Z, d.thy * f, color=color, ls='--')
+                if '-' in d['hadron'].values[0]:
+                    ax.plot(d.Z, d.thy * f, color=color, ls=':')
+                p = ax.errorbar(d.Z, d.value * f, d.alpha * f, fmt='.', color=color)
+                H[ymin] = p
+        ax.set_ylim(0.002, 20)
+        ax.set_xlim(0.1, 0.95)
+        ax.semilogy()
+        minorLocator = MultipleLocator(0.05)
+        majorLocator = MultipleLocator(0.2)
+        ax.xaxis.set_minor_locator(minorLocator)
+        ax.xaxis.set_major_locator(majorLocator)
+        ax.tick_params(axis='both', which='both', top=True, right=True, direction='in', labelsize=20)
+        if any([cnt == _ for _ in [2, 3, 4, 6, 7, 8]]):
+            ax.set_yticklabels([])
+        if any([cnt == _ for _ in [1, 2, 3, 4]]):
+            ax.set_xticklabels([])
+        if cnt in [5, 6, 7, 8]:
+            ax.set_xlabel('\\boldmath$z_H$', size=30)
+            ax.set_xticks([0.2, 0.4, 0.6, 0.8])
+            ax.set_xticklabels(['$0.2$', '$0.4$', '$0.6$', '$0.8$'])
+        if cnt == 1:
+            ax.set_ylabel('\\boldmath${\\rm d} M^{h}/{\\rm d} z_H\\times 2^i$', size=30)
+            ax.yaxis.set_label_coords(-0.2, -0.05)
+        if cnt == 1 or cnt == 5:
+            ax.set_yticks([0.01, 0.1, 1, 10])
+            ax.set_yticklabels(['$0.01$', '$0.1$', '$1$', '$10$'])
+        if cnt == 1:
+            msg = '\\boldmath{$x_{\\rm Bj}\\in[0.01,0.02]$}'
+        if cnt == 2:
+            msg = '\\boldmath{$x_{\\rm Bj}\\in[0.02,0.03]$}'
+        if cnt == 3:
+            msg = '\\boldmath{$x_{\\rm Bj}\\in[0.03,0.04]$}'
+        if cnt == 4:
+            msg = '\\boldmath{$x_{\\rm Bj}\\in[0.04,0.06]$}'
+        if cnt == 5:
+            msg = '\\boldmath{$x_{\\rm Bj}\\in[0.06,0.10]$}'
+        if cnt == 6:
+            msg = '\\boldmath{$x_{\\rm Bj}\\in[0.10,0.14]$}'
+        if cnt == 7:
+            msg = '\\boldmath{$x_{\\rm Bj}\\in[0.14,0.18]$}'
+        if cnt == 8:
+            msg = '\\boldmath{$x_{\\rm Bj}\\in[0.18,0.40]$}'
+        ax.text(0.3, 0.9, msg, transform=ax.transAxes, size=20)
+        if cnt == 1:
+            ax1 = ax
+        if cnt == 2:
+            from matplotlib.lines import Line2D
+            h = [Line2D([0], [0], color='k', lw=5, ls='--'), Line2D([0], [0], color='k', lw=5, ls=':')]
+            l = ['\\boldmath{$K^+$}', '\\boldmath{$K^-$}']
+            h = [handle for (idx, handle) in zip([2005, 2006], h) if idx in data]
+            l = [label for (idx, label) in zip([2005, 2006], l) if idx in data]
+            thesis_legend(ax, h, l, fontsize=30, loc=3, frameon=0, handlelength=2.5, handletextpad=0.4)
+    H = [H.get(_) for _ in [0.1, 0.15, 0.2, 0.3, 0.5]]
+    L = ['$0.1~<y<0.15~(i=0)$', '$0.15<y<0.2~~(i=1)$', '$0.2~<y<0.3~~(i=2)$', '$0.3~<y<0.5~~(i=3)$', '$0.5~<y<0.7~~(i=4)$']
+    if ax1 is not None:
+        thesis_legend(ax1, H, L, loc=3, fontsize=20, frameon=0, handletextpad=0)
+    py.subplots_adjust(left=0.08, bottom=0.05, right=0.98, top=0.98, wspace=0, hspace=0)
+    filename = output_file
+    thesis_save_labels(py.gcf(), filename)
+
+# Adapted from thesis/sidis.py:plot_hadron, original lines 301-430; SHA256 bbf6969bd9db5719e86594f1a733e14be49ad78d72116e40058a0841b72d868e.
+def thesis_sidis_plot_hadron(datasets, output_file, interval):
+    _selected_keys = {r + ':' + str(i) for (r, tables) in datasets.items() for i in tables}
+    thy_plot = thy_band = thy_plot0 = thy_band0 = thy_point0 = None
+    istep = 0
+    kc = SimpleNamespace(nc={0: 1})
+    nc = 1
+    predictions = {'reactions': datasets}
+    data = datasets['sidis']
+    tabs = data
+    if 'sidis' not in predictions['reactions']:
+        return
+    data = predictions['reactions']['sidis']
+    X = [[0.004, 0.01], [0.01, 0.02], [0.02, 0.03], [0.03, 0.04], [0.04, 0.06], [0.06, 0.1], [0.1, 0.14], [0.14, 0.18], [0.18, 0.4]]
+    Y = [[0.1, 0.15], [0.15, 0.2], [0.2, 0.3], [0.3, 0.5], [0.5, 0.7]]
+    (nrows, ncols) = (2, 4)
+    fig = py.figure(figsize=(ncols * 4, nrows * 5))
+    cnt = 0
+    ax1 = None
+    H = {}
+    for tab in data.values():
+        if np.any((tab['X'] > 0.004) & (tab['X'] < 0.01)):
+            raise ValueError('Selected SIDIS points occupy the source-unrepresented first x window; eight-panel design retained without silently cutting those points.')
+    for (slot, xrange) in enumerate(X[1:], 1):
+        (xmin, xmax) = xrange
+        frames = [pd.DataFrame(data[idx]).query('X>%f and X<%f' % (xmin, xmax)) for idx in [3000, 3001] if idx in data]
+        if not any((len(frame) for frame in frames)):
+            continue
+        cnt = slot
+        ax = py.subplot(nrows, ncols, cnt)
+        alpha = -1
+        for yrange in Y:
+            alpha += 1
+            (ymin, ymax) = yrange
+            for D in frames:
+                d = D.query('Y>%f  and Y<%f' % (ymin, ymax))
+                if len(d) <= 1:
+                    continue
+                f = 2 ** alpha
+                if ymin == 0.1:
+                    color = 'r'
+                elif ymin == 0.15:
+                    color = 'darkorange'
+                elif ymin == 0.2:
+                    color = 'g'
+                elif ymin == 0.3:
+                    color = 'c'
+                elif ymin == 0.5:
+                    color = 'm'
+                else:
+                    color = 'k'
+                ax.fill_between(d.Z, np.minimum((d.thy - d.dthy_lower) * f, (d.thy + d.dthy_upper) * f), np.maximum((d.thy - d.dthy_lower) * f, (d.thy + d.dthy_upper) * f), color=color, where=thesis_band_mask(d.Z))
+                if '+' in d['hadron'].values[0]:
+                    ax.plot(d.Z, d.thy * f, color=color, ls='--')
+                if '-' in d['hadron'].values[0]:
+                    ax.plot(d.Z, d.thy * f, color=color, ls=':')
+                p = ax.errorbar(d.Z, d.value * f, d.alpha * f, fmt='.', color=color)
+                H[ymin] = p
+        ax.set_ylim(0.03, 50.5)
+        ax.set_xlim(0.1, 0.95)
+        ax.semilogy()
+        minorLocator = MultipleLocator(0.05)
+        majorLocator = MultipleLocator(0.2)
+        ax.xaxis.set_minor_locator(minorLocator)
+        ax.xaxis.set_major_locator(majorLocator)
+        ax.tick_params(axis='both', which='both', top=True, right=True, direction='in', labelsize=20)
+        if any([cnt == _ for _ in [2, 3, 4, 6, 7, 8]]):
+            ax.set_yticklabels([])
+        if any([cnt == _ for _ in [1, 2, 3, 4]]):
+            ax.set_xticklabels([])
+        if cnt in [5, 6, 7, 8]:
+            ax.set_xlabel('\\boldmath$z_H$', size=30)
+            ax.set_xticks([0.2, 0.4, 0.6, 0.8])
+            ax.set_xticklabels(['$0.2$', '$0.4$', '$0.6$', '$0.8$'])
+        if cnt == 1:
+            ax.set_ylabel('\\boldmath${\\rm d} M^{h}/{\\rm d} z_H\\times 2^i$', size=30)
+            ax.yaxis.set_label_coords(-0.15, -0.05)
+        if cnt == 1 or cnt == 5:
+            ax.set_yticks([0.1, 1, 10])
+            ax.set_yticklabels(['$0.1$', '$1$', '$10$'])
+        if cnt == 1:
+            msg = '\\boldmath{$x_{\\rm Bj}\\in[0.01,0.02]$}'
+        if cnt == 2:
+            msg = '\\boldmath{$x_{\\rm Bj}\\in[0.02,0.03]$}'
+        if cnt == 3:
+            msg = '\\boldmath{$x_{\\rm Bj}\\in[0.03,0.04]$}'
+        if cnt == 4:
+            msg = '\\boldmath{$x_{\\rm Bj}\\in[0.04,0.06]$}'
+        if cnt == 5:
+            msg = '\\boldmath{$x_{\\rm Bj}\\in[0.06,0.10]$}'
+        if cnt == 6:
+            msg = '\\boldmath{$x_{\\rm Bj}\\in[0.10,0.14]$}'
+        if cnt == 7:
+            msg = '\\boldmath{$x_{\\rm Bj}\\in[0.14,0.18]$}'
+        if cnt == 8:
+            msg = '\\boldmath{$x_{\\rm Bj}\\in[0.18,0.40]$}'
+        ax.text(0.3, 0.9, msg, transform=ax.transAxes, size=20)
+        if cnt == 1:
+            ax1 = ax
+        if cnt == 2:
+            from matplotlib.lines import Line2D
+            h = [Line2D([0], [0], color='k', lw=5, ls='--'), Line2D([0], [0], color='k', lw=5, ls=':')]
+            l = ['\\boldmath{$h^+$}', '\\boldmath{$h^-$}']
+            h = [handle for (idx, handle) in zip([3000, 3001], h) if idx in data]
+            l = [label for (idx, label) in zip([3000, 3001], l) if idx in data]
+            thesis_legend(ax, h, l, fontsize=30, loc=3, frameon=0, handlelength=2.5, handletextpad=0.4)
+    H = [H.get(_) for _ in [0.1, 0.15, 0.2, 0.3, 0.5]]
+    L = ['$0.1~<y<0.15~(i=0)$', '$0.15<y<0.2~~(i=1)$', '$0.2~<y<0.3~~(i=2)$', '$0.3~<y<0.5~~(i=3)$', '$0.5~<y<0.7~~(i=4)$']
+    if ax1 is not None:
+        thesis_legend(ax1, H, L, loc=3, fontsize=20, frameon=0, handletextpad=0)
+    py.subplots_adjust(left=0.08, bottom=0.05, right=0.98, top=0.98, wspace=0, hspace=0)
+    filename = output_file
+    thesis_save_labels(py.gcf(), filename)
+
+# Adapted from thesis/psidis.py:plot_pion, original lines 40-209; SHA256 f16cd20d12dcbb2cf3d50686398736cb571cf36c6a884d6a78120d8cec104d96.
+def thesis_psidis_plot_pion(datasets, output_file, interval):
+    _selected_keys = {r + ':' + str(i) for (r, tables) in datasets.items() for i in tables}
+    thy_plot = thy_band = thy_plot0 = thy_band0 = thy_point0 = None
+    istep = 0
+    kc = SimpleNamespace(nc={0: 1})
+    nc = 1
+    predictions = {'reactions': datasets}
+    data = datasets['psidis']
+    tabs = data
+    (nrows, ncols) = (2, 2)
+    fig = py.figure(figsize=(ncols * 7, nrows * 4))
+    ax11 = py.subplot(nrows, ncols, 1)
+    ax12 = py.subplot(nrows, ncols, 2)
+    ax21 = py.subplot(nrows, ncols, 3)
+    ax22 = py.subplot(nrows, ncols, 4)
+    tabs = datasets['psidis']
+    data = predictions['reactions']['psidis']
+    hand = {}
+    thy_band = {}
+    for idx in tabs:
+        X = tabs[idx]['X']
+        values = tabs[idx]['value']
+        alpha = data[idx]['alpha']
+        if idx == 20004:
+            (ax, color) = (ax11, 'firebrick')
+        if idx == 20005:
+            (ax, color) = (ax12, 'firebrick')
+        if idx == 20017:
+            (ax, color) = (ax11, 'darkgreen')
+        if idx == 20018:
+            (ax, color) = (ax12, 'darkgreen')
+        if idx == 20008:
+            (ax, color) = (ax21, 'firebrick')
+        if idx == 20009:
+            (ax, color) = (ax22, 'firebrick')
+        if idx == 20021:
+            (ax, color) = (ax21, 'darkgreen')
+        if idx == 20022:
+            (ax, color) = (ax22, 'darkgreen')
+        hand[idx] = ax.errorbar(X, values, yerr=alpha, color=color, fmt='o', ms=2, capsize=3.0)
+        for ic in range(nc):
+            if nc > 1:
+                color = colors[cluster[ic]]
+            thy = data[idx]['thy-%d' % ic]
+            std_lower = data[idx]['dthy_lower-%d' % ic]
+            std_upper = data[idx]['dthy_upper-%d' % ic]
+            down = thy - std_lower
+            up = thy + std_upper
+            (thy_plot,) = ax.plot(X, thy, color=color)
+            thy_band[idx] = ax.fill_between(X, np.minimum(down, up), np.maximum(down, up), color=color, alpha=0.5, where=thesis_band_mask(X))
+    for ax in [ax11, ax12]:
+        ax.tick_params(axis='both', which='both', top=True, right=True, labelbottom=False, direction='in', labelsize=30)
+        ax.set_yticks([0.25, 0.5, 0.75])
+    for ax in [ax21, ax22]:
+        ax.tick_params(axis='both', which='both', top=True, right=True, direction='in', labelsize=30)
+    for ax in [ax11, ax12, ax21, ax22]:
+        ax.semilogx()
+        ax.set_xlim(0.004, 0.6)
+        ax.set_xticks([0.01, 0.1])
+        ax.set_xticklabels(['$0.01$', '$0.1$'])
+        ax.xaxis.set_tick_params(which='major', length=6)
+        ax.xaxis.set_tick_params(which='minor', length=3)
+        ax.yaxis.set_tick_params(which='major', length=6)
+        ax.yaxis.set_tick_params(which='minor', length=3)
+        ax.axhline(0, 0, 1, color='black', alpha=0.2)
+    for ax in [ax21, ax22]:
+        ax.set_xlabel('\\boldmath$x_{\\rm bj}$', size=40)
+    for ax in [ax12, ax22]:
+        ax.tick_params(axis='both', which='both', labelleft=False)
+    ax11.set_ylim(-0.1, 1.0)
+    ax12.set_ylim(-0.1, 1.0)
+    ax21.set_ylim(-0.1, 0.5)
+    ax22.set_ylim(-0.1, 0.5)
+    minorLocator = MultipleLocator(0.1)
+    majorLocator = MultipleLocator(0.2)
+    ax11.yaxis.set_minor_locator(minorLocator)
+    ax11.yaxis.set_major_locator(majorLocator)
+    ax12.yaxis.set_minor_locator(minorLocator)
+    ax12.yaxis.set_major_locator(majorLocator)
+    minorLocator = MultipleLocator(0.1)
+    majorLocator = MultipleLocator(0.2)
+    ax21.yaxis.set_minor_locator(minorLocator)
+    ax21.yaxis.set_major_locator(majorLocator)
+    ax22.yaxis.set_minor_locator(minorLocator)
+    ax22.yaxis.set_major_locator(majorLocator)
+    ax11.text(0.05, 0.75, '\\boldmath$A^{p,\\pi^+}_{1}$', transform=ax11.transAxes, size=40)
+    ax12.text(0.05, 0.75, '\\boldmath$A^{p,\\pi^-}_{1}$', transform=ax12.transAxes, size=40)
+    ax21.text(0.05, 0.75, '\\boldmath$A^{D,\\pi^+}_{1}$', transform=ax21.transAxes, size=40)
+    ax22.text(0.05, 0.75, '\\boldmath$A^{D,\\pi^-}_{1}$', transform=ax22.transAxes, size=40)
+    (handles, labels) = ([], [])
+    handles.append(hand.get(20004))
+    handles.append(hand.get(20017))
+    labels.append('\\textbf{\\textrm{HERMES}}')
+    labels.append('\\textbf{\\textrm{COMPASS}}')
+    thesis_legend(ax11, handles, labels, frameon=False, fontsize=22, loc=(0.0, 0.35), handletextpad=0.5, handlelength=1.0)
+    (handles, labels) = ([], [])
+    handles.append(thy_band.get(20004))
+    handles.append(thy_band.get(20017))
+    labels.append('\\textbf{\\textrm{JAM (HERMES)}}')
+    labels.append('\\textbf{\\textrm{JAM (COMPASS)}}')
+    thesis_legend(ax12, handles, labels, frameon=False, fontsize=22, loc=(0.0, 0.35), handletextpad=0.5, handlelength=1.0)
+    py.tight_layout()
+    py.subplots_adjust(hspace=0, wspace=0)
+    filename = output_file
+    thesis_finish_panels(py.gcf(), 'thesis_psidis_plot_pion', _selected_keys)
+    py.savefig(filename)
+
+# Adapted from thesis/psidis.py:plot_kaon, original lines 211-382; SHA256 f16cd20d12dcbb2cf3d50686398736cb571cf36c6a884d6a78120d8cec104d96.
+def thesis_psidis_plot_kaon(datasets, output_file, interval):
+    _selected_keys = {r + ':' + str(i) for (r, tables) in datasets.items() for i in tables}
+    thy_plot = thy_band = thy_plot0 = thy_band0 = thy_point0 = None
+    istep = 0
+    kc = SimpleNamespace(nc={0: 1})
+    nc = 1
+    predictions = {'reactions': datasets}
+    data = datasets['psidis']
+    tabs = data
+    (nrows, ncols) = (2, 3)
+    fig = py.figure(figsize=(ncols * 7, nrows * 4))
+    ax11 = py.subplot(nrows, ncols, 1)
+    ax12 = py.subplot(nrows, ncols, 2)
+    ax21 = py.subplot(nrows, ncols, 4)
+    ax22 = py.subplot(nrows, ncols, 5)
+    ax23 = py.subplot(nrows, ncols, 6)
+    tabs = datasets['psidis']
+    data = predictions['reactions']['psidis']
+    hand = {}
+    thy_band = {}
+    for idx in tabs:
+        X = tabs[idx]['X']
+        values = tabs[idx]['value']
+        alpha = data[idx]['alpha']
+        if idx == 20012:
+            (ax, color) = (ax21, 'firebrick')
+        if idx == 20013:
+            (ax, color) = (ax22, 'firebrick')
+        if idx == 20014:
+            (ax, color) = (ax23, 'firebrick')
+        if idx == 20019:
+            (ax, color) = (ax11, 'darkgreen')
+        if idx == 20020:
+            (ax, color) = (ax12, 'darkgreen')
+        if idx == 20025:
+            (ax, color) = (ax21, 'darkgreen')
+        if idx == 20026:
+            (ax, color) = (ax22, 'darkgreen')
+        hand[idx] = ax.errorbar(X, values, yerr=alpha, color=color, fmt='o', ms=2, capsize=3.0)
+        for ic in range(nc):
+            if nc > 1:
+                color = colors[cluster[ic]]
+            thy = data[idx]['thy-%d' % ic]
+            std_lower = data[idx]['dthy_lower-%d' % ic]
+            std_upper = data[idx]['dthy_upper-%d' % ic]
+            down = thy - std_lower
+            up = thy + std_upper
+            (thy_plot,) = ax.plot(X, thy, color=color)
+            thy_band[idx] = ax.fill_between(X, np.minimum(down, up), np.maximum(down, up), color=color, alpha=0.5, where=thesis_band_mask(X))
+    for ax in [ax11, ax12]:
+        ax.tick_params(axis='both', which='both', top=True, right=True, labelbottom=False, direction='in', labelsize=30)
+        ax.set_yticks([0.25, 0.5, 0.75])
+    for ax in [ax21, ax22, ax23]:
+        ax.tick_params(axis='both', which='both', top=True, right=True, direction='in', labelsize=30)
+    for ax in [ax11, ax12, ax21, ax22, ax23]:
+        ax.semilogx()
+        ax.set_xlim(0.004, 0.6)
+        ax.set_xticks([0.01, 0.1])
+        ax.set_xticklabels(['$0.01$', '$0.1$'])
+        ax.xaxis.set_tick_params(which='major', length=6)
+        ax.xaxis.set_tick_params(which='minor', length=3)
+        ax.yaxis.set_tick_params(which='major', length=6)
+        ax.yaxis.set_tick_params(which='minor', length=3)
+        ax.axhline(0, 0, 1, color='black', alpha=0.2)
+    for ax in [ax21, ax22, ax23]:
+        ax.set_xlabel('\\boldmath$x_{\\rm bj}$', size=40)
+    for ax in [ax12, ax22, ax23]:
+        ax.tick_params(axis='both', which='both', labelleft=False)
+    ax11.set_ylim(-0.18, 1.0)
+    ax12.set_ylim(-0.18, 1.0)
+    ax21.set_ylim(-0.18, 0.9)
+    ax22.set_ylim(-0.18, 0.9)
+    ax23.set_ylim(-0.18, 0.9)
+    minorLocator = MultipleLocator(0.1)
+    majorLocator = MultipleLocator(0.2)
+    ax11.yaxis.set_minor_locator(minorLocator)
+    ax11.yaxis.set_major_locator(majorLocator)
+    ax12.yaxis.set_minor_locator(minorLocator)
+    ax12.yaxis.set_major_locator(majorLocator)
+    minorLocator = MultipleLocator(0.1)
+    majorLocator = MultipleLocator(0.2)
+    ax21.yaxis.set_minor_locator(minorLocator)
+    ax21.yaxis.set_major_locator(majorLocator)
+    ax22.yaxis.set_minor_locator(minorLocator)
+    ax22.yaxis.set_major_locator(majorLocator)
+    ax11.text(0.05, 0.75, '\\boldmath$A^{p,K^+}_{1}$', transform=ax11.transAxes, size=40)
+    ax12.text(0.05, 0.75, '\\boldmath$A^{p,K^-}_{1}$', transform=ax12.transAxes, size=40)
+    ax21.text(0.05, 0.75, '\\boldmath$A^{D,K^+}_{1}$', transform=ax21.transAxes, size=40)
+    ax22.text(0.05, 0.75, '\\boldmath$A^{D,K^-}_{1}$', transform=ax22.transAxes, size=40)
+    ax23.text(0.05, 0.75, '\\boldmath$A^{D,K^{\\pm}}_{1}$', transform=ax23.transAxes, size=40)
+    (handles, labels) = ([], [])
+    handles.append(hand.get(20012))
+    handles.append(hand.get(20019))
+    labels.append('\\textbf{\\textrm{HERMES}}')
+    labels.append('\\textbf{\\textrm{COMPASS}}')
+    thesis_legend(ax11, handles, labels, frameon=False, fontsize=22, loc=(0.0, 0.35), handletextpad=0.5, handlelength=1.0)
+    (handles, labels) = ([], [])
+    handles.append(thy_band.get(20012))
+    handles.append(thy_band.get(20019))
+    labels.append('\\textbf{\\textrm{JAM (HERMES)}}')
+    labels.append('\\textbf{\\textrm{JAM (COMPASS)}}')
+    thesis_legend(ax12, handles, labels, frameon=False, fontsize=22, loc=(0.0, 0.35), handletextpad=0.5, handlelength=1.0)
+    py.tight_layout()
+    py.subplots_adjust(hspace=0, wspace=0)
+    filename = output_file
+    thesis_finish_panels(py.gcf(), 'thesis_psidis_plot_kaon', _selected_keys)
+    py.savefig(filename)
+
+# Adapted from thesis/psidis.py:plot_hadron, original lines 384-577; SHA256 f16cd20d12dcbb2cf3d50686398736cb571cf36c6a884d6a78120d8cec104d96.
+def thesis_psidis_plot_hadron(datasets, output_file, interval):
+    _selected_keys = {r + ':' + str(i) for (r, tables) in datasets.items() for i in tables}
+    thy_plot = thy_band = thy_plot0 = thy_band0 = thy_point0 = None
+    istep = 0
+    kc = SimpleNamespace(nc={0: 1})
+    nc = 1
+    predictions = {'reactions': datasets}
+    data = datasets['psidis']
+    tabs = data
+    (nrows, ncols) = (3, 2)
+    fig = py.figure(figsize=(ncols * 7, nrows * 4))
+    ax11 = py.subplot(nrows, ncols, 1)
+    ax12 = py.subplot(nrows, ncols, 2)
+    ax21 = py.subplot(nrows, ncols, 3)
+    ax22 = py.subplot(nrows, ncols, 4)
+    ax31 = py.subplot(nrows, ncols, 5)
+    ax32 = py.subplot(nrows, ncols, 6)
+    tabs = datasets['psidis']
+    data = predictions['reactions']['psidis']
+    hand = {}
+    thy_band = {}
+    for idx in tabs:
+        X = tabs[idx]['X']
+        values = tabs[idx]['value']
+        alpha = data[idx]['alpha']
+        if idx == 20000:
+            (ax, color) = (ax11, 'blue')
+        if idx == 20001:
+            (ax, color) = (ax12, 'blue')
+        if idx == 20002:
+            (ax, color) = (ax21, 'blue')
+        if idx == 20003:
+            (ax, color) = (ax22, 'blue')
+        if idx == 20006:
+            (ax, color) = (ax11, 'firebrick')
+        if idx == 20007:
+            (ax, color) = (ax12, 'firebrick')
+        if idx == 20010:
+            (ax, color) = (ax21, 'firebrick')
+        if idx == 20011:
+            (ax, color) = (ax22, 'firebrick')
+        if idx == 20015:
+            (ax, color) = (ax31, 'firebrick')
+        if idx == 20016:
+            (ax, color) = (ax32, 'firebrick')
+        if idx == 20023:
+            (ax, color) = (ax21, 'darkgreen')
+        if idx == 20024:
+            (ax, color) = (ax22, 'darkgreen')
+        hand[idx] = ax.errorbar(X, values, yerr=alpha, color=color, fmt='o', ms=2, capsize=3.0)
+        for ic in range(nc):
+            if nc > 1:
+                color = colors[cluster[ic]]
+            thy = data[idx]['thy-%d' % ic]
+            std_lower = data[idx]['dthy_lower-%d' % ic]
+            std_upper = data[idx]['dthy_upper-%d' % ic]
+            down = thy - std_lower
+            up = thy + std_upper
+            (thy_plot,) = ax.plot(X, thy, color=color)
+            thy_band[idx] = ax.fill_between(X, np.minimum(down, up), np.maximum(down, up), color=color, alpha=0.5, where=thesis_band_mask(X))
+    for ax in [ax11, ax12, ax21, ax22]:
+        ax.tick_params(axis='both', which='both', top=True, right=True, labelbottom=False, direction='in', labelsize=30)
+        ax.set_yticks([0.25, 0.5, 0.75])
+    for ax in [ax31, ax32]:
+        ax.tick_params(axis='both', which='both', top=True, right=True, direction='in', labelsize=30)
+    for ax in [ax11, ax12, ax21, ax22, ax31, ax32]:
+        ax.semilogx()
+        ax.set_xlim(0.004, 0.6)
+        ax.set_xticks([0.01, 0.1])
+        ax.set_xticklabels(['$0.01$', '$0.1$'])
+        ax.xaxis.set_tick_params(which='major', length=6)
+        ax.xaxis.set_tick_params(which='minor', length=3)
+        ax.yaxis.set_tick_params(which='major', length=6)
+        ax.yaxis.set_tick_params(which='minor', length=3)
+        ax.axhline(0, 0, 1, color='black', alpha=0.2)
+    for ax in [ax31, ax32]:
+        ax.set_xlabel('\\boldmath$x_{\\rm bj}$', size=40)
+    for ax in [ax12, ax22, ax32]:
+        ax.tick_params(axis='both', which='both', labelleft=False)
+    ax11.set_ylim(-0.1, 0.99)
+    ax12.set_ylim(-0.1, 0.99)
+    ax21.set_ylim(-0.1, 0.5)
+    ax22.set_ylim(-0.1, 0.5)
+    ax31.set_ylim(-0.5, 0.5)
+    ax32.set_ylim(-0.5, 0.5)
+    minorLocator = MultipleLocator(0.1)
+    majorLocator = MultipleLocator(0.2)
+    ax11.yaxis.set_minor_locator(minorLocator)
+    ax11.yaxis.set_major_locator(majorLocator)
+    ax12.yaxis.set_minor_locator(minorLocator)
+    ax12.yaxis.set_major_locator(majorLocator)
+    minorLocator = MultipleLocator(0.1)
+    majorLocator = MultipleLocator(0.2)
+    ax21.yaxis.set_minor_locator(minorLocator)
+    ax21.yaxis.set_major_locator(majorLocator)
+    ax22.yaxis.set_minor_locator(minorLocator)
+    ax22.yaxis.set_major_locator(majorLocator)
+    minorLocator = MultipleLocator(0.1)
+    majorLocator = MultipleLocator(0.2)
+    ax31.yaxis.set_minor_locator(minorLocator)
+    ax31.yaxis.set_major_locator(majorLocator)
+    ax32.yaxis.set_minor_locator(minorLocator)
+    ax32.yaxis.set_major_locator(majorLocator)
+    ax11.text(0.05, 0.75, '\\boldmath$A^{p,h^+}_{1}$', transform=ax11.transAxes, size=40)
+    ax12.text(0.05, 0.75, '\\boldmath$A^{p,h^-}_{1}$', transform=ax12.transAxes, size=40)
+    ax21.text(0.05, 0.75, '\\boldmath$A^{D,h^+}_{1}$', transform=ax21.transAxes, size=40)
+    ax22.text(0.05, 0.75, '\\boldmath$A^{D,h^-}_{1}$', transform=ax22.transAxes, size=40)
+    ax31.text(0.05, 0.75, '\\boldmath$A^{^3{\\rm He},h^+}_{1}$', transform=ax31.transAxes, size=40)
+    ax32.text(0.05, 0.75, '\\boldmath$A^{^3{\\rm He},h^-}_{1}$', transform=ax32.transAxes, size=40)
+    (handles, labels) = ([], [])
+    handles.append(hand.get(20006))
+    handles.append(hand.get(20023))
+    handles.append(hand.get(20000))
+    labels.append('\\textbf{\\textrm{HERMES}}')
+    labels.append('\\textbf{\\textrm{COMPASS}}')
+    labels.append('\\textbf{\\textrm{SMC}}')
+    thesis_legend(ax11, handles, labels, frameon=False, fontsize=22, loc=(0.0, 0.35), handletextpad=0.5, handlelength=1.0)
+    (handles, labels) = ([], [])
+    handles.append(thy_band.get(20006))
+    handles.append(thy_band.get(20023))
+    handles.append(thy_band.get(20000))
+    labels.append('\\textbf{\\textrm{JAM (HERMES)}}')
+    labels.append('\\textbf{\\textrm{JAM (COMPASS)}}')
+    labels.append('\\textbf{\\textrm{JAM (SMC)}}')
+    thesis_legend(ax12, handles, labels, frameon=False, fontsize=22, loc=(0.0, 0.35), handletextpad=0.5, handlelength=1.0)
+    py.tight_layout()
+    py.subplots_adjust(hspace=0, wspace=0)
+    filename = output_file
+    thesis_finish_panels(py.gcf(), 'thesis_psidis_plot_hadron', _selected_keys)
+    py.savefig(filename)
+
+
+
+
+_THESIS_FIGURES = [{'source': 'dy.py:plot_ratios', 'function': 'thesis_dy_plot_ratios', 'filename': 'DY-ratios.png', 'datasets': ['dy:20001', 'dy:20002'], 'lines': [42, 212], 'notes': [], 'arithmetic_corrections': [], 'panels': [['dy:20001', 'dy:20002'], ['dy:20001', 'dy:20002']], 'output_directory': ''}, {'source': 'dy.py:plot_xsec', 'function': 'thesis_dy_plot_xsec', 'filename': 'DY-xsec.png', 'datasets': ['dy:10001'], 'lines': [214, 360], 'notes': [], 'arithmetic_corrections': [], 'panels': [['dy:10001']], 'output_directory': ''}, {'source': 'idis.py:plot_proton', 'function': 'thesis_idis_plot_proton', 'filename': 'DIS-proton.png', 'datasets': ['idis:10003', 'idis:10010', 'idis:10016', 'idis:10020', 'idis:10026', 'idis:10027', 'idis:10028', 'idis:10029', 'idis:10030'], 'lines': [301, 777], 'notes': [], 'arithmetic_corrections': [], 'panels': [['idis:10010', 'idis:10016', 'idis:10020'], ['idis:10003'], ['idis:10026', 'idis:10030'], ['idis:10027', 'idis:10028', 'idis:10029']], 'output_directory': ''}, {'source': 'idis.py:plot_deuteron', 'function': 'thesis_idis_plot_deuteron', 'filename': 'DIS-deuteron.png', 'datasets': ['idis:10002', 'idis:10011', 'idis:10017', 'idis:10021', 'idis:10033', 'idis:10050'], 'lines': [779, 1186], 'notes': [], 'arithmetic_corrections': [], 'panels': [['idis:10011', 'idis:10017'], ['idis:10002'], ['idis:10021', 'idis:10050'], ['idis:10033']], 'output_directory': ''}, {'source': 'idis.py:plot_CC', 'function': 'thesis_idis_plot_CC', 'filename': 'DIS-CC.png', 'datasets': ['idis:10031', 'idis:10032'], 'lines': [1188, 1301], 'notes': [], 'arithmetic_corrections': [], 'panels': [['idis:10031', 'idis:10032']], 'output_directory': ''}, {'source': 'idis.py:plot_A3', 'function': 'thesis_idis_plot_A3', 'filename': 'DIS-A3.png', 'datasets': ['idis:10041', 'idis:10051'], 'lines': [1303, 1468], 'notes': [], 'arithmetic_corrections': [], 'panels': [['idis:10041'], ['idis:10051']], 'output_directory': ''}, {'source': 'marathon.py:__main__', 'function': 'thesis_marathon_plot_main', 'filename': 'marathon.png', 'datasets': ['idis:10050', 'idis:10051'], 'lines': [138, 383], 'notes': ['Only selected campaign supplied; historical alternate-fit overlay absent.'], 'arithmetic_corrections': [], 'panels': [['idis:10050'], ['idis:10051']], 'output_directory': ''}, {'source': 'jets.py:plot_data', 'function': 'thesis_jets_plot_data', 'filename': 'jets.png', 'datasets': ['jet:10001', 'jet:10002', 'jet:10003', 'jet:10004'], 'lines': [136, 362], 'notes': [], 'arithmetic_corrections': ["RHIC ratio panels use each dataset's own eta-bin row bounds, not the preceding dataset's."], 'panels': [['jet:10001'], ['jet:10002'], ['jet:10003', 'jet:10004'], ['jet:10003'], ['jet:10004']], 'output_directory': 'jets'}, {'source': 'lepton.py:plot_asym', 'function': 'thesis_lepton_plot_asym', 'filename': 'lepton-asym.png', 'datasets': ['wzrv:2010', 'wzrv:2011', 'wzrv:2012', 'wzrv:2013', 'wzrv:2014', 'wzrv:2016', 'wzrv:2017'], 'lines': [40, 319], 'notes': [], 'arithmetic_corrections': ['Experimental data/theory errors divide by the fixed mean theory, not measured data.'], 'panels': [['wzrv:2010', 'wzrv:2011', 'wzrv:2012', 'wzrv:2013', 'wzrv:2014'], ['wzrv:2016', 'wzrv:2017'], ['wzrv:2011', 'wzrv:2013', 'wzrv:2014'], ['wzrv:2016'], ['wzrv:2010'], ['wzrv:2017'], ['wzrv:2012'], []], 'output_directory': ''}, {'source': 'lepton.py:plot_star', 'function': 'thesis_lepton_plot_star', 'filename': 'lepton-STAR.png', 'datasets': ['wzrv:2020'], 'lines': [321, 469], 'notes': [], 'arithmetic_corrections': [], 'panels': [['wzrv:2020'], ['wzrv:2020']], 'output_directory': ''}, {'source': 'wz.py:__main__', 'function': 'thesis_wz_plot_main', 'filename': 'WZboson.png', 'datasets': ['zrap:1000', 'zrap:1001', 'wasym:1000', 'wasym:1001'], 'lines': [57, 376], 'notes': [], 'arithmetic_corrections': ["Removed source's extra normalization in the Z data/theory uncertainty.", "Z normalization uses the current dataset's measured values, not a stale loop variable."], 'panels': [['zrap:1000', 'zrap:1001'], ['zrap:1000'], ['zrap:1001'], ['wasym:1000', 'wasym:1001'], ['wasym:1000'], ['wasym:1001']], 'output_directory': ''}, {'source': 'pidis.py:plot_proton_A1_Apa', 'function': 'thesis_pidis_plot_proton_A1_Apa', 'filename': 'PDIS-Apa-proton.png', 'datasets': ['pidis:10002', 'pidis:10003', 'pidis:10004', 'pidis:10007', 'pidis:10022', 'pidis:10029', 'pidis:10032', 'pidis:10035', 'pidis:10036'], 'lines': [279, 496], 'notes': [], 'arithmetic_corrections': [], 'panels': [['pidis:10002', 'pidis:10003', 'pidis:10004', 'pidis:10035', 'pidis:10036'], ['pidis:10007', 'pidis:10022', 'pidis:10029', 'pidis:10032']], 'output_directory': ''}, {'source': 'pidis.py:plot_deuteron_A1_Apa', 'function': 'thesis_pidis_plot_deuteron_A1_Apa', 'filename': 'PDIS-Apa-deuteron.png', 'datasets': ['pidis:10001', 'pidis:10006', 'pidis:10021', 'pidis:10027', 'pidis:10033', 'pidis:10034'], 'lines': [498, 708], 'notes': [], 'arithmetic_corrections': [], 'panels': [['pidis:10001', 'pidis:10033', 'pidis:10034'], ['pidis:10006', 'pidis:10021', 'pidis:10027']], 'output_directory': ''}, {'source': 'pidis.py:plot_helium_neutron', 'function': 'thesis_pidis_plot_helium_neutron', 'filename': 'PDIS-Apa-neutron-helium.png', 'datasets': ['pidis:10005', 'pidis:10018', 'pidis:10025'], 'lines': [710, 912], 'notes': [], 'arithmetic_corrections': [], 'panels': [['pidis:10005', 'pidis:10018'], ['pidis:10025']], 'output_directory': ''}, {'source': 'pjets.py:plot_pjets', 'function': 'thesis_pjets_plot_pjets', 'filename': 'pjets.png', 'datasets': ['pjet:20001', 'pjet:20002', 'pjet:20003', 'pjet:20004', 'pjet:20006', 'pjet:20007', 'pjet:20008'], 'lines': [40, 283], 'notes': [], 'arithmetic_corrections': ['Original pjets has only a band: added its mean curve in the existing theory color; no panels or legends changed.'], 'panels': [['pjet:20001'], ['pjet:20002'], ['pjet:20003'], ['pjet:20004'], ['pjet:20004'], ['pjet:20006'], ['pjet:20008'], ['pjet:20007'], ['pjet:20007']], 'output_directory': 'pjets'}, {'source': 'polWlep.py:__main__', 'function': 'thesis_polWlep_plot_main', 'filename': 'polWlep.png', 'datasets': ['wzrv:1000', 'wzrv:1020', 'wzrv:1021'], 'lines': [35, 226], 'notes': ['Only selected campaign supplied; historical alternate-fit overlay absent.'], 'arithmetic_corrections': [], 'panels': [['wzrv:1000'], ['wzrv:1020', 'wzrv:1021']], 'output_directory': ''}, {'source': 'sidis.py:plot_pion', 'function': 'thesis_sidis_plot_pion', 'filename': 'SIDIS-pion.png', 'datasets': ['sidis:1005', 'sidis:1006'], 'lines': [39, 168], 'notes': [], 'arithmetic_corrections': [], 'panels': [['sidis:1005', 'sidis:1006'], ['sidis:1005', 'sidis:1006'], ['sidis:1005', 'sidis:1006'], ['sidis:1005', 'sidis:1006'], ['sidis:1005', 'sidis:1006'], ['sidis:1005', 'sidis:1006'], ['sidis:1005', 'sidis:1006'], ['sidis:1005', 'sidis:1006']], 'output_directory': ''}, {'source': 'sidis.py:plot_kaon', 'function': 'thesis_sidis_plot_kaon', 'filename': 'SIDIS-kaon.png', 'datasets': ['sidis:2005', 'sidis:2006'], 'lines': [170, 299], 'notes': [], 'arithmetic_corrections': [], 'panels': [['sidis:2005', 'sidis:2006'], ['sidis:2005', 'sidis:2006'], ['sidis:2005', 'sidis:2006'], ['sidis:2005', 'sidis:2006'], ['sidis:2005', 'sidis:2006'], ['sidis:2005', 'sidis:2006'], ['sidis:2005', 'sidis:2006'], ['sidis:2005', 'sidis:2006']], 'output_directory': ''}, {'source': 'sidis.py:plot_hadron', 'function': 'thesis_sidis_plot_hadron', 'filename': 'SIDIS-hadron.png', 'datasets': ['sidis:3000', 'sidis:3001'], 'lines': [301, 430], 'notes': [], 'arithmetic_corrections': [], 'panels': [['sidis:3000', 'sidis:3001'], ['sidis:3000', 'sidis:3001'], ['sidis:3000', 'sidis:3001'], ['sidis:3000', 'sidis:3001'], ['sidis:3000', 'sidis:3001'], ['sidis:3000', 'sidis:3001'], ['sidis:3000', 'sidis:3001'], ['sidis:3000', 'sidis:3001']], 'output_directory': ''}, {'source': 'psidis.py:plot_pion', 'function': 'thesis_psidis_plot_pion', 'filename': 'PSIDIS-pion.png', 'datasets': ['psidis:20004', 'psidis:20005', 'psidis:20017', 'psidis:20018', 'psidis:20008', 'psidis:20009', 'psidis:20021', 'psidis:20022'], 'lines': [40, 209], 'notes': [], 'arithmetic_corrections': [], 'panels': [['psidis:20004', 'psidis:20017'], ['psidis:20005', 'psidis:20018'], ['psidis:20008', 'psidis:20021'], ['psidis:20009', 'psidis:20022']], 'output_directory': ''}, {'source': 'psidis.py:plot_kaon', 'function': 'thesis_psidis_plot_kaon', 'filename': 'PSIDIS-kaon.png', 'datasets': ['psidis:20012', 'psidis:20013', 'psidis:20014', 'psidis:20019', 'psidis:20020', 'psidis:20025', 'psidis:20026'], 'lines': [211, 382], 'notes': [], 'arithmetic_corrections': [], 'panels': [['psidis:20019'], ['psidis:20020'], ['psidis:20012', 'psidis:20025'], ['psidis:20013', 'psidis:20026'], ['psidis:20014']], 'output_directory': ''}, {'source': 'psidis.py:plot_hadron', 'function': 'thesis_psidis_plot_hadron', 'filename': 'PSIDIS-hadron.png', 'datasets': ['psidis:20000', 'psidis:20001', 'psidis:20002', 'psidis:20003', 'psidis:20006', 'psidis:20007', 'psidis:20010', 'psidis:20011', 'psidis:20015', 'psidis:20016', 'psidis:20023', 'psidis:20024'], 'lines': [384, 577], 'notes': [], 'arithmetic_corrections': [], 'panels': [['psidis:20000', 'psidis:20006'], ['psidis:20001', 'psidis:20007'], ['psidis:20002', 'psidis:20010', 'psidis:20023'], ['psidis:20003', 'psidis:20011', 'psidis:20024'], ['psidis:20015'], ['psidis:20016']], 'output_directory': ''}, {'source': 'corrected-sia.py:plot_sia:pion', 'function': 'thesis_sia_plot_pion', 'filename': 'SIA-pion.png', 'datasets': ['sia:1030', 'sia:1028', 'sia:1029', 'sia:1001', 'sia:1002', 'sia:1003', 'sia:1005', 'sia:1006', 'sia:1010', 'sia:1011', 'sia:1013', 'sia:1018', 'sia:1025', 'sia:1026', 'sia:1027', 'sia:1019', 'sia:1014', 'sia:1015', 'sia:1016', 'sia:1017'], 'lines': [1, 246], 'notes': [], 'arithmetic_corrections': ['Selected 0.1 split; pointwise low/mean and high/mean; stable dataset identity; no arbitrary mean replacement.'], 'panels': [['sia:1030'], ['sia:1028'], ['sia:1029'], ['sia:1001', 'sia:1002', 'sia:1003', 'sia:1005', 'sia:1006'], ['sia:1010'], ['sia:1011'], ['sia:1013'], ['sia:1018'], ['sia:1025'], ['sia:1026'], ['sia:1027'], ['sia:1019'], ['sia:1014'], ['sia:1015'], ['sia:1016'], ['sia:1017']], 'output_directory': ''}, {'source': 'corrected-sia.py:plot_sia:kaon', 'function': 'thesis_sia_plot_kaon', 'filename': 'SIA-kaon.png', 'datasets': ['sia:2030', 'sia:2028', 'sia:2029', 'sia:2001', 'sia:2002', 'sia:2003', 'sia:2005', 'sia:2008', 'sia:2013', 'sia:2018', 'sia:2025', 'sia:2026', 'sia:2027', 'sia:2019', 'sia:2014', 'sia:2015', 'sia:2016', 'sia:2017'], 'lines': [1, 246], 'notes': [], 'arithmetic_corrections': ['Selected 0.1 split; pointwise low/mean and high/mean; stable dataset identity; no arbitrary mean replacement.'], 'panels': [['sia:2030'], ['sia:2028'], ['sia:2029'], ['sia:2001', 'sia:2002', 'sia:2003', 'sia:2005'], ['sia:2008'], ['sia:2013'], ['sia:2018'], ['sia:2025'], ['sia:2026'], ['sia:2027'], ['sia:2019'], ['sia:2014'], ['sia:2015'], ['sia:2016'], ['sia:2017']], 'output_directory': ''}, {'source': 'corrected-sia.py:plot_sia:hadron', 'function': 'thesis_sia_plot_hadron', 'filename': 'SIA-hadron.png', 'datasets': ['sia:4003', 'sia:4008', 'sia:4009', 'sia:4010', 'sia:4012', 'sia:4004', 'sia:4000', 'sia:4001', 'sia:4017', 'sia:4013', 'sia:4007', 'sia:4002', 'sia:4016', 'sia:4014', 'sia:4015'], 'lines': [1, 246], 'notes': [], 'arithmetic_corrections': ['Selected 0.1 split; pointwise low/mean and high/mean; stable dataset identity; no arbitrary mean replacement.'], 'panels': [['sia:4003', 'sia:4008', 'sia:4009', 'sia:4010', 'sia:4012'], ['sia:4004'], ['sia:4000'], ['sia:4001'], ['sia:4017'], ['sia:4013'], ['sia:4007'], ['sia:4002'], ['sia:4016'], ['sia:4014'], ['sia:4015']], 'output_directory': ''}, {'source': 'corrected-wc.py:plot_wc', 'function': 'thesis_wc_plot', 'filename': 'wcharm.png', 'datasets': ['wc:20001', 'wc:10001', 'wc:20002', 'wc:10002', 'wc:20003'], 'lines': [1, 175], 'notes': [], 'arithmetic_corrections': ['Single red JAM series; pointwise percentiles; no historical comparisons.'], 'panels': [['wc:20001'], ['wc:10001'], ['wc:20002'], ['wc:10002'], ['wc:20003']], 'output_directory': 'wc'}]
+_THESIS_PANEL_MAP = {'thesis_dy_plot_ratios': {'panels': [['dy:20001', 'dy:20002'], ['dy:20001', 'dy:20002']], 'annotations': [{'source_line': 139, 'axis': 'ax11', 'label': "'\\\\boldmath$\\\\sigma_{pD}^{\\\\rm DY}/2\\\\sigma_{pp}^{\\\\rm DY}$'", 'selection': 'panel-selected datasets'}, {'source_line': 140, 'axis': 'ax21', 'label': "'\\\\textbf{\\\\textrm{data/theory}}'", 'selection': 'panel-selected datasets'}, {'source_line': 141, 'axis': 'ax11', 'label': "'$0.48 < x_1 < 0.69$'", 'selection': '20002 in data'}, {'source_line': 142, 'axis': 'ax11', 'label': "'$0.36 < x_1 < 0.56$'", 'selection': '20001 in data'}]}, 'thesis_dy_plot_xsec': {'panels': [['dy:10001']], 'annotations': [{'source_line': 255, 'axis': 'ax11', 'label': "'$Q^2 \\\\, \\\\in \\\\,[15,20]\\\\,\\\\mathrm{GeV^2}$'", 'selection': 'panel-selected datasets'}, {'source_line': 256, 'axis': 'ax11', 'label': "'$Q^2 \\\\, \\\\in \\\\,[20,24]$'", 'selection': 'panel-selected datasets'}, {'source_line': 257, 'axis': 'ax11', 'label': "'$Q^2 \\\\, \\\\in \\\\,[24,28]$'", 'selection': 'panel-selected datasets'}, {'source_line': 258, 'axis': 'ax11', 'label': "'$Q^2 \\\\, \\\\in \\\\,[28,35]$'", 'selection': 'panel-selected datasets'}, {'source_line': 259, 'axis': 'ax11', 'label': "'$Q^2 \\\\, \\\\in \\\\,[35,40]$'", 'selection': 'panel-selected datasets'}, {'source_line': 260, 'axis': 'ax11', 'label': "'$Q^2 \\\\, \\\\in \\\\,[40,45]$'", 'selection': 'panel-selected datasets'}, {'source_line': 261, 'axis': 'ax11', 'label': "'$Q^2 \\\\, \\\\in \\\\,[45,52]$'", 'selection': 'panel-selected datasets'}, {'source_line': 262, 'axis': 'ax11', 'label': "'$Q^2 \\\\, \\\\in \\\\,[52,60]$'", 'selection': 'panel-selected datasets'}, {'source_line': 263, 'axis': 'ax11', 'label': "'$Q^2 \\\\, \\\\in \\\\,[60,68]$'", 'selection': 'panel-selected datasets'}, {'source_line': 264, 'axis': 'ax11', 'label': "'$Q^2 \\\\, \\\\in \\\\,[68,75]$'", 'selection': 'panel-selected datasets'}, {'source_line': 265, 'axis': 'ax11', 'label': "'$Q^2 \\\\, \\\\in \\\\,[100,140]$'", 'selection': 'panel-selected datasets'}, {'source_line': 266, 'axis': 'ax11', 'label': "'$Q^2 \\\\, \\\\in \\\\,[140,160]\\\\, (i=11)$'", 'selection': 'panel-selected datasets'}, {'source_line': 267, 'axis': 'ax11', 'label': "'$(i=0)$'", 'selection': 'panel-selected datasets'}, {'source_line': 268, 'axis': 'ax11', 'label': "'\\\\boldmath$M_{\\\\ell \\\\ell}^3 ~ \\\\frac{{\\\\rm d}^2 \\\\sigma_{pp}^{\\\\rm DY}}{{\\\\rm d} M_{\\\\ell \\\\ell} {\\\\rm d} x_F}$'", 'selection': 'panel-selected datasets'}, {'source_line': 269, 'axis': 'ax11', 'label': "'$(\\\\times\\\\, 10^{\\\\, i})$'", 'selection': 'panel-selected datasets'}]}, 'thesis_idis_plot_proton': {'panels': [['idis:10010', 'idis:10016', 'idis:10020'], ['idis:10003'], ['idis:10026', 'idis:10030'], ['idis:10027', 'idis:10028', 'idis:10029']], 'annotations': [{'source_line': 597, 'axis': 'ax11', 'label': "'$x=0.005\\\\, (i=24)$'", 'selection': "any(len(v['value'].get(26, [])) for v in PLOT.values())"}, {'source_line': 598, 'axis': 'ax11', 'label': "'$x=0.008$'", 'selection': "any(len(v['value'].get(25, [])) for v in PLOT.values())"}, {'source_line': 599, 'axis': 'ax11', 'label': "'$x=0.013$'", 'selection': "any(len(v['value'].get(24, [])) for v in PLOT.values())"}, {'source_line': 600, 'axis': 'ax11', 'label': "'$x=0.018$'", 'selection': "any(len(v['value'].get(23, [])) for v in PLOT.values())"}, {'source_line': 601, 'axis': 'ax11', 'label': "'$x=0.026$'", 'selection': "any(len(v['value'].get(22, [])) for v in PLOT.values())"}, {'source_line': 602, 'axis': 'ax11', 'label': "'$x=0.036$'", 'selection': "any(len(v['value'].get(21, [])) for v in PLOT.values())"}, {'source_line': 603, 'axis': 'ax11', 'label': "'$x=0.05$'", 'selection': "any(len(v['value'].get(20, [])) for v in PLOT.values())"}, {'source_line': 604, 'axis': 'ax11', 'label': "'$x=0.07$'", 'selection': "any(len(v['value'].get(19, [])) for v in PLOT.values())"}, {'source_line': 605, 'axis': 'ax11', 'label': "'$x=0.09$'", 'selection': "any(len(v['value'].get(18, [])) for v in PLOT.values())"}, {'source_line': 606, 'axis': 'ax11', 'label': "'$x=0.10$'", 'selection': "any(len(v['value'].get(17, [])) for v in PLOT.values())"}, {'source_line': 607, 'axis': 'ax11', 'label': "'$x=0.11$'", 'selection': "any(len(v['value'].get(16, [])) for v in PLOT.values())"}, {'source_line': 608, 'axis': 'ax11', 'label': "'$x=0.14$'", 'selection': "any(len(v['value'].get(15, [])) for v in PLOT.values())"}, {'source_line': 609, 'axis': 'ax11', 'label': "'$x=0.18$'", 'selection': "any(len(v['value'].get(14, [])) for v in PLOT.values())"}, {'source_line': 610, 'axis': 'ax11', 'label': "'$x=0.23$'", 'selection': "any(len(v['value'].get(13, [])) for v in PLOT.values())"}, {'source_line': 611, 'axis': 'ax11', 'label': "'$x=0.28$'", 'selection': "any(len(v['value'].get(12, [])) for v in PLOT.values())"}, {'source_line': 612, 'axis': 'ax11', 'label': "'$x=0.35$'", 'selection': "any(len(v['value'].get(11, [])) for v in PLOT.values())"}, {'source_line': 613, 'axis': 'ax11', 'label': "'$x=0.43$'", 'selection': "any(len(v['value'].get(10, [])) for v in PLOT.values())"}, {'source_line': 614, 'axis': 'ax11', 'label': "'$x=0.46$'", 'selection': "any(len(v['value'].get(9, [])) for v in PLOT.values())"}, {'source_line': 615, 'axis': 'ax11', 'label': "'$x=0.50$'", 'selection': "any(len(v['value'].get(8, [])) for v in PLOT.values())"}, {'source_line': 616, 'axis': 'ax11', 'label': "'$x=0.53$'", 'selection': "any(len(v['value'].get(7, [])) for v in PLOT.values())"}, {'source_line': 617, 'axis': 'ax11', 'label': "'$x=0.56$'", 'selection': "any(len(v['value'].get(6, [])) for v in PLOT.values())"}, {'source_line': 618, 'axis': 'ax11', 'label': "'$x=0.59$'", 'selection': "any(len(v['value'].get(5, [])) for v in PLOT.values())"}, {'source_line': 619, 'axis': 'ax11', 'label': "'$x=0.61$'", 'selection': "any(len(v['value'].get(4, [])) for v in PLOT.values())"}, {'source_line': 620, 'axis': 'ax11', 'label': "'$x=0.65$'", 'selection': "any(len(v['value'].get(3, [])) for v in PLOT.values())"}, {'source_line': 621, 'axis': 'ax11', 'label': "'$x=0.75$'", 'selection': "any(len(v['value'].get(2, [])) for v in PLOT.values())"}, {'source_line': 622, 'axis': 'ax11', 'label': "'$x=0.85$'", 'selection': "any(len(v['value'].get(1, [])) for v in PLOT.values())"}, {'source_line': 623, 'axis': 'ax11', 'label': "'$x=0.88\\\\, (i=0)$'", 'selection': "any(len(v['value'].get(0, [])) for v in PLOT.values())"}, {'source_line': 641, 'axis': 'ax11', 'label': "'\\\\boldmath$F_2^p$'", 'selection': 'panel-selected datasets'}, {'source_line': 642, 'axis': 'ax11', 'label': "'$(\\\\times\\\\, 2^{\\\\, i})$'", 'selection': 'panel-selected datasets'}, {'source_line': 689, 'axis': 'ax12', 'label': "'$\\\\theta=70^{\\\\circ} \\\\, (i=5)$'", 'selection': "any(len(v['value'].get(5, [])) for v in PLOT.values())"}, {'source_line': 690, 'axis': 'ax12', 'label': "'$\\\\theta=60^{\\\\circ} $'", 'selection': "any(len(v['value'].get(4, [])) for v in PLOT.values())"}, {'source_line': 691, 'axis': 'ax12', 'label': "'$\\\\theta=55^{\\\\circ} $'", 'selection': "any(len(v['value'].get(3, [])) for v in PLOT.values())"}, {'source_line': 692, 'axis': 'ax12', 'label': "'$\\\\theta=45^{\\\\circ} $'", 'selection': "any(len(v['value'].get(2, [])) for v in PLOT.values())"}, {'source_line': 693, 'axis': 'ax12', 'label': "'$\\\\theta=41^{\\\\circ} $'", 'selection': "any(len(v['value'].get(1, [])) for v in PLOT.values())"}, {'source_line': 694, 'axis': 'ax12', 'label': "'$\\\\theta=38^{\\\\circ}  \\\\, (i=0)$'", 'selection': "any(len(v['value'].get(0, [])) for v in PLOT.values())"}, {'source_line': 708, 'axis': 'ax12', 'label': "'\\\\boldmath$F_2^p$'", 'selection': 'panel-selected datasets'}, {'source_line': 709, 'axis': 'ax12', 'label': "'$(\\\\, \\\\times\\\\, 2^{\\\\, i})$'", 'selection': 'panel-selected datasets'}, {'source_line': 756, 'axis': 'ax21', 'label': "'$x=2.8\\\\cdot 10^{-5}\\\\, (i=24)$'", 'selection': "any(len(v['value'].get(24, [])) for v in PLOT.values())"}, {'source_line': 757, 'axis': 'ax21', 'label': "'$x=4.6\\\\cdot 10^{-5}$'", 'selection': "any(len(v['value'].get(23, [])) for v in PLOT.values())"}, {'source_line': 758, 'axis': 'ax21', 'label': "'$x=7.3\\\\cdot 10^{-5}$'", 'selection': "any(len(v['value'].get(22, [])) for v in PLOT.values())"}, {'source_line': 759, 'axis': 'ax21', 'label': "'$x=1.2\\\\cdot 10^{-4}$'", 'selection': "any(len(v['value'].get(21, [])) for v in PLOT.values())"}, {'source_line': 760, 'axis': 'ax21', 'label': "'$x=1.9\\\\cdot 10^{-4}$'", 'selection': "any(len(v['value'].get(20, [])) for v in PLOT.values())"}, {'source_line': 761, 'axis': 'ax21', 'label': "'$x=3.1\\\\cdot 10^{-4}$'", 'selection': "any(len(v['value'].get(19, [])) for v in PLOT.values())"}, {'source_line': 762, 'axis': 'ax21', 'label': "'$x=4.4\\\\cdot 10^{-4}$'", 'selection': "any(len(v['value'].get(18, [])) for v in PLOT.values())"}, {'source_line': 763, 'axis': 'ax21', 'label': "'$x=6.2\\\\cdot 10^{-4}$'", 'selection': "any(len(v['value'].get(17, [])) for v in PLOT.values())"}, {'source_line': 764, 'axis': 'ax21', 'label': "'$x=7.7\\\\cdot 10^{-4}$'", 'selection': "any(len(v['value'].get(16, [])) for v in PLOT.values())"}, {'source_line': 765, 'axis': 'ax21', 'label': "'$x=9.1 \\\\cdot 10^{-4}$'", 'selection': "any(len(v['value'].get(15, [])) for v in PLOT.values())"}, {'source_line': 766, 'axis': 'ax21', 'label': "'$x=0.0014$'", 'selection': "any(len(v['value'].get(14, [])) for v in PLOT.values())"}, {'source_line': 767, 'axis': 'ax21', 'label': "'$x=0.0024$'", 'selection': "any(len(v['value'].get(13, [])) for v in PLOT.values())"}, {'source_line': 768, 'axis': 'ax21', 'label': "'$x=0.0035$'", 'selection': "any(len(v['value'].get(12, [])) for v in PLOT.values())"}, {'source_line': 769, 'axis': 'ax21', 'label': "'$x=0.0056$'", 'selection': "any(len(v['value'].get(11, [])) for v in PLOT.values())"}, {'source_line': 770, 'axis': 'ax21', 'label': "'$x=0.0083$'", 'selection': "any(len(v['value'].get(10, [])) for v in PLOT.values())"}, {'source_line': 771, 'axis': 'ax21', 'label': "'$x=0.013$'", 'selection': "any(len(v['value'].get(9, [])) for v in PLOT.values())"}, {'source_line': 772, 'axis': 'ax21', 'label': "'$x=0.021$'", 'selection': "any(len(v['value'].get(8, [])) for v in PLOT.values())"}, {'source_line': 773, 'axis': 'ax21', 'label': "'$x=0.032$'", 'selection': "any(len(v['value'].get(7, [])) for v in PLOT.values())"}, {'source_line': 774, 'axis': 'ax21', 'label': "'$x=0.052$'", 'selection': "any(len(v['value'].get(6, [])) for v in PLOT.values())"}, {'source_line': 775, 'axis': 'ax21', 'label': "'$x=0.084$'", 'selection': "any(len(v['value'].get(5, [])) for v in PLOT.values())"}, {'source_line': 776, 'axis': 'ax21', 'label': "'$x=0.13$'", 'selection': "any(len(v['value'].get(4, [])) for v in PLOT.values())"}, {'source_line': 777, 'axis': 'ax21', 'label': "'$x=0.18$'", 'selection': "any(len(v['value'].get(3, [])) for v in PLOT.values())"}, {'source_line': 778, 'axis': 'ax21', 'label': "'$x=0.25$'", 'selection': "any(len(v['value'].get(2, [])) for v in PLOT.values())"}, {'source_line': 779, 'axis': 'ax21', 'label': "'$x=0.40$'", 'selection': "any(len(v['value'].get(1, [])) for v in PLOT.values())"}, {'source_line': 780, 'axis': 'ax21', 'label': "'$x=0.65 \\\\, (i=0)$'", 'selection': "any(len(v['value'].get(0, [])) for v in PLOT.values())"}, {'source_line': 795, 'axis': 'ax21', 'label': "'\\\\textrm{\\\\textbf{HERA}}'", 'selection': 'panel-selected datasets'}, {'source_line': 796, 'axis': 'ax21', 'label': "'\\\\boldmath$\\\\sigma_{\\\\rm red}^{\\\\rm NC}$'", 'selection': 'panel-selected datasets'}, {'source_line': 797, 'axis': 'ax21', 'label': "'$(\\\\, \\\\times\\\\, 2^{\\\\, i})$'", 'selection': 'panel-selected datasets'}, {'source_line': 798, 'axis': 'ax21', 'label': "'$\\\\sqrt{s}=318 \\\\,\\\\rm{GeV}$'", 'selection': 'panel-selected datasets'}, {'source_line': 846, 'axis': 'ax22', 'label': "'$x=3.3 \\\\cdot 10^{-5}\\\\, (i=29)$'", 'selection': "any(len(v['value'].get(29, [])) for v in PLOT.values())"}, {'source_line': 847, 'axis': 'ax22', 'label': "'$x=5.9 \\\\cdot 10^{-5}$'", 'selection': "any(len(v['value'].get(28, [])) for v in PLOT.values())"}, {'source_line': 848, 'axis': 'ax22', 'label': "'$x=1.6 \\\\cdot 10^{-4}$'", 'selection': "any(len(v['value'].get(27, [])) for v in PLOT.values())"}, {'source_line': 849, 'axis': 'ax22', 'label': "'$x=3.1 \\\\cdot 10^{-4}$'", 'selection': "any(len(v['value'].get(26, [])) for v in PLOT.values())"}, {'source_line': 850, 'axis': 'ax22', 'label': "'$x=4.5 \\\\cdot 10^{-4}$'", 'selection': "any(len(v['value'].get(25, [])) for v in PLOT.values())"}, {'source_line': 851, 'axis': 'ax22', 'label': "'$x=6.2 \\\\cdot 10^{-4}$'", 'selection': "any(len(v['value'].get(24, [])) for v in PLOT.values())"}, {'source_line': 852, 'axis': 'ax22', 'label': "'$x=7.8 \\\\cdot 10^{-4}$'", 'selection': "any(len(v['value'].get(23, [])) for v in PLOT.values())"}, {'source_line': 853, 'axis': 'ax22', 'label': "'$x=9.1 \\\\cdot 10^{-4}$'", 'selection': "any(len(v['value'].get(22, [])) for v in PLOT.values())"}, {'source_line': 854, 'axis': 'ax22', 'label': "'$x=0.0011$'", 'selection': "any(len(v['value'].get(21, [])) for v in PLOT.values())"}, {'source_line': 855, 'axis': 'ax22', 'label': "'$x=0.0015$'", 'selection': "any(len(v['value'].get(20, [])) for v in PLOT.values())"}, {'source_line': 856, 'axis': 'ax22', 'label': "'$x=0.0022$'", 'selection': "any(len(v['value'].get(19, [])) for v in PLOT.values())"}, {'source_line': 857, 'axis': 'ax22', 'label': "'$x=0.0034$'", 'selection': "any(len(v['value'].get(18, [])) for v in PLOT.values())"}, {'source_line': 858, 'axis': 'ax22', 'label': "'$x=0.0046$'", 'selection': "any(len(v['value'].get(17, [])) for v in PLOT.values())"}, {'source_line': 859, 'axis': 'ax22', 'label': "'$x=0.0064$'", 'selection': "any(len(v['value'].get(16, [])) for v in PLOT.values())"}, {'source_line': 860, 'axis': 'ax22', 'label': "'$x=0.0085$'", 'selection': "any(len(v['value'].get(15, [])) for v in PLOT.values())"}, {'source_line': 861, 'axis': 'ax22', 'label': "'$x=0.0094$'", 'selection': "any(len(v['value'].get(14, [])) for v in PLOT.values())"}, {'source_line': 862, 'axis': 'ax22', 'label': "'$x=0.011$'", 'selection': "any(len(v['value'].get(13, [])) for v in PLOT.values())"}, {'source_line': 863, 'axis': 'ax22', 'label': "'$x=0.0138$'", 'selection': "any(len(v['value'].get(12, [])) for v in PLOT.values())"}, {'source_line': 864, 'axis': 'ax22', 'label': "'$x=0.0156$'", 'selection': "any(len(v['value'].get(11, [])) for v in PLOT.values())"}, {'source_line': 865, 'axis': 'ax22', 'label': "'$x=0.0183$'", 'selection': "any(len(v['value'].get(10, [])) for v in PLOT.values())"}, {'source_line': 866, 'axis': 'ax22', 'label': "'$x=0.020$'", 'selection': "any(len(v['value'].get(9, [])) for v in PLOT.values())"}, {'source_line': 867, 'axis': 'ax22', 'label': "'$x=0.025$'", 'selection': "any(len(v['value'].get(8, [])) for v in PLOT.values())"}, {'source_line': 868, 'axis': 'ax22', 'label': "'$x=0.032$'", 'selection': "any(len(v['value'].get(7, [])) for v in PLOT.values())"}, {'source_line': 869, 'axis': 'ax22', 'label': "'$x=0.05$'", 'selection': "any(len(v['value'].get(6, [])) for v in (v for name, v in PLOT.items() if name in ['HERA 10028', 'HERA 10029']))"}, {'source_line': 870, 'axis': 'ax22', 'label': "'$x=0.08$'", 'selection': "any(len(v['value'].get(5, [])) for v in (v for name, v in PLOT.items() if name in ['HERA 10028', 'HERA 10029']))"}, {'source_line': 871, 'axis': 'ax22', 'label': "'$x=0.13$'", 'selection': "any(len(v['value'].get(4, [])) for v in (v for name, v in PLOT.items() if name in ['HERA 10028', 'HERA 10029']))"}, {'source_line': 872, 'axis': 'ax22', 'label': "'$x=0.18$'", 'selection': "any(len(v['value'].get(3, [])) for v in (v for name, v in PLOT.items() if name in ['HERA 10028', 'HERA 10029']))"}, {'source_line': 873, 'axis': 'ax22', 'label': "'$x=0.25$'", 'selection': "any(len(v['value'].get(2, [])) for v in (v for name, v in PLOT.items() if name in ['HERA 10028', 'HERA 10029']))"}, {'source_line': 874, 'axis': 'ax22', 'label': "'$x=0.40$'", 'selection': "any(len(v['value'].get(1, [])) for v in (v for name, v in PLOT.items() if name in ['HERA 10028', 'HERA 10029']))"}, {'source_line': 875, 'axis': 'ax22', 'label': "'$x=0.65 \\\\, (i=0)$'", 'selection': "any(len(v['value'].get(0, [])) for v in PLOT.values())"}, {'source_line': 876, 'axis': 'ax22', 'label': "'$x=0.05$'", 'selection': "any(len(v['value'].get(6, [])) for v in (v for name, v in PLOT.items() if name in ['HERA 10027']))"}, {'source_line': 877, 'axis': 'ax22', 'label': "'$x=0.08$'", 'selection': "any(len(v['value'].get(5, [])) for v in (v for name, v in PLOT.items() if name in ['HERA 10027']))"}, {'source_line': 878, 'axis': 'ax22', 'label': "'$x=0.13$'", 'selection': "any(len(v['value'].get(4, [])) for v in (v for name, v in PLOT.items() if name in ['HERA 10027']))"}, {'source_line': 879, 'axis': 'ax22', 'label': "'$x=0.18$'", 'selection': "any(len(v['value'].get(3, [])) for v in (v for name, v in PLOT.items() if name in ['HERA 10027']))"}, {'source_line': 880, 'axis': 'ax22', 'label': "'$x=0.25$'", 'selection': "any(len(v['value'].get(2, [])) for v in (v for name, v in PLOT.items() if name in ['HERA 10027']))"}, {'source_line': 881, 'axis': 'ax22', 'label': "'$x=0.40\\\\, (i=1)$'", 'selection': "any(len(v['value'].get(1, [])) for v in (v for name, v in PLOT.items() if name in ['HERA 10027']))"}, {'source_line': 887, 'axis': 'ax22', 'label': "'\\\\textrm{\\\\textbf{HERA}}' + ' ' + '\\\\boldmath$e^-p$'", 'selection': 'panel-selected datasets'}, {'source_line': 888, 'axis': 'ax22', 'label': "'\\\\boldmath$\\\\sigma_{\\\\rm red}^{\\\\rm NC}$'", 'selection': 'panel-selected datasets'}, {'source_line': 889, 'axis': 'ax22', 'label': "'$(\\\\, \\\\times\\\\, 2^{\\\\, i})$'", 'selection': 'panel-selected datasets'}]}, 'thesis_idis_plot_deuteron': {'panels': [['idis:10011', 'idis:10017'], ['idis:10002'], ['idis:10021', 'idis:10050'], ['idis:10033']], 'annotations': [{'source_line': 971, 'axis': 'ax11', 'label': "'$x=0.07 \\\\,(i=15)$'", 'selection': "any(len(v['value'].get(18, [])) for v in PLOT.values())"}, {'source_line': 972, 'axis': 'ax11', 'label': "'$x=0.09$'", 'selection': "any(len(v['value'].get(17, [])) for v in PLOT.values())"}, {'source_line': 973, 'axis': 'ax11', 'label': "'$x=0.10$'", 'selection': "any(len(v['value'].get(16, [])) for v in PLOT.values())"}, {'source_line': 974, 'axis': 'ax11', 'label': "'$x=0.14$'", 'selection': "any(len(v['value'].get(15, [])) for v in PLOT.values())"}, {'source_line': 975, 'axis': 'ax11', 'label': "'$x=0.18$'", 'selection': "any(len(v['value'].get(14, [])) for v in PLOT.values())"}, {'source_line': 976, 'axis': 'ax11', 'label': "'$x=0.23$'", 'selection': "any(len(v['value'].get(13, [])) for v in PLOT.values())"}, {'source_line': 977, 'axis': 'ax11', 'label': "'$x=0.28$'", 'selection': "any(len(v['value'].get(12, [])) for v in PLOT.values())"}, {'source_line': 978, 'axis': 'ax11', 'label': "'$x=0.35$'", 'selection': "any(len(v['value'].get(11, [])) for v in PLOT.values())"}, {'source_line': 979, 'axis': 'ax11', 'label': "'$x=0.43$'", 'selection': "any(len(v['value'].get(10, [])) for v in PLOT.values())"}, {'source_line': 980, 'axis': 'ax11', 'label': "'$x=0.46$'", 'selection': "any(len(v['value'].get(9, [])) for v in PLOT.values())"}, {'source_line': 981, 'axis': 'ax11', 'label': "'$x=0.50$'", 'selection': "any(len(v['value'].get(8, [])) for v in PLOT.values())"}, {'source_line': 982, 'axis': 'ax11', 'label': "'$x=0.53$'", 'selection': "any(len(v['value'].get(7, [])) for v in PLOT.values())"}, {'source_line': 983, 'axis': 'ax11', 'label': "'$x=0.56$'", 'selection': "any(len(v['value'].get(6, [])) for v in PLOT.values())"}, {'source_line': 984, 'axis': 'ax11', 'label': "'$x=0.59$'", 'selection': "any(len(v['value'].get(5, [])) for v in PLOT.values())"}, {'source_line': 985, 'axis': 'ax11', 'label': "'$x=0.61$'", 'selection': "any(len(v['value'].get(4, [])) for v in PLOT.values())"}, {'source_line': 986, 'axis': 'ax11', 'label': "'$x=0.65$'", 'selection': "any(len(v['value'].get(3, [])) for v in PLOT.values())"}, {'source_line': 987, 'axis': 'ax11', 'label': "'$x=0.75$'", 'selection': "any(len(v['value'].get(2, [])) for v in PLOT.values())"}, {'source_line': 988, 'axis': 'ax11', 'label': "'$x=0.85$'", 'selection': "any(len(v['value'].get(1, [])) for v in PLOT.values())"}, {'source_line': 989, 'axis': 'ax11', 'label': "'$x=0.88 \\\\,(i=0)$'", 'selection': "any(len(v['value'].get(0, [])) for v in PLOT.values())"}, {'source_line': 1009, 'axis': 'ax11', 'label': "'\\\\boldmath$F_2^D$'", 'selection': 'panel-selected datasets'}, {'source_line': 1010, 'axis': 'ax11', 'label': "'$(\\\\times\\\\, 2^{\\\\, i})$'", 'selection': 'panel-selected datasets'}, {'source_line': 1054, 'axis': 'ax12', 'label': "'$\\\\theta=70^{\\\\circ} \\\\, (i=5)$'", 'selection': "any(len(v['value'].get(5, [])) for v in PLOT.values())"}, {'source_line': 1055, 'axis': 'ax12', 'label': "'$\\\\theta=60^{\\\\circ} $'", 'selection': "any(len(v['value'].get(4, [])) for v in PLOT.values())"}, {'source_line': 1056, 'axis': 'ax12', 'label': "'$\\\\theta=55^{\\\\circ} $'", 'selection': "any(len(v['value'].get(3, [])) for v in PLOT.values())"}, {'source_line': 1057, 'axis': 'ax12', 'label': "'$\\\\theta=45^{\\\\circ} $'", 'selection': "any(len(v['value'].get(2, [])) for v in PLOT.values())"}, {'source_line': 1058, 'axis': 'ax12', 'label': "'$\\\\theta=41^{\\\\circ} $'", 'selection': "any(len(v['value'].get(1, [])) for v in PLOT.values())"}, {'source_line': 1059, 'axis': 'ax12', 'label': "'$\\\\theta=38^{\\\\circ}  \\\\, (i=0)$'", 'selection': "any(len(v['value'].get(0, [])) for v in PLOT.values())"}, {'source_line': 1073, 'axis': 'ax12', 'label': "'\\\\boldmath$F_2^D$'", 'selection': 'panel-selected datasets'}, {'source_line': 1074, 'axis': 'ax12', 'label': "'$(\\\\, \\\\times\\\\, 2^{\\\\, i})$'", 'selection': 'panel-selected datasets'}, {'source_line': 1121, 'axis': 'ax21', 'label': "'$x=0.005 \\\\, (i=17)$'", 'selection': "any(len(v['value'].get(17, [])) for v in PLOT.values())"}, {'source_line': 1122, 'axis': 'ax21', 'label': "'$x=0.008$'", 'selection': "any(len(v['value'].get(16, [])) for v in PLOT.values())"}, {'source_line': 1123, 'axis': 'ax21', 'label': "'$x=0.013$'", 'selection': "any(len(v['value'].get(15, [])) for v in PLOT.values())"}, {'source_line': 1124, 'axis': 'ax21', 'label': "'$x=0.018$'", 'selection': "any(len(v['value'].get(14, [])) for v in PLOT.values())"}, {'source_line': 1125, 'axis': 'ax21', 'label': "'$x=0.025$'", 'selection': "any(len(v['value'].get(13, [])) for v in PLOT.values())"}, {'source_line': 1126, 'axis': 'ax21', 'label': "'$x=0.035$'", 'selection': "any(len(v['value'].get(12, [])) for v in PLOT.values())"}, {'source_line': 1127, 'axis': 'ax21', 'label': "'$x=0.05$'", 'selection': "any(len(v['value'].get(11, [])) for v in PLOT.values())"}, {'source_line': 1128, 'axis': 'ax21', 'label': "'$x=0.07$'", 'selection': "any(len(v['value'].get(10, [])) for v in PLOT.values())"}, {'source_line': 1129, 'axis': 'ax21', 'label': "'$x=0.09$'", 'selection': "any(len(v['value'].get(9, [])) for v in PLOT.values())"}, {'source_line': 1130, 'axis': 'ax21', 'label': "'$x=0.11$'", 'selection': "any(len(v['value'].get(8, [])) for v in PLOT.values())"}, {'source_line': 1131, 'axis': 'ax21', 'label': "'$x=0.14$'", 'selection': "any(len(v['value'].get(7, [])) for v in PLOT.values())"}, {'source_line': 1132, 'axis': 'ax21', 'label': "'$x=0.18$'", 'selection': "any(len(v['value'].get(6, [])) for v in PLOT.values())"}, {'source_line': 1133, 'axis': 'ax21', 'label': "'$x=0.23$'", 'selection': "any(len(v['value'].get(5, [])) for v in PLOT.values())"}, {'source_line': 1134, 'axis': 'ax21', 'label': "'$x=0.28$'", 'selection': "any(len(v['value'].get(4, [])) for v in PLOT.values())"}, {'source_line': 1135, 'axis': 'ax21', 'label': "'$x=0.35$'", 'selection': "any(len(v['value'].get(3, [])) for v in PLOT.values())"}, {'source_line': 1136, 'axis': 'ax21', 'label': "'$x=0.45$'", 'selection': "any(len(v['value'].get(2, [])) for v in PLOT.values())"}, {'source_line': 1137, 'axis': 'ax21', 'label': "'$x=0.55$'", 'selection': "any(len(v['value'].get(1, [])) for v in PLOT.values())"}, {'source_line': 1138, 'axis': 'ax21', 'label': "'$x=0.68 \\\\,(i=0)$'", 'selection': "any(len(v['value'].get(0, [])) for v in PLOT.values())"}, {'source_line': 1158, 'axis': 'ax21', 'label': "'\\\\boldmath$F_2^D/F_2^p$'", 'selection': 'panel-selected datasets'}, {'source_line': 1159, 'axis': 'ax21', 'label': "'$(\\\\, \\\\times\\\\, 2^{\\\\, i})$'", 'selection': 'panel-selected datasets'}, {'source_line': 1199, 'axis': 'ax22', 'label': "'$Q^2 = 4.0 $' + '$\\\\, (i=5)$'", 'selection': "any(len(v['value'].get(5, [])) for v in PLOT.values())"}, {'source_line': 1200, 'axis': 'ax22', 'label': "'$Q^2 = 3.4 $'", 'selection': "any(len(v['value'].get(4, [])) for v in PLOT.values())"}, {'source_line': 1201, 'axis': 'ax22', 'label': "'$Q^2 = 2.9 $'", 'selection': "any(len(v['value'].get(3, [])) for v in PLOT.values())"}, {'source_line': 1202, 'axis': 'ax22', 'label': "'$Q^2 = 2.4 $'", 'selection': "any(len(v['value'].get(2, [])) for v in PLOT.values())"}, {'source_line': 1203, 'axis': 'ax22', 'label': "'$Q^2 = 2.0 $'", 'selection': "any(len(v['value'].get(1, [])) for v in PLOT.values())"}, {'source_line': 1204, 'axis': 'ax22', 'label': "'$Q^2 = 1.7 \\\\: \\\\rm{GeV^2}$' + '$\\\\, (i=0)$'", 'selection': "any(len(v['value'].get(0, [])) for v in PLOT.values())"}, {'source_line': 1214, 'axis': 'ax22', 'label': "'\\\\boldmath$F_2^n/F_2^D$'", 'selection': 'panel-selected datasets'}, {'source_line': 1215, 'axis': 'ax22', 'label': "'$(\\\\, \\\\times\\\\, 4^{\\\\, i})$'", 'selection': 'panel-selected datasets'}]}, 'thesis_idis_plot_CC': {'panels': [['idis:10031', 'idis:10032']], 'annotations': [{'source_line': 1282, 'axis': 'ax', 'label': "'$x=0.008 \\\\, (i=7)$'", 'selection': "any(len(v['value'].get(7, [])) for v in (v for name, v in PLOT.items() if name in ['HERA 10032']))"}, {'source_line': 1283, 'axis': 'ax', 'label': "'$x=0.013$'", 'selection': "any(len(v['value'].get(6, [])) for v in (v for name, v in PLOT.items() if name in ['HERA 10032']))"}, {'source_line': 1284, 'axis': 'ax', 'label': "'$x=0.032$'", 'selection': "any(len(v['value'].get(5, [])) for v in (v for name, v in PLOT.items() if name in ['HERA 10032']))"}, {'source_line': 1285, 'axis': 'ax', 'label': "'$x=0.08$'", 'selection': "any(len(v['value'].get(4, [])) for v in (v for name, v in PLOT.items() if name in ['HERA 10032']))"}, {'source_line': 1286, 'axis': 'ax', 'label': "'$x=0.13$'", 'selection': "any(len(v['value'].get(3, [])) for v in (v for name, v in PLOT.items() if name in ['HERA 10032']))"}, {'source_line': 1287, 'axis': 'ax', 'label': "'$x=0.25$'", 'selection': "any(len(v['value'].get(2, [])) for v in (v for name, v in PLOT.items() if name in ['HERA 10032']))"}, {'source_line': 1288, 'axis': 'ax', 'label': "'$x=0.40$'", 'selection': "any(len(v['value'].get(1, [])) for v in (v for name, v in PLOT.items() if name in ['HERA 10032']))"}, {'source_line': 1289, 'axis': 'ax', 'label': "'$x=0.65 \\\\, (i=0) $'", 'selection': "any(len(v['value'].get(0, [])) for v in (v for name, v in PLOT.items() if name in ['HERA 10032']))"}, {'source_line': 1290, 'axis': 'ax', 'label': "'$x=0.008 \\\\, (i=7)$'", 'selection': "any(len(v['value'].get(7, [])) for v in (v for name, v in PLOT.items() if name in ['HERA 10031']))"}, {'source_line': 1291, 'axis': 'ax', 'label': "'$x=0.013$'", 'selection': "any(len(v['value'].get(6, [])) for v in (v for name, v in PLOT.items() if name in ['HERA 10031']))"}, {'source_line': 1292, 'axis': 'ax', 'label': "'$x=0.032$'", 'selection': "any(len(v['value'].get(5, [])) for v in (v for name, v in PLOT.items() if name in ['HERA 10031']))"}, {'source_line': 1293, 'axis': 'ax', 'label': "'$x=0.08$'", 'selection': "any(len(v['value'].get(4, [])) for v in (v for name, v in PLOT.items() if name in ['HERA 10031']))"}, {'source_line': 1294, 'axis': 'ax', 'label': "'$x=0.13$'", 'selection': "any(len(v['value'].get(3, [])) for v in (v for name, v in PLOT.items() if name in ['HERA 10031']))"}, {'source_line': 1295, 'axis': 'ax', 'label': "'$x=0.25$'", 'selection': "any(len(v['value'].get(2, [])) for v in (v for name, v in PLOT.items() if name in ['HERA 10031']))"}, {'source_line': 1296, 'axis': 'ax', 'label': "'$x=0.40 \\\\, (i=1)$'", 'selection': "any(len(v['value'].get(1, [])) for v in (v for name, v in PLOT.items() if name in ['HERA 10031']))"}, {'source_line': 1308, 'axis': 'ax', 'label': "'\\\\boldmath$\\\\sigma_{\\\\rm red}^{\\\\rm CC}$'", 'selection': 'panel-selected datasets'}, {'source_line': 1309, 'axis': 'ax', 'label': "'$(\\\\, \\\\times\\\\, 5^{\\\\, i})$'", 'selection': 'panel-selected datasets'}]}, 'thesis_idis_plot_A3': {'panels': [['idis:10041'], ['idis:10051']], 'annotations': [{'source_line': 1380, 'axis': 'ax11', 'label': "'\\\\boldmath$F_2^{^3\\\\rm{He}}/F_2^{D}$'", 'selection': 'panel-selected datasets'}, {'source_line': 1436, 'axis': 'ax12', 'label': "'\\\\boldmath$F_2^{^3\\\\rm{He}}/F_2^{^3\\\\rm{H}}$'", 'selection': 'panel-selected datasets'}]}, 'thesis_marathon_plot_main': {'panels': [['idis:10050'], ['idis:10051']], 'annotations': [{'source_line': 1669, 'axis': 'ax12', 'label': "'$Q^2 = 14 x_{\\\\rm bj} ~ {\\\\rm GeV^2}$'", 'selection': 'panel-selected datasets'}, {'source_line': 1679, 'axis': 'ax11', 'label': "'\\\\boldmath$F_2^D/F_2^p$'", 'selection': 'panel-selected datasets'}, {'source_line': 1680, 'axis': 'ax12', 'label': "'\\\\boldmath$F_2^{^3\\\\rm{He}}/F_2^{^3\\\\rm{H}}$'", 'selection': 'panel-selected datasets'}]}, 'thesis_jets_plot_data': {'panels': [['jet:10001'], ['jet:10002'], ['jet:10003', 'jet:10004'], ['jet:10003'], ['jet:10004']], 'annotations': [{'source_line': 1895, 'axis': 'axs[i]', 'label': "'$%s$' % eta_range", 'selection': 'panel-selected datasets'}, {'source_line': 1905, 'axis': 'axs[i]', 'label': "'\\\\boldmath{$\\\\mathrm{%s}$}' % text", 'selection': 'panel-selected datasets'}, {'source_line': 1929, 'axis': 'axs[3]', 'label': "'\\\\boldmath{$\\\\mathrm{data/theory}$}'", 'selection': 'panel-selected datasets'}, {'source_line': 1930, 'axis': 'axs[4]', 'label': "'\\\\boldmath{$\\\\mathrm{data/theory}$}'", 'selection': 'panel-selected datasets'}, {'source_line': 1931, 'axis': 'axs[3]', 'label': "'\\\\boldmath{$\\\\mathrm{STAR~2003}$}'", 'selection': 'panel-selected datasets'}, {'source_line': 1932, 'axis': 'axs[4]', 'label': "'\\\\boldmath{$\\\\mathrm{STAR~2004}$}'", 'selection': 'panel-selected datasets'}, {'source_line': 1937, 'axis': 'axs[0]', 'label': "'$%s$' % eta_name", 'selection': 'panel-selected datasets'}, {'source_line': 1938, 'axis': 'axs[0]', 'label': "'$%s$' % factor", 'selection': 'panel-selected datasets'}, {'source_line': 1940, 'axis': 'axs[0]', 'label': "'$%s$' % factor", 'selection': 'panel-selected datasets'}, {'source_line': 1942, 'axis': 'axs[0]', 'label': "'$%s$' % factor", 'selection': 'panel-selected datasets'}, {'source_line': 1944, 'axis': 'axs[0]', 'label': "'$%s$' % factor", 'selection': 'panel-selected datasets'}, {'source_line': 1946, 'axis': 'axs[0]', 'label': "'$%s$' % factor", 'selection': 'panel-selected datasets'}, {'source_line': 1948, 'axis': 'axs[0]', 'label': "'$%s$' % factor", 'selection': 'panel-selected datasets'}, {'source_line': 1953, 'axis': 'axs[1]', 'label': "'$%s$' % eta_name", 'selection': 'panel-selected datasets'}, {'source_line': 1954, 'axis': 'axs[1]', 'label': "'$%s$' % factor", 'selection': 'panel-selected datasets'}, {'source_line': 1956, 'axis': 'axs[1]', 'label': "'$%s$' % factor", 'selection': 'panel-selected datasets'}, {'source_line': 1958, 'axis': 'axs[1]', 'label': "'$%s$' % factor", 'selection': 'panel-selected datasets'}, {'source_line': 1960, 'axis': 'axs[1]', 'label': "'$%s$' % factor", 'selection': 'panel-selected datasets'}, {'source_line': 1962, 'axis': 'axs[1]', 'label': "'$%s$' % factor", 'selection': 'panel-selected datasets'}]}, 'thesis_lepton_plot_asym': {'panels': [['wzrv:2010', 'wzrv:2011', 'wzrv:2012', 'wzrv:2013', 'wzrv:2014'], ['wzrv:2016', 'wzrv:2017'], ['wzrv:2011', 'wzrv:2013', 'wzrv:2014'], ['wzrv:2016'], ['wzrv:2010'], ['wzrv:2017'], ['wzrv:2012'], []], 'annotations': [{'source_line': 2063, 'axis': 'ax11', 'label': "'\\\\boldmath$A_l$'", 'selection': 'panel-selected datasets'}, {'source_line': 2064, 'axis': 'ax11', 'label': "'\\\\textrm{\\\\textbf{CMS}}'", 'selection': 'panel-selected datasets'}, {'source_line': 2065, 'axis': 'ax12', 'label': "'\\\\textrm{\\\\textbf{LHCb}}'", 'selection': 'panel-selected datasets'}, {'source_line': 2189, 'axis': 'ax21', 'label': "'\\\\textrm{\\\\textbf{data/theory}}'", 'selection': 'panel-selected datasets'}, {'source_line': 2190, 'axis': 'ax31', 'label': "'\\\\textrm{\\\\textbf{data/theory}}'", 'selection': 'panel-selected datasets'}, {'source_line': 2191, 'axis': 'ax41', 'label': "'\\\\textrm{\\\\textbf{data/theory}}'", 'selection': 'panel-selected datasets'}, {'source_line': 2192, 'axis': 'ax22', 'label': "'\\\\textrm{\\\\textbf{data-theory}}'", 'selection': 'panel-selected datasets'}, {'source_line': 2193, 'axis': 'ax32', 'label': "'\\\\textrm{\\\\textbf{data-theory}}'", 'selection': 'panel-selected datasets'}]}, 'thesis_lepton_plot_star': {'panels': [['wzrv:2020'], ['wzrv:2020']], 'annotations': [{'source_line': 2270, 'axis': 'ax11', 'label': "'\\\\boldmath$\\\\sigma_{pp}^{W^+}/\\\\sigma_{pp}^{W^-}$'", 'selection': 'panel-selected datasets'}, {'source_line': 2271, 'axis': 'ax11', 'label': "'$\\\\sqrt{s} = 510$' + ' ' + '\\\\textrm{GeV}'", 'selection': 'panel-selected datasets'}, {'source_line': 2272, 'axis': 'ax11', 'label': "'\\\\rm{$p_T^{\\\\ell}$ $>$ 25 GeV}'", 'selection': 'panel-selected datasets'}, {'source_line': 2273, 'axis': 'ax21', 'label': "'\\\\textbf{\\\\textrm{data/theory}}'", 'selection': 'panel-selected datasets'}]}, 'thesis_wz_plot_main': {'panels': [['zrap:1000', 'zrap:1001'], ['zrap:1000'], ['zrap:1001'], ['wasym:1000', 'wasym:1001'], ['wasym:1000'], ['wasym:1001']], 'annotations': [{'source_line': 2378, 'axis': 'ax', 'label': 'label', 'selection': 'panel-selected datasets'}, {'source_line': 2418, 'axis': 'ax11', 'label': "'\\\\boldmath$\\\\frac{1}{\\\\sigma} \\\\frac{d\\\\sigma(Z/\\\\gamma^*)}{dy}$'", 'selection': 'panel-selected datasets'}, {'source_line': 2419, 'axis': 'ax21', 'label': "'\\\\textbf{\\\\textrm{data/theory}}'", 'selection': 'panel-selected datasets'}, {'source_line': 2420, 'axis': 'ax11', 'label': "'$\\\\sqrt{s} = 1.96$' + ' ' + '\\\\textrm{TeV}'", 'selection': 'panel-selected datasets'}, {'source_line': 2474, 'axis': 'ax', 'label': 'label', 'selection': 'panel-selected datasets'}, {'source_line': 2476, 'axis': 'ax', 'label': 'label', 'selection': 'panel-selected datasets'}, {'source_line': 2516, 'axis': 'ax11', 'label': "'\\\\boldmath$A_W$'", 'selection': 'panel-selected datasets'}, {'source_line': 2517, 'axis': 'ax21', 'label': "'\\\\textbf{\\\\textrm{data/theory}}'", 'selection': 'panel-selected datasets'}, {'source_line': 2518, 'axis': 'ax11', 'label': "'$\\\\sqrt{s} = 1.96$' + ' ' + '\\\\textrm{TeV}'", 'selection': 'panel-selected datasets'}]}, 'thesis_pidis_plot_proton_A1_Apa': {'panels': [['pidis:10002', 'pidis:10003', 'pidis:10004', 'pidis:10035', 'pidis:10036'], ['pidis:10007', 'pidis:10022', 'pidis:10029', 'pidis:10032']], 'annotations': [{'source_line': 2821, 'axis': 'ax11', 'label': "'$Q^2 > 60~{\\\\rm GeV^2} \\\\, (i=6)$'", 'selection': "any(len(v['value'].get(6, [])) for v in PLOT.values())"}, {'source_line': 2822, 'axis': 'ax11', 'label': "'$40 < Q^2 < 60$'", 'selection': "any(len(v['value'].get(5, [])) for v in PLOT.values())"}, {'source_line': 2823, 'axis': 'ax11', 'label': "'$20 < Q^2 < 40$'", 'selection': "any(len(v['value'].get(4, [])) for v in PLOT.values())"}, {'source_line': 2824, 'axis': 'ax11', 'label': "'$10 < Q^2 < 20$'", 'selection': "any(len(v['value'].get(3, [])) for v in PLOT.values())"}, {'source_line': 2825, 'axis': 'ax11', 'label': "'$5 < Q^2 < 10$'", 'selection': "any(len(v['value'].get(2, [])) for v in PLOT.values())"}, {'source_line': 2826, 'axis': 'ax11', 'label': "'$2 < Q^2 < 5$'", 'selection': "any(len(v['value'].get(1, [])) for v in PLOT.values())"}, {'source_line': 2827, 'axis': 'ax11', 'label': "'$1 < Q^2 < 2\\\\, (i=0)$'", 'selection': "any(len(v['value'].get(0, [])) for v in PLOT.values())"}, {'source_line': 2838, 'axis': 'ax11', 'label': "'\\\\boldmath$A_1^p$'", 'selection': 'panel-selected datasets'}, {'source_line': 2839, 'axis': 'ax11', 'label': "'$(+\\\\, i)$'", 'selection': 'panel-selected datasets'}, {'source_line': 2900, 'axis': 'ax12', 'label': "'$Q^2 > 20~{\\\\rm GeV^2} \\\\, (i=9)$'", 'selection': "any(len(v['value'].get(8, [])) for v in PLOT.values())"}, {'source_line': 2901, 'axis': 'ax12', 'label': "'$15 < Q^2 < 20$'", 'selection': "any(len(v['value'].get(7, [])) for v in PLOT.values())"}, {'source_line': 2902, 'axis': 'ax12', 'label': "'$10 < Q^2 < 15$'", 'selection': "any(len(v['value'].get(6, [])) for v in PLOT.values())"}, {'source_line': 2903, 'axis': 'ax12', 'label': "'$7 < Q^2 < 10$'", 'selection': "any(len(v['value'].get(5, [])) for v in PLOT.values())"}, {'source_line': 2904, 'axis': 'ax12', 'label': "'$5 < Q^2 < 7$'", 'selection': "any(len(v['value'].get(4, [])) for v in PLOT.values())"}, {'source_line': 2905, 'axis': 'ax12', 'label': "'$4 < Q^2 < 5$'", 'selection': "any(len(v['value'].get(3, [])) for v in PLOT.values())"}, {'source_line': 2906, 'axis': 'ax12', 'label': "'$3 < Q^2 < 4$'", 'selection': "any(len(v['value'].get(2, [])) for v in PLOT.values())"}, {'source_line': 2907, 'axis': 'ax12', 'label': "'$2 < Q^2 < 3$'", 'selection': "any(len(v['value'].get(1, [])) for v in PLOT.values())"}, {'source_line': 2908, 'axis': 'ax12', 'label': "'$1 < Q^2 < 2\\\\, (i=0)$'", 'selection': "any(len(v['value'].get(0, [])) for v in PLOT.values())"}, {'source_line': 2921, 'axis': 'ax12', 'label': "'\\\\boldmath$A_{\\\\parallel}^p$'", 'selection': 'panel-selected datasets'}, {'source_line': 2922, 'axis': 'ax12', 'label': "'$(+\\\\, i)$'", 'selection': 'panel-selected datasets'}]}, 'thesis_pidis_plot_deuteron_A1_Apa': {'panels': [['pidis:10001', 'pidis:10033', 'pidis:10034'], ['pidis:10006', 'pidis:10021', 'pidis:10027']], 'annotations': [{'source_line': 2991, 'axis': 'ax11', 'label': "'$Q^2 > 40~{\\\\rm GeV^2} \\\\, (i=4)$'", 'selection': "any(len(v['value'].get(4, [])) for v in PLOT.values())"}, {'source_line': 2992, 'axis': 'ax11', 'label': "'$20 < Q^2 < 40$'", 'selection': "any(len(v['value'].get(3, [])) for v in PLOT.values())"}, {'source_line': 2993, 'axis': 'ax11', 'label': "'$10 < Q^2 < 20$'", 'selection': "any(len(v['value'].get(2, [])) for v in PLOT.values())"}, {'source_line': 2994, 'axis': 'ax11', 'label': "'$5 < Q^2 < 10$'", 'selection': "any(len(v['value'].get(1, [])) for v in PLOT.values())"}, {'source_line': 2995, 'axis': 'ax11', 'label': "'$m_c^2 < Q^2 < 5\\\\, (i=0)$'", 'selection': "any(len(v['value'].get(0, [])) for v in PLOT.values())"}, {'source_line': 3006, 'axis': 'ax11', 'label': "'\\\\boldmath$A_1^D$'", 'selection': 'panel-selected datasets'}, {'source_line': 3007, 'axis': 'ax11', 'label': "'$(+\\\\, i)$'", 'selection': 'panel-selected datasets'}, {'source_line': 3065, 'axis': 'ax12', 'label': "'$Q^2 > 20~{\\\\rm GeV^2} \\\\, (i=9)$'", 'selection': "any(len(v['value'].get(8, [])) for v in PLOT.values())"}, {'source_line': 3066, 'axis': 'ax12', 'label': "'$15 < Q^2 < 20$'", 'selection': "any(len(v['value'].get(7, [])) for v in PLOT.values())"}, {'source_line': 3067, 'axis': 'ax12', 'label': "'$10 < Q^2 < 15$'", 'selection': "any(len(v['value'].get(6, [])) for v in PLOT.values())"}, {'source_line': 3068, 'axis': 'ax12', 'label': "'$7 < Q^2 < 10$'", 'selection': "any(len(v['value'].get(5, [])) for v in PLOT.values())"}, {'source_line': 3069, 'axis': 'ax12', 'label': "'$5 < Q^2 < 7$'", 'selection': "any(len(v['value'].get(4, [])) for v in PLOT.values())"}, {'source_line': 3070, 'axis': 'ax12', 'label': "'$4 < Q^2 < 5$'", 'selection': "any(len(v['value'].get(3, [])) for v in PLOT.values())"}, {'source_line': 3071, 'axis': 'ax12', 'label': "'$3 < Q^2 < 4$'", 'selection': "any(len(v['value'].get(2, [])) for v in PLOT.values())"}, {'source_line': 3072, 'axis': 'ax12', 'label': "'$2 < Q^2 < 3$'", 'selection': "any(len(v['value'].get(1, [])) for v in PLOT.values())"}, {'source_line': 3073, 'axis': 'ax12', 'label': "'$m_c^2 < Q^2 < 2\\\\, (i=0)$'", 'selection': "any(len(v['value'].get(0, [])) for v in PLOT.values())"}, {'source_line': 3086, 'axis': 'ax12', 'label': "'\\\\boldmath$A_{\\\\parallel}^D$'", 'selection': 'panel-selected datasets'}, {'source_line': 3087, 'axis': 'ax12', 'label': "'$(+\\\\, i)$'", 'selection': 'panel-selected datasets'}]}, 'thesis_pidis_plot_helium_neutron': {'panels': [['pidis:10005', 'pidis:10018'], ['pidis:10025']], 'annotations': [{'source_line': 3161, 'axis': 'ax11', 'label': "'$m_c^2 < Q^2 < 5.5 ~ {\\\\rm GeV}^2$'", 'selection': "any(len(v['value'].get(0, [])) for v in PLOT.values())"}, {'source_line': 3172, 'axis': 'ax11', 'label': "'\\\\boldmath$A_1$'", 'selection': 'panel-selected datasets'}, {'source_line': 3227, 'axis': 'ax12', 'label': "'$Q^2 > 10~{\\\\rm GeV^2} \\\\, (i=3)$'", 'selection': "any(len(v['value'].get(3, [])) for v in PLOT.values())"}, {'source_line': 3228, 'axis': 'ax12', 'label': "'$5 < Q^2 < 10$'", 'selection': "any(len(v['value'].get(2, [])) for v in PLOT.values())"}, {'source_line': 3229, 'axis': 'ax12', 'label': "'$3 < Q^2 < 5$'", 'selection': "any(len(v['value'].get(1, [])) for v in PLOT.values())"}, {'source_line': 3230, 'axis': 'ax12', 'label': "'$m_c^2 < Q^2 < 3\\\\, (i=0)$'", 'selection': "any(len(v['value'].get(0, [])) for v in PLOT.values())"}, {'source_line': 3243, 'axis': 'ax12', 'label': "'\\\\boldmath$A_{\\\\parallel}^{^3{\\\\rm He}}$'", 'selection': 'panel-selected datasets'}, {'source_line': 3244, 'axis': 'ax12', 'label': "'$(+\\\\, i)$'", 'selection': 'panel-selected datasets'}]}, 'thesis_pjets_plot_pjets': {'panels': [['pjet:20001'], ['pjet:20002'], ['pjet:20003'], ['pjet:20004'], ['pjet:20004'], ['pjet:20006'], ['pjet:20008'], ['pjet:20007'], ['pjet:20007']], 'annotations': [{'source_line': 3323, 'axis': 'ax21', 'label': "'$|\\\\eta_{\\\\rm jet}| \\\\in [%2.1f,%2.1f]$' % (etamin, etamax)", 'selection': 'panel-selected datasets'}, {'source_line': 3326, 'axis': 'ax22', 'label': "'$|\\\\eta_{\\\\rm jet}| \\\\in [%2.1f,%2.1f]$' % (etamin, etamax)", 'selection': 'panel-selected datasets'}, {'source_line': 3330, 'axis': 'ax32', 'label': "'$|\\\\eta_{\\\\rm jet}| \\\\in [%2.1f,%2.1f]$' % (etamin, etamax)", 'selection': 'panel-selected datasets'}, {'source_line': 3333, 'axis': 'ax33', 'label': "'$|\\\\eta_{\\\\rm jet}| \\\\in [%2.1f,%2.1f]$' % (etamin, etamax)", 'selection': 'panel-selected datasets'}, {'source_line': 3338, 'axis': 'ax', 'label': "'$|\\\\eta_{\\\\rm jet}| \\\\in [%2.1f,%2.1f]$' % (etamin, etamax)", 'selection': 'panel-selected datasets'}, {'source_line': 3342, 'axis': 'ax', 'label': "'$\\\\eta_{\\\\rm jet}   \\\\in [%2.1f,%2.1f]$' % (etamin, etamax)", 'selection': 'panel-selected datasets'}, {'source_line': 3413, 'axis': 'ax13', 'label': "'\\\\boldmath$A_{LL}^{\\\\rm jet}$'", 'selection': 'panel-selected datasets'}, {'source_line': 3414, 'axis': 'ax11', 'label': "'\\\\textrm{\\\\textbf{2003}}'", 'selection': 'panel-selected datasets'}, {'source_line': 3415, 'axis': 'ax12', 'label': "'\\\\textrm{\\\\textbf{2005}}'", 'selection': 'panel-selected datasets'}, {'source_line': 3416, 'axis': 'ax13', 'label': "'\\\\textrm{\\\\textbf{2006}}'", 'selection': 'panel-selected datasets'}, {'source_line': 3417, 'axis': 'ax21', 'label': "'\\\\textrm{\\\\textbf{2009}}'", 'selection': 'panel-selected datasets'}, {'source_line': 3418, 'axis': 'ax22', 'label': "'\\\\textrm{\\\\textbf{2009}}'", 'selection': 'panel-selected datasets'}, {'source_line': 3419, 'axis': 'ax23', 'label': "'\\\\textrm{\\\\textbf{2012}}'", 'selection': 'panel-selected datasets'}, {'source_line': 3420, 'axis': 'ax31', 'label': "'\\\\textrm{\\\\textbf{2013}}'", 'selection': 'panel-selected datasets'}, {'source_line': 3421, 'axis': 'ax32', 'label': "'\\\\textrm{\\\\textbf{2015}}'", 'selection': 'panel-selected datasets'}, {'source_line': 3422, 'axis': 'ax33', 'label': "'\\\\textrm{\\\\textbf{2015}}'", 'selection': 'panel-selected datasets'}]}, 'thesis_polWlep_plot_main': {'panels': [['wzrv:1000'], ['wzrv:1020', 'wzrv:1021']], 'annotations': [{'source_line': 3539, 'axis': 'ax11', 'label': "'\\\\boldmath$A_L^{W}$'", 'selection': 'panel-selected datasets'}, {'source_line': 3540, 'axis': 'ax11', 'label': "'\\\\textrm{\\\\textbf{(STAR)}}'", 'selection': 'panel-selected datasets'}, {'source_line': 3541, 'axis': 'ax11', 'label': "'$\\\\sqrt{s}=510~$' + '\\\\textrm{GeV}'", 'selection': 'panel-selected datasets'}, {'source_line': 3542, 'axis': 'ax11', 'label': "'$p_T^\\\\ell > 25~$' + '\\\\hspace{0.00cm}\\\\textrm{GeV}'", 'selection': 'panel-selected datasets'}, {'source_line': 3543, 'axis': 'ax11', 'label': "'$W^-$'", 'selection': 'panel-selected datasets'}, {'source_line': 3544, 'axis': 'ax11', 'label': "'$W^+$'", 'selection': 'panel-selected datasets'}, {'source_line': 3545, 'axis': 'ax12', 'label': "'\\\\boldmath$A_L^{W/Z}$'", 'selection': 'panel-selected datasets'}, {'source_line': 3546, 'axis': 'ax12', 'label': "'\\\\textrm{\\\\textbf{(PHENIX)}}'", 'selection': 'panel-selected datasets'}, {'source_line': 3563, 'axis': 'ax12', 'label': "'\\\\textrm{\\\\textbf{JAM}}'", 'selection': 'panel-selected datasets'}]}, 'thesis_sidis_plot_pion': {'panels': [['sidis:1005', 'sidis:1006'], ['sidis:1005', 'sidis:1006'], ['sidis:1005', 'sidis:1006'], ['sidis:1005', 'sidis:1006'], ['sidis:1005', 'sidis:1006'], ['sidis:1005', 'sidis:1006'], ['sidis:1005', 'sidis:1006'], ['sidis:1005', 'sidis:1006']], 'annotations': [{'source_line': 95, 'axis': 'ax', 'label': 'msg', 'selection': 'panel-selected datasets'}]}, 'thesis_sidis_plot_kaon': {'panels': [['sidis:2005', 'sidis:2006'], ['sidis:2005', 'sidis:2006'], ['sidis:2005', 'sidis:2006'], ['sidis:2005', 'sidis:2006'], ['sidis:2005', 'sidis:2006'], ['sidis:2005', 'sidis:2006'], ['sidis:2005', 'sidis:2006'], ['sidis:2005', 'sidis:2006']], 'annotations': [{'source_line': 95, 'axis': 'ax', 'label': 'msg', 'selection': 'panel-selected datasets'}]}, 'thesis_sidis_plot_hadron': {'panels': [['sidis:3000', 'sidis:3001'], ['sidis:3000', 'sidis:3001'], ['sidis:3000', 'sidis:3001'], ['sidis:3000', 'sidis:3001'], ['sidis:3000', 'sidis:3001'], ['sidis:3000', 'sidis:3001'], ['sidis:3000', 'sidis:3001'], ['sidis:3000', 'sidis:3001']], 'annotations': [{'source_line': 95, 'axis': 'ax', 'label': 'msg', 'selection': 'panel-selected datasets'}]}, 'thesis_psidis_plot_pion': {'panels': [['psidis:20004', 'psidis:20017'], ['psidis:20005', 'psidis:20018'], ['psidis:20008', 'psidis:20021'], ['psidis:20009', 'psidis:20022']], 'annotations': [{'source_line': 3988, 'axis': 'ax11', 'label': "'\\\\boldmath$A^{p,\\\\pi^+}_{1}$'", 'selection': 'panel-selected datasets'}, {'source_line': 3989, 'axis': 'ax12', 'label': "'\\\\boldmath$A^{p,\\\\pi^-}_{1}$'", 'selection': 'panel-selected datasets'}, {'source_line': 3990, 'axis': 'ax21', 'label': "'\\\\boldmath$A^{D,\\\\pi^+}_{1}$'", 'selection': 'panel-selected datasets'}, {'source_line': 3991, 'axis': 'ax22', 'label': "'\\\\boldmath$A^{D,\\\\pi^-}_{1}$'", 'selection': 'panel-selected datasets'}]}, 'thesis_psidis_plot_kaon': {'panels': [['psidis:20019'], ['psidis:20020'], ['psidis:20012', 'psidis:20025'], ['psidis:20013', 'psidis:20026'], ['psidis:20014']], 'annotations': [{'source_line': 4094, 'axis': 'ax11', 'label': "'\\\\boldmath$A^{p,K^+}_{1}$'", 'selection': 'panel-selected datasets'}, {'source_line': 4095, 'axis': 'ax12', 'label': "'\\\\boldmath$A^{p,K^-}_{1}$'", 'selection': 'panel-selected datasets'}, {'source_line': 4096, 'axis': 'ax21', 'label': "'\\\\boldmath$A^{D,K^+}_{1}$'", 'selection': 'panel-selected datasets'}, {'source_line': 4097, 'axis': 'ax22', 'label': "'\\\\boldmath$A^{D,K^-}_{1}$'", 'selection': 'panel-selected datasets'}, {'source_line': 4098, 'axis': 'ax23', 'label': "'\\\\boldmath$A^{D,K^{\\\\pm}}_{1}$'", 'selection': 'panel-selected datasets'}]}, 'thesis_psidis_plot_hadron': {'panels': [['psidis:20000', 'psidis:20006'], ['psidis:20001', 'psidis:20007'], ['psidis:20002', 'psidis:20010', 'psidis:20023'], ['psidis:20003', 'psidis:20011', 'psidis:20024'], ['psidis:20015'], ['psidis:20016']], 'annotations': [{'source_line': 4219, 'axis': 'ax11', 'label': "'\\\\boldmath$A^{p,h^+}_{1}$'", 'selection': 'panel-selected datasets'}, {'source_line': 4220, 'axis': 'ax12', 'label': "'\\\\boldmath$A^{p,h^-}_{1}$'", 'selection': 'panel-selected datasets'}, {'source_line': 4221, 'axis': 'ax21', 'label': "'\\\\boldmath$A^{D,h^+}_{1}$'", 'selection': 'panel-selected datasets'}, {'source_line': 4222, 'axis': 'ax22', 'label': "'\\\\boldmath$A^{D,h^-}_{1}$'", 'selection': 'panel-selected datasets'}, {'source_line': 4223, 'axis': 'ax31', 'label': "'\\\\boldmath$A^{^3{\\\\rm He},h^+}_{1}$'", 'selection': 'panel-selected datasets'}, {'source_line': 4224, 'axis': 'ax32', 'label': "'\\\\boldmath$A^{^3{\\\\rm He},h^-}_{1}$'", 'selection': 'panel-selected datasets'}]}, 'thesis_sia_plot_pion': {'panels': [['sia:1030'], ['sia:1028'], ['sia:1029'], ['sia:1001', 'sia:1002', 'sia:1003', 'sia:1005', 'sia:1006'], ['sia:1010'], ['sia:1011'], ['sia:1013'], ['sia:1018'], ['sia:1025'], ['sia:1026'], ['sia:1027'], ['sia:1019'], ['sia:1014'], ['sia:1015'], ['sia:1016'], ['sia:1017']], 'groups': {'ARGUS': [1030], 'BABAR': [1028], 'BELLE': [1029], 'TASSO': [1001, 1002, 1003, 1005, 1006], 'TPC(c)': [1010], 'TPC(b)': [1011], 'TOPAZ': [1013], 'ALEPH': [1018], 'DELPHI': [1025], 'DELPHI(uds)': [1026], 'DELPHI(b)': [1027], 'OPAL': [1019], 'SLD': [1014], 'SLD(uds)': [1015], 'SLD(c)': [1016], 'SLD(b)': [1017]}, 'annotations': 'Selected experiment/energy; fixed source grid slot'}, 'thesis_sia_plot_kaon': {'panels': [['sia:2030'], ['sia:2028'], ['sia:2029'], ['sia:2001', 'sia:2002', 'sia:2003', 'sia:2005'], ['sia:2008'], ['sia:2013'], ['sia:2018'], ['sia:2025'], ['sia:2026'], ['sia:2027'], ['sia:2019'], ['sia:2014'], ['sia:2015'], ['sia:2016'], ['sia:2017']], 'groups': {'ARGUS': [2030], 'BABAR': [2028], 'BELLE': [2029], 'TASSO': [2001, 2002, 2003, 2005], 'TPC': [2008], 'TOPAZ': [2013], 'ALEPH': [2018], 'DELPHI': [2025], 'DELPHI(uds)': [2026], 'DELPHI(b)': [2027], 'OPAL': [2019], 'SLD': [2014], 'SLD(uds)': [2015], 'SLD(c)': [2016], 'SLD(b)': [2017]}, 'annotations': 'Selected experiment/energy; fixed source grid slot'}, 'thesis_sia_plot_hadron': {'panels': [['sia:4003', 'sia:4008', 'sia:4009', 'sia:4010', 'sia:4012'], ['sia:4004'], ['sia:4000'], ['sia:4001'], ['sia:4017'], ['sia:4013'], ['sia:4007'], ['sia:4002'], ['sia:4016'], ['sia:4014'], ['sia:4015']], 'groups': {'TASSO': [4003, 4008, 4009, 4010, 4012], 'TPC': [4004], 'ALEPH': [4000], 'DELPHI': [4001], 'DELPHI(uds)': [4017], 'DELPHI(b)': [4013], 'OPAL': [4007], 'SLD': [4002], 'SLD(uds)': [4016], 'SLD(c)': [4014], 'SLD(b)': [4015]}, 'annotations': 'Selected experiment/energy; fixed source grid slot'}, 'thesis_wc_plot': {'panels': [['wc:20001'], ['wc:10001'], ['wc:20002'], ['wc:10002'], ['wc:20003']], 'annotations': 'Selected dataset only; supplied data_info by fixed grid slot'}}
+_SIA_GROUPS = {'pion': {'ARGUS': [1030], 'BABAR': [1028], 'BELLE': [1029], 'TASSO': [1001, 1002, 1003, 1005, 1006], 'TPC(c)': [1010], 'TPC(b)': [1011], 'TOPAZ': [1013], 'ALEPH': [1018], 'DELPHI': [1025], 'DELPHI(uds)': [1026], 'DELPHI(b)': [1027], 'OPAL': [1019], 'SLD': [1014], 'SLD(uds)': [1015], 'SLD(c)': [1016], 'SLD(b)': [1017]}, 'kaon': {'ARGUS': [2030], 'BABAR': [2028], 'BELLE': [2029], 'TASSO': [2001, 2002, 2003, 2005], 'TPC': [2008], 'TOPAZ': [2013], 'ALEPH': [2018], 'DELPHI': [2025], 'DELPHI(uds)': [2026], 'DELPHI(b)': [2027], 'OPAL': [2019], 'SLD': [2014], 'SLD(uds)': [2015], 'SLD(c)': [2016], 'SLD(b)': [2017]}, 'hadron': {'TASSO': [4003, 4008, 4009, 4010, 4012], 'TPC': [4004], 'ALEPH': [4000], 'DELPHI': [4001], 'DELPHI(uds)': [4017], 'DELPHI(b)': [4013], 'OPAL': [4007], 'SLD': [4002], 'SLD(uds)': [4016], 'SLD(c)': [4014], 'SLD(b)': [4015]}}
+_SIA_HAD_LAB = {'pion': '\\pi^{\\pm}', 'kaon': 'K^{\\pm}', 'hadron': 'h^{\\pm}'}
+_SIA_HAD_COLORS = ['red', 'dodgerblue', 'xkcd:grassy green']
+_SIA_TASSO_COLORS = {'pion': ['xkcd:vibrant purple', 'k', 'xkcd:grassy green', 'xkcd:bright orange', 'dodgerblue'], 'kaon': ['red', 'k', 'xkcd:grassy green', 'xkcd:vibrant purple'], 'hadron': ['dodgerblue', 'red', 'k', 'xkcd:vibrant purple', 'xkcd:bright orange']}
+_SIA_TASSO_NAMES = {'pion': ['12', '14', '22', '32', '44'], 'kaon': ['12', '14', '22', '32'], 'hadron': ['12', '14', '22', '30', '44']}
+_WC_DATA_INFO = {10001: {'name': 'ATLAS~7~TeV', 'ylabel': '\\boldmath $\\frac{d\\sigma(W^{-}+c)}{d|\\eta_{\\ell}|}$', 'yticks': [0, 10000.0, 20000.0, 30000.0], 'yticklabels': ['$0$', '$10$', '$20$', '$30$'], 'ymm': [2000.0, 10000.0], 'xlim': [0.0, 2.49], 'ylim': [4000.0, 24900.0], 'txt-loc-pT': [0.08, 0.22], 'pT': 20, 'txt-loc-rs': [0.09, 0.1], 'rs': 7}, 10002: {'name': 'ATLAS~7~TeV', 'ylabel': '\\boldmath $\\frac{d\\sigma(W^{+}+\\bar{c})}{d|\\eta_{\\ell}|}$', 'yticks': [0, 10000.0, 20000.0, 30000.0], 'yticklabels': ['$0$', '$10$', '$20$', '$30$'], 'ymm': [2500.0, 10000.0], 'xlim': [0.0, 2.49], 'ylim': [4000.0, 24900.0], 'txt-loc-pT': [0.08, 0.22], 'pT': 20, 'txt-loc-rs': [0.09, 0.1], 'rs': 7}, 20001: {'name': 'CMS~7~TeV', 'ylabel': '\\boldmath $\\frac{d\\sigma(W + c)}{d|\\eta_{\\ell}|}$', 'yticks': [40000.0, 50000.0, 60000.0, 70000.0], 'yticklabels': ['$40$', '$50$', '$60$', '$70$'], 'ymm': [5000.0, 10000.0], 'xlim': [0.0, 1.99], 'ylim': [30100.0, 80000.0], 'txt-loc-pT': [0.08, 0.22], 'pT': 25, 'txt-loc-rs': [0.09, 0.1], 'rs': 7}, 20002: {'name': 'CMS~7~TeV', 'ylabel': '\\boldmath $\\frac{\\sigma(W^{+} + \\bar{c})}{\\sigma(W^{-} + c)}$', 'yticks': [0.6, 0.8, 1.0, 1.2, 1.4], 'yticklabels': ['$0.6$', '$0.8$', '$1.0$', '$1.2$', '$1.4$'], 'ymm': [0.1, 0.2], 'xlim': [0.0, 1.99], 'ylim': [0.5, 1.5], 'txt-loc-pT': [0.08, 0.22], 'pT': 25, 'txt-loc-rs': [0.09, 0.1], 'rs': 7}, 20003: {'name': 'CMS~13~TeV', 'ylabel': '\\boldmath $\\frac{d\\sigma(W + c)}{d|\\eta_{\\ell}|}$', 'yticks': [100000.0, 200000.0, 300000.0, 400000.0, 500000.0, 600000.0], 'yticklabels': ['$100$', '$200$', '$300$', '$400$', '$500$', '$600$'], 'ymm': [50000.0, 100000.0], 'xlim': [0.0, 2.25], 'ylim': [201000.0, 699000.0], 'txt-loc-pT': [0.08, 0.22], 'pT': 26, 'txt-loc-rs': [0.09, 0.1], 'rs': 13}}
+def thesis_legend(axis, handles, labels, **kwargs):
+    def present(handle):
+        return all(present(part) for part in handle) if type(handle) is tuple else handle is not None
+    entries = [(h, label) for h, label in zip(handles, labels) if present(h)]
+    if not entries:
+        return None
+    return axis.legend([e[0] for e in entries], [e[1] for e in entries], **kwargs)
+
+
+def thesis_finish_panels(fig, function, selected):
+    panel_map = _THESIS_PANEL_MAP[function]['panels']
+    for index, axis in enumerate(fig.axes):
+        required = panel_map[index] if index < len(panel_map) else []
+        if not set(required) & selected:
+            axis.set_visible(False)
+    fig._thesis_selected = sorted(selected)
+
+def thesis_save_labels(fig, path, **kwargs):
+    # Extend the export canvas, not source panel positions, for default-positioned labels.
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    boxes = [fig.bbox_inches]
+    boxes.extend(axis.xaxis.label.get_window_extent(renderer).transformed(fig.dpi_scale_trans.inverted())
+                 for axis in fig.axes if axis.get_visible() and axis.get_xlabel())
+    boxes.extend(label.get_window_extent(renderer).transformed(fig.dpi_scale_trans.inverted())
+                 for label in fig.texts if label.get_visible())
+    bounds = matplotlib.transforms.Bbox.union(boxes).padded(.01)
+    fig._thesis_export_bounds = bounds
+    fig.savefig(path, bbox_inches=bounds, **kwargs)
+
+
+def thesis_sia_ratios(tab, dataset):
+    mean = np.asarray(tab['thy-0'])
+    invalid = np.flatnonzero(~np.isfinite(mean) | (mean <= 0))
+    if len(invalid):
+        raise ValueError('sia:%d has nonpositive/nonfinite mean cross section at original rows %s; '
+                         'the source data/theory ratio is incompatible and no positive replacement was made.' %
+                         (dataset, invalid.tolist()))
+    low = thesis_ratio(mean - tab['dthy_lower-0'], mean)
+    high = thesis_ratio(mean + tab['dthy_upper-0'], mean)
+    return (thesis_ratio(tab['value'], mean), thesis_ratio(tab['alpha'], mean, error=True),
+            np.minimum(low, high), np.maximum(low, high))
+
+# Adapted from the user-supplied corrected SIA source; SHA256 50d27ce3566bb931bdd9ef53686945dab3f69c27ad84e84a0d9c656a9c123063.
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+def thesis_sia_panel(had_idx, num, had, name, z, val, val_err, thy, thy_dn, thy_up, idx_list, identities):
+    ax = py.subplot(5, 4, num + 1)
+    divider = make_axes_locatable(ax)
+    axL = divider.append_axes('right', size='120%', pad=0, sharey=ax)
+    axL.set_xlim(0.2, 0.95)
+    axL.spines['left'].set_visible(False)
+    axL.yaxis.set_ticks_position('right')
+    py.setp(axL.get_xticklabels(), visible=True)
+    ax.spines['right'].set_visible(False)
+    one = np.ones(len(z))
+    if name == 'TASSO':
+        for (i, idx) in enumerate(_SIA_GROUPS[had]['TASSO']):
+            if idx not in idx_list:
+                continue
+            mask = identities == idx
+            z_i = z[mask]
+            val_i = val[mask]
+            err_i = val_err[mask]
+            for ax_ in [ax, axL]:
+                ax_.errorbar(z_i, val_i, err_i, fmt='.', color=_SIA_TASSO_COLORS[had][i], capsize=None)
+                ax_.scatter(z_i, val_i, color=_SIA_TASSO_COLORS[had][i], s=10)
+    else:
+        for ax_ in [ax, axL]:
+            ax_.errorbar(z, val, val_err, fmt='k.', capsize=None)
+            ax_.scatter(z, val, color='k', s=20)
+    for ax_ in [ax, axL]:
+        ax_.fill_between(z, thy_dn, thy_up, color=_SIA_HAD_COLORS[had_idx], alpha=0.8, where=thesis_band_mask(z))
+        ax_.axhline(y=1, linestyle='--', color='k')
+        ax_.set_ylim(bottom=0.5, top=1.5)
+    ax.set_xscale('log')
+    ax.set_xlim(0.015, 0.2)
+    axL.set_xlim(0.2, 0.95)
+    (x, y) = (0.13, 0.85)
+    if had == 'kaon':
+        if name == 'DELPHI':
+            (x, y) = (0.27, 0.85)
+        elif name == 'DELPHI(uds)':
+            (x, y) = (0.27, 0.85)
+        elif name == 'DELPHI(b)':
+            (x, y) = (0.4, 0.85)
+        elif 'ALEPH' in name:
+            (x, y) = (0.19, 0.85)
+    ax.text(x, y, '\\boldmath$\\mathrm{%s}$' % name, transform=ax.transAxes, size=30)
+    if any((experiment in name for experiment in ['ALEPH', 'DELPHI', 'OPAL', 'SLD'])):
+        ax.text(0.13, 0.08, '\\boldmath$\\sqrt{s} = M_Z$', transform=ax.transAxes, size=30)
+    if any((experiment in name for experiment in ['ARGUS', 'BELLE', 'BABAR'])):
+        ax.text(0.13, 0.08, '\\boldmath$\\sqrt{s} \\approx 10~\\mathrm{GeV}$', transform=ax.transAxes, size=30)
+    if 'TPC' in name:
+        ax.text(0.13, 0.08, '\\boldmath$\\sqrt{s} = 29~\\mathrm{GeV}$', transform=ax.transAxes, size=30)
+    if 'TOPAZ' in name:
+        ax.text(0.13, 0.08, '\\boldmath$\\sqrt{s} = 58~\\mathrm{GeV}$', transform=ax.transAxes, size=30)
+    if num == 1:
+        axL.text(0.55, 0.76, '\\boldmath$%s$' % _SIA_HAD_LAB[had], transform=axL.transAxes, color=_SIA_HAD_COLORS[had_idx], size=60)
+    if num >= len(_SIA_GROUPS[had].keys()) - 4:
+        axL.set_xlabel('\\boldmath$z_h$', size=45, x=1.0 / 12.0)
+        (labelbottom, labeltop, labelleft, labelright, bottom, top, left, right) = (True, False, False, False, True, True, True, False)
+        (labelbottomL, labeltopL, labelleftL, labelrightL, bottomL, topL, leftL, rightL) = (True, False, False, False, True, True, False, True)
+        if num % 4 == 0:
+            labelleft = True
+    elif num % 4 == 0:
+        (labelbottom, labeltop, labelleft, labelright, bottom, top, left, right) = (False, False, True, False, True, True, True, False)
+        (labelbottomL, labeltopL, labelleftL, labelrightL, bottomL, topL, leftL, rightL) = (False, False, False, False, True, True, False, True)
+    else:
+        (labelbottom, labeltop, labelleft, labelright, bottom, top, left, right) = (False, False, False, False, True, True, True, False)
+        (labelbottomL, labeltopL, labelleftL, labelrightL, bottomL, topL, leftL, rightL) = (False, False, False, False, True, True, False, True)
+    ax.tick_params(axis='both', which='both', labelleft=labelleft, labelbottom=labelbottom, labelright=labelright, bottom=bottom, top=top, left=left, right=right, direction='in', labelsize=30, length=8, pad=10)
+    axL.tick_params(axis='both', which='both', labelleft=labelleftL, labelbottom=labelbottomL, labelright=labelrightL, bottom=bottomL, top=topL, left=leftL, right=rightL, direction='in', labelsize=30, length=8, pad=10)
+    for ax_ in [ax, axL]:
+        ax_.set_yticks([0.6, 0.8, 1.0, 1.2, 1.4])
+        ax_.set_yticklabels(['$0.6$', '$0.8$', '$1.0$', '$1.2$', '$1.4$'])
+        ax_.set_facecolor('none')
+    ax.set_xticks([0.03, 0.1])
+    ax.set_xticklabels(['$0.03$', '$0.1$'], ha='center')
+    axL.set_xticks([0.2, 0.4, 0.6, 0.8])
+    axL.set_xticklabels(['$0.2$', '$0.4$', '$0.6$', '$0.8$'])
+    ax.xaxis.set_minor_locator(matplotlib.ticker.FixedLocator([0.02, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09]))
+    ax.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+    axL.xaxis.set_minor_locator(matplotlib.ticker.NullLocator())
+    axL.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+    ax.set_xlim(0.015, 0.2)
+    axL.set_xlim(0.2, 0.95)
+    ax.set_rasterized(True)
+    ax.spines['top'].set_linewidth(2)
+    ax.spines['bottom'].set_linewidth(2)
+    ax.spines['left'].set_linewidth(2)
+    axL.set_rasterized(True)
+    axL.spines['top'].set_linewidth(2)
+    axL.spines['right'].set_linewidth(2)
+    axL.spines['bottom'].set_linewidth(2)
+    for spine in ax.spines.values():
+        spine.set_zorder(10)
+    for spine in axL.spines.values():
+        spine.set_zorder(10)
+    if name == 'TASSO':
+        handles = []
+        labels = []
+        for (i, idx) in enumerate(_SIA_GROUPS[had]['TASSO']):
+            if idx not in idx_list:
+                continue
+            handle = ax.errorbar([], [], fmt='o', color=_SIA_TASSO_COLORS[had][i], capsize=None, markersize=6, linestyle='None')
+            handles.append(handle)
+            labels.append('\\boldmath$%s~\\mathrm{GeV}$' % _SIA_TASSO_NAMES[had][i])
+        if had == 'pion':
+            y = 0.53
+        if had == 'kaon':
+            y = 0.49
+        if had == 'hadron':
+            y = 0.53
+        ax.legend(handles, labels, frameon=False, fontsize=20, loc='upper left', handletextpad=-0.2, labelspacing=0.4, bbox_to_anchor=(-0.04, y))
+    num += 1
+    return num
+
+
+def thesis_sia_plot_species(datasets, output_file, interval, had):
+    data = datasets['sia']
+    had_idx = ['pion', 'kaon', 'hadron'].index(had)
+    fig = py.figure(figsize=(4 * 7, 5 * 4))
+    for num, (name, group) in enumerate(_SIA_GROUPS[had].items()):
+        selected = [idx for idx in group if idx in data]
+        if not selected:
+            continue
+        values, errors, lower, upper, coordinates, identities = [], [], [], [], [], []
+        for idx in selected:
+            tab = data[idx]
+            val, err, low, high = thesis_sia_ratios(tab, idx)
+            values.extend(val)
+            errors.extend(err)
+            lower.extend(low)
+            upper.extend(high)
+            coordinates.extend(tab['z'])
+            identities.extend([idx] * len(val))
+        z = np.asarray(coordinates)
+        order = np.argsort(z, kind='stable')
+        arrays = [np.asarray(a)[order] for a in (values, errors, lower, upper, identities)]
+        val, err, low, high, identities = arrays
+        thesis_sia_panel(had_idx, num, had, name, z[order], val, err, np.ones(len(z)),
+                         low, high, selected, identities)
+    y = .698 if had == 'hadron' else .60
+    fig.text(-.017, y, r'\boldmath$\mathrm{data/theory}$', rotation=90, va='center', ha='center', fontsize=55)
+    py.tight_layout()
+    py.subplots_adjust(hspace=0, wspace=.04)
+    if any(not any(idx in data for idx in group) for group in _SIA_GROUPS[had].values()):
+        thesis_save_labels(fig, output_file, dpi=100)
+    else:
+        fig.savefig(output_file, bbox_inches='tight', dpi=100)
+
+
+def thesis_sia_plot_pion(datasets, output_file, interval):
+    thesis_sia_plot_species(datasets, output_file, interval, 'pion')
+
+
+def thesis_sia_plot_kaon(datasets, output_file, interval):
+    thesis_sia_plot_species(datasets, output_file, interval, 'kaon')
+
+
+def thesis_sia_plot_hadron(datasets, output_file, interval):
+    thesis_sia_plot_species(datasets, output_file, interval, 'hadron')
+
+
+# Adapted from the user-supplied corrected W+charm source; SHA256 c16a55145de507ccf5f300de3114cb6fce2a986f149622e2574a2d42146f5ef8.
+def thesis_wc_draw(ax, idx, tab):
+    i_d = 1
+    err_type = 1
+    (hand, thy_plot, thy_band) = ({}, {}, {})
+    names = {1: 'JAM'}
+    colors_err = colors_line = {1: 'red'}
+    data_info = _WC_DATA_INFO
+    (x, val, val_err) = (tab['y'], tab['value'], tab['alpha'])
+    thy = tab['thy-0']
+    thy_CI = {'dn': thy - tab['dthy_lower-0'], 'up': thy + tab['dthy_upper-0']}
+    info = data_info[idx]
+    hand[idx] = ax.errorbar(x, val, val_err, color='blue', fmt='.', capsize=None, ms=15, linewidth=2)
+    if i_d == 0:
+        ls = '-'
+        alpha_err = 0.4
+        alpha_line = 0.5
+    else:
+        ls = '-'
+        alpha_line = 1
+        alpha_err = 0.6
+    (thy_plot[i_d],) = ax.plot(x, thy, color=colors_line[i_d], lw=1.5, ls=ls, label='{\\rm \\textbf{%s}}' % names[i_d], zorder=i_d - 2, alpha=alpha_line)
+    if err_type == 1:
+        thy_band[i_d] = ax.fill_between(x, thy_CI['dn'], thy_CI['up'], color=colors_err[i_d], alpha=alpha_err, lw=1, label='{\\rm \\textbf{%s}}' % names[i_d], zorder=i_d - 2, where=thesis_band_mask(x))
+    ax.text(info['txt-loc-pT'][0], info['txt-loc-pT'][1], '$p^{l}_{T} > %g~\\textrm{GeV}$' % info['pT'], transform=ax.transAxes, size=25)
+    ax.text(info['txt-loc-rs'][0], info['txt-loc-rs'][1], '$\\sqrt{s} = %g~\\textrm{TeV}$' % info['rs'], transform=ax.transAxes, size=25)
+    ax.yaxis.set_minor_locator(MultipleLocator(info['ymm'][0]))
+    ax.yaxis.set_major_locator(MultipleLocator(info['ymm'][1]))
+    ax.text(0.94, 0.75, info['ylabel'], ha='right', transform=ax.transAxes, size=50)
+    ax.set_yticks(info['yticks'])
+    ax.set_yticklabels(info['yticklabels'])
+    ax.set_ylim(bottom=info['ylim'][0], top=info['ylim'][1])
+    if idx not in [20002]:
+        ax.set_ylabel('\\textrm{[pb]}', fontsize=30, rotation='vertical')
+        ax.yaxis.set_label_coords(-0.025, 0.93)
+    ax.xaxis.set_minor_locator(MultipleLocator(0.1))
+    ax.xaxis.set_major_locator(MultipleLocator(0.5))
+    ax.set_xlabel('\\boldmath $|\\eta_{\\ell}|$', fontsize=40)
+    ax.set_xlim(left=0.001, right=2.49)
+    ax.tick_params(axis='both', which='major', top=True, right=True, direction='in', labelsize=30, length=12, pad=10)
+    ax.tick_params(axis='both', which='minor', top=True, right=True, direction='in', labelsize=30, length=6, pad=10)
+    return (hand[idx], thy_plot[1], thy_band.get(1))
+
+
+def thesis_wc_plot(datasets, output_file, interval):
+    data = datasets['wc']
+    fig = py.figure(figsize=(2 * 8, 3 * 5))
+    for slot, idx in enumerate([20001, 10001, 20002, 10002, 20003]):
+        if idx not in data:
+            continue
+        ax = py.subplot(3, 2, slot + 1)
+        _, line, band = thesis_wc_draw(ax, idx, data[idx])
+        if idx == 20002:
+            handles = [(band, line)] if _THESIS_BANDS else [line]
+            ax.legend(handles, [r'\textbf{\textrm{JAM}}'], loc='upper left', fontsize=30,
+                      frameon=0, handletextpad=.3, handlelength=1.)
+        if idx == 20001:
+            py.title(label=r'$\textbf{\textrm{CMS}}$', loc='center', fontsize=40, pad=20)
+        if idx == 10001:
+            py.title(label=r'$\textbf{\textrm{ATLAS}}$', loc='center', fontsize=40, pad=20)
+        for side in ['top', 'right', 'bottom', 'left']:
+            ax.spines[side].set_linewidth(2)
+        ax.set_rasterized(True)
+    py.tight_layout()
+    py.subplots_adjust(hspace=0, wspace=.125)
+    fig.savefig(output_file)
+
+
+import base64
+import copy
+import os
+from types import SimpleNamespace
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as py
+from matplotlib import pyplot, gridspec
+from matplotlib.lines import Line2D
+from matplotlib.collections import PolyCollection
+from matplotlib.container import ErrorbarContainer
+from matplotlib.ticker import MultipleLocator, FormatStrFormatter, ScalarFormatter
+import matplotlib.colors as mcolors
+import pandas as pd
+import scipy as sp
+from scipy import interpolate
+from scipy.interpolate import griddata
+from scipy.integrate import fixed_quad
+
+_THESIS_BANDS = True
+
+
+def thesis_band_mask(x):
+    return np.full(np.asarray(x).shape, _THESIS_BANDS, dtype=bool)
+
+
+def thesis_ratio(value, mean, error=False):
+    mean = np.asarray(mean)
+    if np.any(~np.isfinite(mean)) or np.any(mean == 0):
+        raise ValueError('Original data/theory display has a zero or nonfinite mean denominator.')
+    return np.asarray(value) / (np.abs(mean) if error else mean)
+
+
+def thesis_deviation(curves, interval, side):
+    mean, bounds = theory_statistics(curves, interval)
+    if bounds is None:
+        return np.zeros_like(mean)
+    return mean - bounds[0] if side == 'lower' else bounds[1] - mean
+
+
+def thesis_error_extents(lower, upper):
+    if not _THESIS_BANDS:
+        return None
+    if np.any(lower < 0) or np.any(upper < 0):
+        raise ValueError('Pointwise interval does not enclose the mean; the original theory-errorbar representation is incompatible.')
+    return np.array([lower, upper])
+
+
+def thesis_dataset(point, interval):
+    n = len(point['value'])
+    data = {k: np.asarray(v).copy() for k, v in point['tab'].items()
+            if np.asarray(v).ndim == 1 and len(v) == n}
+    mean, bounds = theory_statistics(point['theory'], interval)
+    data.update(value=point['value'].copy(), alpha=point['alpha'].copy())
+    data['thy-0'] = mean
+    data['dthy_lower-0'] = mean - bounds[0] if bounds is not None else np.zeros(n)
+    data['dthy_upper-0'] = bounds[1] - mean if bounds is not None else np.zeros(n)
+    data['thy'] = mean
+    data['dthy_lower'] = data['dthy_lower-0']
+    data['dthy_upper'] = data['dthy_upper-0']
+    for name in ('X', 'Y', 'Z'):
+        lo, hi = name.lower() + 'min', name.lower() + 'max'
+        if name not in data and lo in data and hi in data:
+            data[name] = (data[lo] + data[hi]) / 2
+    if 'X' in data:
+        data['x'] = data['X']
+        data['rx'] = np.around(data['X'], decimals=2)
+    if 'Q2' in data:
+        data['rQ2'] = np.around(data['Q2'], decimals=0)
+    if 'shifts' in point:
+        data['shifts'] = np.mean(point['shifts'], axis=0)
+    if point['reaction'] == 'jet':
+        data['thy-rep'] = {'all': np.asarray(point['theory'])}
+        data['plot-factor'] = theory_plot_factors(data)
+        names = {'d2sigma/dy-dpt': 'd2_sigma_over_d_y_d_pt',
+                 'd2sigma/2-pi-dy-dpt': 'd2_sigma_over_2_pi_d_y_d_pt'}
+        if 'obs' in data:
+            data['obs'] = np.array([names.get(str(x), str(x)) for x in data['obs']])
+        if 'units' not in data and 'unit' in data:
+            data['units'] = data['unit']
+    return data
+
+
+def thesis_log_clipping(fig):
+    def count_coordinates(paths, dimension):
+        count = 0
+        for path in paths:
+            vertices = path.vertices
+            if path.codes is not None:
+                vertices = vertices[path.codes != path.CLOSEPOLY]
+            invalid = np.all(np.isfinite(vertices), axis=1) & (vertices[:, dimension] <= 0)
+            count += len(np.unique(vertices[invalid], axis=0))
+        return count
+
+    clipping = []
+    for index, axis in enumerate(fig.axes):
+        for coordinate, dimension in (('x', 0), ('y', 1)):
+            if getattr(axis, 'get_' + coordinate + 'scale')() != 'log':
+                continue
+            # Inspect emitted polygons after source bin selection and display transforms.
+            bands = sum(count_coordinates(collection.get_paths(), dimension)
+                        for collection in axis.collections
+                        if isinstance(collection, PolyCollection) and collection.get_visible()
+                        and collection.get_transform() == axis.transData)
+            errors = sum(count_coordinates(collection.get_paths(), dimension)
+                         for container in axis.containers if isinstance(container, ErrorbarContainer)
+                         for collection in container.lines[2] if collection.get_visible())
+            for kind, count in (('theory_band', bands), ('experimental_errorbar', errors)):
+                if count:
+                    clipping.append({'kind': kind, 'axis': index, 'coordinate': coordinate,
+                                     'nonpositive_boundary_coordinates': count})
+    return clipping
+
+
+def render_theory_plots(points, interval, output_dir, metadata):
+    global _THESIS_BANDS
+    interval = validate_credible_interval(interval)
+    _THESIS_BANDS = metadata['n_replicas'] > 1
+    images, limitations, accounted = [], [], set()
+    selected = {(p['reaction'], p['dataset_id']): p for p in points}
+    for case in _THESIS_FIGURES:
+        ordered = [(k.split(':')[0], int(k.split(':')[1])) for k in case['datasets']]
+        present = set(ordered) & set(selected)
+        if not present:
+            continue
+        accounted |= present
+        folder = case.get('output_directory', '')
+        base = output_dir
+        if folder in {'jets', 'pjets'} and os.path.basename(base) in {'jet', 'pjet'}:
+            base = os.path.join(os.path.dirname(base), folder)
+        destination = base if not folder or os.path.basename(base) == folder else os.path.join(base, folder)
+        os.makedirs(destination, exist_ok=True)
+        path = os.path.join(destination, case['filename'])
+        if os.path.isfile(path):
+            os.remove(path)
+        datasets = {}
+        prior = set(py.get_fignums())
+        try:
+            for key in ordered:
+                if key in selected:
+                    datasets.setdefault(key[0], {})[key[1]] = thesis_dataset(selected[key], interval)
+            with matplotlib.rc_context({'text.usetex': True, 'text.latex.preamble': r'\usepackage{amsmath}'}):
+                globals()[case['function']](datasets, path, interval)
+                if not os.path.isfile(path):
+                    raise ValueError('Original plotting function did not produce a figure for the selected points.')
+                fig = py.gcf()
+                notes = list(case['notes'])
+                clipping = thesis_log_clipping(fig)
+                band_issues = []
+                for item in clipping:
+                    location = 'original logarithmic %s axis in subplot %d' % (item['coordinate'], item['axis'] + 1)
+                    if item['kind'] == 'theory_band':
+                        reason = ('%s: %d nonpositive theory credible-band boundary coordinates cannot be represented on the %s; '
+                                  'full theory-band display is UNVALIDATED. Source-clipped image retained; no points, replicas, or bounds changed.' %
+                                  (case['filename'][:-4], item['nonpositive_boundary_coordinates'], location))
+                        band_issues.append(reason)
+                        limitations.append({'source_function': case['source'], **item,
+                                            'band_display_status': 'unvalidated', 'reason': reason})
+                    else:
+                        reason = ('%d experimental errorbar boundary coordinates are clipped by the %s; '
+                                  'this source-consistent clipping does not itself invalidate the theory band.' %
+                                  (item['nonpositive_boundary_coordinates'], location))
+                    notes.append(reason)
+                for note in case['notes']:
+                    limitations.append({'source_function': case['source'], 'reason': note})
+                label = ('%g%% pointwise credible interval' % interval if _THESIS_BANDS else
+                         'mean only; credible interval requires at least two fitted replicas')
+                if _THESIS_BANDS and interval == 100:
+                    label += ' (available fitted-replica envelope, not universal physical coverage)'
+                if band_issues:
+                    label += '; ' + '; '.join(band_issues)
+                selected_names = ['%s:%s' % key for key in ordered if key in present]
+                omitted = [name for name in case['datasets'] if name not in selected_names]
+                with open(path, 'rb') as handle:
+                    png = base64.b64encode(handle.read()).decode()
+                axes = []
+                for axis in fig.axes:
+                    spec = axis.get_subplotspec()
+                    axes.append({'xscale': axis.get_xscale(), 'yscale': axis.get_yscale(),
+                                 'xlim': list(axis.get_xlim()), 'ylim': list(axis.get_ylim()),
+                                 'position': list(axis.get_position().bounds), 'visible': axis.get_visible(),
+                                 'grid_position': None if spec is None else
+                                 [spec.rowspan.start, spec.rowspan.stop, spec.colspan.start, spec.colspan.stop]})
+                images.append({'path': path, 'family': case['filename'][:-4], 'panels': len(fig.axes),
+                               'source_function': case['source'], 'datasets': selected_names,
+                               'omitted_datasets': omitted, 'source_panels': case['panels'],
+                               'credible_interval': interval, 'n_replicas': metadata['n_replicas'],
+                               'caption': case['filename'][:-4] + '; mean fitted profiled theory; ' + label,
+                               'plot_status': 'partial' if case['notes'] or band_issues else 'ok',
+                               'band_display_status': ('unvalidated' if band_issues else
+                                                       'compatible' if _THESIS_BANDS else 'not_drawn'),
+                               'log_clipping': clipping, 'display_notes': notes,
+                               'arithmetic_corrections': case['arithmetic_corrections'],
+                               'axes': axes, 'png_b64': png})
+        except (ValueError, KeyError, TypeError, RuntimeError, OSError, IndexError, UnboundLocalError) as exc:
+            if os.path.isfile(path):
+                os.remove(path)
+            limitations.append({'source_function': case['source'], 'reason': str(exc)})
+        finally:
+            for number in set(py.get_fignums()) - prior:
+                py.close(number)
+    for key in selected:
+        if key not in accounted:
+            limitations.append({'dataset': '%s:%s' % key,
+                                'reason': ('Original polarized-jet figure explicitly omits PHENIX 20005; no panel added.'
+                                           if key == ('pjet', 20005) else
+                                           'No experimental-data figure for this dataset in the supplied source functions; no generic figure substituted.')})
+    metadata['rendering_errors'] = limitations
+    metadata['band_drawn'] = bool(images and metadata['n_replicas'] > 1)
+    metadata['band_display_status'] = ('unvalidated' if any(i['band_display_status'] == 'unvalidated' for i in images)
+                                       else 'compatible' if metadata['band_drawn'] else 'not_drawn')
+    if limitations:
+        metadata['note'] = (metadata.get('note', '') + ' Thesis plotting limitations: ' +
+                            '; '.join(item['reason'] for item in limitations)).strip()
+        metadata['plot_status'] = 'partial' if images else 'error'
+    return images
+
+
+
 '''
 
 
-def analyze_by_experiment(collection_id="", experiments="", plot=True, username=""):
-    """chi2 of the best replica grouped by experiment, and data vs theory plots
-    for the experiments named (comma list; empty = all)."""
+# Compress only the transplanted source payload to stay below SSH's argument-size limit.
+_BY_EXPERIMENT = _REPLICA_STATE + ("\nimport base64, zlib\n"
+    "exec(zlib.decompress(base64.b64decode(%r)))\n" %
+    base64.b64encode(zlib.compress(_THEORY_PLOTTING.encode(), 9)).decode()) + r'''
+import glob, json, os
+stage = __STAGE__; want = __WANT__; plot = __PLOT__
+interval = validate_credible_interval(__INTERVAL__)
+records, notes = [], []
+excluded = {'not_fitted':0, 'failed':0, 'missing_msr':0, 'missing_summary':0}
+for directory in sorted(glob.glob(os.path.join(stage,'current','replica_*'))):
+    if not os.path.isdir(directory): continue
+    state, summary = replica_state(os.path.join(directory,'fit_summary.json'))
+    if state != 'fitted':
+        excluded[state or 'missing_summary'] += 1
+    elif not summary.get('msr_path') or not os.path.isfile(summary['msr_path']):
+        excluded['missing_msr'] += 1
+    else:
+        records.append({**summary, 'identity':os.path.basename(directory)})
+metadata = {'credible_interval':interval, 'percentiles':[(100-interval)/2,100-(100-interval)/2],
+            'interval_kind':'pointwise_equal_tailed', 'central_estimator':'mean',
+            'n_replicas':len(records), 'replica_ids':[s['identity'] for s in records],
+            'excluded_replicas':excluded, 'band_drawn':False,
+            'theory_convention':'FitPack prediction: normalized theory plus profiled correlated shifts',
+            'chi2_estimator':'best fitted replica against central experimental values; not ensemble-mean chi2'}
+if not records:
+    print(json.dumps({'status':'missing_inputs', **metadata,
+                      'message':'No qualified fitted replicas with .msr files; no plots generated.'}))
+    raise SystemExit(0)
+if len(records)<2: notes.append('Only one fitted replica; mean shown without a credible band.')
+if interval==100: notes.append('100% is the pointwise envelope of available fitted replicas, not the entire underlying posterior.')
+if any(excluded.values()): notes.append('Excluded replicas: '+', '.join('%s=%d' % item for item in excluded.items()))
+from fitlib.resman import RESMAN
+from tools.config import conf, load_config
+from tools.tools import load
+def first(tab, *keys):
+    for k in keys:
+        if k in tab:
+            values=np.asarray(tab[k])
+            if values.size: return str(values.flat[0])
+    return ''
+resman = None
+context = 'initializing campaign datasets'
+try:
+    scores=[float(s['chi2_total']) for s in records]
+    if not np.isfinite(scores).all(): raise ValueError('Nonfinite fitted-replica chi2 summary.')
+    best_record=records[int(np.argmin(scores))]
+    best=best_record['msr_path']
+    conf.clear(); load_config(os.path.join(stage,'input.py')); conf['bootstrap']=False
+    resman=RESMAN(nworkers=1,parallel=False,datasets=True)
+    residuals={}
+    unavailable=[]
+    for reaction, spec in conf['datasets'].items():
+        if not spec.get('xlsx'): continue
+        attr={'dy-pion':'dy_pion_res','pion_qT':'pion_qTres'}.get(reaction,reaction+'_res')
+        residual=getattr(resman,attr,None)
+        if residual is None or not isinstance(getattr(residual,'tabs',None),dict):
+            raise ValueError('No FitPack residual tables for selected reaction '+reaction)
+        for idx in spec['xlsx']:
+            if idx not in residual.tabs:
+                unavailable.append({'reaction':reaction,'dataset_id':str(idx),
+                                    'reason':'No experimental points survived the campaign reader/cuts.'})
+        residuals[reaction]=residual
+    points, signatures = {}, {}
+    for reaction,residual in residuals.items():
+        for idx,tab in residual.tabs.items():
+            key=(reaction,idx)
+            context='%s:%s experimental data' % key
+            value=theory_column(tab,'value')
+            if not len(value): raise ValueError('Empty experimental dataset.')
+            alpha=theory_column(tab,'alpha',len(value))
+            if np.any(alpha<0): raise ValueError('Negative experimental uncertainty.')
+            signatures[key]=theory_identity(tab)
+            points[key]={'reaction':reaction,'dataset_id':idx,'experiment':first(tab,'col') or 'unknown',
+                         'target':first(tab,'target','reaction'),'observable':first(tab,'obs'),
+                         'tab':{k:np.asarray(v).copy() for k,v in tab.items()},
+                         'value':value.copy(),'alpha':alpha.copy(),'theory':[],'norms':[],'shifts':[],
+                         'point_order_sha256':signatures[key]}
+    original_order={tuple(x) for x in resman.parman.order}
+    for s in records if plot else [best_record]:
+        context=s['identity']
+        m=load(s['msr_path'])
+        order,params=m['order'][0],np.asarray(m['params'][0],dtype=float)
+        if params.ndim!=1 or len(order)!=len(params) or not np.isfinite(params).all():
+            raise ValueError('Invalid fitted parameter array/order.')
+        if len(set(tuple(x) for x in order))!=len(order) or set(tuple(x) for x in order)!=original_order:
+            raise ValueError('Fitted parameter identities do not match the selected stage input.')
+        resman.parman.order=order
+        resman.get_residuals(params,initial=True)
+        if s['identity']==best_record['identity']: chi2=resman.get_chi2()
+        current_keys={(r,idx) for r,res in residuals.items() for idx in res.tabs}
+        if current_keys!=set(signatures): raise ValueError('Dataset identities changed between replicas.')
+        for key,p in points.items():
+            context='%s; %s:%s' % (s['identity'],*key)
+            tab=residuals[key[0]].tabs[key[1]]
+            if theory_identity(tab)!=signatures[key]:
+                raise ValueError('Experimental point ordering, kinematics or uncertainties changed between replicas.')
+            p['theory'].append(theory_column(tab,'prediction',len(p['value'])).copy())
+            p['shifts'].append(theory_column(tab,'shift',len(p['value'])).copy())
+            norm=conf['datasets'][key[0]].get('norm',{}).get(key[1],{}).get('value',1.)
+            p['norms'].append(float(norm))
+    groups={}
+    for key,p in points.items():
+        context='%s:%s chi2 diagnostic' % key
+        info=chi2[key[0]][key[1]]
+        n,c=int(info['npts']),float(info['chi2'])
+        if n!=len(p['value']) or not np.isfinite(c): raise ValueError('Invalid best-replica chi2 diagnostic.')
+        p['theory']=np.asarray(p['theory'],dtype=float)
+        p['shifts']=np.asarray(p['shifts'],dtype=float)
+        g=groups.setdefault(p['experiment'],{'experiment':p['experiment'],'datasets':[],'chi2':0.,'npts':0})
+        g['datasets'].append({'reaction':key[0],'dataset_id':str(key[1]),'target':p['target'],
+                             'observable':p['observable'],'npts':n,'chi2':c,'chi2_per_npt':c/n,
+                             'point_order_sha256':p['point_order_sha256']})
+        g['chi2']+=c; g['npts']+=n
+    rows=sorted(groups.values(),key=lambda g:-(g['chi2']/g['npts']))
+    for g in rows: g['chi2_per_npt']=g['chi2']/g['npts']
+except (OSError, KeyError, TypeError, ValueError, ArithmeticError, SystemExit) as exc:
+    print(json.dumps({'status':'error', **metadata, 'band_drawn':False,
+                      'message':'Cannot evaluate '+context+': '+str(exc)+
+                                ' No replicas were silently dropped and no plots were generated.'}))
+    raise SystemExit(0)
+finally:
+    if resman is not None: resman.shutdown()
+selected=[p for p in points.values() if not want or p['experiment'].lower() in want]
+if plot and not selected: notes.append('No datasets match the requested experiments.')
+if unavailable: notes.append('Some selected datasets have no points after campaign cuts; see unavailable_datasets.')
+metadata.update(note=' '.join(notes),band_drawn=bool(plot and selected and len(records)>1),
+                unavailable_datasets=unavailable)
+try:
+    images=render_theory_plots(selected,interval,os.path.join(os.path.dirname(os.path.dirname(stage)),
+                              'analysis','by_experiment'),metadata) if plot else []
+    if metadata.get('plot_status')=='error':
+        raise ValueError(metadata['note'])
+except (OSError, KeyError, TypeError, ValueError, ArithmeticError) as exc:
+    print(json.dumps({'status':'error', **metadata, 'band_drawn':False,
+                      'message':'Theory plotting failed: '+str(exc)}))
+    raise SystemExit(0)
+print(json.dumps({'status':'success', **metadata, 'best_msr':best, 'experiments':rows, 'images':images}))
+'''
+
+
+def analyze_by_experiment(collection_id="", experiments="", plot=True, username="", credible_interval=95):
+    """Best-replica chi2 diagnostics and thesis-style mean fitted theory with pointwise intervals."""
+    try:
+        credible_interval = object_registry.validate_credible_interval(credible_interval)
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc)}
     u, err = _need_user(username)
     if err:
         return err
@@ -2632,7 +7700,8 @@ def analyze_by_experiment(collection_id="", experiments="", plot=True, username=
     if not e:
         return {"status": "error", "message": f"No campaign {collection_id!r}."}
     want = [x.strip().lower() for x in (experiments or "").split(",") if x.strip()]
-    code = _fill(_BY_EXPERIMENT, STAGE=_stage_root(u, e), WANT=want, PLOT=bool(plot))
+    code = inspect.getsource(object_registry) + _fill(
+        _BY_EXPERIMENT, STAGE=_stage_root(u, e), WANT=want, PLOT=bool(plot), INTERVAL=credible_interval)
     ws = _workspace(u)
     r = _run_ifarm_py(u, code, apptainer=True, timeout=900, cap=20000000,
                       env={"MPLCONFIGDIR": f"{ws}/{CAMPAIGNS_DIR}/.matplotlib"})
@@ -2641,13 +7710,14 @@ def analyze_by_experiment(collection_id="", experiments="", plot=True, username=
     except Exception:
         return {"status": "error", "message": "analysis failed", "detail": (r.get("err") or r.get("out") or "")[-800:]}
     if d.get("status") != "success":
-        return {"status": d.get("status"), "message": d.get("message")}
+        return {**d, "detail": "\n".join(r.get("out", "").splitlines()[:-1])[-2000:]}
     imgs = d.get("images") or []
-    return {"status": "ok", "collection_id": collection_id, "best_msr": d["best_msr"],
-            "experiments": d["experiments"],
-            "plots": [{"path": i["path"], "panels": i["panels"]} for i in imgs],
+    plots = [{k: v for k, v in i.items() if k != "png_b64"} for i in imgs]
+    return {**{k: v for k, v in d.items() if k not in ("status", "images")},
+            "status": "ok", "collection_id": collection_id, "plots": plots,
             "_images": [{"data": i["png_b64"], "mimeType": "image/png"} for i in imgs],
-            "_panel_plots": [{"path": i["path"], "data_url": "data:image/png;base64," + i["png_b64"]} for i in imgs]}
+            "_panel_plots": [{**p, "data_url": "data:image/png;base64," + i["png_b64"]}
+                             for p, i in zip(plots, imgs)]}
 
 
 # Each replica's state and Slurm log (Logs). Replica i's log is
@@ -3200,14 +8270,20 @@ TOOLS = {
                                            credible_interval=a.get("credible_interval", 95))},
     "analyze_by_experiment": {
         "desc": "Analysis by experiment: chi2/N of the best replica grouped by experiment (SLAC, "
-                "BCDMS, NMC, E866 ...) and, for the experiments named, data vs theory plots per "
-                "dataset. experiments: comma list, empty = all.",
+                "BCDMS, NMC, E866 ...) and thesis-style data vs mean fitted-replica theory plots. "
+                "The chi2 table is a separate best-replica diagnostic, not chi2 of the ensemble mean. "
+                "credible_interval: independent equal-tailed pointwise interval (%), default 95; "
+                "100 is the available fitted-replica envelope, not the entire posterior. "
+                "experiments: comma list, empty = all.",
         "schema": {"type": "object", "properties": {"collection_id": {"type": "string"},
                                                     "experiments": {"type": "string"},
-                                                    "plot": {"type": "boolean"}},
+                                                    "plot": {"type": "boolean"},
+                                                    "credible_interval": {"type": "number", "default": 95,
+                                                                          "exclusiveMinimum": 0, "maximum": 100,
+                                                                          "description": "Equal-tailed pointwise credible interval (%)."}},
                    "required": ["collection_id"]},
         "fn": lambda a: analyze_by_experiment(a.get("collection_id", ""), a.get("experiments", ""),
-                                              a.get("plot", True))},
+                                              a.get("plot", True), credible_interval=a.get("credible_interval", 95))},
     "campaign_logs": {
         "desc": "Logs of a campaign: each replica's state (fitted, not fitted, failed, running, no "
                 "output) and, for a replica that did not fit, the Python error and the end of its "

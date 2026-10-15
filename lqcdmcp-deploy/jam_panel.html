@@ -445,8 +445,10 @@
         <div class="plot-controls">
           <div class="pc" style="flex:1"><span class="label">Experiments to plot (comma list, empty = all)</span>
             <input type="text" id="caExpList" placeholder="e.g. SLAC, BCDMS"></div>
+          <div class="pc"><label class="label" for="caExpInterval">Credible interval (%)</label><input type="number" step="any" max="100" id="caExpInterval" value="95" required style="width:110px"></div>
           <button class="btn primary" id="caExpGo">Analyze</button>
         </div>
+        <div class="note">Mean fitted-replica theory with an equal-tailed pointwise interval, calculated independently at every experimental point. Choose a finite percentage greater than 0 and at most 100; fractional percentages are accepted. At 100%, the band is the full envelope of available fitted replicas, not the entire underlying posterior. At least two fitted replicas are needed for a band. Experimental error bars remain separate.</div>
       </div>
       <div id="caLogsBox" class="subbox" style="display:none"></div>
       <div id="caOut"><div class="empty">Pick a campaign, then Postprocess once replicas have finished.</div></div>
@@ -1591,11 +1593,13 @@
 
   /* ---------- analysis ---------- */
   let analysisCampaign = ws().analysisCampaign || "";
+  let theoryPlotSeq = 0, theoryPlotVisible = false;
   let logsSeq = 0;      // a newer Logs request, a closed Logs box or another campaign voids an answer on its way
   const FLAVORS = ["u","d","g","s","ub","db","sb"];
   const pdfOn = new Set(["u","d","g","s"]);
   // What is shown under the buttons belongs to one campaign: picking another clears it.
   function pickAnalysis(id){
+    if (id !== analysisCampaign) invalidateTheoryPlots();
     if (analysisCampaign && id !== analysisCampaign){ $("caOut").innerHTML = ""; $("caMoreOut").innerHTML = ""; closeLogs(); }
     analysisCampaign = id;
   }
@@ -1627,7 +1631,7 @@
       + '<span>Job ID <b>'+esc((c.job_ids || []).join(", "))+'</b></span></div>';
   }
   $("caSel").onchange = ()=>{ pickAnalysis($("caSel").value); persist(); paintCaHead(); };
-  function caBusy(t){ $("caOut").innerHTML = '<div class="spin">'+esc(t)+'</div>'; }
+  function caBusy(t){ theoryPlotSeq++; theoryPlotVisible = false; $("caOut").innerHTML = '<div class="spin">'+esc(t)+'</div>'; }
   function caWarn(t, cause){ $("caOut").innerHTML = '<div class="note warn">'+esc(t)+causePre(cause)+'</div>'; }
   function showBox(id){
     ["caMoreBox","caPdfBox","caExpBox","caLogsBox"].forEach(b=>$(b).style.display = b === id && $(b).style.display === "none" ? "" : "none");
@@ -1739,20 +1743,37 @@
     } catch(e){ if (cid === analysisCampaign && seq === pdfPlotSeq) caWarn("Plotting failed: "+(e && e.message || e)); }
   };
   $("caExp").onclick = ()=>showBox("caExpBox");
+  function invalidateTheoryPlots(){
+    theoryPlotSeq++;
+    if (theoryPlotVisible) $("caOut").innerHTML = '<div class="note">Theory plot selection changed. Press Analyze to redraw.</div>';
+    theoryPlotVisible = false;
+  }
+  $("caExpInterval").oninput = invalidateTheoryPlots;
+  $("caExpList").oninput = invalidateTheoryPlots;
   $("caExpGo").onclick = async ()=>{
-    if (!analysisCampaign) return; caBusy("Evaluating the best replica against every dataset… this takes a minute.");
-    const cid = analysisCampaign;
-    try{ const r = await call("analyze_by_experiment", {collection_id: cid, experiments: $("caExpList").value, plot: true});
-      if (cid !== analysisCampaign) return;
+    if (!analysisCampaign) return;
+    invalidateTheoryPlots();
+    const credibleInterval = Number($("caExpInterval").value);
+    if (!$("caExpInterval").value.trim() || !Number.isFinite(credibleInterval) || credibleInterval <= 0 || credibleInterval > 100){
+      caWarn("Credible interval (%) must be greater than 0 and at most 100."); return;
+    }
+    caBusy("Evaluating every fitted replica against the central experimental data… this takes a minute.");
+    const cid = analysisCampaign, seq = ++theoryPlotSeq, experiments = $("caExpList").value;
+    theoryPlotVisible = true;
+    try{ const r = await call("analyze_by_experiment", {collection_id: cid, experiments, plot: true, credible_interval: credibleInterval});
+      if (cid !== analysisCampaign || seq !== theoryPlotSeq) return;
       if (!r || r.status !== "ok"){ caWarn(msgOf(r, "No analysis."), r && r.detail); return; }
       const ex = r.experiments || [];
-      $("caOut").innerHTML = '<div class="label" style="margin:4px 0 6px">χ²/N by experiment: best replica against the central data values</div>'
+      $("caOut").innerHTML = (r.note ? '<div class="note warn">'+esc(r.note)+'</div>' : "")
+        + '<div class="note">Plots: arithmetic mean of '+esc(r.n_replicas)+' fitted replicas using FitPack normalized, profiled predictions. The χ² table is a separate best-replica diagnostic, not χ² of the ensemble mean.</div>'
+        + (r.unavailable_datasets?.length ? '<div class="note warn">'+r.unavailable_datasets.map(d=>esc(d.reaction+":"+d.dataset_id+" — "+d.reason)).join("<br>")+'</div>' : "")
+        + '<div class="label" style="margin:4px 0 6px">χ²/N by experiment: best replica against the central data values</div>'
         + '<table class="tbl"><thead><tr><th>Experiment</th><th>Datasets</th><th>Points</th><th style="text-transform:none">χ²/N</th></tr></thead><tbody>'
         + ex.map(g=>'<tr><td><b>'+esc(g.experiment)+'</b></td><td class="mono" style="font-size:11.5px">'
           + esc(g.datasets.map(d=>d.reaction+":"+d.dataset_id+" ("+(d.chi2_per_npt == null ? "—" : fmtNum(d.chi2_per_npt))+")").join(", "))+'</td>'
           + '<td class="mono">'+esc(g.npts)+'</td><td class="mono">'+esc(g.chi2_per_npt == null ? "—" : fmtNum(g.chi2_per_npt))+'</td></tr>').join("")+'</tbody></table>'
-        + imagesHtml(r._panel_plots, p=>"Data vs theory · "+p.path);
-    } catch(e){ if (cid === analysisCampaign) caWarn("Analysis failed: "+(e && e.message || e)); }
+        + imagesHtml(r._panel_plots, p=>p.caption || ("Data vs mean theory · "+p.interval_label));
+    } catch(e){ if (cid === analysisCampaign && seq === theoryPlotSeq) caWarn("Analysis failed: "+(e && e.message || e)); }
   };
 
   /* Logs (campaign_logs): every replica's state and, for one that did not fit, failed
