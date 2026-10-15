@@ -269,19 +269,33 @@ The **Campaign** tab walks through five steps, like the FemtoMind JAM app.
 Reactions and datasets are never chosen for you. Use **Next** and **Back**,
 or click a step.
 
-1. **Non-perturbative object** — tick *Unpolarized PDF* (the others are
-   marked BLUEPRINT: not available yet). The parameter table is read from
-   your workspace's `examples/input02.py` (the library; 39 rows on the
-   current `ai` branch): block, parameter, FREE or FIXED, value, min, max.
-   - Click a status to switch it between FREE and FIXED. You can edit each
-     row's value, and the min and max of FREE rows.
-   - Use **Equal to** to tie one parameter's value to another parameter.
+1. **Non-perturbative object** — tick *Unpolarized PDF*, *Pion PDF* or
+   both (the others are marked BLUEPRINT: not available yet). Each object
+   gets its own parameter table: block, parameter, status (FREE, FIXED, or
+   EQUAL when the library ties it to another parameter), value, min, max.
+   - *Unpolarized PDF*: the table is read from your workspace's
+     `examples/input02.py` (the library; 39 rows on the current `ai`
+     branch).
+   - *Pion PDF*: the table comes from the JAM final-fit reference file named
+     under it (a NumPy input in the `/w/ceph24/JAM` area), restricted to one
+     shape. When that file cannot be read from your account, the object is
+     marked UNAVAILABLE with the reason. Ticking it also switches the QCD and
+     job settings that you have not edited to the reference's values.
+   - Tick a row's box to keep the parameter FIXED at its value; untick it to
+     fit it. You can edit each row's value, and the min and max of FREE rows.
+   - Use **Equal to** to tie one parameter's value to another parameter of
+     the same object.
    - Only the rows you change are written into the input card. Every other
      row stays exactly as the library has it.
    - A parameter you switch to FREE needs a min and a max. Where the library
      gives none, its row says "set a min and max" until you fill in both.
    - **Reset to library values** undoes all your changes.
-2. **Reactions** — tick *DIS* and/or *Drell-Yan* (the others are BLUEPRINT).
+2. **Reactions** — tick *DIS* and/or *Drell-Yan* for the proton PDF,
+   *Pion Drell-Yan* and/or *Leading neutron* for the pion PDF (the others
+   are BLUEPRINT). A reaction stays greyed out (SELECT ITS OBJECT) until
+   you tick the object it constrains. *Leading neutron* adds the fitted
+   p→πn companion's table on step 1 and keeps the proton PDF fixed at the
+   reference's values unless you also tick *Unpolarized PDF*.
    Each reaction has two sub-tabs:
    - **Datasets**: grouped by experiment, with a search box, **Select visible**
      and **Clear visible**. DIS datasets without a data file in your workspace
@@ -291,7 +305,9 @@ or click a step.
      value, range, FREE/FIXED state, and Equal-to dataset control appear below
      that dataset. These settings are written into the campaign input card.
    - **Cuts**: the kinematic cuts written into the card. Edit, add or remove
-     them; at least one must stay enabled.
+     them; at least one must stay enabled. For *Leading neutron* the cuts
+     are per dataset (the reference's H1 y < 0.3 and ZEUS y < 0.2), and each
+     selected dataset needs at least one enabled cut.
 3. **QCD settings** — order, Q₀², TMC, DGLAP mode, αS mode, higher twist.
 4. **Job config** — campaign name (required), number of replicas, parameter
    initialization, inference mode, tolerance, max iterations, optimizer, and
@@ -322,8 +338,10 @@ Settings start at these values; keep or change each one:
 |---|---|---|
 | DIS cuts | Q² > 1.69, W² > 10 | edit, add, remove |
 | Drell-Yan cut | Q² > 0 | edit, add, remove |
+| Pion Drell-Yan and leading-neutron cuts | the reference file's (leading neutron: per dataset) | edit, add, remove |
 | Order | NLO | LO, NNLO |
 | Q₀² | 1.6129 GeV² | any positive number |
+| With *Pion PDF* ticked | the reference's order, Q₀², DGLAP and αS modes, tolerance and inference mode, for the settings you have not edited | as above |
 | TMC | AOT | off |
 | Higher twist | off | on |
 | DGLAP mode | truncated | iterated |
@@ -379,10 +397,14 @@ are Fitted, Not fitted and (when there are any) Failed. Then:
   the replicas and divided by the number of points. **By experiment**
   (below) compares the best replica with the central data values instead.
   When replicas did not fit, a warning above the summary says how many.
-- **View PDF Plots** — pick flavors (u, d, g and s are on; ub, db and sb can
-  be added) and Q² (starts at 10 GeV²), then press **Draw**. You get
-  x f(x, Q²) of every fitted replica, with the mean and 68% band when that
-  box is ticked.
+- **View PDF Plots** — pick the distribution (when the campaign fitted both
+  objects), the flavors (proton: u, d, g and s are on, ub, db and sb can be
+  added; pion: valence, sea and g, in the π⁻ convention), Q² (starts at
+  10 GeV²) and the credible interval in percent (starts at 95; 100 is the
+  full envelope of the fitted replicas), then press **Draw**. You get
+  x f(x, Q²) of every fitted replica, with the mean and the equal-tailed
+  pointwise band when that box is ticked; the band needs at least two
+  fitted replicas.
 - **By experiment** — list the experiments to plot (for example
   `SLAC, BCDMS`; empty = all) and press **Analyze**. You get a table of χ²/N
   for every experiment, for the best replica against the central data
