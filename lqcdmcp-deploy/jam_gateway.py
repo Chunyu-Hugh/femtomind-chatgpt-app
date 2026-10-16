@@ -59,6 +59,8 @@ import urllib.request
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from jamai import object_registry
+from jamai.dataset_catalog import (CONFIGURATION_DATASETS, CONFIGURATION_METADATA,
+                                  CONFIGURATION_ONLY_REACTIONS, configuration_dataset_block)
 from jamai.object_registry import OBJECTS, SELECTABLE_OBJECTS
 from jamai.reaction_registry import resolve_object_roles
 
@@ -946,9 +948,17 @@ CAMPAIGN_REACTIONS = [
      "cut_note": "No additional cuts."},
     {"key": "jet", "label": "Jet", "enabled": True, "cut_policy": "jet_pt",
      "cut_note": "Only pT > 8.0 GeV is applied."},
-    {"key": "sia", "label": "SIA", "enabled": False},
+    {"key": "sidis", "label": "SIDIS — PDFs + FFs", "enabled": False,
+     "configuration_only": True, "fit_ready": False, "cut_policy": "configuration",
+     "cut_note": "Only Q2 > Q2cut, using the DIS Q² cutoff configured in this card. No W2SIDIS or Z cuts.",
+     "requirements": "Requires PDFs and FFs; FF fitting is not implemented."},
+    {"key": "sia", "label": "SIA — FFs only", "enabled": False,
+     "configuration_only": True, "fit_ready": False, "cut_policy": "configuration",
+     "cut_note": "Authoritative dataset-specific filters are preserved. No universal SIA cut is applied.",
+     "requirements": "Requires FFs only; FF fitting is not implemented."},
 ]
 ENABLED_REACTIONS = {r["key"] for r in CAMPAIGN_REACTIONS if r["enabled"]}
+CATALOG_REACTIONS = ENABLED_REACTIONS | set(CONFIGURATION_ONLY_REACTIONS)
 # Display labels only: edit/add string dataset IDs within their reaction.
 # Missing entries keep the existing catalog or Excel-derived display name.
 DATASET_LABELS = {
@@ -1043,7 +1053,92 @@ DATASET_LABELS = {
         "20001": "CMS 7 TeV Wp+Wm pp",
         "20002": "CMS 7 TeV Wp/Wm pp",
         "20003": "CMS 13 TeV Wp+Wm pp"
-    }
+    },
+    "sidis": {
+        "1105": "COMPASS deuteron π+ multiplicity",
+        "1106": "COMPASS deuteron π− multiplicity",
+        "1115": "COMPASS proton π+ multiplicity",
+        "1116": "COMPASS proton π− multiplicity",
+        "2105": "COMPASS deuteron K+ multiplicity",
+        "2106": "COMPASS deuteron K− multiplicity",
+        "2115": "COMPASS proton K+ multiplicity",
+        "2116": "COMPASS proton K− multiplicity",
+        "3100": "COMPASS deuteron h+ multiplicity",
+        "3101": "COMPASS deuteron h− multiplicity",
+        "3110": "COMPASS proton h+ multiplicity",
+        "3111": "COMPASS proton h− multiplicity",
+    },
+    "sia": {
+        "1001": "TASSO pion (√s = 12 GeV)",
+        "1002": "TASSO pion (√s = 14 GeV)",
+        "1003": "TASSO pion (√s = 22 GeV)",
+        "1004": "TASSO pion (√s = 30 GeV)",
+        "1005": "TASSO pion (√s = 34 GeV)",
+        "1006": "TASSO pion (√s = 44 GeV)",
+        "1007": "TPC 1984 pion (√s = 29 GeV)",
+        "1008": "TPC 1988 pion (√s = 29 GeV)",
+        "1010": "TPC pion (√s = 29 GeV, c-tagged)",
+        "1011": "TPC pion (√s = 29 GeV, b-tagged)",
+        "1012": "HRS pion (√s = 29 GeV)",
+        "1013": "TOPAZ pion (√s = 58 GeV)",
+        "1014": "SLD pion (√s = 91.28 GeV)",
+        "1015": "SLD pion (√s = 91.28 GeV, uds-tagged)",
+        "1016": "SLD pion (√s = 91.28 GeV, c-tagged)",
+        "1017": "SLD pion (√s = 91.28 GeV, b-tagged)",
+        "1018": "ALEPH pion (√s = 91.2 GeV)",
+        "1019": "OPAL pion (√s = 91.2 GeV)",
+        "1023": "OPAL pion (√s = 91.2 GeV, c-tagged)",
+        "1024": "OPAL pion (√s = 91.2 GeV, b-tagged)",
+        "1025": "DELPHI pion (√s = 91.2 GeV)",
+        "1026": "DELPHI pion (√s = 91.2 GeV, uds-tagged)",
+        "1027": "DELPHI pion (√s = 91.2 GeV, b-tagged)",
+        "1028": "BABAR pion (√s = 10.54 GeV)",
+        "1029": "BELLE pion (√s = 10.52 GeV)",
+        "1030": "ARGUS pion (√s = 9.98 GeV)",
+        "2001": "TASSO kaon (√s = 12 GeV)",
+        "2002": "TASSO kaon (√s = 14 GeV)",
+        "2003": "TASSO kaon (√s = 22 GeV)",
+        "2004": "TASSO kaon (√s = 30 GeV)",
+        "2005": "TASSO kaon (√s = 34 GeV)",
+        "2006": "TASSO kaon (√s = 44 GeV)",
+        "2007": "TPC 1984 kaon (√s = 29 GeV)",
+        "2008": "TPC 1988 kaon (√s = 29 GeV)",
+        "2012": "HRS kaon (√s = 29 GeV)",
+        "2013": "TOPAZ kaon (√s = 58 GeV)",
+        "2014": "SLD kaon (√s = 91.28 GeV)",
+        "2015": "SLD kaon (√s = 91.28 GeV, uds-tagged)",
+        "2016": "SLD kaon (√s = 91.28 GeV, c-tagged)",
+        "2017": "SLD kaon (√s = 91.28 GeV, b-tagged)",
+        "2018": "ALEPH kaon (√s = 91.2 GeV)",
+        "2019": "OPAL kaon (√s = 91.2 GeV)",
+        "2023": "OPAL kaon (√s = 91.2 GeV, c-tagged)",
+        "2024": "OPAL kaon (√s = 91.2 GeV, b-tagged)",
+        "2025": "DELPHI kaon (√s = 91.2 GeV)",
+        "2026": "DELPHI kaon (√s = 91.2 GeV, uds-tagged)",
+        "2027": "DELPHI kaon (√s = 91.2 GeV, b-tagged)",
+        "2028": "BABAR kaon (√s = 10.54 GeV)",
+        "2029": "BELLE kaon (√s = 10.52 GeV)",
+        "2030": "ARGUS kaon (√s = 9.98 GeV)",
+        "2031": "DELPHI 1995 kaon (√s = 91.2 GeV)",
+        "4000": "ALEPH unidentified charged hadrons (√s = 91.2 GeV)",
+        "4001": "DELPHI unidentified charged hadrons (√s = 91.2 GeV)",
+        "4002": "SLD unidentified charged hadrons (√s = 91.28 GeV)",
+        "4003": "TASSO unidentified charged hadrons (√s = 12 GeV)",
+        "4004": "TPC unidentified charged hadrons (√s = 29 GeV)",
+        "4005": "OPAL unidentified charged hadrons (√s = 91.2 GeV, b-tagged)",
+        "4006": "OPAL unidentified charged hadrons (√s = 91.2 GeV, c-tagged)",
+        "4007": "OPAL unidentified charged hadrons (√s = 91.2 GeV)",
+        "4008": "TASSO unidentified charged hadrons (√s = 14 GeV)",
+        "4009": "TASSO unidentified charged hadrons (√s = 22 GeV)",
+        "4010": "TASSO unidentified charged hadrons (√s = 30 GeV)",
+        "4011": "TASSO unidentified charged hadrons (√s = 35 GeV)",
+        "4012": "TASSO unidentified charged hadrons (√s = 44 GeV)",
+        "4013": "DELPHI unidentified charged hadrons (√s = 91.2 GeV, b-tagged)",
+        "4014": "SLD unidentified charged hadrons (√s = 91.28 GeV, c-tagged)",
+        "4015": "SLD unidentified charged hadrons (√s = 91.28 GeV, b-tagged)",
+        "4016": "SLD unidentified charged hadrons (√s = 91.28 GeV, uds-tagged)",
+        "4017": "DELPHI unidentified charged hadrons (√s = 91.2 GeV, uds-tagged)",
+    },
 }
 
 # Experiment headings only: independent of DATASET_LABELS above.
@@ -1140,7 +1235,92 @@ DATASET_EXPERIMENTS = {
         "20001": "CMS",
         "20002": "CMS",
         "20003": "CMS"
-    }
+    },
+    "sidis": {
+        "1105": "COMPASS",
+        "1106": "COMPASS",
+        "1115": "COMPASS",
+        "1116": "COMPASS",
+        "2105": "COMPASS",
+        "2106": "COMPASS",
+        "2115": "COMPASS",
+        "2116": "COMPASS",
+        "3100": "COMPASS",
+        "3101": "COMPASS",
+        "3110": "COMPASS",
+        "3111": "COMPASS",
+    },
+    "sia": {
+        "1001": "pion",
+        "1002": "pion",
+        "1003": "pion",
+        "1004": "pion",
+        "1005": "pion",
+        "1006": "pion",
+        "1007": "pion",
+        "1008": "pion",
+        "1010": "pion",
+        "1011": "pion",
+        "1012": "pion",
+        "1013": "pion",
+        "1014": "pion",
+        "1015": "pion",
+        "1016": "pion",
+        "1017": "pion",
+        "1018": "pion",
+        "1019": "pion",
+        "1023": "pion",
+        "1024": "pion",
+        "1025": "pion",
+        "1026": "pion",
+        "1027": "pion",
+        "1028": "pion",
+        "1029": "pion",
+        "1030": "pion",
+        "2001": "kaon",
+        "2002": "kaon",
+        "2003": "kaon",
+        "2004": "kaon",
+        "2005": "kaon",
+        "2006": "kaon",
+        "2007": "kaon",
+        "2008": "kaon",
+        "2012": "kaon",
+        "2013": "kaon",
+        "2014": "kaon",
+        "2015": "kaon",
+        "2016": "kaon",
+        "2017": "kaon",
+        "2018": "kaon",
+        "2019": "kaon",
+        "2023": "kaon",
+        "2024": "kaon",
+        "2025": "kaon",
+        "2026": "kaon",
+        "2027": "kaon",
+        "2028": "kaon",
+        "2029": "kaon",
+        "2030": "kaon",
+        "2031": "kaon",
+        "4000": "hadron",
+        "4001": "hadron",
+        "4002": "hadron",
+        "4003": "hadron",
+        "4004": "hadron",
+        "4005": "hadron",
+        "4006": "hadron",
+        "4007": "hadron",
+        "4008": "hadron",
+        "4009": "hadron",
+        "4010": "hadron",
+        "4011": "hadron",
+        "4012": "hadron",
+        "4013": "hadron",
+        "4014": "hadron",
+        "4015": "hadron",
+        "4016": "hadron",
+        "4017": "hadron",
+    },
 }
 
 DY_DATASETS = [
@@ -1321,10 +1501,25 @@ def campaign_datasets(reaction="idis", search="", username=""):
     if err:
         return err
     reaction = (reaction or "").strip()
-    if reaction not in ENABLED_REACTIONS:
+    if reaction not in CATALOG_REACTIONS:
         return {"status": "error", "message": f"{reaction!r} is not available yet; the composer "
-                                              f"offers {sorted(ENABLED_REACTIONS)}."}
-    if reaction in object_registry.PROTON_REACTION_DATASETS:
+                                              f"offers {sorted(CATALOG_REACTIONS)}."}
+    if reaction in CONFIGURATION_ONLY_REACTIONS:
+        spec = CONFIGURATION_DATASETS[reaction]
+        code = ("import json, os\nitems = " + repr([
+            {"id": str(idx), "path": path, **CONFIGURATION_METADATA[reaction][idx]}
+            for idx, path in sorted(spec["xlsx"].items())])
+            + "\nfor item in items: item['enabled'] = os.path.isfile(os.path.join("
+            + repr(_workspace(u)) + ", 'database', item['path']))\nprint(json.dumps(items))")
+        r = _run_ifarm_py(u, code, timeout=60, cap=200000)
+        try:
+            if r["rc"]:
+                raise ValueError("catalog file check failed")
+            items = json.loads(r["out"].strip().splitlines()[-1])
+        except (ValueError, IndexError, KeyError):
+            return {"status": "error", "message": f"Could not inspect {reaction} dataset files.",
+                    "detail": (r.get("err") or "")[-300:]}
+    elif reaction in object_registry.PROTON_REACTION_DATASETS:
         spec = object_registry.PROTON_REACTION_DATASETS[reaction]
         r = _run_ifarm_py(u, _fill(_PROTON_CATALOG, WS=_workspace(u),
                                   REACTION=reaction, DATASETS=spec["xlsx"]),
@@ -1361,9 +1556,13 @@ def campaign_datasets(reaction="idis", search="", username=""):
     # Normalization defaults come from the same workspace input card as the
     # PDF library. They are metadata only until the user edits them.
     try:
-        key = "pdf-pion" if reaction in PION_DATASETS else "pdf"
-        lib = _object_libraries(u, [key])[key]
-        dataset = lib["datasets"].get(reaction, {})
+        if reaction in CONFIGURATION_ONLY_REACTIONS:
+            lib = {"source": "Authoritative SIDIS/SIA configuration excerpt"}
+            dataset = CONFIGURATION_DATASETS[reaction]
+        else:
+            key = "pdf-pion" if reaction in PION_DATASETS else "pdf"
+            lib = _object_libraries(u, [key])[key]
+            dataset = lib["datasets"].get(reaction, {})
         norms = {str(k): v for k, v in dataset.get("norm", {}).items()}
         default_cuts = (object_registry.library_cuts(dataset.get("filters", []))
                         if reaction in PION_DATASETS else CAMPAIGN_DEFAULTS["cuts"].get(reaction, []))
@@ -1372,6 +1571,13 @@ def campaign_datasets(reaction="idis", search="", username=""):
     for item in items:
         item["label"] = DATASET_LABELS.get(reaction, {}).get(str(item["id"]), item["label"])
         item["experiment"] = DATASET_EXPERIMENTS.get(reaction, {}).get(str(item["id"]), item.get("experiment") or "Other")
+        if item.get("not_normally_used"):
+            item["label"] += "*"
+        if reaction in CONFIGURATION_ONLY_REACTIONS:
+            item["configuration_only"] = True
+            item["fit_ready"] = False
+            if reaction == "sia":
+                item["filters"] = dataset["filters"].get(int(item["id"]))
         if str(item.get("id")) in norms:
             item["normalization"] = norms[str(item["id"])]
     q = (search or "").strip().lower()
@@ -1383,7 +1589,11 @@ def campaign_datasets(reaction="idis", search="", username=""):
         groups.setdefault(d.get("experiment") or "Other", []).append(d)
     return {"status": "ok", "reaction": reaction, "count": len(items),
             "experiments": [{"experiment": k, "datasets": v} for k, v in groups.items()],
-            "default_cuts": default_cuts, "source": lib["source"]}
+            "default_cuts": default_cuts, "source": lib["source"],
+            **({"configuration_only": True, "fit_ready": False,
+                "legend": "* indicates dataset is not normally used in JAM fits." if reaction == "sia" else "",
+                "fit_unavailable_reason": "FF fitting is not implemented; dataset configuration only."}
+               if reaction in CONFIGURATION_ONLY_REACTIONS else {})}
 
 
 # ---- the input card ---------------------------------------------------------
@@ -2001,6 +2211,8 @@ def _checked_card(u, card):
     the workspace has what it needs: (norm, None), or (None, the result to
     return). validate_campaign and submit_campaign both use it, so the phrase
     and the submitted card come from one reading of the table."""
+    if _configuration_reactions(card):
+        return None, _unsupported_configuration_fit(card)
     try:
         keys = [obj.get("type") for obj in _card_objects(card or {}) if isinstance(obj, dict)
                 and obj.get("type") in SELECTABLE_OBJECTS]
@@ -2184,12 +2396,135 @@ def _data_warnings(u, norm):
     return warnings, points
 
 
+def _card_reactions(card):
+    """Canonical reaction keys shared by the preview and execution boundary."""
+    raw = (card or {}).get("reactions") or []
+    if isinstance(raw, dict):
+        raw = [key for key, on in raw.items() if on]
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return list(dict.fromkeys(str(key).strip().lower() for key in raw if str(key).strip()))
+
+
+def _configuration_reactions(card):
+    return set(_card_reactions(card)).intersection(CONFIGURATION_ONLY_REACTIONS)
+
+
+def _unsupported_configuration_fit(card):
+    return {"status": "unsupported", "valid": False, "fit_ready": False,
+            "message": "Configuration only: FF fitting is not implemented for "
+                       + ", ".join(sorted(_configuration_reactions(card))) + ". No campaign was submitted."}
+
+
+def _configuration_preview(u, card):
+    """Dataset-only input fragment; no upload, materialization, or fit authorization."""
+    card = json.loads(json.dumps(card or {}))
+    reactions = _card_reactions(card)
+    errors, warnings, blocks = [], [], {}
+    selections = card.get("datasets") or {}
+    cutoff = None
+    if "sidis" in reactions:
+        rows = (card.get("cuts") or {}).get("idis", CAMPAIGN_DEFAULTS["cuts"]["idis"])
+        try:
+            qcuts = [row for row in rows if row.get("enabled", True)
+                     and row.get("variable") == "Q2" and row.get("op", ">") == ">"]
+            if len(qcuts) != 1:
+                raise ValueError("configure exactly one enabled DIS Q2 > cutoff")
+            cutoff = float(qcuts[0]["value"])
+            if not math.isfinite(cutoff) or cutoff <= 0:
+                raise ValueError("the DIS Q² cutoff must be positive and finite")
+        except (TypeError, KeyError, AttributeError, ValueError) as exc:
+            errors.append("SIDIS uses the configured DIS Q² cutoff: " + str(exc))
+    for reaction in reactions:
+        if reaction not in CATALOG_REACTIONS:
+            errors.append(f"Reaction {reaction!r} is not available.")
+            continue
+        if reaction not in CONFIGURATION_ONLY_REACTIONS:
+            continue
+        entry = selections.get(reaction) or []
+        ids = entry.get("selected", []) if isinstance(entry, dict) else entry
+        try:
+            if not isinstance(ids, list) or not ids:
+                raise ValueError(f"{reaction}: select at least one dataset")
+            block = configuration_dataset_block(reaction, ids, q2cut=cutoff)
+            custom_cuts = (card.get("cuts") or {}).get(reaction)
+            if isinstance(entry, dict) and "cuts" in entry:
+                custom_cuts = entry["cuts"]
+            if custom_cuts:
+                if reaction == "sidis" and isinstance(custom_cuts, list):
+                    same = (object_registry.cut_filters(custom_cuts)
+                            == object_registry.cut_filters(object_registry.library_cuts(block["filters"])))
+                else:
+                    same = custom_cuts == {str(idx): cuts for idx, cuts in block["filters"].items()}
+                if not same:
+                    raise ValueError(f"{reaction}: preserve the authoritative dataset filters")
+            custom_norms = (card.get("normalizations") or {}).get(reaction) or {}
+            for idx, norm in custom_norms.items():
+                # JSON booleans must not compare equal to integer tied references.
+                canonical = block["norm"].get(int(idx))
+                if canonical is None or json.dumps(norm, sort_keys=True) != json.dumps(canonical, sort_keys=True):
+                    raise ValueError(f"{reaction}:{idx}: preserve the authoritative normalization definition")
+            blocks[reaction] = block
+            if reaction == "sia":
+                missing = sorted(int(idx) for idx in ids if int(idx) not in block["filters"])
+                if missing:
+                    warnings.append("SIA datasets " + ", ".join(map(str, missing))
+                                    + " have no filter definition in the authoritative excerpt; none was invented.")
+        except (TypeError, KeyError, ValueError, OverflowError) as exc:
+            errors.append(str(exc))
+    # Existing reactions keep their existing normalization and cut validation.
+    fitting_reactions = [r for r in reactions if r in ENABLED_REACTIONS]
+    if fitting_reactions:
+        draft = dict(card, reactions=fitting_reactions)
+        draft["job"] = {**(card.get("job") or {}), "campaignName": "configuration_preview"}
+        try:
+            keys = [obj.get("type") for obj in _card_objects(card) if isinstance(obj, dict)
+                    and obj.get("type") in SELECTABLE_OBJECTS]
+            if "pdf-pion" in keys:
+                keys = list(dict.fromkeys(keys + ["p->pi,n", "pdf"]))
+            libraries = _object_libraries(u, keys)
+            normalized, problems = _normalize_card(draft, libraries)
+            errors.extend(problems)
+            if not problems:
+                available = {}
+                for key in normalized["fit_objects"] + normalized["frozen_objects"]:
+                    available.update(libraries[key].get("datasets", {}))
+                for reaction in fitting_reactions:
+                    source = available[reaction]
+                    ids = {int(idx) for idx in normalized["datasets"][reaction]}
+                    block = json.loads(json.dumps(source))
+                    for field in ("xlsx", "norm"):
+                        block[field] = {int(idx): value for idx, value in source.get(field, {}).items() if int(idx) in ids}
+                    selected_filters = object_registry.cut_filters(normalized["cuts"][reaction])
+                    if "filters" in source or selected_filters:
+                        block["filters"] = selected_filters
+                    for idx, value in normalized["normalizations"].get(reaction, {}).items():
+                        value = dict(value)
+                        if isinstance(value.get("fixed"), str) and value["fixed"].isdigit():
+                            value["fixed"] = int(value["fixed"])
+                        block["norm"][int(idx)] = value
+                    blocks[reaction] = block
+        except (RuntimeError, ValueError, KeyError, TypeError) as exc:
+            errors.append(str(exc))
+    fragment = "# Dataset configuration fragment only. FF parameters/theory are not implemented.\n"
+    fragment += "# This is not a runnable fit input and does not authorize job submission.\n"
+    fragment += "conf.setdefault('datasets', {})\n"
+    fragment += "\n".join(f"conf['datasets'][{reaction!r}] = {block!r}" for reaction, block in blocks.items())
+    return {"status": "configuration_only", "valid": False, "fit_ready": False,
+            "configuration_valid": not errors, "errors": errors, "warnings": warnings,
+            "message": "Dataset configuration only. SIDIS requires PDFs + FFs; SIA requires FFs only. "
+                       "FF fitting is not implemented, so job submission is disabled.",
+            "dataset_configuration": blocks, "input_preview": fragment if not errors else ""}
+
+
 def validate_campaign(card=None, username=""):
     """Validate an input card and show what would run, with the confirmation
     phrase submit_campaign needs, and warnings about the selected data."""
     u, err = _need_user(username)
     if err:
         return err
+    if _configuration_reactions(card):
+        return _configuration_preview(u, card)
     norm, err = _checked_card(u, card)
     if err:
         return err
@@ -2208,6 +2543,8 @@ def submit_campaign(card=None, confirm="", username=""):
     u, err = _need_user(username)
     if err:
         return err
+    if _configuration_reactions(card):
+        return _unsupported_configuration_fit(card)
     norm, err = _checked_card(u, card)
     if err:
         return err
@@ -8449,8 +8786,9 @@ TOOLS = {
         "fn": lambda a: campaign_options()},
     "campaign_datasets": {
         "desc": "The datasets of one available reaction from campaign_options, grouped by experiment, with labels "
-                "(experiment, observable, target). Optional search text. Nothing is preselected.",
-        "schema": {"type": "object", "properties": {"reaction": {"type": "string", "enum": sorted(ENABLED_REACTIONS)},
+                "(experiment, observable, target). Optional search text. Nothing is preselected. "
+                "SIDIS and SIA are selectable for dataset configuration only; FF fitting is unavailable.",
+        "schema": {"type": "object", "properties": {"reaction": {"type": "string", "enum": sorted(CATALOG_REACTIONS)},
                                                     "search": {"type": "string"}},
                    "required": ["reaction"]},
         "fn": lambda a: campaign_datasets(a.get("reaction", "idis"), a.get("search", ""))},
@@ -8460,7 +8798,9 @@ TOOLS = {
         "schema": {"type": "object", "properties": {}},
         "fn": lambda a: use_ai_branch()},
     "validate_campaign": {
-        "desc": "Create Input Card: validate the composer card and return the summary (free/fixed "
+        "desc": "SIDIS/SIA selections return a dataset-only input fragment with configuration_valid and "
+                "fit_ready=false, never a runnable fit or submission confirmation. "
+                "Create Input Card: validate the composer card and return the summary (free/fixed "
                 "parameters per object. Additive card.objects=[{type:'pdf',parameters:{}},"
                 "{type:'pdf-pion',parameters:{}}] selects one or both; card.companions={'p->pi,n':"
                 "{parameters:{...}}} edits the fitted leading-neutron companion. Legacy card.object "
@@ -8477,6 +8817,7 @@ TOOLS = {
         "fn": lambda a: validate_campaign(a.get("card"))},
     "submit_campaign": {
         "desc": "Submit Jobs: materialize the card and submit one Slurm array task per replica. "
+                "Rejects SIDIS/SIA configuration-only cards before uploads or job creation. "
                 "Needs confirm = the phrase from validate_campaign, after the user has seen the "
                 "summary and the Slurm script and agreed.",
         "schema": {"type": "object", "properties": {"card": {"type": "object"}, "confirm": {"type": "string"}},
@@ -8683,7 +9024,10 @@ INSTRUCTIONS = (
     "memory, cpus, partition or auto), using slurm_partitions to explain the choice.\n"
     "Every setting shows its library value; the user keeps or changes it. Reactions and "
     "datasets are never preselected; never pick a value for the user.\n"
-    "8. Review: validate_campaign; show the summary, its warnings (they never block "
+    "8. Review: SIDIS/SIA datasets are configuration-only: validate_campaign returns an input "
+    "fragment, configuration_valid and fit_ready=false. Do not attempt submission or claim FF fits "
+    "are implemented. SIDIS needs PDFs plus FFs; SIA needs FFs only. For supported fits, "
+    "validate_campaign; show the summary, its warnings (they never block "
     "submission) and the Slurm array script exactly as returned (not shortened); submit with "
     "submit_campaign(card, confirm=<phrase>) only after the user agrees.\n"
     "9. Collections and analysis: list_campaigns (it also returns the user's Slurm queue), "

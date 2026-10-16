@@ -4,10 +4,24 @@ import hashlib
 import shutil
 from pathlib import Path
 
+from .dataset_catalog import CONFIGURATION_ONLY_REACTIONS, configuration_dataset_block
 from .object_registry import (
     DY_DATASET_DEFAULTS, PROTON_REACTION_DATASETS, cut_filters, dis_version_for, library_cuts, load_object_libraries,
 )
 from .stage_resolver import ResolvedStage
+
+
+def render_dataset_configuration_fragment(selections: dict, q2cut=None) -> str:
+    """Render dataset assignments for inspection, not a runnable FF fit card."""
+    blocks = {reaction: configuration_dataset_block(reaction, dataset_ids, q2cut)
+              for reaction, dataset_ids in selections.items()}
+    lines = [
+        '# Configuration only: SIDIS/SIA FF fitting is not implemented.',
+        "conf.setdefault('datasets', {})",
+    ]
+    lines.extend(f"conf['datasets'][{reaction!r}] = {block!r}"
+                 for reaction, block in blocks.items())
+    return '\n'.join(lines) + '\n'
 
 
 def copy_stage_input_template(template_path: str | Path, output_path: str | Path) -> str:
@@ -161,6 +175,10 @@ def _render_stage_override_block(stage: ResolvedStage) -> str:
 
 def materialize_stage_input(template_path: str | Path, output_path: str | Path, stage: ResolvedStage,
                             fitpack_root: str | Path | None = None) -> str:
+    unsupported = set(stage.reactions).intersection(CONFIGURATION_ONLY_REACTIONS)
+    if unsupported:
+        raise ValueError('Configuration only; FF fitting is not implemented for: '
+                         + ', '.join(sorted(unsupported)))
     # Validate sources before copying, then compose the single final input.
     # Replace only the five approved reaction blocks before dataset pruning.
     # This also removes historical Jet filters and preserves omitted WC filters.

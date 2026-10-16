@@ -1136,7 +1136,7 @@
   }
 
   function reactionAvailable(r){
-    return r && r.enabled && (r.objects || ["pdf"]).some(key=>card.objects.some(o=>o.type === key));
+    return r && (r.configuration_only || (r.enabled && (r.objects || ["pdf"]).some(key=>card.objects.some(o=>o.type === key))));
   }
 
   async function loadDatasets(rk){
@@ -1156,7 +1156,8 @@
       box.innerHTML = '<div class="rxhead"><label class="inline"><input type="checkbox" class="rxon"'+(on ? " checked" : "")+(r.enabled ? "" : " disabled")+'> '
         + '<b>'+esc(r.label)+'</b></label><span class="muted mono" style="font-size:11px">'+esc(rk)+'</span><span class="sp"></span>'
         + (r.enabled ? (on ? '<span class="muted" style="font-size:12px">'+nsel+' selected</span> <button class="btn sm rxopen">'+(v.open ? "Hide" : "Show")+'</button>' : '')
-                     : '<span class="bp">'+(r.needsObject ? "SELECT ITS OBJECT" : "BLUEPRINT")+'</span>')+'</div><div class="rxbody"></div>';
+                     : '<span class="bp">'+(r.needsObject ? "SELECT ITS OBJECT" : "BLUEPRINT")+'</span>')+'</div>'
+        + (r.configuration_only ? '<div class="hint" style="padding:0 12px 8px">Configuration only. '+esc(r.requirements)+'</div>' : '')+'<div class="rxbody"></div>';
       const cb = box.querySelector(".rxon");
       if (r.enabled) cb.onchange = ()=>{
         if (cb.checked){ card.reactions.push(rk); v.open = true; if (!card.cuts[rk]) card.cuts[rk] = JSON.parse(JSON.stringify(opts.defaults.cuts[rk] || [])); }
@@ -1183,7 +1184,8 @@
     const sel = new Set(card.datasets[rk] || []);
     const q = v.search.toLowerCase();
     const all = [];
-    let html = '<div class="plot-controls" style="margin-bottom:6px"><div class="pc" style="flex:1"><input type="text" class="dsq" placeholder="Search '+esc(rk)+' datasets" value="'+esc(v.search)+'"></div>'
+    let html = (d.legend ? '<div class="note">'+esc(d.legend)+'</div>' : '')
+      + '<div class="plot-controls" style="margin-bottom:6px"><div class="pc" style="flex:1"><input type="text" class="dsq" placeholder="Search '+esc(rk)+' datasets" value="'+esc(v.search)+'"></div>'
       + '<button class="btn sm" data-a="all">Select visible</button><button class="btn sm" data-a="none">Clear visible</button></div>'
       + '<div class="hint" style="margin:0 0 8px">Check only the datasets you want in this fit. Selected datasets stay selected while you search.</div><div class="dslist">';
     d.experiments.forEach(g=>{
@@ -1195,7 +1197,13 @@
         if (usable) all.push(x.id);
         html += '<label class="ds'+(usable ? "" : " disabled")+'"><input type="checkbox" data-id="'+esc(x.id)+'"'+(sel.has(x.id) ? " checked" : "")+(usable ? "" : " disabled")+'> '
           + esc(x.label)+(usable ? "" : ' <span class="bp">'+(x.blueprint ? "BLUEPRINT" : "NO DATA FILE")+'</span>')+'<span class="id">'+esc(x.id)+'</span></label>';
-        if (usable && x.normalization){
+        if (usable && x.normalization && d.configuration_only){
+          const n = x.normalization;
+          html += '<div class="hint" style="margin-left:24px">Normalization '+esc(n.value)
+            + esc(n.fixed === false ? ' FREE' : n.fixed === true ? ' FIXED' : ' tied to '+n.fixed)
+            + ' ['+esc(n.min)+', '+esc(n.max)+'] · reference definition</div>';
+        }
+        if (usable && x.normalization && !d.configuration_only){
           const n = (card.normalizations[rk] || {})[x.id] || x.normalization;
           const links = d.experiments.flatMap(g=>g.datasets).filter(y=>y.id !== x.id && y.normalization && sel.has(y.id))
             .map(y=>'<option value="'+esc(y.id)+'"'+(String(n.fixed) === String(y.id) ? " selected" : "")+'>'+esc(y.id)+'</option>').join("");
@@ -1251,6 +1259,15 @@
   }
   function renderCuts(rk, pane){
     const reaction = opts.reactions.find(r=>r.key === rk);
+    if (reaction?.configuration_only){
+      pane.innerHTML = '<div class="note">'+esc(reaction.cut_note)+'</div>';
+      if (rk === "sia" && dsCache[rk]){
+        const selected = new Set(card.datasets[rk] || []);
+        pane.innerHTML += dsCache[rk].experiments.flatMap(g=>g.datasets).filter(d=>selected.has(d.id))
+          .map(d=>'<div class="hint">'+esc(d.id+': '+(d.filters ? d.filters.join('; ') : 'No filter defined in the reference excerpt'))+'</div>').join('');
+      }
+      return;
+    }
     if (reaction?.cut_policy === "none" || reaction?.cut_policy === "jet_pt"){
       pane.innerHTML = '<div class="note">'+esc(reaction.cut_note ||
         (reaction.cut_policy === "jet_pt" ? "pT > 8.0 GeV." : "No additional reaction cuts."))+'</div>';
@@ -1316,8 +1333,18 @@
   $("sPart").onchange = ()=>{ card.slurm.partition = $("sPart").value; saveCard(); };
 
   function paintValidation(){
-    const ok = validated && validated.valid;
+    const configurationOnly = card.reactions.some(rk=>opts.reactions.find(r=>r.key === rk)?.configuration_only);
+    const ok = validated && validated.valid && !configurationOnly;
     $("submitJobs").disabled = !ok || !!submitted || submitting;
+    if (configurationOnly){
+      $("cStatus").innerHTML = '<span>Status <b>'+(validated?.configuration_valid ? 'dataset configuration ready · fitting unavailable' : 'configuration only · fitting unavailable')+'</b></span>';
+      $("reviewErr").innerHTML = (validated?.errors || []).map(esc).join('<br>');
+      $("reviewBox").innerHTML = '<div class="note warn">'+esc(validated?.message || 'SIDIS requires PDFs + FFs; SIA requires FFs only. FF fitting is not implemented. Create Input Card previews dataset configuration only; no jobs can be submitted.')+'</div>'
+        + (validated?.warnings || []).map(w=>'<div class="note warn">'+esc(w)+'</div>').join('')
+        + (validated?.input_preview ? '<pre class="out">'+esc(validated.input_preview)+'</pre>' : '');
+      $("scriptBox").style.display = 'none';
+      return;
+    }
     $("cStatus").innerHTML = '<span>Status <b>'+(submitted ? "submitted" : ok ? "validated input card ready" : validated ? "validation failed" : "draft input card in progress")+'</b></span>';
     if (!validated){ $("reviewBox").innerHTML = ""; $("reviewErr").textContent = ""; $("scriptBox").style.display = "none"; return; }
     if (!validated.valid){
@@ -1370,7 +1397,8 @@
     $("createCard").disabled = submitting; paintValidation();
   };
   $("submitJobs").onclick = async ()=>{
-    if (!validated || !validated.valid || submitting) return;
+    if (!validated || !validated.valid || validated.fit_ready === false || submitting
+        || card.reactions.some(rk=>opts.reactions.find(r=>r.key === rk)?.configuration_only)) return;
     // The click is the user's confirmation; the phrase ties it to exactly this card.
     // Its outcome goes to submitErr, which paintValidation leaves alone. Until it is
     // back the card can be neither validated again nor submitted a second time.
@@ -1404,7 +1432,7 @@
     $("cNext").style.visibility = cStep === last ? "hidden" : "visible";
     $("cNew").style.display = submitted ? "" : "none";
     const note = $("cSubmittedNote");
-    if (submitted){
+    if (submitted && !card?.reactions.some(rk=>opts?.reactions.find(r=>r.key === rk)?.configuration_only)){
       note.style.display = "block";
       note.innerHTML = 'Fitting campaign submitted. Collection <span class="mono">'+esc(submitted.collection_id)+'</span>, job <span class="mono">'
         + esc(submitted.job_id)+'</span>, '+esc(submitted.replicas)+' replicas on '+esc(submitted.partition)+'. <a href="#" id="toColl">Open Collections</a>';
