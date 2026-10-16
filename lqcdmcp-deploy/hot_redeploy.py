@@ -13,7 +13,8 @@ not run as a Slurm job (a test gateway) has no such loop, so it is refused.
 Uploads go through node_diag, a shell on the gateway node: it is hidden from
 AI clients (not in tools/list) but callable by name with the owner's
 dashboard token (LQCDMCP_TOKEN). Nothing is replaced until the new gateway
-loads on the node, and the one it replaces stays there as jam_gateway.prev.py.
+loads with its complete package on the node. The previous gateway, panel and
+package stay together in .hot_redeploy.previous for rollback.
 After the restart the script checks that the server answering started after
 the swap, runs the uploaded file and still accepts the token.
 """
@@ -22,6 +23,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import sys
 import time
 import urllib.request
@@ -90,6 +92,93 @@ def upload(path, dest, rid0):
         sys.exit(f"decoding {path} on the node FAILED: {str(r)[:300]}")
 
 
+def deployment_files():
+    """Discover the whole application package, never a hand-maintained module list."""
+    files = {"jam_gateway.py": LOCAL, "jam_panel.html": PANEL}
+    src = os.path.join(HERE, "jamai")
+    if not os.path.isfile(os.path.join(src, "__init__.py")):
+        sys.exit("the source jamai package is missing __init__.py")
+    for directory, directories, names in os.walk(src):
+        directories[:] = sorted(d for d in directories if d not in ("__pycache__", ".ipynb_checkpoints"))
+        for name in sorted(names):
+            if name.endswith((".pyc", ".pyo")):
+                continue
+            path = os.path.join(directory, name)
+            if os.path.islink(path):
+                sys.exit(f"refusing a symlink in the application package: {path}")
+            rel = "jamai/" + os.path.relpath(path, src).replace(os.sep, "/")
+            files[rel] = path
+    return files
+
+
+def remote_python(source, arguments, rid):
+    """Run a small stdlib-only transaction in the gateway job's Python environment."""
+    program = "args = " + repr(arguments) + "\n" + source
+    encoded = base64.b64encode(program.encode()).decode()
+    command = "import base64; exec(base64.b64decode(" + repr(encoded) + "))"
+    return diag("python3 -B -c " + shlex.quote(command), rid)
+
+
+STAGE_CHECK = r"""
+import hashlib, importlib, os, pathlib, sys
+stage = pathlib.Path(os.path.expanduser(args['stage'])).resolve()
+os.chdir(stage)
+sys.path.insert(0, str(stage))
+for rel, expected in args['hashes'].items():
+    path = stage / rel
+    if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+        raise RuntimeError('staged hash mismatch: ' + rel)
+    if path.suffix == '.py':
+        compile(path.read_bytes(), str(path), 'exec')
+importlib.import_module('jam_gateway')
+for name, module in list(sys.modules.items()):
+    if name == 'jam_gateway' or name == 'jamai' or name.startswith('jamai.'):
+        path = pathlib.Path(module.__file__).resolve()
+        if stage not in path.parents:
+            raise RuntimeError('import escaped staged application: ' + name)
+print('IMPORT-OK')
+"""
+
+INSTALL = r"""
+import os, pathlib, shutil
+app = pathlib.Path(os.path.expanduser(args['app'])).resolve()
+stage = pathlib.Path(os.path.expanduser(args['stage'])).resolve()
+if stage.parent != app or not stage.name.startswith('.hot_redeploy.stage-'):
+    raise RuntimeError('unexpected staging directory')
+backup = app / '.hot_redeploy.previous'
+if backup.exists():
+    shutil.rmtree(backup)
+backup.mkdir(mode=0o700)
+components = ('jamai', 'jam_panel.html', 'jam_gateway.py')
+saved, installed = [], []
+try:
+    for name in components:
+        if (app / name).exists():
+            shutil.move(str(app / name), str(backup / name))
+            saved.append(name)
+        shutil.move(str(stage / name), str(app / name))
+        installed.append(name)
+except BaseException:
+    for name in reversed(installed):
+        target = app / name
+        shutil.rmtree(target) if target.is_dir() else target.unlink()
+    for name in reversed(saved):
+        shutil.move(str(backup / name), str(app / name))
+    raise
+print('SWAPPED')
+"""
+
+CLEAN_STAGE = r"""
+import os, pathlib, shutil
+app = pathlib.Path(os.path.expanduser(args['app'])).resolve()
+stage = pathlib.Path(os.path.expanduser(args['stage'])).resolve()
+if stage.parent != app or not stage.name.startswith('.hot_redeploy.stage-'):
+    raise RuntimeError('unexpected staging directory')
+if stage.exists():
+    shutil.rmtree(stage)
+"""
+
+
 def main():
     gw_auth.require()
     if not gw_auth.token():
@@ -106,38 +195,35 @@ def main():
                  "after the swap. Restart a test gateway yourself with the new code; this script is for the "
                  "gateway job that deploy_and_verify.py launches.")
 
-    # The new gateway must load on the node before anything is replaced:
-    # importing it runs its module code without starting a server.
-    upload(LOCAL, f"{APP}/jam_gateway_new.py", 200)
-    r = diag(f"mv {APP}/jam_gateway_new.py.new {APP}/jam_gateway_new.py && cd {APP} && "
-             "python3 -c 'import jam_gateway_new' && echo IMPORT-OK", 299)
-    if "IMPORT-OK" not in (r.get("out") or ""):
-        last = ((r.get("err") or r.get("out") or "").strip().splitlines() or ["no output"])[-1]
-        sys.exit(f"the new gateway does not load on the node ({last[:300]}), so nothing was replaced: "
-                 "fix it and run hot_redeploy.py again.")
-    print("the new gateway loads on the node")
-
-    # The panel is read from disk on every request: no restart needed.
-    upload(PANEL, f"{APP}/jam_panel.html", 100)
-    if "OK" not in (diag(f"mv {APP}/jam_panel.html.new {APP}/jam_panel.html && echo OK", 199).get("out") or ""):
-        sys.exit("installing the panel FAILED")
-
-    # The campaign package.
-    src = os.path.join(HERE, "jamai")
-    files = sorted("jamai/" + os.path.relpath(os.path.join(d, n), src)
-                   for d, _, ns in os.walk(src) for n in ns if not n.endswith(".pyc"))
-    diag(f"rm -rf {APP}/jamai", 3)
-    for i, rel in enumerate(files):
-        upload(os.path.join(HERE, rel), f"{APP}/{rel}", 400 + 50 * i)
-        diag(f"mv {APP}/{rel}.new {APP}/{rel}", 449 + 50 * i)
-    print(f"panel and campaign package installed ({len(files)} files); restarting the server…")
+    stage = f"{APP}/.hot_redeploy.stage-{time.time_ns()}"
+    files = deployment_files()
+    try:
+        for i, (rel, path) in enumerate(files.items()):
+            upload(path, f"{stage}/{rel}", 400 + 50 * i)
+            r = diag(f"mv {stage}/{rel}.new {stage}/{rel}", 449 + 50 * i)
+            if r.get("rc") != 0:
+                sys.exit(f"staging {rel} FAILED; the running deployment was not replaced")
+        expected = {rel: hashlib.sha256(open(path, "rb").read()).hexdigest()
+                    for rel, path in files.items()}
+        r = remote_python(STAGE_CHECK, {"stage": stage, "hashes": expected}, 299)
+        if r.get("rc") != 0 or "IMPORT-OK" not in (r.get("out") or ""):
+            last = ((r.get("err") or r.get("out") or "").strip().splitlines() or ["no output"])[-1]
+            sys.exit(f"the staged application does not load on the node ({last[:300]}), "
+                     "so nothing was replaced")
+        print(f"the complete staged application loads on the node ({len(files)} files)")
+        r = remote_python(INSTALL, {"app": APP, "stage": stage}, 300)
+        if r.get("rc") != 0 or "SWAPPED" not in (r.get("out") or ""):
+            sys.exit(f"installing the staged application FAILED: {str(r)[:300]}")
+    finally:
+        remote_python(CLEAN_STAGE, {"app": APP, "stage": stage}, 398)
+    print("gateway, panel and campaign package installed; restarting the server…")
 
     t0 = time.time()
     try:
-        # [y] keeps pkill from matching this very command line.
-        r = diag(f"cd {APP} && {{ [ ! -e jam_gateway.py ] || cp -p jam_gateway.py jam_gateway.prev.py; }} && "
-                 "cp jam_gateway_new.py jam_gateway.py && echo SWAPPED && "
-                 "pkill -u $(id -u) -f 'python3 jam_gatewa[y].py'", 300, timeout=20)
+        # node_diag's shell is a direct child of this gateway. Verify its cwd
+        # before signaling that exact server; other gateways are untouched.
+        r = diag(f'test "$(readlink -f /proc/$PPID/cwd)" = "$(readlink -f {APP})" && '
+                 'echo SWAPPED && kill -TERM "$PPID"', 399, timeout=20)
     except Exception as e:
         print("restart call interrupted as expected:", type(e).__name__)
     else:
@@ -158,7 +244,7 @@ def main():
         sys.exit("the gateway does not answer 60 s after the restart. Check again in a few minutes with "
                  "python3 deploy_and_verify.py --check; if it stays down, the new code fails at start-up: "
                  f"fix it, then {RELAUNCH}. The code that ran before is kept on the node as "
-                 f"{APP}/jam_gateway.prev.py.")
+                 f"{APP}/.hot_redeploy.previous (gateway, panel and jamai package).")
     if state == "refused":
         sys.exit("the new gateway runs but refuses your token, so this script cannot reach it any more. "
                  "python3 check_dashboard_token.py shows why; once it says the gateway accepts your token, "
