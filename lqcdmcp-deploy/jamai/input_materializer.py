@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 
 from .object_registry import (
-    PROTON_REACTION_DATASETS, cut_filters, dis_version_for, library_cuts, load_object_libraries,
+    DY_DATASET_DEFAULTS, PROTON_REACTION_DATASETS, cut_filters, dis_version_for, library_cuts, load_object_libraries,
 )
 from .stage_resolver import ResolvedStage
 
@@ -166,6 +166,8 @@ def materialize_stage_input(template_path: str | Path, output_path: str | Path, 
     # This also removes historical Jet filters and preserves omitted WC filters.
     fragments = [f"\nconf.setdefault('datasets', {{}})[{reaction!r}] = {PROTON_REACTION_DATASETS[reaction]!r}"
                  for reaction in stage.reactions if reaction in PROTON_REACTION_DATASETS]
+    if 'dy' in stage.reactions:
+        fragments.append(f"\nconf.setdefault('datasets', {{}})['dy'] = {DY_DATASET_DEFAULTS!r}")
     overrides = _render_stage_override_block(stage)
     for key, source in stage.params.get('library_sources', {}).items():
         if source.get('source') and source.get('sha256'):

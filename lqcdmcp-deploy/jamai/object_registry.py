@@ -51,6 +51,15 @@ OBJECTS = {
 SELECTABLE_OBJECTS = ('pdf', 'pdf-pion')
 
 
+# Proton DY defaults shared by the library metadata and generated inputs.
+DY_DATASET_DEFAULTS = {
+    'filters': ['Q2>0'],
+    'xlsx': {idx: f'dy/expdata/{idx}.xlsx' for idx in (10001, 20001, 20002)},
+    'norm': {idx: {'value': 1.0, 'fixed': False, 'min': 0.5, 'max': 1.5}
+             for idx in (10001, 20001, 20002)},
+}
+
+
 # Canonical dataset metadata from the supplied input.py (SHA256
 # 218a8e633bf015899f9f7b68494a8a44d79b1998fb506ea99d2424c85c8f75a6).
 # Jet intentionally keeps only its pT cut; no x expression is synthesized.
@@ -212,6 +221,7 @@ def load_object_libraries(root, keys, pion_reference=None):
                     if r in config.get('datasets', {})}
         if key == 'pdf':
             datasets.update(copy.deepcopy(PROTON_REACTION_DATASETS))
+            datasets['dy'] = copy.deepcopy(DY_DATASET_DEFAULTS)
         libraries[key] = {
             'rows': rows, 'source': str(path),
             'sha256': fingerprint,

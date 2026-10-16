@@ -949,10 +949,204 @@ CAMPAIGN_REACTIONS = [
     {"key": "sia", "label": "SIA", "enabled": False},
 ]
 ENABLED_REACTIONS = {r["key"] for r in CAMPAIGN_REACTIONS if r["enabled"]}
+# Display labels only: edit/add string dataset IDs within their reaction.
+# Missing entries keep the existing catalog or Excel-derived display name.
+DATASET_LABELS = {
+    "idis": {
+        "10001": "JLab Hall C (E00-106) F_2 deuteron",
+        "10002": "JLab Hall C (E00-116) σ_red deuteron",
+        "10003": "JLab Hall C (E00-116) σ_red proton",
+        "10004": "JLab Hall C (E00-106) σ_red deuteron",
+        "10005": "HERMES F_2 proton",
+        "10006": "HERMES F_2 deuteron",
+        "10007": "HERMES σ_red proton",
+        "10008": "HERMES σ_red deuteron",
+        "10009": "HERMES σ_red deuteron/proton",
+        "10010": "SLAC F_2 proton",
+        "10011": "SLAC F_2 deuteron",
+        "10012": "SLAC rebinned F_2 proton",
+        "10013": "SLAC rebinned F_2 deuteron",
+        "10014": "SLAC σ_red proton",
+        "10015": "SLAC σ_red deuteron",
+        "10016": "BCDMS F_2 proton",
+        "10017": "BCDMS F_2 deuteron",
+        "10018": "BCDMS σ_red proton",
+        "10019": "BCDMS σ_red deuteron",
+        "10020": "NMC F_2 proton",
+        "10021": "NMC F_2 deuteron/proton",
+        "10022": "NMC σ_red proton",
+        "10026": "HERA II NC e+ (1) σ_red proton",
+        "10027": "HERA II NC e+ (2) σ_red proton",
+        "10028": "HERA II NC e+ (3) σ_red proton",
+        "10029": "HERA II NC e+ (4) σ_red proton",
+        "10030": "HERA II NC e- σ_red proton",
+        "10031": "HERA II CC e+ σ_red proton",
+        "10032": "HERA II CC e- σ_red proton",
+        "10033": "BONUS F_2 neutron/deuteron",
+        "10035": "SLAC-E140x F_2 proton",
+        "10036": "SLAC-E140x F_2 deuteron",
+        "10037": "HERA I and II σ_red^cc proton",
+        "10038": "HERA I and II σ_red^bb proton",
+        "10040": "NMC σ_red deuteron",
+        "10041": "JLab Hall C (E03-103) σ_red helium-3/deuteron",
+        "10042": "JLab Hall C (E12-10-002) F_2 deuteron/proton",
+        "10045": "JLab E03-103 F_2 proton",
+        "10046": "JLab E06-009 F_2 deuteron",
+        "10050": "MARATHON F_2 deuteron/proton",
+        "10051": "MARATHON F_2 helium-3/tritium",
+        "10052": "MARATHON F_2 helium-3/deuteron",
+        "10053": "MARATHON F_2 tritium/deuteron",
+        "10054": "SLAC A_PV^e proton",
+        "10055": "SLAC A_PV^e deuteron",
+        "10056": "JLab A_PV^e deuteron",
+        "10057": "CLAS6 F_2 proton",
+        "10058": "CLAS6 F_2 deuteron",
+        "10061": "BONUS F_2 neutron",
+        "10062": "E665 F_2 proton",
+        "10063": "E665 F_2 deuteron",
+        "10077": "JLab E03-103 F_2 deuteron",
+        "10086": "NMC σ_red deuteron/proton",
+        "10090": "CLAS12 dσ/dWdQ^2 proton"
+    },
+    "dy": {
+        "10001": "E866 NuSea DY pp",
+        "20001": "E866 NuSea DY pd/2pp",
+        "20002": "E906 SeaQuest DY pd/2pp"
+    },
+    "wzrv": {
+        "2010": "CMS 8 TeV A_eta_mu pp",
+        "2011": "CMS 7 TeV A_eta_mu pp",
+        "2012": "CMS 7 TeV A_eta_e pp",
+        "2013": "CMS 7 TeV A_eta_e pp",
+        "2014": "CMS 7 TeV A_eta_mu pp",
+        "2016": "LHCb 7 TeV A_eta_mu pp",
+        "2017": "LHCb 8 TeV A_eta_mu pp",
+        "2020": "STAR RW pp"
+    },
+    "wasym": {
+        "1000": "CDF(W) W_asym ppb",
+        "1001": "D0(W) W_asym ppb"
+    },
+    "zrap": {
+        "1000": "CDF(Z) Z_xsec ppb",
+        "1001": "D0(Z) Z_xsec_norm ppb"
+    },
+    "jet": {
+        "10001": "D0 d2sigma/dy-dpt",
+        "10002": "CDF d2sigma/dy-dpt",
+        "10003": "STAR d2sigma/2-pi-dy-dpt",
+        "10004": "STAR d2sigma/2-pi-dy-dpt"
+    },
+    "wc": {
+        "10001": "ATLAS 7 TeV Wm sig pp",
+        "10002": "ATLAS 7 TeV Wp sig pp",
+        "20001": "CMS 7 TeV Wp+Wm pp",
+        "20002": "CMS 7 TeV Wp/Wm pp",
+        "20003": "CMS 13 TeV Wp+Wm pp"
+    }
+}
+
+# Experiment headings only: independent of DATASET_LABELS above.
+# Equal headings group datasets together; missing entries retain catalog metadata.
+DATASET_EXPERIMENTS = {
+    "idis": {
+        "10001": "JLab Hall C (E00-106)",
+        "10002": "JLab Hall C (E00-116)",
+        "10003": "JLab Hall C (E00-116)",
+        "10004": "JLab Hall C (E00-106)",
+        "10005": "HERMES",
+        "10006": "HERMES",
+        "10007": "HERMES",
+        "10008": "HERMES",
+        "10009": "HERMES",
+        "10010": "SLAC",
+        "10011": "SLAC",
+        "10012": "SLAC rebinned",
+        "10013": "SLAC rebinned",
+        "10014": "SLAC",
+        "10015": "SLAC",
+        "10016": "BCDMS",
+        "10017": "BCDMS",
+        "10018": "BCDMS",
+        "10019": "BCDMS",
+        "10020": "NMC",
+        "10021": "NMC",
+        "10022": "NMC",
+        "10026": "HERA",
+        "10027": "HERA",
+        "10028": "HERA",
+        "10029": "HERA",
+        "10030": "HERA",
+        "10031": "HERA",
+        "10032": "HERA",
+        "10033": "BONUS",
+        "10035": "SLAC-E140x",
+        "10036": "SLAC-E140x",
+        "10037": "HERA I and II",
+        "10038": "HERA I and II",
+        "10040": "NMC",
+        "10041": "JLab Hall C (E03-103)",
+        "10042": "JLab Hall C (E12-10-002)",
+        "10045": "JLab E03-103",
+        "10046": "JLab E06-009",
+        "10050": "MARATHON",
+        "10051": "MARATHON",
+        "10052": "MARATHON",
+        "10053": "MARATHON",
+        "10054": "SLAC",
+        "10055": "SLAC",
+        "10056": "JLab",
+        "10057": "CLAS6",
+        "10058": "CLAS6",
+        "10061": "BONUS",
+        "10062": "E665",
+        "10063": "E665",
+        "10077": "JLab E03-103",
+        "10086": "NMC",
+        "10090": "CLAS12"
+    },
+    "dy": {
+        "10001": "E866 NuSea",
+        "20001": "E866 NuSea",
+        "20002": "E906 SeaQuest"
+    },
+    "wzrv": {
+        "2010": "CMS",
+        "2011": "CMS",
+        "2012": "CMS",
+        "2013": "CMS",
+        "2014": "CMS",
+        "2016": "LHCb",
+        "2017": "LHCb",
+        "2020": "STAR"
+    },
+    "wasym": {
+        "1000": "CDF",
+        "1001": "D0"
+    },
+    "zrap": {
+        "1000": "CDF",
+        "1001": "D0"
+    },
+    "jet": {
+        "10001": "D0",
+        "10002": "CDF",
+        "10003": "STAR",
+        "10004": "STAR"
+    },
+    "wc": {
+        "10001": "ATLAS",
+        "10002": "ATLAS",
+        "20001": "CMS",
+        "20002": "CMS",
+        "20003": "CMS"
+    }
+}
+
 DY_DATASETS = [
     {"id": "10001", "label": "E866 NuSea DY pp", "experiment": "E866 NuSea", "enabled": True},
-    {"id": "10002", "label": "E866 NuSea DY pd", "experiment": "E866 NuSea", "enabled": False, "blueprint": True},
-    {"id": "10003", "label": "E605 DY", "experiment": "E605", "enabled": False, "blueprint": True},
+    {"id": "20001", "label": "E866 NuSea DY pd/pp", "experiment": "E866 NuSea", "enabled": True},
+    {"id": "20002", "label": "E906 SeaQuest DY pd/pp", "experiment": "E906 SeaQuest", "enabled": True},
 ]
 PION_DATASETS = {
     "dy-pion": [{"id": "10001", "label": "E615", "experiment": "E615"},
@@ -1176,6 +1370,8 @@ def campaign_datasets(reaction="idis", search="", username=""):
     except (RuntimeError, ValueError) as exc:
         return {"status": "error", "message": str(exc)}
     for item in items:
+        item["label"] = DATASET_LABELS.get(reaction, {}).get(str(item["id"]), item["label"])
+        item["experiment"] = DATASET_EXPERIMENTS.get(reaction, {}).get(str(item["id"]), item.get("experiment") or "Other")
         if str(item.get("id")) in norms:
             item["normalization"] = norms[str(item["id"])]
     q = (search or "").strip().lower()
