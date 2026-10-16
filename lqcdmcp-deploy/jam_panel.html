@@ -1250,6 +1250,12 @@
     });
   }
   function renderCuts(rk, pane){
+    const reaction = opts.reactions.find(r=>r.key === rk);
+    if (reaction?.cut_policy === "none" || reaction?.cut_policy === "jet_pt"){
+      pane.innerHTML = '<div class="note">'+esc(reaction.cut_note ||
+        (reaction.cut_policy === "jet_pt" ? "pT > 8.0 GeV." : "No additional reaction cuts."))+'</div>';
+      return;
+    }
     const cuts = card.cuts[rk] = card.cuts[rk] || [];
     const groups = Array.isArray(cuts) ? [["", cuts]] : (card.datasets[rk] || []).map(id=>[id, cuts[id] = cuts[id] || []]);
     pane.innerHTML = groups.map(([id, rows])=>'<div data-cut-group="'+esc(id)+'">'

@@ -4,7 +4,9 @@ import hashlib
 import shutil
 from pathlib import Path
 
-from .object_registry import cut_filters, dis_version_for, load_object_libraries
+from .object_registry import (
+    PROTON_REACTION_DATASETS, cut_filters, dis_version_for, library_cuts, load_object_libraries,
+)
 from .stage_resolver import ResolvedStage
 
 
@@ -35,6 +37,14 @@ def _enabled_cuts(stage: ResolvedStage) -> dict:
                 missing = set(map(str, stage.datasets.get(reaction, []))) - filters.keys()
                 if missing:
                     raise ValueError(f'{reaction}: missing cuts for datasets {sorted(missing)}')
+            if reaction in PROTON_REACTION_DATASETS:
+                approved = cut_filters(library_cuts(
+                    PROTON_REACTION_DATASETS[reaction].get('filters', [])))
+                supplied = filters.values() if isinstance(filters, dict) else [filters]
+                if any(value != approved for value in supplied):
+                    raise ValueError(f'{reaction}: cuts must match the approved reaction configuration')
+                if not approved:
+                    continue
             if not filters:
                 continue
             out[reaction] = ({int(key): value for key, value in filters.items()
@@ -48,6 +58,11 @@ def _render_stage_override_block(stage: ResolvedStage) -> str:
     # Python snippet appended to the copied template. When FitPack executes the
     # input card, these assignments/filtering operations mutate `conf` for this
     # stage.
+    for reaction in stage.reactions:
+        if reaction in PROTON_REACTION_DATASETS:
+            unknown = set(stage.datasets.get(reaction, [])) - PROTON_REACTION_DATASETS[reaction]['xlsx'].keys()
+            if unknown:
+                raise ValueError(f'{reaction}: unsupported datasets {sorted(unknown)}')
     parameter_overrides: dict[str, dict] = {}
     norm_overrides: dict[str, dict[str, dict]] = {}
     for sector in stage.params.get('sectors', []) or []:
@@ -60,6 +75,14 @@ def _render_stage_override_block(stage: ResolvedStage) -> str:
                 parameter_id = str(parameter.get('id') or '')
                 _, reaction, dataset_id = (parameter_id.split('_', 2) + ['', '', ''])[:3]
                 if reaction and dataset_id:
+                    if reaction in PROTON_REACTION_DATASETS:
+                        selected = stage.datasets.get(reaction, []) if reaction in stage.reactions else []
+                        allowed = PROTON_REACTION_DATASETS[reaction]['norm']
+                        if int(dataset_id) not in selected or int(dataset_id) not in allowed:
+                            raise ValueError(f'{reaction}: normalization {dataset_id} is not an explicit selected entry')
+                        tied = parameter.get('fixed', False)
+                        if type(tied) is int and (tied not in selected or tied not in allowed):
+                            raise ValueError(f'{reaction}: normalization {dataset_id} has an invalid equal-to dataset')
                     norm_overrides.setdefault(reaction, {})[dataset_id] = {
                         'value': parameter.get('value'),
                         'min': parameter.get('min'),
@@ -139,7 +162,10 @@ def _render_stage_override_block(stage: ResolvedStage) -> str:
 def materialize_stage_input(template_path: str | Path, output_path: str | Path, stage: ResolvedStage,
                             fitpack_root: str | Path | None = None) -> str:
     # Validate sources before copying, then compose the single final input.
-    fragments = []
+    # Replace only the five approved reaction blocks before dataset pruning.
+    # This also removes historical Jet filters and preserves omitted WC filters.
+    fragments = [f"\nconf.setdefault('datasets', {{}})[{reaction!r}] = {PROTON_REACTION_DATASETS[reaction]!r}"
+                 for reaction in stage.reactions if reaction in PROTON_REACTION_DATASETS]
     overrides = _render_stage_override_block(stage)
     for key, source in stage.params.get('library_sources', {}).items():
         if source.get('source') and source.get('sha256'):

@@ -27,7 +27,7 @@ def dis_version_for(fitted_objects):
 OBJECTS = {
     'pdf': {
         'label': 'Unpolarized PDF', 'template': 'examples/input02.py',
-        'reactions': ['idis', 'dy'], 'settings': [],
+        'reactions': ['idis', 'dy', 'wzrv', 'wasym', 'zrap', 'jet', 'wc'], 'settings': [],
         'note': 'Proton PDF basis and sum rules from the workspace library.',
         'flavors': ['u', 'd', 'g', 's', 'ub', 'db', 'sb'],
     },
@@ -49,6 +49,74 @@ OBJECTS = {
     },
 }
 SELECTABLE_OBJECTS = ('pdf', 'pdf-pion')
+
+
+# Canonical dataset metadata from the supplied input.py (SHA256
+# 218a8e633bf015899f9f7b68494a8a44d79b1998fb506ea99d2424c85c8f75a6).
+# Jet intentionally keeps only its pT cut; no x expression is synthesized.
+PROTON_REACTION_DATASETS = {
+    'wzrv': {
+        'filters': [],
+        'xlsx': {
+            2010: 'wzrv/expdata/2010.xlsx',
+            2011: 'wzrv/expdata/2011.xlsx',
+            2012: 'wzrv/expdata/2012.xlsx',
+            2013: 'wzrv/expdata/2013.xlsx',
+            2014: 'wzrv/expdata/2014.xlsx',
+            2016: 'wzrv/expdata/2016.xlsx',
+            2017: 'wzrv/expdata/2017.xlsx',
+            2020: 'wzrv/expdata/2020.xlsx',
+        },
+        'norm': {},
+    },
+    'wasym': {
+        'filters': [],
+        'xlsx': {
+            1000: 'wasym/expdata/1000.xlsx',
+            1001: 'wasym/expdata/1001.xlsx',
+        },
+        'norm': {},
+    },
+    'zrap': {
+        'filters': [],
+        'xlsx': {
+            1000: 'zrap/expdata/1000.xlsx',
+            1001: 'zrap/expdata/1001.xlsx',
+        },
+        'norm': {
+            1000: {'value': 1.0, 'fixed': False, 'min': 0.5, 'max': 1.5},
+        },
+    },
+    'jet': {
+        'filters': ['pT>8.000000'],
+        'xlsx': {
+            10001: 'jet/expdata/10001.xlsx',
+            10002: 'jet/expdata/10002.xlsx',
+            10003: 'jet/expdata/10003.xlsx',
+            10004: 'jet/expdata/10004.xlsx',
+        },
+        'norm': {
+            10001: {'value': 1.0, 'fixed': False, 'min': 0.5, 'max': 1.5},
+            10002: {'value': 1.0, 'fixed': False, 'min': 0.5, 'max': 1.5},
+            10003: {'value': 1.0, 'fixed': False, 'min': 0.5, 'max': 1.5},
+            10004: {'value': 1.0, 'fixed': False, 'min': 0.5, 'max': 1.5},
+        },
+    },
+    'wc': {
+        'xlsx': {
+            10001: 'wc/expdata/10001.xlsx',
+            10002: 'wc/expdata/10002.xlsx',
+            20001: 'wc/expdata/20001.xlsx',
+            20002: 'wc/expdata/20002.xlsx',
+            20003: 'wc/expdata/20003.xlsx',
+        },
+        'norm': {
+            10001: {'value': 1.0, 'fixed': False, 'min': 0.8, 'max': 1.2},
+            10002: {'value': 1.0, 'fixed': False, 'min': 0.8, 'max': 1.2},
+            20003: {'value': 1.0, 'fixed': False, 'min': 0.8, 'max': 1.2},
+        },
+    },
+}
 
 
 def _cut_number(node):
@@ -142,6 +210,8 @@ def load_object_libraries(root, keys, pion_reference=None):
             rows.append(row)
         datasets = {r: copy.deepcopy(config['datasets'][r]) for r in meta['reactions']
                     if r in config.get('datasets', {})}
+        if key == 'pdf':
+            datasets.update(copy.deepcopy(PROTON_REACTION_DATASETS))
         libraries[key] = {
             'rows': rows, 'source': str(path),
             'sha256': fingerprint,

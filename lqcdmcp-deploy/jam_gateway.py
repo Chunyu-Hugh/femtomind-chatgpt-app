@@ -936,11 +936,16 @@ CAMPAIGN_REACTIONS = [
     {"key": "dy", "label": "Drell-Yan", "enabled": True},
     {"key": "dy-pion", "label": "Pion Drell-Yan", "enabled": True},
     {"key": "ln", "label": "Leading neutron", "enabled": True},
-    {"key": "wasym", "label": "W asymmetry", "enabled": False},
-    {"key": "zrap", "label": "Z rapidity", "enabled": False},
-    {"key": "wzrv", "label": "WZ rapidity", "enabled": False},
-    {"key": "wc", "label": "Weak charge", "enabled": False},
-    {"key": "jets", "label": "Jets", "enabled": False},
+    {"key": "wasym", "label": "W asymmetry", "enabled": True, "cut_policy": "none",
+     "cut_note": "No additional cuts; the campaign's global settings are preserved."},
+    {"key": "zrap", "label": "Z rapidity", "enabled": True, "cut_policy": "none",
+     "cut_note": "No additional cuts; the campaign's global settings are preserved."},
+    {"key": "wzrv", "label": "W-lepton asymmetry", "enabled": True, "cut_policy": "none",
+     "cut_note": "No additional cuts."},
+    {"key": "wc", "label": "W+charm", "enabled": True, "cut_policy": "none",
+     "cut_note": "No additional cuts."},
+    {"key": "jet", "label": "Jet", "enabled": True, "cut_policy": "jet_pt",
+     "cut_note": "Only pT > 8.0 GeV is applied."},
     {"key": "sia", "label": "SIA", "enabled": False},
 ]
 ENABLED_REACTIONS = {r["key"] for r in CAMPAIGN_REACTIONS if r["enabled"]}
@@ -959,7 +964,9 @@ PION_DATASETS = {
 CAMPAIGN_DEFAULTS = {
     "cuts": {"idis": [{"variable": "Q2", "op": ">", "value": 1.69, "enabled": True},
                       {"variable": "W2", "op": ">", "value": 10, "enabled": True}],
-             "dy": [{"variable": "Q2", "op": ">", "value": 0, "enabled": True}]},
+             "dy": [{"variable": "Q2", "op": ">", "value": 0, "enabled": True}],
+             **{reaction: object_registry.library_cuts(spec.get("filters", []))
+                for reaction, spec in object_registry.PROTON_REACTION_DATASETS.items()}},
     "qcd": {"order": "NLO", "Q20": 1.6129, "tmc": "AOT", "higherTwist": False,
             "dglapMode": "truncated", "asMode": "backward"},
     "parameters": {"initialization": "default", "randomSeed": None, "perReplicaSeed": True},
@@ -1090,9 +1097,32 @@ out.sort(key=lambda d: int(d['id']))
 print(json.dumps(out))
 '''
 
+_PROTON_CATALOG = r'''
+import json, os
+import pandas as pd
+out = []
+for idx, relative in __DATASETS__.items():
+    path = os.path.join(__WS__, 'database', relative)
+    item = {'id': str(idx), 'path': relative, 'enabled': os.path.isfile(path),
+            'label': __REACTION__ + ' ' + str(idx), 'experiment': 'Other'}
+    if item['enabled']:
+        try:
+            table = pd.read_excel(path, nrows=1)
+            if len(table.index):
+                for key, column in (('experiment', 'col'), ('observable', 'obs'), ('target', 'target')):
+                    if column in table.columns and pd.notna(table.iloc[0][column]):
+                        item[key] = str(table.iloc[0][column])
+                item['label'] = ' '.join(item[k] for k in ('experiment', 'observable', 'target')
+                                         if item.get(k) and item[k] != 'Other') or item['label']
+        except (OSError, ValueError, KeyError, ImportError) as exc:
+            item['metadata_note'] = str(exc)[:200]
+    out.append(item)
+print(json.dumps(out))
+'''
+
+
 def campaign_datasets(reaction="idis", search="", username=""):
-    """The datasets of one reaction, grouped by experiment (DIS from the
-    repository's database/idis/README.md, as the JAM app does)."""
+    """Reaction-qualified datasets from the approved catalog or workspace library."""
     u, err = _need_user(username)
     if err:
         return err
@@ -1100,7 +1130,19 @@ def campaign_datasets(reaction="idis", search="", username=""):
     if reaction not in ENABLED_REACTIONS:
         return {"status": "error", "message": f"{reaction!r} is not available yet; the composer "
                                               f"offers {sorted(ENABLED_REACTIONS)}."}
-    if reaction == "dy":
+    if reaction in object_registry.PROTON_REACTION_DATASETS:
+        spec = object_registry.PROTON_REACTION_DATASETS[reaction]
+        r = _run_ifarm_py(u, _fill(_PROTON_CATALOG, WS=_workspace(u),
+                                  REACTION=reaction, DATASETS=spec["xlsx"]),
+                        apptainer=True, timeout=60, cap=200000)
+        try:
+            if r["rc"]:
+                raise ValueError("catalog reader failed")
+            items = json.loads(r["out"].strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            return {"status": "error", "message": f"Could not read {reaction} datasets.",
+                    "detail": (r.get("err") or "")[-300:]}
+    elif reaction == "dy":
         items = [dict(d) for d in DY_DATASETS]
     elif reaction in PION_DATASETS:
         code = ("import json, os\nitems = " + repr(PION_DATASETS[reaction])
@@ -1256,6 +1298,19 @@ def _card_objects(card):
 
 
 def _normalize_cuts(reaction, raw, dataset_ids):
+    if reaction in object_registry.PROTON_REACTION_DATASETS:
+        expected = CAMPAIGN_DEFAULTS["cuts"][reaction]
+        if not isinstance(raw, list):
+            return [], [f'Reaction {reaction}: dataset-specific cuts are not supported.']
+        try:
+            actual_filters = object_registry.cut_filters(raw)
+            expected_filters = object_registry.cut_filters(expected)
+        except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+            return [], [f'Reaction {reaction}: invalid cuts.']
+        if actual_filters != expected_filters:
+            required = "pT > 8.0 only" if reaction == "jet" else "no additional cuts"
+            return [], [f'Reaction {reaction} requires {required}.']
+        return [dict(cut) for cut in expected], []
     if isinstance(raw, dict):
         if not dataset_ids:
             return {}, [f'Reaction {reaction}: dataset cuts must be a list.']
@@ -1366,6 +1421,11 @@ def _normalize_card(card, library):
         if not ids:
             errors.append(f'Reaction "{r}" must include at least one dataset.')
         datasets[r] = ids
+        canonical = object_registry.PROTON_REACTION_DATASETS.get(r)
+        if canonical is not None:
+            for dataset_id in ids:
+                if int(dataset_id) not in canonical["xlsx"]:
+                    errors.append(f'Reaction "{r}" dataset {dataset_id} is not in the approved catalog.')
         raw_norm = normalization_in.get(r) or {}
         if not isinstance(raw_norm, dict):
             errors.append(f'Reaction "{r}" normalization settings must be an object.')
@@ -1375,6 +1435,9 @@ def _normalize_card(card, library):
             dataset_id = str(dataset_id)
             if dataset_id not in ids:
                 errors.append(f'Reaction "{r}" normalization {dataset_id!r} is not selected.')
+                continue
+            if canonical is not None and int(dataset_id) not in canonical["norm"]:
+                errors.append(f'Reaction "{r}" dataset {dataset_id} has no normalization parameter.')
                 continue
             if not isinstance(value, dict):
                 errors.append(f'Reaction "{r}" dataset {dataset_id}: normalization must be an object.')
@@ -1395,6 +1458,9 @@ def _normalize_card(card, library):
                 nfixed = nfixed.strip()
                 if nfixed not in ids or nfixed == dataset_id:
                     errors.append(f'Reaction "{r}" dataset {dataset_id}: invalid normalization equal-to dataset.')
+                    continue
+                if canonical is not None and int(nfixed) not in canonical["norm"]:
+                    errors.append(f'Reaction "{r}" dataset {dataset_id}: normalization target has no parameter.')
                     continue
             elif not isinstance(nfixed, bool):
                 errors.append(f'Reaction "{r}" dataset {dataset_id}: fixed must be true, false, or a dataset id.')
@@ -1755,7 +1821,9 @@ def _checked_card(u, card):
                 for reaction in OBJECTS[key]["reactions"]:
                     if reaction in norm["reactions"] and reaction not in lib["datasets"]:
                         errors.append(f"The {key} library has no {reaction} dataset configuration.")
-        checks = " ".join(f"{r}/expdata/{x}.xlsx" for r, ids in norm["datasets"].items() for x in ids)
+        checks = " ".join(_shq(object_registry.PROTON_REACTION_DATASETS[r]["xlsx"][int(x)]
+                               if r in object_registry.PROTON_REACTION_DATASETS else f"{r}/expdata/{x}.xlsx")
+                          for r, ids in norm["datasets"].items() for x in ids)
         r = _remote(u, f"cd {_shq(ws)}/database 2>/dev/null && for f in {checks}; do "
                        f"[ -f \"$f\" ] || echo MISSING $f; done; "
                        f"[ -f {_shq(ws)}/{CAMPAIGN_TEMPLATE} ] || echo NOTEMPLATE; "
@@ -1871,7 +1939,9 @@ for r, ids in datasets.items():
 print(json.dumps(out))
 '''
 # What FitPack's status report reads from each data table, and what it names.
-_REPORT_COLUMNS = {"idis": ("col", "obs", "target"), "dy": ("col", "reaction")}
+_REPORT_COLUMNS = {"idis": ("col", "obs", "target"), "dy": ("col", "reaction"),
+                   **{r: ("col", "obs", "target") for r in ("wzrv", "wasym", "zrap", "wc")},
+                   "jet": ("col", "obs")}
 _COLUMN_NAMES = {"col": "experiment name", "obs": "observable", "target": "target",
                  "reaction": "reaction"}
 
@@ -8182,7 +8252,7 @@ TOOLS = {
         "schema": {"type": "object", "properties": {}},
         "fn": lambda a: campaign_options()},
     "campaign_datasets": {
-        "desc": "The datasets of one reaction (idis, dy, dy-pion or ln), grouped by experiment, with labels "
+        "desc": "The datasets of one available reaction from campaign_options, grouped by experiment, with labels "
                 "(experiment, observable, target). Optional search text. Nothing is preselected.",
         "schema": {"type": "object", "properties": {"reaction": {"type": "string", "enum": sorted(ENABLED_REACTIONS)},
                                                     "search": {"type": "string"}},
@@ -8200,7 +8270,9 @@ TOOLS = {
                 "{parameters:{...}}} edits the fitted leading-neutron companion. Legacy card.object "
                 "remains accepted. Parameter names are scoped to their object; pion second shapes "
                 "are excluded. Each reaction's cuts can be a list or a dataset-ID mapping of lists "
-                "(LN reference defaults: 1000 y<0.3, 2000 y<0.2). Summary reports "
+                "(LN reference defaults: 1000 y<0.3, 2000 y<0.2). The five added proton reactions "
+                "use their approved cut policies: jet has only pT>8; wzrv, wasym, zrap and wc "
+                "have no additional filters. Summary reports "
                 "parameters (including optional equal_to links between PDF parameters), the ones changed from the library, datasets, cuts, QCD, job, and "
                 "points_after_cuts per dataset), the Slurm array script, the confirmation phrase and "
                 "warnings (a dataset with no points left after the cuts, a data file without a column "
@@ -8400,7 +8472,8 @@ INSTRUCTIONS = (
     "only changed rows are written into the card. A parameter switched to FREE needs a min "
     "and max from the user. A parameter can also be set equal to another parameter in the same object "
     "(equal_to): it then follows that parameter's value and is not fitted on its own.\n"
-    "4. Reactions: idis or dy for proton PDF; dy-pion or ln for Pion PDF. Ask.\n"
+    "4. Reactions: offer the enabled, compatible choices from campaign_options for the selected "
+    "objects; ask the user which to include. Never preselect reactions or datasets.\n"
     "5. Datasets and cuts: campaign_datasets per reaction, grouped by experiment; ask which "
     "ids. A dataset listed with a 'normalization' has a normalization parameter in the library: "
     "offer to keep it, change its value or range, set it FREE or FIXED, or make it equal to "
