@@ -69,9 +69,9 @@ def resolve_stage(document: CampaignDocument, stage: Stage) -> ResolvedStage:
     # Turn author-facing manifest values into the exact set of objects/datasets
     # the generated FitPack input card should activate.
     reactions = normalize_reactions(stage.reactions)
-    required_objects = get_required_objects(reactions)
+    required_objects = get_required_objects(reactions, stage.datasets)
     fit_objects, frozen_objects = resolve_object_roles(
-        stage.fit_objects, reactions, stage.frozen_objects)
+        stage.fit_objects, reactions, stage.frozen_objects, datasets=stage.datasets)
 
     # Every object required by the chosen reactions must be accounted for. It can
     # be fitted in this stage or frozen from a previous/default configuration.

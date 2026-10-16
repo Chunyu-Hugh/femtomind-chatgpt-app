@@ -48,7 +48,16 @@ OBJECTS = {
         'flavors': [],
     },
 }
-SELECTABLE_OBJECTS = ('pdf', 'pdf-pion')
+FF_OBJECT_KEYS = ('ffpion', 'ffkaon', 'ffhadron')
+for _ff_key, _ff_label in zip(FF_OBJECT_KEYS, ('Pion FF', 'Kaon FF', 'Residual hadron FF')):
+    OBJECTS[_ff_key] = {
+        'label': _ff_label, 'template': 'examples/input02.py',
+        'reactions': ['sidis', 'sia'], 'settings': [f'{_ff_key} parametrization'],
+        'note': 'Independent fragmentation parameters from the authoritative FF reference.',
+        'flavors': ['g', 'u', 'd', 'ub', 'db', 's', 'sb', 'c', 'b'],
+    }
+OBJECTS['pdf']['reactions'] = OBJECTS['pdf']['reactions'] + ['sidis']
+SELECTABLE_OBJECTS = ('pdf', 'pdf-pion') + FF_OBJECT_KEYS
 
 
 # Proton DY defaults shared by the library metadata and generated inputs.
@@ -195,6 +204,12 @@ def load_object_libraries(root, keys, pion_reference=None):
     """Read trusted FitPack input cards, without importing/initializing physics."""
     configs, libraries = {}, {}
     for key in keys:
+        if key in FF_OBJECT_KEYS:
+            factory = globals().get('ff_library')
+            if factory is None:
+                from .ff_registry import ff_library as factory
+            libraries[key] = factory(key)
+            continue
         meta = OBJECTS[key]
         path = (Path(root) / meta['template'] if key == 'pdf'
                 else Path(pion_reference or PION_REFERENCE))

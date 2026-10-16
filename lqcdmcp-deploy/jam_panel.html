@@ -308,7 +308,7 @@
             <div class="pinfo" data-role="info"></div>
             <div>
               <div class="kv" data-role="counts"></div>
-              <div class="tblwrap"><table class="tbl ptbl"><thead><tr><th>Block</th><th>Parameter</th><th>Status</th>
+              <div class="tblwrap"><table class="tbl ptbl"><thead><tr><th data-role="enabledHead" style="display:none">Include</th><th>Block</th><th>Parameter</th><th>Status</th>
                 <th>Equal to</th><th>Value</th><th>Min</th><th>Max</th></tr></thead><tbody data-role="rows"></tbody></table></div>
               <div class="hint" data-role="hint"></div>
               <div class="actions"><button class="btn sm" data-role="reset">Reset to library values</button></div>
@@ -421,7 +421,7 @@
         <button class="btn" id="caPost">Postprocess</button>
         <button class="btn" id="caMore">Generate More Replicas</button>
         <button class="btn" id="caSum">Load Fit Summary</button>
-        <button class="btn" id="caPdf">View PDF Plots</button>
+        <button class="btn" id="caPdf">View PDF / FF Plots</button>
         <button class="btn" id="caExp">By experiment</button>
         <button class="btn" id="caLogs">Logs</button>
       </div>
@@ -434,12 +434,13 @@
         <div class="plot-controls">
           <div class="pc"><span class="label">Distribution object</span><select id="caObject"></select></div>
           <div class="pc"><span class="label">Flavors</span><div class="flavs" id="caFlavs"></div></div>
+          <div class="pc" id="caFfSourceBox" style="display:none"><span class="label">FF parameters</span><select id="caFfSource"><option value="replicas">Fitted replicas</option><option value="configured">Configured starting values</option></select></div>
           <div class="pc"><span class="label">Q² (GeV²)</span><input type="number" step="any" id="caQ2" value="10" style="width:110px"></div>
           <div class="pc"><label class="label" for="caInterval">Credible interval (%)</label><input type="number" step="any" max="100" id="caInterval" value="95" required style="width:110px"></div>
           <div class="pc"><label class="inline"><input type="checkbox" id="caMean" checked> Mean and credible interval</label></div>
           <button class="btn primary" id="caPdfGo">Draw</button>
         </div>
-        <div class="note">Equal-tailed pointwise intervals across fitted replicas, not simultaneous bands over x. Choose a finite percentage greater than 0 and at most 100. At 100%, the band is the full pointwise envelope of available fitted replicas, not a guarantee about the entire underlying posterior distribution. At least two valid fitted replicas are needed for a band.</div>
+        <div class="note">Equal-tailed pointwise intervals across fitted replicas, not simultaneous bands over x or z. Choose a finite percentage greater than 0 and at most 100. At 100%, the band is the full pointwise envelope of available fitted replicas, not a guarantee about the entire underlying posterior distribution. At least two valid fitted replicas are needed for a band.</div>
       </div>
       <div id="caExpBox" class="subbox" style="display:none">
         <div class="plot-controls">
@@ -1048,8 +1049,8 @@
   }
   const needsRange = r=>!r.fixed && (r.min == null || r.max == null);
   function paintParamCounts(key, el, rows){
-    const free = rows.filter(r=>!r.fixed).length;
-    el.innerHTML = '<span>Free <b>'+free+'</b></span><span>Fixed <b>'+(rows.length - free)+'</b></span>'
+    const active = rows.filter(r=>r.enabled !== false), free = active.filter(r=>!r.fixed).length;
+    el.innerHTML = '<span>Free <b>'+free+'</b></span><span>Fixed <b>'+(active.length - free)+'</b></span>'
       + '<span>Changed from the library <b>'+Object.keys(objectCard(key).parameters).length+'</b></span>';
   }
   function renderParams(){
@@ -1078,10 +1079,23 @@
       if (!keys.includes("pdf")) container.insertAdjacentHTML("beforeend",
         '<div class="note">Proton PDF is a fixed companion from '+esc(opts.parameters["pdf-pion"].source)+' for leading-neutron data.</div>');
     }
+    if (card.reactions.some(reaction=>["sidis", "sia"].includes(reaction))){
+      const required = new Set();
+      card.reactions.filter(reaction=>["sidis", "sia"].includes(reaction)).forEach(reaction=>{
+        if (reaction === "sidis") required.add("pdf");
+        (card.datasets[reaction] || []).forEach(id=>{
+          (String(id).startsWith("1") ? ["ffpion"] : String(id).startsWith("2") ? ["ffkaon"] : ["ffpion","ffkaon","ffhadron"])
+            .forEach(key=>required.add(key));
+        });
+      });
+      const frozen = [...required].filter(key=>!keys.includes(key));
+      if (frozen.length) container.insertAdjacentHTML("beforeend", '<div class="note">Required companion objects use fixed library defaults: '
+        +esc(frozen.join(", "))+'. Select an object above to fit its parameters instead. Review confirms the resolved object roles.</div>');
+    }
     keys.forEach(key=>renderParameterCard(key, container));
   }
   function renderParameterCard(key, container){
-    const p = opts.parameters[key];
+    const p = opts.parameters[key], isFF = ["ffpion", "ffkaon", "ffhadron"].includes(key);
     if (!p){ container.insertAdjacentHTML("beforeend", '<div class="note warn">Missing library for '+esc(key)+'</div>'); return; }
     const el = $("paramTemplate").content.firstElementChild.cloneNode(true);
     el.dataset.object = key; container.appendChild(el);
@@ -1091,32 +1105,43 @@
       + '<b>Auxiliary / inactive blocks</b>'+esc(p.auxiliary_blocks.join(", "))
       + '<b>Library model</b>'+esc(p.parametrization)+'<b>Construction note</b>'+esc(p.note);
     const rows = paramRows(key);
+    part("enabledHead").style.display = isFF ? "" : "none";
     paintParamCounts(key, part("counts"), rows);
     part("hint").textContent = "Tick a parameter to keep it FIXED at its value; untick it to fit it (FREE, within min and max). Use Equal to when two parameters in this object must share one value. "
       + "Values, ranges and FREE/FIXED come from "+(p.source || "examples/input02.py")
-      + " (the library). Only the rows you change are written into the generated card.";
+      + (isFF ? ". Include controls optional definitions; disabled rows are omitted. Heavy-quark partner activation is paired and cb/bb equality links are locked. Gaussian metadata is preserved."
+              : " (the library). Only the rows you change are written into the generated card.");
     const num = v=>v == null ? "" : String(v);
     // A freed parameter gets no invented range: its min and max stay empty until the user sets them.
     // A tied parameter takes the value of the one it is tied to, so its value is not edited here.
     part("rows").innerHTML = rows.map(r=>{ const tied = r.fixed && r.tied_to;
       const equalTo = r.equal_to || r.tied_to || "";
-      const candidates = rows.filter(x=>x.name !== r.name).map(x=>'<option value="'+esc(x.name)+'"'+(x.name === equalTo ? " selected" : "")+'>'+esc(x.name)+'</option>').join("");
+      const candidates = rows.filter(x=>x.name !== r.name && x.enabled !== false).map(x=>'<option value="'+esc(x.name)+'"'+(x.name === equalTo ? " selected" : "")+'>'+esc(x.name)+'</option>').join("");
       // Status: a checkbox (ticked = FIXED, the library's value is kept); a row set
       // equal to another parameter shows EQUAL and is unlinked with "— none —".
-      return '<tr data-n="'+esc(r.name)+'"><td class="mono">'+esc(r.block)+'</td><td class="mono">'+esc(r.parameter)+'</td>'
-      + '<td><label class="inline" style="gap:6px"><input type="checkbox" data-k="fixed"'+(r.fixed ? " checked" : "")+(equalTo ? " disabled" : "")
+      return '<tr data-n="'+esc(r.name)+'">'+(isFF ? '<td><input type="checkbox" data-k="enabled"'+(r.enabled !== false ? ' checked' : '')+' aria-label="Include '+esc(r.name)+'"></td>' : '')+'<td class="mono">'+esc(r.block)+'</td><td class="mono">'+esc(r.parameter)+'</td>'
+      + '<td><label class="inline" style="gap:6px"><input type="checkbox" data-k="fixed"'+(r.fixed ? " checked" : "")+(equalTo || r.relationship_locked || r.enabled === false ? " disabled" : "")
       + ' aria-label="'+esc(r.name)+' fixed"><span class="st '+(r.fixed ? "fixed" : "free")+'">'+(equalTo ? "EQUAL" : r.fixed ? "FIXED" : "FREE")+'</span></label>'
       + (tied ? '<div class="hint" style="margin-top:2px">tied to '+esc(r.tied_to)+' (value follows it)</div>' : '')
       + '<span class="need"'+(needsRange(r) ? '' : ' style="display:none"')+'>set a min and max</span></td>'
-      + '<td><select data-k="equal_to" aria-label="Set '+esc(r.name)+' equal to another parameter"><option value="">— none —</option>'+candidates+'</select></td>'
-      + '<td><input data-k="value" value="'+esc(num(r.value))+'"'+(tied || equalTo ? " disabled" : "")+'></td>'
-      + '<td><input data-k="min" value="'+esc(num(r.min))+'"'+(r.fixed || equalTo ? " disabled" : "")+'></td>'
-      + '<td><input data-k="max" value="'+esc(num(r.max))+'"'+(r.fixed || equalTo ? " disabled" : "")+'></td></tr>'; }).join("");
+      + '<td><select data-k="equal_to"'+(r.relationship_locked || r.enabled === false ? ' disabled' : '')+' aria-label="Set '+esc(r.name)+' equal to another parameter"><option value="">— none —</option>'+candidates+'</select></td>'
+      + '<td><input data-k="value" value="'+esc(num(r.value))+'"'+(tied || equalTo || r.enabled === false ? " disabled" : "")+'></td>'
+      + '<td><input data-k="min" value="'+esc(num(r.min))+'"'+(r.fixed || equalTo || r.enabled === false ? " disabled" : "")+'></td>'
+      + '<td><input data-k="max" value="'+esc(num(r.max))+'"'+(r.fixed || equalTo || r.enabled === false ? " disabled" : "")+'></td></tr>'; }).join("");
     part("rows").querySelectorAll("tr").forEach(tr=>{
       const name = tr.dataset.n;
       // An edit repaints only its row's hint and the counts: rebuilding the table
       // would drop the field that Tab is moving the focus to.
       tr.querySelectorAll("input, select").forEach(inp=>inp.onchange = ()=>{
+        if (inp.dataset.k === "enabled"){
+          setParam(key, name, {enabled: inp.checked});
+          const match = name.match(/^(c|cb|b|bb)([12]) (.+)$/);
+          if (match){
+            const partners = {c:"cb", cb:"c", b:"bb", bb:"b"};
+            setParam(key, partners[match[1]]+match[2]+" "+match[3], {enabled: inp.checked});
+          }
+          renderParams(); return;
+        }
         if (inp.dataset.k === "fixed"){ setParam(key, name, {fixed: inp.checked, equal_to: null}); renderParams(); return; }
         if (inp.dataset.k === "equal_to"){
           const target = inp.value;
@@ -1197,13 +1222,13 @@
         if (usable) all.push(x.id);
         html += '<label class="ds'+(usable ? "" : " disabled")+'"><input type="checkbox" data-id="'+esc(x.id)+'"'+(sel.has(x.id) ? " checked" : "")+(usable ? "" : " disabled")+'> '
           + esc(x.label)+(usable ? "" : ' <span class="bp">'+(x.blueprint ? "BLUEPRINT" : "NO DATA FILE")+'</span>')+'<span class="id">'+esc(x.id)+'</span></label>';
-        if (usable && x.normalization && d.configuration_only){
+        if (usable && x.normalization && ["sidis", "sia"].includes(rk)){
           const n = x.normalization;
           html += '<div class="hint" style="margin-left:24px">Normalization '+esc(n.value)
             + esc(n.fixed === false ? ' FREE' : n.fixed === true ? ' FIXED' : ' tied to '+n.fixed)
             + ' ['+esc(n.min)+', '+esc(n.max)+'] · reference definition</div>';
         }
-        if (usable && x.normalization && !d.configuration_only){
+        if (usable && x.normalization && !["sidis", "sia"].includes(rk)){
           const n = (card.normalizations[rk] || {})[x.id] || x.normalization;
           const links = d.experiments.flatMap(g=>g.datasets).filter(y=>y.id !== x.id && y.normalization && sel.has(y.id))
             .map(y=>'<option value="'+esc(y.id)+'"'+(String(n.fixed) === String(y.id) ? " selected" : "")+'>'+esc(y.id)+'</option>').join("");
@@ -1259,7 +1284,7 @@
   }
   function renderCuts(rk, pane){
     const reaction = opts.reactions.find(r=>r.key === rk);
-    if (reaction?.configuration_only){
+    if (reaction?.cut_policy === "configuration"){
       pane.innerHTML = '<div class="note">'+esc(reaction.cut_note)+'</div>';
       if (rk === "sia" && dsCache[rk]){
         const selected = new Set(card.datasets[rk] || []);
@@ -1740,21 +1765,26 @@
   function imagesHtml(plots, cap){
     return '<div class="imgs">'+(plots || []).map(p=>'<figure><img alt="'+esc(cap(p))+'" src="'+esc(p.data_url)+'"><figcaption>'+esc(cap(p))+'</figcaption></figure>').join("")+'</div>';
   }
+  const FF_FLAVORS = ["g","u","d","ub","db","s","sb","c","b"];
+  const ffPlotSelected = ()=>$("caObject").value === "ff";
   function renderFlavs(){
-    const flavors = $("caObject").value === "pdf-pion" ? ["valence","sea",...FLAVORS] : FLAVORS;
+    const flavors = ffPlotSelected() ? FF_FLAVORS : $("caObject").value === "pdf-pion" ? ["valence","sea",...FLAVORS] : FLAVORS;
+    $("caFfSourceBox").style.display = ffPlotSelected() ? "" : "none";
     $("caFlavs").innerHTML = flavors.map(f=>'<span class="fl'+(pdfOn.has(f) ? " on" : "")+'" data-f="'+f+'">'+esc(f)+'</span>').join("");
     $("caFlavs").querySelectorAll(".fl").forEach(el=>el.onclick = ()=>{ const f = el.dataset.f; if (pdfOn.has(f)) pdfOn.delete(f); else pdfOn.add(f); renderFlavs(); });
   }
   function resetFlavors(){
     pdfOn.clear();
-    ($("caObject").value === "pdf-pion" ? ["valence","sea","g"] : ["u","d","g","s"]).forEach(f=>pdfOn.add(f));
+    (ffPlotSelected() ? ["u","d","g","s","c","b"] : $("caObject").value === "pdf-pion" ? ["valence","sea","g"] : ["u","d","g","s"]).forEach(f=>pdfOn.add(f));
     renderFlavs();
   }
   $("caObject").onchange = resetFlavors;
   $("caPdf").onclick = ()=>{
     const campaign = campaignsCache?.find(c=>c.collection_id === analysisCampaign);
     const objects = campaign?.objects || [{type:"pdf",label:"Unpolarized PDF"}];
-    $("caObject").innerHTML = objects.map(o=>'<option value="'+esc(o.type)+'">'+esc(o.label || o.type)+'</option>').join("");
+    const pdfObjects = objects.filter(o=>!["ffpion","ffkaon","ffhadron"].includes(o.type));
+    $("caObject").innerHTML = pdfObjects.map(o=>'<option value="'+esc(o.type)+'">'+esc(o.label || o.type)+'</option>').join("")
+      + (objects.some(o=>["ffpion","ffkaon","ffhadron"].includes(o.type)) ? '<option value="ff">Fragmentation functions</option>' : '');
     resetFlavors(); showBox("caPdfBox");
   };
   let pdfPlotSeq = 0;
@@ -1764,16 +1794,17 @@
     if (!$("caInterval").value.trim() || !Number.isFinite(credibleInterval) || credibleInterval <= 0 || credibleInterval > 100){
       caWarn("Credible interval (%) must be greater than 0 and at most 100."); return;
     }
-    caBusy("Evaluating every fitted replica's PDFs on the cluster… this takes a minute.");
+    caBusy(ffPlotSelected() ? "Evaluating fragmentation functions at the selected Q²…" : "Evaluating every fitted replica's PDFs on the cluster… this takes a minute.");
     const cid = analysisCampaign;
-    try{ const r = await call("campaign_pdf_plots", {collection_id: cid, flavors: Array.from(pdfOn).join(","),
+    try{ const r = await call(ffPlotSelected() ? "campaign_ff_plots" : "campaign_pdf_plots", {collection_id: cid, flavors: Array.from(pdfOn).join(","),
+                                                     ...(ffPlotSelected() ? {configured: $("caFfSource").value === "configured"} : {}),
                                                      object_key: $("caObject").value,
                                                      credible_interval: credibleInterval,
                                                      q2: Number($("caQ2").value) || 10, mean_overlay: $("caMean").checked});
       if (cid !== analysisCampaign || seq !== pdfPlotSeq) return;
       if (!r || r.status !== "ok"){ caWarn(msgOf(r, "No plots."), r && r.detail); return; }
       $("caOut").innerHTML = (r.note ? '<div class="note warn">'+esc(r.note)+'</div>' : "")
-        + imagesHtml(r._panel_plots, p=>(p.object || "pdf")+" "+p.flavor+" · "+p.n_replicas+" replicas · Q² = "+r.q2+" GeV² · "+p.interval_label+" · "+p.path);
+        + imagesHtml(r._panel_plots, p=>(p.label || p.object || "pdf")+" "+(p.flavor || (p.flavors || []).join(", "))+" · "+p.n_replicas+" replicas · Q² = "+r.q2+" GeV² · "+p.interval_label+" · "+p.path);
     } catch(e){ if (cid === analysisCampaign && seq === pdfPlotSeq) caWarn("Plotting failed: "+(e && e.message || e)); }
   };
   $("caExp").onclick = ()=>showBox("caExpBox");

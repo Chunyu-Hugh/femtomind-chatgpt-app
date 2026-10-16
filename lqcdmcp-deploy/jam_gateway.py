@@ -58,11 +58,11 @@ import urllib.parse
 import urllib.request
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from jamai import object_registry
+from jamai import object_registry, ff_registry, ff_plotting
 from jamai.dataset_catalog import (CONFIGURATION_DATASETS, CONFIGURATION_METADATA,
                                   CONFIGURATION_ONLY_REACTIONS, configuration_dataset_block)
 from jamai.object_registry import OBJECTS, SELECTABLE_OBJECTS
-from jamai.reaction_registry import resolve_object_roles
+from jamai.reaction_registry import get_required_objects, resolve_object_roles
 
 # ── constants ──────────────────────────────────────────────────────────────
 
@@ -929,9 +929,6 @@ CAMPAIGN_OBJECTS = [
     *[{"value": key, "label": OBJECTS[key]["label"], "enabled": True}
       for key in SELECTABLE_OBJECTS],
     {"value": "polarized_pdf", "label": "Polarized PDF", "enabled": False},
-    {"value": "pion_ff", "label": "Pion FF", "enabled": False},
-    {"value": "kaon_ff", "label": "Kaon FF", "enabled": False},
-    {"value": "hadron_ff", "label": "Hadron FF", "enabled": False},
 ]
 CAMPAIGN_REACTIONS = [
     {"key": "idis", "label": "DIS", "enabled": True},
@@ -957,6 +954,8 @@ CAMPAIGN_REACTIONS = [
      "cut_note": "Authoritative dataset-specific filters are preserved. No universal SIA cut is applied.",
      "requirements": "Requires FFs only; FF fitting is not implemented."},
 ]
+# Enabled only after bounded FitPack integration checks pass.
+FF_EXECUTION_ENABLED = True
 ENABLED_REACTIONS = {r["key"] for r in CAMPAIGN_REACTIONS if r["enabled"]}
 CATALOG_REACTIONS = ENABLED_REACTIONS | set(CONFIGURATION_ONLY_REACTIONS)
 # Display labels only: edit/add string dataset IDs within their reaction.
@@ -1382,9 +1381,17 @@ def _auto_partition_seconds(seconds):
 
 # ---- options and the dataset catalog ---------------------------------------
 
+def _object_registry_source():
+    # Remote helpers execute as one source unit, not an installed package.
+    sources = [inspect.getsource(ff_registry), inspect.getsource(object_registry)]
+    return "\n".join("\n".join(line for line in source.splitlines()
+                                if not line.startswith("from __future__ import"))
+                      for source in sources)
+
+
 def _object_libraries(u, keys):
     # The shared reader travels as source, so reading options does not deploy modules.
-    code = inspect.getsource(object_registry) + "\nimport json\nprint(json.dumps(load_object_libraries(" \
+    code = _object_registry_source() + "\nimport json\nprint(json.dumps(load_object_libraries(" \
         + repr(_workspace(u)) + ", " + repr(list(keys)) + ")))\n"
     r = _run_ifarm_py(u, code, apptainer=any(key != "pdf" for key in keys), timeout=60, cap=500000)
     try:
@@ -1412,6 +1419,13 @@ def campaign_options(username=""):
         for item in objects:
             if item["value"] == "pdf-pion":
                 item.update(enabled=False, reason=str(e))
+    for key in ff_registry.FF_OBJECTS:
+        try:
+            libraries.update(_object_libraries(u, [key]))
+        except RuntimeError as e:
+            for item in objects:
+                if item["value"] == key:
+                    item.update(enabled=False, reason=str(e))
     defaults = json.loads(json.dumps(CAMPAIGN_DEFAULTS))
     for key in ("pdf-pion", "p->pi,n"):
         for reaction, dataset in libraries.get(key, {}).get("datasets", {}).items():
@@ -1419,6 +1433,14 @@ def campaign_options(username=""):
     reactions = [dict(r, objects=[key for key in SELECTABLE_OBJECTS
                                   if r["key"] in OBJECTS[key]["reactions"]])
                  for r in CAMPAIGN_REACTIONS]
+    for reaction in reactions:
+        if reaction["key"] in CONFIGURATION_ONLY_REACTIONS:
+            reaction.update(enabled=FF_EXECUTION_ENABLED,
+                            configuration_only=not FF_EXECUTION_ENABLED,
+                            fit_ready=FF_EXECUTION_ENABLED,
+                            requirements=("SIDIS requires a proton PDF and the FFs for its selected hadrons."
+                                          if reaction["key"] == "sidis" else
+                                          "SIA requires the FFs for its selected hadrons; no proton PDF."))
     parameters = {key: {k: v for k, v in lib.items() if k not in ("params", "datasets", "fixed_companions")}
                   for key, lib in libraries.items()}
     parameters["pdf"].update(parametrization=PDF_DETAILS["parametrization"], note=PDF_DETAILS["note"])
@@ -1574,8 +1596,8 @@ def campaign_datasets(reaction="idis", search="", username=""):
         if item.get("not_normally_used"):
             item["label"] += "*"
         if reaction in CONFIGURATION_ONLY_REACTIONS:
-            item["configuration_only"] = True
-            item["fit_ready"] = False
+            item["configuration_only"] = not FF_EXECUTION_ENABLED
+            item["fit_ready"] = FF_EXECUTION_ENABLED
             if reaction == "sia":
                 item["filters"] = dataset["filters"].get(int(item["id"]))
         if str(item.get("id")) in norms:
@@ -1590,9 +1612,9 @@ def campaign_datasets(reaction="idis", search="", username=""):
     return {"status": "ok", "reaction": reaction, "count": len(items),
             "experiments": [{"experiment": k, "datasets": v} for k, v in groups.items()],
             "default_cuts": default_cuts, "source": lib["source"],
-            **({"configuration_only": True, "fit_ready": False,
+            **({"configuration_only": not FF_EXECUTION_ENABLED, "fit_ready": FF_EXECUTION_ENABLED,
                 "legend": "* indicates dataset is not normally used in JAM fits." if reaction == "sia" else "",
-                "fit_unavailable_reason": "FF fitting is not implemented; dataset configuration only."}
+                "fit_unavailable_reason": "" if FF_EXECUTION_ENABLED else "FF fitting is not implemented; dataset configuration only."}
                if reaction in CONFIGURATION_ONLY_REACTIONS else {})}
 
 
@@ -1603,6 +1625,32 @@ def _same_number(a, b):
     if a is None or b is None:
         return a is None and b is None
     return abs(a - b) <= 1e-9 * max(abs(a), abs(b))
+
+
+def _normalize_ff_parameters(key, obj, library):
+    overrides = {}
+    errors = []
+    for name, entry in (obj.get("parameterBounds") or {}).items():
+        overrides[name.replace(":", " ")] = dict(entry or {})
+    for name, entry in (obj.get("parameters") or {}).items():
+        overrides.setdefault(name.replace(":", " "), {}).update(entry or {})
+    for name, entry in overrides.items():
+        target = entry.pop("equal_to", entry.pop("equalTo", None))
+        if target:
+            entry["fixed"] = target
+        if "enabled" in entry and not isinstance(entry["enabled"], bool):
+            errors.append(f"Parameter {name}: enabled must be true or false.")
+    if errors:
+        return [], [], errors
+    try:
+        active = ff_registry.resolve_ff_parameters(key, overrides)
+    except (ValueError, TypeError, KeyError) as exc:
+        return [], [], [str(exc)]
+    rows = [dict(entry, name=name) for name, entry in active.items()]
+    known = {row["name"]: row for row in library}
+    changed = [row for row in rows if row["name"] in overrides
+               or not known[row["name"]].get("enabled", True)]
+    return rows, changed, []
 
 
 def _normalize_parameters(obj, library):
@@ -1778,7 +1826,7 @@ def _normalize_card(card, library):
     if not rx:
         errors.append("Select at least one reaction.")
     for r in rx:
-        if r not in ENABLED_REACTIONS:
+        if r not in ENABLED_REACTIONS and not (FF_EXECUTION_ENABLED and r in CONFIGURATION_ONLY_REACTIONS):
             errors.append(f"Reaction {r!r} is not available yet.")
         elif not any(r in OBJECTS[key]["reactions"] for key in selected):
             errors.append(f"Reaction {r!r} does not constrain any selected object.")
@@ -1786,7 +1834,7 @@ def _normalize_card(card, library):
         if not any(r in OBJECTS[key]["reactions"] for r in rx):
             errors.append(f"Select a reaction for {OBJECTS[key]['label']}.")
     try:
-        fitted, frozen = resolve_object_roles(selected, rx)
+        fitted, frozen = resolve_object_roles(selected, rx, datasets=card.get("datasets") or {})
     except ValueError as exc:
         fitted, frozen = selected[:], []
         errors.append(str(exc))
@@ -1801,7 +1849,9 @@ def _normalize_card(card, library):
             continue
         obj = next((obj for obj in objects if isinstance(obj, dict) and obj.get("type") == key),
                    companions.get(key) or {})
-        rows, edits, problems = _normalize_parameters(obj, lib["rows"])
+        rows, edits, problems = (_normalize_ff_parameters(key, obj, lib["rows"])
+                                  if key in ff_registry.FF_OBJECTS else
+                                  _normalize_parameters(obj, lib["rows"]))
         params.extend(dict(row, sector=key) for row in rows)
         changed.extend(dict(row, sector=key) for row in edits)
         errors.extend(f"{key}: {problem}" for problem in problems)
@@ -1827,6 +1877,36 @@ def _normalize_card(card, library):
         if not ids:
             errors.append(f'Reaction "{r}" must include at least one dataset.')
         datasets[r] = ids
+        if r in CONFIGURATION_ONLY_REACTIONS:
+            try:
+                qrows = cuts_in.get("idis", CAMPAIGN_DEFAULTS["cuts"]["idis"])
+                qcuts = [row for row in qrows if row.get("enabled", True)
+                         and row.get("variable") == "Q2" and row.get("op", ">") == ">"]
+                if r == "sidis" and len(qcuts) != 1:
+                    raise ValueError("SIDIS requires exactly one configured DIS Q2 > cutoff")
+                cutoff = float(qcuts[0]["value"]) if r == "sidis" else None
+                block = configuration_dataset_block(r, ids, q2cut=cutoff)
+                supplied_cuts = cuts_in.get(r)
+                expected_cuts = block.get("filters", [])
+                if supplied_cuts:
+                    supplied = (object_registry.cut_filters(supplied_cuts)
+                                if r == "sidis" else supplied_cuts)
+                    expected = (object_registry.cut_filters(object_registry.library_cuts(expected_cuts))
+                                if r == "sidis" else {str(idx): value for idx, value in expected_cuts.items()})
+                    if supplied != expected:
+                        raise ValueError(f"{r}: preserve the authoritative dataset filters")
+                supplied_norms = normalization_in.get(r) or {}
+                for idx, entry in supplied_norms.items():
+                    if json.dumps(entry, sort_keys=True) != json.dumps(block["norm"].get(int(idx)), sort_keys=True):
+                        raise ValueError(f"{r}:{idx}: preserve the authoritative normalization definition")
+                normalizations[r] = {str(idx): dict(entry) for idx, entry in block["norm"].items()}
+                # Keep complex SIA expressions verbatim rather than parsing/reformatting.
+                cuts[r] = (object_registry.library_cuts(expected_cuts) if r == "sidis" else
+                           {str(idx): list(value) for idx, value in expected_cuts.items()})
+            except (ValueError, TypeError, KeyError) as exc:
+                errors.append(str(exc))
+                cuts[r], normalizations[r] = {}, {}
+            continue
         canonical = object_registry.PROTON_REACTION_DATASETS.get(r)
         if canonical is not None:
             for dataset_id in ids:
@@ -1993,7 +2073,7 @@ def _card_summary(norm):
     objects = norm.get("objects") or [norm.get("object") or {"type": "pdf", "label": "Unpolarized PDF"}]
     cuts = {}
     for reaction, rows in norm["cuts"].items():
-        rendered = object_registry.cut_filters(rows)
+        rendered = rows if reaction == "sia" else object_registry.cut_filters(rows)
         cuts[reaction] = ([f'{dataset_id}: {expression}' for dataset_id, expressions in rendered.items()
                            for expression in expressions] if isinstance(rendered, dict) else rendered)
     return {"object": " + ".join(o["label"] for o in objects), "objects": objects,
@@ -2027,8 +2107,9 @@ def _campaign_yaml(ws, folder, norm, nreplicas):
     seed = pi["randomSeed"] if pi["randomSeed"] is not None else 120000
     # Only the rows the user changed; the card keeps the library's own for the rest.
     sectors = [{"key": key, "parameters": [
-        {"name": p["name"], "value": p["value"], "min": p["min"], "max": p["max"], "fixed": p["fixed"]}
-        for p in norm["parameters_changed"] if p.get("sector", "pdf") == key]}
+        {field: value for field, value in p.items() if field != "sector"}
+        for p in (norm["parameters_table"] if key in ff_registry.FF_OBJECTS else norm["parameters_changed"])
+        if p.get("sector", "pdf") == key]}
         for key in norm.get("fit_objects", ["pdf"])]
     norm_params = []
     for reaction, entries in norm.get("normalizations", {}).items():
@@ -2052,6 +2133,10 @@ def _campaign_yaml(ws, folder, norm, nreplicas):
                     "cuts": norm["cuts"],
                     "params": {"initializationMode": init, "randomSeed": pi["randomSeed"],
                                "perReplicaSeed": pi["perReplicaSeed"], "baseSeed": seed,
+                               "ff_parameters": {key: {p["name"]: {field: value for field, value in p.items()
+                                                                        if field not in ("name", "sector")}
+                                                               for p in norm["parameters_table"] if p.get("sector") == key}
+                                                 for key in norm["fit_objects"] if key in ff_registry.FF_OBJECTS},
                                "sectors": sectors, "selected_objects": norm.get("objects", [norm["object"]]),
                                "compatibility": {"dis_version": object_registry.dis_version_for(
                                    norm.get("fit_objects", ["pdf"])), "temporary": True},
@@ -2218,6 +2303,8 @@ def _checked_card(u, card):
                 and obj.get("type") in SELECTABLE_OBJECTS]
         if "pdf-pion" in keys:
             keys = list(dict.fromkeys(keys + ["p->pi,n", "pdf"]))
+        if FF_EXECUTION_ENABLED and set(_card_reactions(card)).intersection(CONFIGURATION_ONLY_REACTIONS):
+            keys = list(dict.fromkeys(keys + get_required_objects(_card_reactions(card), datasets=(card or {}).get("datasets") or {})))
         library = _object_libraries(u, keys)
     except (RuntimeError, ValueError) as e:
         return None, {"status": "error", "valid": False, "message": str(e)}
@@ -2227,10 +2314,13 @@ def _checked_card(u, card):
         for key, lib in library.items():
             if key in norm["fit_objects"] + norm["frozen_objects"]:
                 for reaction in OBJECTS[key]["reactions"]:
-                    if reaction in norm["reactions"] and reaction not in lib["datasets"]:
+                    if (reaction in norm["reactions"] and reaction not in CONFIGURATION_ONLY_REACTIONS
+                            and reaction not in lib["datasets"]):
                         errors.append(f"The {key} library has no {reaction} dataset configuration.")
         checks = " ".join(_shq(object_registry.PROTON_REACTION_DATASETS[r]["xlsx"][int(x)]
-                               if r in object_registry.PROTON_REACTION_DATASETS else f"{r}/expdata/{x}.xlsx")
+                               if r in object_registry.PROTON_REACTION_DATASETS else
+                               CONFIGURATION_DATASETS[r]["xlsx"][int(x)] if r in CONFIGURATION_DATASETS
+                               else f"{r}/expdata/{x}.xlsx")
                           for r, ids in norm["datasets"].items() for x in ids)
         r = _remote(u, f"cd {_shq(ws)}/database 2>/dev/null && for f in {checks}; do "
                        f"[ -f \"$f\" ] || echo MISSING $f; done; "
@@ -2247,6 +2337,16 @@ def _checked_card(u, card):
             errors.append("The workspace is not on the FitPack ai branch (no fitlib/ai.py): switch it "
                           "(the Project tab's 'Switch to the ai branch', or use_ai_branch), or create a "
                           "new workspace.")
+    if not errors and set(norm["reactions"]).intersection(CONFIGURATION_ONLY_REACTIONS):
+        warnings, points = _data_warnings(u, norm)
+        norm["_data_warnings"], norm["_data_points"] = warnings, points
+        for reaction in set(norm["reactions"]).intersection(CONFIGURATION_ONLY_REACTIONS):
+            selected = [f"{reaction}:{idx}" for idx in norm["datasets"][reaction]]
+            if any(key not in points for key in selected):
+                errors.append(f"{reaction}: the existing FitPack reader could not verify every selected dataset and required cut. "
+                              + " ".join(warnings))
+            elif sum(points[key] for key in selected) <= 0:
+                errors.append(f"{reaction}: no data points remain after the authoritative cuts; choose at least one nonempty dataset.")
     if errors:
         return None, {"status": "invalid", "valid": False, "errors": errors}
     return norm, None
@@ -2274,6 +2374,7 @@ import json, os
 import numpy as np
 import pandas as pd
 ws = __WS__; datasets = __DATASETS__; cuts = __CUTS__; report = __REPORT__; dis_version = __DIS_VERSION__
+paths = __PATHS__
 M = 0.93891897                      # the nucleon mass of qcdlib/aux.py
 M2 = M * M
 def idis(t):
@@ -2318,15 +2419,17 @@ for r, ids in datasets.items():
         d = {'reaction': r, 'id': x}
         out.append(d)
         try:
-            t = pd.read_excel(os.path.join(ws, 'database', r, 'expdata', x + '.xlsx'))
-            if r in ('dy-pion', 'ln') or (r == 'idis' and dis_version == 0):
+            relative = paths.get(r, {}).get(str(x), '%s/expdata/%s.xlsx' % (r, x))
+            t = pd.read_excel(os.path.join(ws, 'database', relative))
+            if r in ('dy-pion', 'ln', 'sidis', 'sia') or (r == 'idis' and dis_version == 0):
                 from tools.config import conf
                 from qcdlib.aux import AUX
                 from importlib import import_module
                 conf['aux'] = AUX()
                 conf['datasets'] = {r: {'filters': []}}
                 module = {'dy-pion': 'obslib.dypion.reader', 'ln': 'obslib.LeadingBaryon.reader',
-                          'idis': 'obslib.idis_V0.reader'}[r]
+                          'idis': 'obslib.idis_V0.reader', 'sidis': 'obslib.sidis.reader',
+                          'sia': 'obslib.sia.reader'}[r]
                 reader = import_module(module).READER()
                 reader.reaction, reader.cut_by_dataset = r, int(x)
                 t = reader.modify_table(t)
@@ -2358,9 +2461,13 @@ def _data_warnings(u, norm):
     """Warnings about the data a card selects, which never block submission,
     and the points each dataset keeps after the cuts ({"idis:10005": 33});
     one container call for all datasets."""
-    cuts = {r: object_registry.cut_filters(cs) for r, cs in norm["cuts"].items()}
+    if "_data_warnings" in norm and "_data_points" in norm:
+        return norm["_data_warnings"], norm["_data_points"]
+    cuts = {r: (cs if r == "sia" else object_registry.cut_filters(cs)) for r, cs in norm["cuts"].items()}
     code = _fill(_DATA_CHECK, WS=_workspace(u), DATASETS=norm["datasets"], CUTS=cuts,
-                 REPORT=_REPORT_COLUMNS, DIS_VERSION=object_registry.dis_version_for(norm["fit_objects"]))
+                 REPORT=_REPORT_COLUMNS, DIS_VERSION=object_registry.dis_version_for(norm["fit_objects"]),
+                 PATHS={r: {str(idx): path for idx, path in block["xlsx"].items()}
+                        for r, block in CONFIGURATION_DATASETS.items()})
     r = {}
     try:
         r = _run_ifarm_py(u, code, apptainer=True, timeout=120, cap=200000)
@@ -2380,7 +2487,8 @@ def _data_warnings(u, norm):
         if d.get("error"):
             warnings.append(f"Could not read the data file of dataset {name}: {d['error']}")
             continue
-        points[f"{d['reaction']}:{d['id']}"] = d["points"]
+        if d['reaction'] not in CONFIGURATION_ONLY_REACTIONS or not d["skipped"]:
+            points[f"{d['reaction']}:{d['id']}"] = d["points"]
         for cut, why in d["skipped"]:
             warnings.append(f"The cut {cut} cannot be evaluated on dataset {name} ({why}), so FitPack "
                             "skips it for this dataset.")
@@ -2407,7 +2515,8 @@ def _card_reactions(card):
 
 
 def _configuration_reactions(card):
-    return set(_card_reactions(card)).intersection(CONFIGURATION_ONLY_REACTIONS)
+    return (set() if FF_EXECUTION_ENABLED else
+            set(_card_reactions(card)).intersection(CONFIGURATION_ONLY_REACTIONS))
 
 
 def _unsupported_configuration_fit(card):
@@ -3133,6 +3242,135 @@ def campaign_pdf_plots(collection_id="", flavors="", q2=10.0, mean_overlay=True,
             **metadata,
             "plots": [{k: v for k, v in p.items() if k != "data_url"} for p in plots],
             "_images": [{"data": p["png_b64"], "mimeType": "image/png"} for p in d["plots"]],
+            "_panel_plots": plots}
+
+
+_FF_PLOTS = _REPLICA_STATE + r"""
+import glob, json, os, base64, uuid
+stage = __STAGE__; flavors = __FLAVORS__; q2 = __Q2__; mean_overlay = __MEAN__
+configured = __CONFIGURED__; credible_interval = validate_credible_interval(__INTERVAL__)
+plot_dir = os.path.join(os.path.dirname(os.path.dirname(stage)), 'analysis', 'ff_plots')
+os.makedirs(plot_dir, exist_ok=True)
+os.environ['MPLCONFIGDIR'] = os.path.join(plot_dir, '.matplotlib')
+records = []
+excluded = {'not_fitted': 0, 'failed': 0, 'missing_msr': 0}
+if not configured:
+    for path in sorted(glob.glob(os.path.join(stage, 'current', 'replica_*', 'fit_summary.json'))):
+        state, record = replica_state(path)
+        if state != 'fitted': excluded[state or 'failed'] += 1
+        elif not record.get('msr_path') or not os.path.isfile(record['msr_path']): excluded['missing_msr'] += 1
+        else: records.append(record)
+    if not records:
+        print(json.dumps({'status': 'missing_inputs', 'message': 'No fitted FF replicas are available. Choose configured parameters for a starting-value curve.'})); raise SystemExit(0)
+import matplotlib; matplotlib.use('Agg')
+from matplotlib import pyplot as plt
+import numpy as np
+from fitlib.resman import RESMAN
+from tools.config import conf, load_config
+from tools.tools import load
+conf.clear(); load_config(os.path.join(stage, 'input.py'))
+resman = RESMAN(nworkers=1, parallel=False, datasets=False)
+zs = np.linspace(0.01, 0.99, 120)
+curves = {}
+try:
+    for record in ([None] if configured else records):
+        if record is not None:
+            replica = load(record['msr_path'])
+            order, params = replica['order'][0], replica['params'][0]
+            if order is None or params is None or not np.isfinite(np.asarray(params, dtype=float)).all():
+                raise ValueError('Missing or nonfinite fitted FF parameters/order')
+            resman.parman.order = order
+            resman.parman.set_new_params(params, initial=True)
+        evaluated = evaluate_ff_curves(conf, zs, q2, flavors)
+        for key, rows in evaluated.items():
+            for flavor, values in rows.items(): curves.setdefault(key, {}).setdefault(flavor, []).append(values)
+finally:
+    resman.shutdown()
+nreplicas = len(records) if not configured else 0
+band_drawn = not configured and mean_overlay and nreplicas > 1
+interval_text = '%g' % credible_interval
+label = interval_text + '% pointwise credible interval'
+if configured: note = 'Configured starting parameters, not fitted results; no uncertainty band.'
+elif nreplicas < 2: note = 'Only one fitted replica; no uncertainty band.'
+else: note = 'Replica predictions are combined before the pointwise equal-tailed interval is computed.'
+if credible_interval == 100 and band_drawn: note += ' 100% is the full available replica envelope, not the entire posterior.'
+unavailable = [key for key in FF_PLOT_OBJECTS if key not in curves]
+if unavailable:
+    note += ' Unavailable FF plots (required component objects absent): ' + ', '.join(unavailable) + '.'
+metadata = {'available_objects': list(curves), 'unavailable_objects': unavailable,
+            'n_replicas': nreplicas, 'configured': configured, 'band_drawn': band_drawn,
+            'credible_interval': credible_interval, 'interval_label': label if band_drawn else 'no uncertainty band',
+            'quantity': 'zD(z,Q2)', 'charge_convention': 'native positive charged hadron; no extra factor of two',
+            'excluded_replicas': excluded, 'note': note}
+plots = []; request_id = uuid.uuid4().hex
+for key in FF_PLOT_OBJECTS:
+    if key not in curves: continue
+    fig, ax = plt.subplots(figsize=(7.0, 4.8))
+    for index, flavor in enumerate(flavors):
+        values = np.asarray(curves[key][flavor], dtype=float)
+        color = 'C%d' % (index % 10)
+        if band_drawn:
+            low, high = pointwise_credible_interval(values, credible_interval)
+            ax.fill_between(zs, low, high, color=color, alpha=0.18, lw=0)
+        if mean_overlay or configured:
+            ax.plot(zs, values.mean(axis=0), color=color, lw=1.7, label=flavor)
+        else:
+            for replica_index, row in enumerate(values):
+                ax.plot(zs, row, color=color, lw=0.8, alpha=0.5, label=flavor if replica_index == 0 else None)
+    ax.axhline(0, color='#64748b', lw=0.8, ls='--')
+    ax.set_xlabel('$z$'); ax.set_ylabel('$z D(z,Q^2)$')
+    ax.set_title('%s, $Q^2=%g$ GeV$^2$' % (FF_PLOT_LABELS[key], q2))
+    ax.grid(alpha=0.25); ax.legend(frameon=False, ncol=3)
+    path = os.path.join(plot_dir, '%s_q2_%g_%s_%s.png' % (key, q2, 'configured' if configured else 'replicas', request_id))
+    fig.tight_layout(); fig.savefig(path, dpi=110); plt.close(fig)
+    plots.append({'object': key, 'label': FF_PLOT_LABELS[key], 'flavors': flavors, 'path': path, **metadata,
+                  'png_b64': base64.b64encode(open(path, 'rb').read()).decode()})
+print(json.dumps({'status': 'success', **metadata, 'plots': plots}))
+"""
+
+
+def campaign_ff_plots(collection_id="", flavors="", q2=10.0, mean_overlay=True,
+                      username="", credible_interval=95, configured=False):
+    """Plot FitPack FF objects, combining charged species within each replica."""
+    u, error = _need_user(username)
+    if error:
+        return error
+    entry = _collection(u, collection_id)
+    if not entry:
+        return {"status": "error", "message": f"No campaign {collection_id!r}."}
+    objects = [obj.get("type") for obj in entry["input_card"].get("objects", [])]
+    if not set(objects).intersection(ff_registry.FF_OBJECTS):
+        return {"status": "error", "message": "This campaign has no fitted FF parameter group."}
+    fl = list(dict.fromkeys(part.strip() for part in (flavors or ",".join(ff_plotting.FF_FLAVORS)).split(",") if part.strip()))
+    try:
+        interval = object_registry.validate_credible_interval(credible_interval)
+        q2 = float(q2)
+        if not math.isfinite(q2) or q2 <= 0:
+            raise ValueError("Q² must be positive and finite.")
+        if not fl or any(flavor not in ff_plotting.FF_FLAVORS for flavor in fl):
+            raise ValueError("FF flavors: " + ", ".join(ff_plotting.FF_FLAVORS))
+        if type(configured) is not bool:
+            raise ValueError("configured must be true or false")
+    except (TypeError, ValueError) as exc:
+        return {"status": "error", "message": str(exc)}
+    code = _object_registry_source() + "\n" + inspect.getsource(ff_plotting) + _fill(
+        _FF_PLOTS, STAGE=_stage_root(u, entry), FLAVORS=fl, Q2=q2,
+        MEAN=bool(mean_overlay), INTERVAL=interval, CONFIGURED=configured)
+    result = _run_ifarm_py(u, code, apptainer=True, timeout=600, cap=20000000,
+                           env={"MPLCONFIGDIR": f"{_workspace(u)}/{CAMPAIGNS_DIR}/.matplotlib"})
+    try:
+        data = json.loads(result["out"].strip().splitlines()[-1])
+    except (ValueError, IndexError, KeyError):
+        return {"status": "error", "message": "FF plotting failed",
+                "detail": (result.get("err") or result.get("out") or "")[-600:]}
+    if data.get("status") != "success":
+        return data
+    plots = [{**{key: value for key, value in plot.items() if key != "png_b64"},
+              "data_url": "data:image/png;base64," + plot["png_b64"]} for plot in data["plots"]]
+    return {"status": "ok", "collection_id": collection_id, "q2": q2, "note": data["note"],
+            "available_objects": data["available_objects"], "unavailable_objects": data["unavailable_objects"],
+            "plots": [{key: value for key, value in plot.items() if key != "data_url"} for plot in plots],
+            "_images": [{"data": plot["png_b64"], "mimeType": "image/png"} for plot in data["plots"]],
             "_panel_plots": plots}
 
 
@@ -8877,6 +9115,20 @@ TOOLS = {
                                            a.get("q2", 10.0), a.get("mean_overlay", True),
                                            object_key=a.get("object_key", ""),
                                            credible_interval=a.get("credible_interval", 95))},
+    "campaign_ff_plots": {
+        "desc": "Plot charged pion, kaon, residual and unidentified hadron zD(z,Q2), using native FitPack FFs. "
+                "Combine species inside each replica before equal-tailed pointwise uncertainty bands. "
+                "Flavors g,u,d,ub,db,s,sb,c,b; cb/bb are constrained partners. configured=true uses starting parameters without a band.",
+        "schema": {"type": "object", "properties": {
+            "collection_id": {"type": "string"}, "flavors": {"type": "string"},
+            "q2": {"type": "number", "exclusiveMinimum": 0},
+            "credible_interval": {"type": "number", "exclusiveMinimum": 0, "maximum": 100},
+            "mean_overlay": {"type": "boolean"}, "configured": {"type": "boolean"}},
+            "required": ["collection_id"]},
+        "fn": lambda a: campaign_ff_plots(a.get("collection_id", ""), a.get("flavors", ""),
+                                          a.get("q2", 10.0), a.get("mean_overlay", True),
+                                          credible_interval=a.get("credible_interval", 95),
+                                          configured=a.get("configured", False))},
     "analyze_by_experiment": {
         "desc": "Analysis by experiment: chi2/N of the best replica grouped by experiment (SLAC, "
                 "BCDMS, NMC, E866 ...) and thesis-style data vs mean fitted-replica theory plots. "

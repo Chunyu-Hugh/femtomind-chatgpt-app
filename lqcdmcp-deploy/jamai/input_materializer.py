@@ -4,11 +4,12 @@ import hashlib
 import shutil
 from pathlib import Path
 
-from .dataset_catalog import CONFIGURATION_ONLY_REACTIONS, configuration_dataset_block
+from .dataset_catalog import CONFIGURATION_DATASETS, CONFIGURATION_ONLY_REACTIONS, configuration_dataset_block
 from .object_registry import (
     DY_DATASET_DEFAULTS, PROTON_REACTION_DATASETS, cut_filters, dis_version_for, library_cuts, load_object_libraries,
 )
 from .stage_resolver import ResolvedStage
+from .ff_registry import FF_OBJECTS, FF_PARAMETERS, ff_library, resolve_ff_parameters
 
 
 def render_dataset_configuration_fragment(selections: dict, q2cut=None) -> str:
@@ -45,6 +46,8 @@ def _enabled_cuts(stage: ResolvedStage) -> dict:
     # Only reactions in the stage, only enabled cuts, only plain comparisons.
     out = {}
     for reaction in stage.reactions:
+        if reaction in ('sidis', 'sia'):
+            continue  # Exact FF dataset filters are installed from the canonical catalog.
         if reaction in (stage.cuts or {}):
             filters = cut_filters(stage.cuts[reaction])
             if isinstance(filters, dict):
@@ -89,6 +92,13 @@ def _render_stage_override_block(stage: ResolvedStage) -> str:
                 parameter_id = str(parameter.get('id') or '')
                 _, reaction, dataset_id = (parameter_id.split('_', 2) + ['', '', ''])[:3]
                 if reaction and dataset_id:
+                    if reaction in ('sidis', 'sia'):
+                        selected = stage.datasets.get(reaction, []) if reaction in stage.reactions else []
+                        expected = CONFIGURATION_DATASETS[reaction]['norm'].get(int(dataset_id))
+                        supplied = {field: parameter.get(field) for field in ('value', 'min', 'max', 'fixed')}
+                        if (int(dataset_id) not in selected or expected is None or supplied != expected
+                                or type(supplied['fixed']) is not type(expected['fixed'])):
+                            raise ValueError(f'{reaction}:{dataset_id}: preserve the selected authoritative normalization definition')
                     if reaction in PROTON_REACTION_DATASETS:
                         selected = stage.datasets.get(reaction, []) if reaction in stage.reactions else []
                         allowed = PROTON_REACTION_DATASETS[reaction]['norm']
@@ -106,6 +116,8 @@ def _render_stage_override_block(stage: ResolvedStage) -> str:
                         'fixed': parameter.get('fixed', False),
                     }
                 continue
+            if sector_key in FF_OBJECTS:
+                continue  # Complete enabled FF definitions are installed as a snapshot below.
             parameter_name = str(parameter.get('name') or '').strip()
             if not parameter_name:
                 continue
@@ -175,10 +187,46 @@ def _render_stage_override_block(stage: ResolvedStage) -> str:
 
 def materialize_stage_input(template_path: str | Path, output_path: str | Path, stage: ResolvedStage,
                             fitpack_root: str | Path | None = None) -> str:
-    unsupported = set(stage.reactions).intersection(CONFIGURATION_ONLY_REACTIONS)
-    if unsupported:
-        raise ValueError('Configuration only; FF fitting is not implemented for: '
-                         + ', '.join(sorted(unsupported)))
+    ff_blocks = {}
+    for reaction in ('sidis', 'sia'):
+        if reaction not in stage.reactions:
+            continue
+        if not stage.datasets.get(reaction):
+            raise ValueError(f'{reaction}: select at least one dataset')
+        cutoff = None
+        if reaction == 'sidis':
+            cuts = stage.cuts.get('sidis', stage.cuts.get('idis', []))
+            qcuts = [cut for cut in cuts if cut.get('enabled', True)
+                     and cut.get('variable') == 'Q2' and cut.get('op', '>') == '>']
+            if len(qcuts) != 1 or sum(bool(cut.get('enabled', True)) for cut in cuts) != 1:
+                raise ValueError('SIDIS requires exactly its configured Q2 > cutoff, without other cuts')
+            cutoff = qcuts[0]['value']
+        ff_blocks[reaction] = configuration_dataset_block(reaction, stage.datasets.get(reaction, []), cutoff)
+        if reaction == 'sia' and 'sia' in stage.cuts:
+            supplied = stage.cuts['sia']
+            if isinstance(supplied, dict):
+                supplied = {int(idx): value for idx, value in supplied.items()}
+            if supplied != ff_blocks['sia']['filters']:
+                raise ValueError('SIA cuts must match the selected authoritative dataset definitions')
+    ff_objects = [key for key in FF_OBJECTS if key in stage.fit_objects or key in stage.frozen_objects]
+    ff_params = {}
+    for key in ff_objects:
+        raw = stage.params.get('ff_parameters', {}).get(key)
+        if key not in stage.effective_fit_objects:
+            raw = None
+        if raw is None:
+            sectors = [sector for sector in stage.params.get('sectors', []) if sector.get('key') == key]
+            edits = sectors[0].get('parameters', []) if sectors and key in stage.effective_fit_objects else None
+        else:
+            if not isinstance(raw, dict):
+                raise ValueError(f'{key}: complete FF parameters must be a dictionary')
+            unknown = set(raw) - set(FF_PARAMETERS[key])
+            if unknown:
+                raise ValueError(f'{key}: unknown parameters {sorted(unknown)}')
+            # A snapshot is exhaustive: absent active and optional definitions stay absent.
+            edits = {name: ({**raw[name], 'enabled': True} if name in raw else {'enabled': False})
+                     for name in FF_PARAMETERS[key]}
+        ff_params[key] = resolve_ff_parameters(key, edits)
     # Validate sources before copying, then compose the single final input.
     # Replace only the five approved reaction blocks before dataset pruning.
     # This also removes historical Jet filters and preserves omitted WC filters.
@@ -186,8 +234,23 @@ def materialize_stage_input(template_path: str | Path, output_path: str | Path, 
                  for reaction in stage.reactions if reaction in PROTON_REACTION_DATASETS]
     if 'dy' in stage.reactions:
         fragments.append(f"\nconf.setdefault('datasets', {{}})['dy'] = {DY_DATASET_DEFAULTS!r}")
+    for reaction, block in ff_blocks.items():
+        fragments.append(f"\nconf.setdefault('datasets', {{}})[{reaction!r}] = {block!r}")
+    for key, params in ff_params.items():
+        fragments.append(f"\nconf.setdefault('params', {{}})[{key!r}] = {params!r}")
+        fragments.extend(f"conf[{name!r}] = {value!r}" for name, value in ff_library(key)['settings'].items())
+    if ff_objects:
+        # The proton template is only a settings scaffold for FF-only SIA.
+        # Remove unused template distributions instead of initializing an unrelated PDF.
+        keep = set(stage.fit_objects) | set(stage.frozen_objects)
+        fragments.append(f"\n_FF_STAGE_OBJECTS = {sorted(keep)!r}")
+        fragments.append("for _key in ('pdf', 'pdf-pion', 'ffpion', 'ffkaon', 'ffhadron'): conf.get('params', {}).pop(_key, None) if _key not in _FF_STAGE_OBJECTS else None")
     overrides = _render_stage_override_block(stage)
     for key, source in stage.params.get('library_sources', {}).items():
+        if key in FF_OBJECTS:
+            if source.get('sha256') and source['sha256'] != ff_library(key)['sha256']:
+                raise ValueError(f'{key} library changed since validation; validate the card again')
+            continue
         if source.get('source') and source.get('sha256'):
             actual = hashlib.sha256(Path(source['source']).read_bytes()).hexdigest()
             if actual != source['sha256']:
