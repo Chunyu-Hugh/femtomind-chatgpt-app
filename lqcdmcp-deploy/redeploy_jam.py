@@ -14,9 +14,8 @@ Usage:
 Optional: JAM_GW_RESERVATION (default chen_mcp_daily, "" for none),
 JAM_GW_SHARED=1 (the gateway then acts as the user named in each call: see
 the guide's "Shared gateway"), JAM_GW_PARTITION (default 24s), JAM_GW_HOURS
-(default 6), JAM_GW_ACCOUNT (a
-Slurm account such as jlablqcd24s, when your default account cannot use the
-partition; default: none, i.e. Slurm's default account for you).
+(default 6), JAM_GW_CPUS (default 16), JAM_GW_ACCOUNT (the Slurm account, default
+hadstruc24s as agreed with Jie Chen; "none" for your default account).
 """
 import base64
 import http.client
@@ -45,7 +44,12 @@ MCP_NAME = gw_auth.NAME
 RESERVATION = os.environ.get("JAM_GW_RESERVATION", "chen_mcp_daily").strip()
 PARTITION = os.environ.get("JAM_GW_PARTITION", "24s").strip()
 HOURS = int(os.environ.get("JAM_GW_HOURS", "6"))
-ACCOUNT = os.environ.get("JAM_GW_ACCOUNT", "").strip()
+# Agreed with Jie Chen (2026-10-19): gateways run under hadstruc24s; 16 CPUs per
+# job, so that four gateways share the reserved 64-core node (each takes its own port).
+ACCOUNT = os.environ.get("JAM_GW_ACCOUNT", "hadstruc24s").strip()
+if ACCOUNT.lower() == "none":
+    ACCOUNT = ""                    # your default Slurm account
+CPUS = int(os.environ.get("JAM_GW_CPUS", "16"))
 SHARED = os.environ.get("JAM_GW_SHARED", "").strip() == "1"
 ctx = ssl.create_default_context()
 sid = None
@@ -158,7 +162,7 @@ def build_slurm():
     gateway checks callers' dashboard tokens with the dashboard."""
     sbatch = [f"#SBATCH --partition={PARTITION}",
               f"#SBATCH --time={HOURS:02d}:00:00",
-              "#SBATCH --nodes=1", "#SBATCH --ntasks=1", "#SBATCH --cpus-per-task=2",
+              "#SBATCH --nodes=1", "#SBATCH --ntasks=1", f"#SBATCH --cpus-per-task={CPUS}",
               f"#SBATCH --job-name={MCP_NAME}"]
     if RESERVATION:
         sbatch.insert(2, f"#SBATCH --reservation={RESERVATION}")
@@ -219,9 +223,10 @@ def main():
                              f"servers and the gateway reservation: ask him, and send him this output. The "
                              f"reservation is required: the proxy reaches a gateway only on its reserved node, "
                              f"so a job without it starts on a node nobody can connect to. Also ask for "
-                             f"hadstruc24s as your default Slurm account (the 24s partition does not allow "
-                             f"jlablqcd24s), or export JAM_GW_ACCOUNT=hadstruc24s. If you set "
-                             f"JAM_GW_RESERVATION, JAM_GW_PARTITION or JAM_GW_HOURS yourself, unset them and "
+                             f"access to the hadstruc24s Slurm account (the 24s partition does not allow "
+                             f"jlablqcd24s; the job asks for hadstruc24s unless JAM_GW_ACCOUNT says otherwise). "
+                             f"If you set JAM_GW_RESERVATION, JAM_GW_PARTITION, JAM_GW_HOURS, JAM_GW_CPUS or "
+                             f"JAM_GW_ACCOUNT yourself, unset them and "
                              f"try again first.")
         print(out)
         print(f"\nyour gateway: {gw_auth.URL}\npanel:        {gw_auth.URL} (in a browser)\n"

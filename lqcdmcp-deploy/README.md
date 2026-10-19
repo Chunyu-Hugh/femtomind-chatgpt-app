@@ -19,7 +19,7 @@ This file is for whoever maintains the gateway.
 | `deploy_and_verify.py` | Launch your gateway unless your gateway job is already queued or running, wait for it (it stops early when the job stays queued, or when a job it launched ends), and check it end to end (`--check`: check only). Prints a shareable report without credentials. |
 | `redeploy_jam.py` | `launch` / `cancel` / `status` through the dashboard API; `script` writes the job script for the dashboard page. |
 | `hot_redeploy.py` | Replace a running gateway's code (gateway, panel, `jamai/`, `plugins/`) inside the same job. |
-| `plugins/` | Other physics tasks on the same gateway, each in its own folder (NESAP SBI: a git submodule). See [plugins/README.md](plugins/README.md). |
+| `plugins/` | Other physics tasks on the same gateway, each in its own folder (NESAP SBI: a git submodule, optional; see Deploy). See [plugins/README.md](plugins/README.md). |
 | `check_dashboard_token.py` | Make the dashboard calls the gateway's access check makes, and print the decision. |
 | `gw_auth.py` | Gateway name, URL and token for the scripts: `JAM_GW_USER`, `LQCDMCP_TOKEN`; `JAM_GW_NAME`, `JAM_GW_URL`, `JAM_GW_TOKEN` for a test gateway. |
 | `COLLABORATOR_GUIDE.md` | The step-by-step guide for collaborators. |
@@ -32,13 +32,32 @@ export JAM_GW_USER=<you>
 python3 deploy_and_verify.py   # launch, wait, verify
 ```
 
+**The NESAP SBI plugin is optional; JAM does not need it.** SBI lives in a git
+submodule, `plugins/sbi/upstream` (Felix Ringer's `femtomind-nesap-sbi`). A plain
+`git clone` or `git pull` leaves that folder empty, and JAM still works in full:
+the gateway starts with every JAM tool, and `deploy_and_verify.py`,
+`redeploy_jam.py` and `hot_redeploy.py` only print
+`note: plugin sbi is left out of the gateway: ... git submodule update --init`
+and deploy as usual. The gateway then has no `sbi_*` tools, and its instructions
+do not mention SBI. To include SBI, fetch the submodule before deploying:
+
+```bash
+git submodule update --init      # or: git clone --recurse-submodules ...
+```
+
+`JAM_GW_PLUGINS=none` leaves every plugin out on purpose. (Checked 2026-10-19
+on a clone of `main` without the submodule: 31 JAM tools, and `hot_redeploy.py`'s
+check on the node passes.)
+
 The job script carries the gateway, the panel and `jamai/` (zlib + base64)
 and no credential. It asks for partition `24s`, reservation `chen_mcp_daily`
-(no time window since 2026-10-16; before, about 10:00–16:00 US Eastern), 6 h
-and 2 CPUs (`JAM_GW_PARTITION`,
-`JAM_GW_RESERVATION`, `JAM_GW_HOURS` override; `JAM_GW_ACCOUNT` adds
-`--account`, for a user whose default Slurm account cannot use the
-partition). The job unpacks the files into `~/.jam_gateway/app`, and a
+(no time window since 2026-10-16; before, about 10:00–16:00 US Eastern), 6 h,
+16 CPUs (a quarter of the reserved 64-core node, so four gateways fit on it,
+each on its own port) and the `hadstruc24s` account, as agreed with Jie Chen
+on 2026-10-19
+(`JAM_GW_PARTITION`, `JAM_GW_RESERVATION`, `JAM_GW_HOURS`, `JAM_GW_CPUS` and
+`JAM_GW_ACCOUNT` override; `JAM_GW_ACCOUNT=none` uses your default Slurm
+account). The job unpacks the files into `~/.jam_gateway/app`, and a
 supervisor loop restarts the server whenever it exits. The server takes the
 first free port from 8080 and registers with the proxy as
 `jam-gateway-<user>`, at `https://lqcdmcp.jlab.org:8000/cloud/jam-gateway-<user>/mcp`.
@@ -51,8 +70,8 @@ first free port from 8080 and registers with the proxy as
   adds people). The proxy reaches port 8080 only on the reserved node
   (`qcd24s100`); a gateway on another `24s` node starts but is unreachable
   ("No route to host", 2026-10-13). The partition allows the `hadstruc24s`
-  account, not `jlablqcd24s`: `JAM_GW_ACCOUNT` names one when the user's
-  default account is not allowed.
+  account, not `jlablqcd24s`, so the job asks for `hadstruc24s`; every
+  collaborator needs access to that account.
 - **One at a time.** So far the reservation has run only one gateway job at a
   time; a second one stays PENDING until the first is cancelled
   (`python3 redeploy_jam.py cancel`).

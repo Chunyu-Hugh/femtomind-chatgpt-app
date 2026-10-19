@@ -59,8 +59,11 @@ Below, replace `<you>` with your JLab username.
 Jie Chen runs the LQCDMCP platform. Before you start a gateway for the first
 time, ask him to enable your JLab account for:
 
-- MCP servers, and
-- the gateway reservation `chen_mcp_daily` (partition `24s`).
+- MCP servers,
+- the gateway reservation `chen_mcp_daily` (partition `24s`), and
+- the Slurm account `hadstruc24s` (the gateway job asks for it, with 16
+  CPUs, as agreed with Jie on 2026-10-19; `jlablqcd24s` cannot use the
+  partition).
 
 Without this, step 2.1 stops with "the LQCDMCP platform could not start your
 gateway". Trying again, or from another computer, gives the same result. Only
