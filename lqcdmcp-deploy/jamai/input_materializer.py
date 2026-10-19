@@ -75,6 +75,10 @@ def _render_stage_override_block(stage: ResolvedStage) -> str:
     # Python snippet appended to the copied template. When FitPack executes the
     # input card, these assignments/filtering operations mutate `conf` for this
     # stage.
+    positivity = {obj: stage.qcd.get(f'{obj}Positivity', True)
+                  for obj in ('pdf', 'ffpion', 'ffkaon', 'ffhadron')}
+    if any(type(value) is not bool for value in positivity.values()):
+        raise ValueError('Positivity settings must be true or false')
     for reaction in stage.reactions:
         if reaction in PROTON_REACTION_DATASETS:
             unknown = set(stage.datasets.get(reaction, [])) - PROTON_REACTION_DATASETS[reaction]['xlsx'].keys()
@@ -174,11 +178,9 @@ def _render_stage_override_block(stage: ResolvedStage) -> str:
         *([f"conf['grid path'] = {stage.qcd.get('grid_path')!r}"] if stage.qcd.get('grid_path') else []),
         f"conf['bootstrap'] = {bool(stage.job.get('bootstrap', False))!r}",
         "conf['resample version'] = 0",
-        # Mandatory for every new stage, after any template/library defaults.
-        "conf['pdf positivity'] = True",
-        "conf['ffpion positivity'] = True",
-        "conf['ffkaon positivity'] = True",
-        "conf['ffhadron positivity'] = True",
+        # Explicit campaign choices override template defaults. Legacy manifests
+        # without these fields retain the previous all-enabled behavior.
+        *[f"conf[{(obj + ' positivity')!r}] = {value!r}" for obj, value in positivity.items()],
         f"conf['jamai parameter initialization'] = {stage.params.get('initializationMode') or stage.params.get('initialization', 'default_prior')!r}",
         f"conf['jamai parameter random seed'] = {stage.params.get('randomSeed', None)!r}",
         f"conf['jamai per replica seed'] = {bool(stage.params.get('perReplicaSeed', True))!r}",

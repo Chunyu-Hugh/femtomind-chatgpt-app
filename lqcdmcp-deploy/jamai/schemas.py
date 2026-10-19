@@ -6,7 +6,7 @@ from typing import Literal
 try:
     # Pydantic is the preferred path: it gives the web/HPC workflow strict
     # validation and a `.model_dump()` API for writing resolved manifests.
-    from pydantic import BaseModel, Field, field_validator, model_validator
+    from pydantic import BaseModel, Field, StrictBool, field_validator, model_validator
 
     HAVE_PYDANTIC = True
 except ModuleNotFoundError:  # pragma: no cover - compatibility path for bare system python
@@ -34,6 +34,10 @@ if HAVE_PYDANTIC:
         higherTwist: bool = False
         dglapMode: str = 'truncated'
         asMode: str = 'backward'
+        pdfPositivity: StrictBool = True
+        ffpionPositivity: StrictBool = True
+        ffkaonPositivity: StrictBool = True
+        ffhadronPositivity: StrictBool = True
 
 
     class SeedPolicy(BaseModel):
@@ -197,7 +201,15 @@ else:
             higherTwist=False,
             dglapMode='truncated',
             asMode='backward',
+            pdfPositivity=True,
+            ffpionPositivity=True,
+            ffkaonPositivity=True,
+            ffhadronPositivity=True,
         ):
+            positivity = dict(pdfPositivity=pdfPositivity, ffpionPositivity=ffpionPositivity,
+                              ffkaonPositivity=ffkaonPositivity, ffhadronPositivity=ffhadronPositivity)
+            if any(type(value) is not bool for value in positivity.values()):
+                raise ValueError('Positivity settings must be true or false')
             super().__init__(
                 order=order,
                 Q20=float(Q20),
@@ -207,6 +219,7 @@ else:
                 higherTwist=bool(higherTwist),
                 dglapMode=dglapMode,
                 asMode=asMode,
+                **positivity,
             )
 
         @classmethod
@@ -221,6 +234,8 @@ else:
                 higherTwist=payload.get('higherTwist', False),
                 dglapMode=payload.get('dglapMode', 'truncated'),
                 asMode=payload.get('asMode', 'backward'),
+                **{f'{obj}Positivity': payload.get(f'{obj}Positivity', True)
+                   for obj in ('pdf', 'ffpion', 'ffkaon', 'ffhadron')},
             )
 
 

@@ -358,6 +358,13 @@
           <div class="field"><div class="label sm">αS mode</div><select id="qAs"></select></div>
           <div class="field"><label class="inline" style="margin-top:26px"><input type="checkbox" id="qHT"> Higher twist</label></div>
         </div>
+        <div class="label" style="margin-top:16px">Positivity constraints</div>
+        <div class="grid2">
+          <label class="inline"><input type="checkbox" id="qPdfPositivity"> Proton PDF positivity</label>
+          <label class="inline"><input type="checkbox" id="qFfpionPositivity"> Pion FF positivity</label>
+          <label class="inline"><input type="checkbox" id="qFfkaonPositivity"> Kaon FF positivity</label>
+          <label class="inline"><input type="checkbox" id="qFfhadronPositivity"> Hadron FF positivity</label>
+        </div>
       </div>
 
       <div class="panel" data-step="job">
@@ -1396,7 +1403,11 @@
     fillSelect("qOrder", ch.order, q.order); fillSelect("qTmc", ch.tmc, q.tmc === "AOT" ? "AOT" : "off");
     fillSelect("qDglap", ch.dglapMode, q.dglapMode); fillSelect("qAs", ch.asMode, q.asMode);
     $("qQ20").value = q.Q20; $("qHT").checked = !!q.higherTwist;
+    positivityControls.forEach(([id, key])=>$(id).checked = q[key] ?? true);
   }
+  const positivityControls = [["qPdfPositivity", "pdfPositivity"], ["qFfpionPositivity", "ffpionPositivity"],
+                              ["qFfkaonPositivity", "ffkaonPositivity"], ["qFfhadronPositivity", "ffhadronPositivity"]];
+  positivityControls.forEach(([id, key])=>$(id).onchange = ()=>editDefault("qcd", key, $(id).checked));
   [["qOrder","order"],["qTmc","tmc"],["qDglap","dglapMode"],["qAs","asMode"]].forEach(([id,k])=>$(id).onchange = ()=>editDefault("qcd", k, $(id).value));
   $("qQ20").onchange = ()=>editDefault("qcd", "Q20", Number($("qQ20").value));
   $("qHT").onchange = ()=>{ card.qcd.higherTwist = $("qHT").checked; saveCard(); };
@@ -1465,6 +1476,8 @@
         +(n.fixed === false ? " FREE ["+n.min+", "+n.max+"]" : n.fixed === true ? " FIXED" : " equal to "+n.fixed))).join(" · ") || "library values"],
       ["Cuts", Object.entries(s.cuts).map(([r,c])=>r+": "+c.join(", ")).join(" · ")],
       ["QCD", s.qcd.order+" · Q₀² "+s.qcd.Q20+" · TMC "+s.qcd.tmc+" · HT "+(s.qcd.higherTwist ? "on" : "off")+" · DGLAP "+s.qcd.dglapMode+" · αS "+s.qcd.asMode],
+      ["Positivity", [["Proton PDF", "pdfPositivity"], ["Pion FF", "ffpionPositivity"], ["Kaon FF", "ffkaonPositivity"],
+                      ["Hadron FF", "ffhadronPositivity"]].map(([label, key])=>label+": "+((s.qcd[key] ?? true) ? "on" : "off")).join(" · ")],
       ["Initialization", s.initialization], ["Inference mode", s.inference],
       ["Replicas · max iterations · tolerance · optimizer", s.replicas+" · "+s.max_iterations+" · "+s.tolerance+" · "+s.optimizer],
       ["Slurm (per replica)", s.slurm.partition_effective+" · "+s.slurm.time+" · "+s.slurm.mem+" · "+s.slurm.cpus+" cpu"]];
@@ -1559,6 +1572,8 @@
       const saved = card ? {card, submitted} : ws().campaign2;
       const legacy = !card && !!saved && !saved.library;
       card = saved && saved.card ? {...freshCard(), ...saved.card} : freshCard();
+      // Legacy drafts omit positivity choices; keep their previous all-on policy.
+      card.qcd = {...opts.defaults.qcd, ...(card.qcd || {})};
       if (saved?.card) card.pionReference = saved.card.pionReference || null;
       submitted = saved && saved.submitted || null;
       // Parameter edits only apply to rows this library has, and only where they

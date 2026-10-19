@@ -1343,6 +1343,7 @@ PION_DATASETS = {
     "ln": [{"id": "1000", "label": "H1", "experiment": "H1"},
            {"id": "2000", "label": "ZEUS", "experiment": "ZEUS"}],
 }
+POSITIVITY_OPTIONS = tuple(f'{obj}Positivity' for obj in ('pdf', 'ffpion', 'ffkaon', 'ffhadron'))
 CAMPAIGN_DEFAULTS = {
     "cuts": {"idis": [{"variable": "Q2", "op": ">", "value": 1.69, "enabled": True},
                       {"variable": "W2", "op": ">", "value": 10, "enabled": True}],
@@ -1350,7 +1351,8 @@ CAMPAIGN_DEFAULTS = {
              **{reaction: object_registry.library_cuts(spec.get("filters", []))
                 for reaction, spec in object_registry.PROTON_REACTION_DATASETS.items()}},
     "qcd": {"order": "NLO", "Q20": 1.6129, "tmc": "AOT", "higherTwist": False,
-            "dglapMode": "truncated", "asMode": "backward"},
+            "dglapMode": "truncated", "asMode": "backward",
+            **dict.fromkeys(POSITIVITY_OPTIONS, True)},
     "parameters": {"initialization": "default", "randomSeed": None, "perReplicaSeed": True},
     "job": {"replicas": 10, "maxIterations": 500, "tolerance": "1e-6", "optimizer": "trf",
             "bootstrap": True, "campaignName": ""},
@@ -2003,6 +2005,9 @@ def _normalize_card(card, library):
         if q[k] not in CAMPAIGN_CHOICES[k]:
             errors.append(f"QCD {k} must be one of {CAMPAIGN_CHOICES[k]}.")
     q["higherTwist"] = q.get("higherTwist") in (True, "on", "true", "True", 1)
+    for key in POSITIVITY_OPTIONS:
+        if type(q[key]) is not bool:
+            errors.append(f"QCD {key} must be true or false.")
     # parameter initialization
     pi = {**CAMPAIGN_DEFAULTS["parameters"], **(card.get("parameters") or {})}
     if pi["initialization"] not in CAMPAIGN_CHOICES["initialization"]:
@@ -2110,7 +2115,8 @@ def _campaign_yaml(ws, folder, norm, nreplicas):
     q = norm["qcd"]
     qcd = {"order": q["order"], "Q20": q["Q20"], "ftol": float(norm["job"]["tolerance"]),
            "grid_path": SITE.get("grid_root"), "tmc": "AOT" if q["tmc"] == "AOT" else False,
-           "higherTwist": q["higherTwist"], "dglapMode": q["dglapMode"], "asMode": q["asMode"]}
+           "higherTwist": q["higherTwist"], "dglapMode": q["dglapMode"], "asMode": q["asMode"],
+           **{key: q.get(key, True) for key in POSITIVITY_OPTIONS}}
     pi = norm["parameters"]
     init = "random_within_bounds" if pi["initialization"] == "random_within_bounds" else "default_prior"
     seed = pi["randomSeed"] if pi["randomSeed"] is not None else 120000
@@ -9527,11 +9533,13 @@ TOOLS = {
                 "are excluded. Each reaction's cuts can be a list or a dataset-ID mapping of lists "
                 "(LN reference defaults: 1000 y<0.3, 2000 y<0.2). The five added proton reactions "
                 "use their approved cut policies: jet has only pT>8; wzrv, wasym, zrap and wc "
-                "have no additional filters. Summary reports "
+                "have no additional filters. The qcd card accepts four independent boolean options: "
+                "pdfPositivity, ffpionPositivity, ffkaonPositivity, ffhadronPositivity "
+                "(default true; false is preserved). Summary reports "
                 "parameters (including optional equal_to links between PDF parameters), the ones changed from the library, datasets, cuts, QCD, job, and "
                 "points_after_cuts per dataset), the Slurm array script, the confirmation phrase and "
                 "warnings (a dataset with no points left after the cuts, a data file without a column "
-                "FitPack's status report reads); warnings never block submission. " + 'card = {"object": {"type": "pdf", "parameters": {"g1 a": {"value", "min", "max", "fixed": true|false, "equal_to": "uv1 a"}, ...}}, "reactions": ["idis", "dy"], "datasets": {"idis": ["10010", ...]}, "normalizations": {"idis": {"10010": {"value", "min", "max", "fixed": true|false|"<id of another selected dataset whose normalization this one equals>"}}} (only for datasets campaign_datasets lists with a normalization), "cuts": {"idis": [{"variable": "Q2", "op": ">", "value": 1.69, "enabled": true}]}, "qcd": {"order", "Q20", "tmc": "off"|"AOT", "higherTwist", "dglapMode", "asMode"}, "parameters": {"initialization": "default"|"random_within_bounds", "randomSeed", "perReplicaSeed"}, "job": {"campaignName", "replicas", "maxIterations", "tolerance", "optimizer", "bootstrap"}, "slurm": {"partition" ("" = auto), "time" (per replica, HH:MM:SS), "mem", "cpus"}}. Only parameters the user changed need to be listed; the rest keep the library values, and only changed rows are written into the card. A parameter switched to FREE needs a min and a max.',
+                "FitPack's status report reads); warnings never block submission. " + 'card = {"object": {"type": "pdf", "parameters": {"g1 a": {"value", "min", "max", "fixed": true|false, "equal_to": "uv1 a"}, ...}}, "reactions": ["idis", "dy"], "datasets": {"idis": ["10010", ...]}, "normalizations": {"idis": {"10010": {"value", "min", "max", "fixed": true|false|"<id of another selected dataset whose normalization this one equals>"}}} (only for datasets campaign_datasets lists with a normalization), "cuts": {"idis": [{"variable": "Q2", "op": ">", "value": 1.69, "enabled": true}]}, "qcd": {"order", "Q20", "tmc": "off"|"AOT", "higherTwist", "dglapMode", "asMode", "pdfPositivity": true|false, "ffpionPositivity": true|false, "ffkaonPositivity": true|false, "ffhadronPositivity": true|false}, "parameters": {"initialization": "default"|"random_within_bounds", "randomSeed", "perReplicaSeed"}, "job": {"campaignName", "replicas", "maxIterations", "tolerance", "optimizer", "bootstrap"}, "slurm": {"partition" ("" = auto), "time" (per replica, HH:MM:SS), "mem", "cpus"}}. Only parameters the user changed need to be listed; the rest keep the library values, and only changed rows are written into the card. A parameter switched to FREE needs a min and a max.',
         "schema": {"type": "object", "properties": {"card": {"type": "object"}}, "required": ["card"]},
         "fn": lambda a: validate_campaign(a.get("card"))},
     "submit_campaign": {
