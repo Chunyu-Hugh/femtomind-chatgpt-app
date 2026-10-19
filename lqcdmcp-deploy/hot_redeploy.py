@@ -30,6 +30,7 @@ import time
 import urllib.request
 
 import gw_auth
+from jamai import analysis_catalog
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 URL = gw_auth.URL
@@ -117,6 +118,7 @@ def deployment_files():
     for name, why in skipped.items():
         print(f"note: plugin {name} is left out of the gateway: {why}")
     files.update(shipped)
+    files.update(analysis_catalog.Catalog(analysis_catalog.catalog_root(HERE)).deployment_files())
     return files
 
 
@@ -140,6 +142,11 @@ for rel, expected in args['hashes'].items():
     if path.suffix == '.py':
         compile(path.read_bytes(), str(path), 'exec')
 gateway = importlib.import_module('jam_gateway')
+catalog_root = gateway.analysis_catalog.catalog_root(stage)
+if catalog_root.resolve() != (stage / 'analysis_catalog').resolve():
+    raise RuntimeError('catalog escaped staged application')
+if not gateway.analysis_catalog.Catalog(catalog_root).deployment_files():
+    raise RuntimeError('no validated scientific catalog entries were staged')
 for name, module in list(sys.modules.items()):
     if (name == 'jam_gateway' or name == 'jamai' or name.startswith('jamai.')
             or name == 'jam_plugins' or name.startswith('jam_plugin_')):
@@ -162,7 +169,7 @@ backup = app / '.hot_redeploy.previous'
 if backup.exists():
     shutil.rmtree(backup)
 backup.mkdir(mode=0o700)
-components = ('jamai', 'plugins', 'jam_panel.html', 'jam_gateway.py')
+components = ('jamai', 'plugins', 'analysis_catalog', 'jam_panel.html', 'jam_gateway.py')
 saved, installed = [], []
 try:
     for name in components:

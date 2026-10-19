@@ -379,3 +379,101 @@ Claude Desktop setups in the guide; Claude Code tool calls longer than 60 s
 with the guide's timeout settings (taken from the Claude Code
 documentation). In October 2026 the dashboard was found to answer yes for
 any token (see Access).
+
+## Published scientific analysis catalog (read-only MCP)
+
+The repository's `analysis_catalog/<analysis>/` entries are available through
+`list_analysis_catalog`, `get_analysis_catalog` and `get_analysis_requirements`.
+These tools use the existing gateway authentication. They do not need an HPC
+connection, read original scientific files, create campaigns, generate inputs,
+or submit jobs. Catalog validation and reproduction readiness are distinct;
+JAM24 remains preliminary and not reproduction-ready.
+
+The LLM orchestrates existing scientific and farm services; the gateway retains
+the numerical configuration. Discovery and overview are compact by default.
+Parameter requests default to object/group counts, not hundreds of definitions;
+dataset requests default to reaction IDs/counts, not experimental arrays.
+`detail:"full"` explicitly requests full records. Exact document sections are
+explicit lossless exports, not a required step in normal orchestration.
+Catalog text responses use compact JSON while retaining MCP structured content;
+other tools keep their existing response formatting.
+
+Examples of `tools/call` arguments:
+
+```json
+{"name":"list_analysis_catalog","arguments":{}}
+{"name":"get_analysis_catalog","arguments":{"analysis_id":"JAM24","section":"overview"}}
+{"name":"get_analysis_catalog","arguments":{"analysis_id":"JAM24","section":"parametrization","object_key":"pdf"}}
+{"name":"get_analysis_catalog","arguments":{"analysis_id":"JAM24","section":"parameters","object_key":"ffpion","group":"u1","status":"free","detail":"full"}}
+{"name":"get_analysis_catalog","arguments":{"analysis_id":"JAM24","section":"datasets"}}
+{"name":"get_analysis_catalog","arguments":{"analysis_id":"JAM24","section":"qcd"}}
+{"name":"get_analysis_catalog","arguments":{"analysis_id":"JAM24","section":"statistics"}}
+{"name":"get_analysis_requirements","arguments":{"analysis_id":"JAM24"}}
+```
+
+Parameter `group` is an exact shape prefix (`g1`, `u1`, etc.); `status` is `free`,
+`fixed` or `linked`. Target one dataset with reaction `object_key` and quoted
+`dataset_id`. Target a theory/statistical setting with `setting_id`, e.g.
+`Q20`, `positivity`, `theory.order`, or `Gaussian_initialization`. Target an
+unresolved requirement with `requirement_id`, e.g. `U03`. Requirements default
+to current blockers only; `detail:"full"` also exposes historical/conditional notes.
+
+Discovery and retrieval return `catalog_ref`, a stable canonical ID pinned to
+the SHA256 revision of all three approved documents. Pass this string directly
+as `analysis_id` on later catalog calls. Changed source documents make the
+reference stale and produce an error; aliases alone select the current revision.
+`catalog_ref` plus a record's JSON pointer identifies its exact source without
+copying its values into subsequent requests. No client-supplied paths are followed.
+
+Future campaign-from-catalog operations should resolve this reference server-side,
+validate current requirements, and pass the saved configuration to the existing
+campaign/input-generation/farm services. They should return campaign/job IDs and
+reuse existing cached-analysis tools for compact result summaries, avoiding an
+LLM download/retransmission loop. Those operations are not implemented here.
+The existing scientific prediction cache is campaign/replica-specific and remains
+unchanged. Catalog paging instead uses a bounded, document-hash-keyed in-memory
+cache; each request still validates and hashes the approved documents. It writes
+no campaign cache, numerical dataset, or artifact.
+
+Other sections are `provenance`, `analysis_config`, `paper_findings` and
+`unresolved_settings`. Dataset `object_key` filters by reaction. Each page
+reports its catalog hash, section/filter, `items`, `complete` and `next_cursor`.
+Keep the same analysis/section/filter and pass `next_cursor` as `cursor` until
+`complete` is true. `limit` is an item ceiling (1–50), not a promise of that many
+items: the entire MCP result, including its duplicate text/structured views,
+is bounded to 10 KiB. Defaults use at most 10 items. A changed catalog invalidates
+old cursors; restart retrieval. Keep `detail` and all selectors unchanged as well.
+
+Structured records retain original values, evidence labels and source references,
+with a JSON pointer back into `analysis_config`. An oversized record is returned
+as numbered JSON-text fragments: concatenate `text` by `fragment_offset`, check
+`fragment_sha256`, then decode the full JSON record. No tail is dropped.
+
+For a complete lossless export, request `section:"analysis_config"` and concatenate
+document `text` chunks by `char_offset` across pages, after reassembling any record
+fragments. UTF-8 encoding of the joined text must match `document_sha256` and
+`document_bytes`. The two Markdown document sections use the same procedure.
+Historical paper-only unknowns are preserved in these documents; use
+`get_analysis_requirements` for current blockers and resolved-policy distinctions.
+Priorities are reported from the catalog; unprioritized historical notes remain
+unassigned. The confirmed reproduction configuration supersedes older audit notes.
+
+To add an analysis, add a regular directory under the approved repository catalog
+with `analysis_config.json`, `paper_findings.md` and `unresolved_settings.md`.
+Use the existing `femtomind.paper_analysis_catalog` schema (supported version 0.x),
+a unique `analysis_id`, publication reference, scope and validation/readiness
+metadata. Follow the existing layered scientific/source-verification structure
+for selective sections; complete document retrieval works for every valid entry.
+Every active blocker ID must have a current, unresolved resolution-register record.
+No per-analysis tool changes are needed. Invalid metadata, duplicate IDs and
+symlink/junction escapes are rejected. MCP arguments cannot select filesystem paths.
+
+Launch payloads and hot-redeploy staging include the same validated catalog files.
+The catalog directory participates in the existing swap/backup/rollback transaction.
+This implementation does not itself deploy or modify a running gateway.
+
+Local transport and package checks (stdlib; no production credentials):
+
+```text
+python -B -m unittest discover -s tests -p test_analysis_catalog_mcp.py -v
+```

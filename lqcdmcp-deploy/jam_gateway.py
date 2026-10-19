@@ -60,7 +60,7 @@ import urllib.parse
 import urllib.request
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from jamai import analysis_cache, object_registry, ff_registry, ff_plotting, pdf_plotting
+from jamai import analysis_cache, analysis_catalog, object_registry, ff_registry, ff_plotting, pdf_plotting
 from jamai.dataset_catalog import (CONFIGURATION_DATASETS, CONFIGURATION_METADATA,
                                   CONFIGURATION_ONLY_REACTIONS, configuration_dataset_block)
 from jamai.object_registry import OBJECTS, SELECTABLE_OBJECTS
@@ -9408,7 +9408,58 @@ COLLECTION_ARG = "The collection id, or the campaign name as the user says it (i
 ASYNC_NOTE = ("A call answers within about 40 s: when the work takes longer it returns status running with "
               "a job_id; then call analysis_result(job_id) until it is done.")
 
+def _analysis_catalog_store():
+    # Only the repository/deployed application catalog is readable by these tools.
+    return analysis_catalog.Catalog(analysis_catalog.catalog_root(HERE))
+
+
+def _catalog_request(operation, arguments):
+    if not isinstance(arguments, dict):
+        raise ValueError("catalog arguments must be an object")
+    allowed = {"list": {"cursor", "limit"},
+               "get": {"analysis_id", "section", "object_key", "cursor", "limit", "detail", "group", "status", "dataset_id", "setting_id"},
+               "requirements": {"analysis_id", "cursor", "limit", "detail", "requirement_id"}}[operation]
+    # Shared-gateway identity is already checked by the existing MCP dispatcher.
+    kwargs = {k: v for k, v in arguments.items() if k != "username"}
+    if set(kwargs) - allowed:
+        raise ValueError("unsupported catalog argument(s): " + ", ".join(sorted(set(kwargs) - allowed)))
+    if operation != "list" and "analysis_id" not in kwargs:
+        raise ValueError("analysis_id is required; discover IDs with list_analysis_catalog")
+    return getattr(_analysis_catalog_store(), operation)(**kwargs)
+
+
 TOOLS = {
+    "list_analysis_catalog": {
+        "compact": True,
+        "desc": "Compact read-only discovery of published analyses: publication, objects, readiness and reusable catalog_ref. Scientific configuration stays server-side; no HPC connection is needed. Follow next_cursor if present.",
+        "schema": {"type": "object", "additionalProperties": False, "properties": {
+            "cursor": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10}}},
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        "fn": lambda a: _catalog_request("list", a)},
+    "get_analysis_catalog": {
+        "compact": True,
+        "desc": "Read-only catalog inspection. Defaults to compact summaries; detail=full explicitly requests definitions/evidence. Filter parameters by object_key/group/status, datasets by reaction object_key/dataset_id, or qcd/statistics by setting_id. Reuse catalog_ref as analysis_id; do not download/retransmit full configuration for orchestration. Explicit document sections provide lossless exports. Follow next_cursor with identical selectors. No campaign creation or fitting.",
+        "schema": {"type": "object", "additionalProperties": False, "required": ["analysis_id"], "properties": {
+            "analysis_id": {"type": "string", "description": "Stable analysis ID, alias or revision-pinned catalog_ref from discovery."}, "section": {"type": "string", "enum": ["overview", "parametrization", "parameters", "datasets", "qcd", "statistics", "provenance", "analysis_config", "paper_findings", "unresolved_settings", "documents"], "default": "overview"},
+            "object_key": {"type": "string", "default": ""}, "cursor": {"type": "string"},
+            "detail": {"type": "string", "enum": ["summary", "full"], "default": "summary"},
+            "group": {"type": "string", "description": "Exact parameter shape prefix, e.g. g1 or u1."},
+            "status": {"type": "string", "enum": ["free", "fixed", "linked"]},
+            "dataset_id": {"type": "string", "description": "Exact ID, qualified by reaction object_key."},
+            "setting_id": {"type": "string", "description": "Exact setting key or scientific ID, e.g. positivity, Q20 or theory.order."},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10}}},
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        "fn": lambda a: _catalog_request("get", a)},
+    "get_analysis_requirements": {
+        "compact": True,
+        "desc": "Read-only current reproduction blockers with priority, rationale and evidence. Defaults to active blockers only; requirement_id targets one, detail=full also includes historical/conditional notes. Resolved issues stay resolved. Accepts ID or catalog_ref; follow next_cursor.",
+        "schema": {"type": "object", "additionalProperties": False, "required": ["analysis_id"], "properties": {
+            "analysis_id": {"type": "string"}, "cursor": {"type": "string"},
+            "detail": {"type": "string", "enum": ["summary", "full"], "default": "summary"},
+            "requirement_id": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10}}},
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        "fn": lambda a: _catalog_request("requirements", a)},
     "ping": {"desc": "Reply pong.",
              "schema": {"type": "object", "properties": {}},
              "fn": lambda a: ping()},
@@ -9767,6 +9818,12 @@ _FALLBACK_PANEL = ("<!doctype html><meta charset='utf-8'><title>JAM gateway</tit
                    "missing on the gateway node. Re-run hot_redeploy.py to upload it.</p>")
 
 INSTRUCTIONS = (
+    "Published-analysis catalog questions use list_analysis_catalog, get_analysis_catalog and "
+    "get_analysis_requirements. These are read-only, need no HPC/workspace, and do not start "
+    "a fit. Prefer summaries and targeted selectors; keep numerical configuration server-side and "
+    "reuse catalog_ref instead of retrieving/retransmitting all parameters. Full definitions/export "
+    "are opt-in. Follow pagination; use current requirements rather than historical unresolved notes. "
+    "Only follow the campaign workflow below when the user requests a fitting campaign.\n"
     f"JAM global-analysis gateway for {SITE['label']}: the FemtoMind JAM app's fitting "
     "campaign, as a conversation. Every call acts as the gateway's owner (the user whose "
     "dashboard token the client sends); never ask for or pass another username. Go one "
@@ -9911,7 +9968,7 @@ def _tool_entry(name, spec):
     return entry
 
 
-def _tool_result(out, is_error=False):
+def _tool_result(out, is_error=False, compact=False):
     images, ui = [], None
     if isinstance(out, dict):
         # Plots travel as MCP image content (the model sees them; MCP Apps
@@ -9926,7 +9983,7 @@ def _tool_result(out, is_error=False):
         text_view = out
     else:
         text_view = out
-    text = json.dumps(text_view, indent=2) if isinstance(text_view, (dict, list)) else str(text_view)
+    text = (json.dumps(text_view, separators=(",", ":")) if compact else json.dumps(text_view, indent=2)) if isinstance(text_view, (dict, list)) else str(text_view)
     res = {"content": [{"type": "text", "text": text}] +
                       [{"type": "image", "data": i["data"], "mimeType": i.get("mimeType", "image/png")}
                        for i in images],
@@ -10095,7 +10152,7 @@ class H(BaseHTTPRequestHandler):
                         result = _tool_result("unknown tool", is_error=True)
                     else:
                         try:
-                            result = _tool_result(spec["fn"](args))
+                            result = _tool_result(spec["fn"](args), compact=spec.get("compact", False))
                         except Exception as e:
                             result = _tool_result(f"error: {e}", is_error=True)
         else:
