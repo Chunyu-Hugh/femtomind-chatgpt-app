@@ -8,6 +8,7 @@
 
 Prints a step-by-step report you can share: nothing in it is a credential.
 """
+import importlib.util
 import json
 import os
 import re
@@ -183,6 +184,17 @@ missing = [n for n in ("campaign_options", "validate_campaign", "submit_campaign
            if n not in names]
 say(f"   {len(names)} tools; campaign tools present: {'all' if not missing else 'MISSING ' + ', '.join(missing)}")
 say(f"   node_diag hidden from AI clients: {'yes (good)' if 'node_diag' not in names else 'NO (bad)'}")
+# Plugins never stop this check: the JAM gateway works without them.
+_spec = importlib.util.spec_from_file_location("jam_plugins", os.path.join(HERE, "plugins", "__init__.py"))
+_plugins = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_plugins)
+_shipped, _skipped = _plugins.ship_files()
+for _name in sorted({p.split("/")[1] for p in _shipped if p.count("/") > 1}):
+    _present = [n for n in names if n.startswith(_name + "_")]
+    say(f"   plugin {_name}: " + (", ".join(_present) if _present else
+        "MISSING on the running gateway (its start-up log says why; update it with python3 hot_redeploy.py)"))
+for _name, _why in _skipped.items():
+    say(f"   plugin {_name}: not in this folder's package ({_why})")
 if missing or "node_diag" in names:
     sys.exit("stop: the running gateway is an older version than the code in this folder. Update it with "
              "python3 hot_redeploy.py (keeps the cluster sign-in), then run python3 deploy_and_verify.py "

@@ -5,6 +5,8 @@ Each plugin is a folder plugins/<name>/ with a plugin.py that defines:
   NAME          the folder name; every tool it adds is named <NAME>_<something>
   SHIP          paths (relative to the folder, glob patterns allowed) that the
                 job script and hot_redeploy.py carry to the gateway node
+  ROUTING       one line for the routing note that opens the MCP instructions:
+                which questions belong to this plugin (models pick tools by it)
   INSTRUCTIONS  text appended to the gateway's MCP instructions
   load()        called once at gateway start; raises if the plugin cannot run
   tools()       {tool name: spec}, spec as in jam_gateway.TOOLS
@@ -23,6 +25,7 @@ import glob
 import importlib.util
 import os
 import re
+import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -57,15 +60,49 @@ def _module(name):
     return module
 
 
+def _git(args, cwd):
+    return subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True, timeout=60)
+
+
+def submodule_problem(folder):
+    """Why a git submodule inside `folder` must not be shipped, or None. The
+    deploy scripts ship the files on disk, so a submodule left at another
+    commit than the one this repository pins (git pull does not move it), or
+    with uncommitted edits, would deploy an unrecorded version."""
+    try:
+        status = _git(["submodule", "status", "--", "."], folder)
+    except (OSError, subprocess.SubprocessError):
+        return None                 # no git: not a checkout, nothing to compare
+    if status.returncode != 0:
+        return None
+    for line in status.stdout.splitlines():
+        flag, path = line[:1], line[1:].split()[1]
+        if flag == "-":
+            return f"submodule {path} is not checked out: git submodule update --init"
+        if flag == "+":
+            return (f"submodule {path} is not at the commit this repository pins: git submodule update "
+                    f"(or, to pin its current commit, git add it and commit)")
+        if flag == "U":
+            return f"submodule {path} has merge conflicts"
+        dirty = _git(["status", "--porcelain"], os.path.join(folder, path))
+        if dirty.returncode != 0 or dirty.stdout.strip():
+            return (f"submodule {path} has uncommitted or untracked files: commit them in its own "
+                    f"repository, or remove them")
+    return None
+
+
 def ship_files():
     """({path relative to the app folder: local path}, {plugin: why it is left out})
     of the plugin files the gateway node needs. Only the selected plugins whose
-    every SHIP pattern matches a file are shipped (a submodule that is not
-    checked out is left out, with the reason)."""
+    every SHIP pattern matches a file, and whose submodules are exactly at the
+    pinned commit, are shipped; the others are left out with the reason."""
     files = {"plugins/__init__.py": os.path.join(ROOT, "__init__.py")}
     skipped = {}
     for name in selected():
         try:
+            problem = submodule_problem(os.path.join(ROOT, name))
+            if problem:
+                raise RuntimeError(problem)
             module = _module(name)
             mine = {}
             for pattern in module.SHIP:
@@ -85,9 +122,10 @@ def ship_files():
 
 def attach(tools, reserved_uris):
     """Load the selected plugins and add their tools to `tools` (the gateway's
-    TOOLS). Returns (resources, instructions, status). A plugin is added whole
-    or not at all; a tool name or resource URI that is taken is an error."""
-    resources, texts = {}, []
+    TOOLS). Returns (resources, routing lines, instructions, status). A plugin
+    is added whole or not at all; a tool name or resource URI that is taken is
+    an error."""
+    resources, texts, routing = {}, [], []
     status = {"loaded": [], "errors": {}}
     for name in selected():
         try:
@@ -108,11 +146,14 @@ def attach(tools, reserved_uris):
                     raise ValueError(f"resource {uri!r} is not a free ui:// URI")
                 if not (isinstance(res.get("mimeType"), str) and callable(res.get("text"))):
                     raise ValueError(f"resource {uri!r} needs mimeType and text")
+            if not (isinstance(module.ROUTING, str) and module.ROUTING.strip()):
+                raise ValueError("ROUTING must be a nonempty line")
         except Exception as e:
             status["errors"][name] = f"{type(e).__name__}: {e}"
             continue
         tools.update(new_tools)
         resources.update(new_resources)
+        routing.append("- " + module.ROUTING.strip())
         texts.append(module.INSTRUCTIONS.strip())
         status["loaded"].append(name)
-    return resources, "".join("\n\n" + t for t in texts), status
+    return resources, routing, "".join("\n\n" + t for t in texts), status

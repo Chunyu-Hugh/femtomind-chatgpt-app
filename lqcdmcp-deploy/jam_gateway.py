@@ -9313,9 +9313,20 @@ if os.path.isfile(_PLUGINS_INIT):
         _plugins = importlib.util.module_from_spec(_spec)
         sys.modules["jam_plugins"] = _plugins
         _spec.loader.exec_module(_plugins)
-        PLUGIN_RESOURCES, _plugin_text, PLUGIN_STATUS = _plugins.attach(
+        PLUGIN_RESOURCES, _routing, _plugin_text, PLUGIN_STATUS = _plugins.attach(
             TOOLS, {PANEL_URI, PANEL_URI_SKYBRIDGE})
-        INSTRUCTIONS += _plugin_text
+        if _routing:
+            # Models choose tools by what they read first: with several tasks on
+            # one gateway, say up front which questions go where.
+            INSTRUCTIONS = (
+                "This gateway serves independent physics tasks. Decide the task from the user's "
+                "question, then use only that task's tools; never start one task's steps for "
+                "the other's question:\n" + "\n".join(_routing) + "\n"
+                "- JAM (every other tool): global QCD analysis with FitPack on ifarm: proton and "
+                "pion PDFs, fragmentation functions, reactions, datasets and cuts, fitting "
+                "campaigns, their results and plots, other Slurm jobs. Follow the JAM steps below.\n"
+                "If the question could belong to either task, ask the user which one they mean.\n\n"
+                + INSTRUCTIONS + _plugin_text)
     except Exception as e:
         PLUGIN_STATUS = {"loaded": [], "errors": {"plugins": f"{type(e).__name__}: {e}"}}
 

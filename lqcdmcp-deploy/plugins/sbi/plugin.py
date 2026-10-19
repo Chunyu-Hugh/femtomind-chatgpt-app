@@ -17,10 +17,48 @@ SHIP = ("plugin.py", "upstream/backend.py", "upstream/server.py",
         "upstream/static/panel.html", "upstream/data/*.json")
 UPSTREAM = os.path.join(os.path.dirname(os.path.abspath(__file__)), "upstream")
 
+# False: question and answer only, the model answers in text from the tool
+# results, with no panel resources or links. True: the tools also link
+# upstream's interactive panel, which draws the conversation's result. Only
+# turn it on with an upstream commit whose panel handles chat results (one
+# that opens empty otherwise), pinned in the submodule.
+PANEL = True
+
 # ChatGPT keys its widget on the legacy skybridge MIME, other MCP Apps hosts
 # on the standard one, as for the JAM panel: the same file under two URIs.
 UI_URI = "ui://nesap/sbi-panel"
 UI_URI_SKYBRIDGE = "ui://nesap/sbi-panel.skybridge"
+
+ROUTING = (
+    "NESAP SBI (tools sbi_options, sbi_infer, sbi_validation): inferring the QCD coupling alpha_s "
+    "from fixed Pythia simulation benchmarks (benchmark-1 to benchmark-5) with a neural event "
+    "classifier: likelihood, best fit, confidence intervals, comparison with the generating truth, "
+    "the method's validation. Questions about simulation-based inference (SBI), the classifier, "
+    "NESAP or these benchmarks belong here. It runs inside the gateway and never needs HPC "
+    "sign-in, a workspace, campaigns or Slurm. (The alphaS setting of a JAM fit is JAM.)")
+
+# Models choose tools by their descriptions, so these replace upstream's short
+# ones here (upstream is not modified). A tool without an entry keeps its own
+# description behind the same "NESAP SBI only." marker.
+DESCRIPTIONS = {
+    "sbi_options": (
+        "NESAP SBI only. What the SBI demonstration offers: its one parameter (the QCD coupling "
+        "alpha_s), the frozen neural classifier and calibration, the five fixed Pythia benchmark "
+        "samples (benchmark-1 to benchmark-5, 80,000 events each) and the limitations. Start here "
+        "for an SBI question. Runs inside the gateway: no HPC sign-in, workspace or Slurm."),
+    "sbi_infer": (
+        "NESAP SBI only. Infer alpha_s for one fixed Pythia benchmark (benchmark_id benchmark-1 to "
+        "benchmark-5, default benchmark-3) from archived neural-classifier score counts: best fit, "
+        "68% and 95% likelihood-ratio confidence sets (not Bayesian credible intervals), the "
+        "likelihood curve, numerical checks, provenance, and the generating truth for comparison. "
+        "Computed live inside the gateway in well under a second: no HPC sign-in, workspace or Slurm. "
+        "It takes no user data and cannot generate events or train."),
+    "sbi_validation": (
+        "NESAP SBI only. Archived validation of the fixed SBI method: bias, interval widths and "
+        "coverage from 2,560 historical pseudo-experiments at five alpha_s truths, and the scope "
+        "of that evidence. Historical results, not a new validation. Runs inside the gateway: no "
+        "HPC sign-in, workspace or Slurm."),
+}
 
 INSTRUCTIONS = (
     "NESAP SBI (tools sbi_options, sbi_infer, sbi_validation) is a separate workflow from the JAM "
@@ -37,7 +75,18 @@ INSTRUCTIONS = (
     "from numerical checks. These are likelihood-ratio confidence sets, not Bayesian credible "
     "intervals. Do not change nuisance parameters, sample size, calibration or model identity. "
     "Do not call cluster login, shell, Slurm, generation or training tools for this workflow. "
-    "Preserve the scientific provenance in exports and acknowledge unsupported requests.")
+    "Preserve the scientific provenance in exports and acknowledge unsupported requests.\n"
+    "Answer in plain text, in the user's language, question by question: first the benchmark and "
+    "the best fit, then the 68% and 95% confidence sets (every component, flagging any truncated "
+    "one), then whether the numerical checks passed; the generating truth and the validation only "
+    "when asked or relevant. Give alpha_s to six decimals, as returned, never recomputed. End with "
+    "one line saying that only the likelihood ran live and everything else was produced earlier. "
+    + ("The SBI panel shown with sbi_infer's answer draws this result's likelihood curve with both "
+       "confidence sets; there the user can show the generating truth, run another benchmark and "
+       "download the result JSON. Point the user to it instead of describing the plot."
+       if PANEL else
+       "If the user wants the curve or the full result, give the returned numbers (curve.alpha and "
+       "curve.twice_delta_log_likelihood) rather than describing a plot you cannot show."))
 
 _backend = _server = None
 
@@ -68,10 +117,11 @@ def _call(name, args):
 def tools():
     out = {}
     for t in _server.tools_list():
-        meta = copy.deepcopy(t.get("_meta") or {})
+        meta = copy.deepcopy(t.get("_meta") or {}) if PANEL else {}
         if "openai/outputTemplate" in meta:
             meta["openai/outputTemplate"] = UI_URI_SKYBRIDGE
-        out[t["name"]] = {"desc": t["description"], "schema": copy.deepcopy(t["inputSchema"]),
+        desc = DESCRIPTIONS.get(t["name"]) or "NESAP SBI only. " + t["description"]
+        out[t["name"]] = {"desc": desc, "schema": copy.deepcopy(t["inputSchema"]),
                           "annotations": copy.deepcopy(t.get("annotations")), "meta": meta or None,
                           "fn": lambda a, name=t["name"]: _call(name, a)}
     return out
@@ -83,7 +133,9 @@ def _panel():
 
 
 def resources():
-    meta = {"ui": {"prefersBorder": True}, "openai/widgetPrefersBorder": True}
+    if not PANEL:
+        return {}
+    meta ={"ui": {"prefersBorder": True}, "openai/widgetPrefersBorder": True}
     return {UI_URI: {"name": "sbi-panel", "mimeType": _server.UI_MIME, "text": _panel, "meta": meta,
                      "description": "NESAP SBI likelihood panel"},
             UI_URI_SKYBRIDGE: {"name": "sbi-panel-chatgpt", "mimeType": "text/html+skybridge",
