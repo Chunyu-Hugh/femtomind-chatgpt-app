@@ -60,7 +60,7 @@ import urllib.parse
 import urllib.request
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from jamai import object_registry, ff_registry, ff_plotting
+from jamai import analysis_cache, object_registry, ff_registry, ff_plotting
 from jamai.dataset_catalog import (CONFIGURATION_DATASETS, CONFIGURATION_METADATA,
                                   CONFIGURATION_ONLY_REACTIONS, configuration_dataset_block)
 from jamai.object_registry import OBJECTS, SELECTABLE_OBJECTS
@@ -269,10 +269,17 @@ def _run_ifarm_py(user, code, apptainer=False, timeout=300, cap=4000, extra_path
     all shell-quoting issues). apptainer=True runs inside the site's image
     (needed for fitpack/numpy imports)."""
     b64 = base64.b64encode(code.encode()).decode()
+    unpack = "base64 -d"
+    if len(b64) > 60000:
+        # The command line is one SSH argument (at most 128 KiB): a long
+        # script travels compressed and the host's python3 unpacks it.
+        b64 = base64.b64encode(zlib.compress(code.encode(), 9)).decode()
+        unpack = ("base64 -d | python3 -c " +
+                  _shq("import sys, zlib; sys.stdout.buffer.write(zlib.decompress(sys.stdin.buffer.read()))"))
     if apptainer:
-        run = f"echo {b64} | base64 -d | {_container_exec(_workspace(user), extra_path, env)} -"
+        run = f"echo {b64} | {unpack} | {_container_exec(_workspace(user), extra_path, env)} -"
     else:
-        run = f"echo {b64} | base64 -d | python3"
+        run = f"echo {b64} | {unpack} | python3"
     return _remote(user, run, timeout=timeout, cap=cap)
 
 
@@ -2215,10 +2222,19 @@ def _registry(u, op):
 
 
 def _collection(u, cid):
-    for e in _registry(u, {"kind": "read"}):
+    """The campaign a collection id names, or, as people say it, its campaign
+    name (case and separators aside): the newest submission of that name."""
+    entries = _registry(u, {"kind": "read"})
+    for e in entries:
         if e.get("collection_id") == cid:
             return e
-    return None
+    want = analysis_cache.norm_name(cid or "")
+    if not want:
+        return None
+    named = [e for e in entries if analysis_cache.norm_name(e.get("campaign_name") or "") == want]
+    if not named:
+        named = [e for e in entries if analysis_cache.norm_name(e.get("collection_id") or "").startswith(want)]
+    return max(named, key=lambda e: e.get("created_at", "")) if named else None
 
 
 def _ai_branch_files(u):
@@ -2709,6 +2725,7 @@ def append_replicas(collection_id="", count=0, confirm="", username=""):
     e = _collection(u, collection_id)
     if not e:
         return {"status": "error", "message": f"No campaign {collection_id!r}; list_campaigns shows them."}
+    collection_id = e["collection_id"]      # a campaign name resolves to its id
     try:
         count = int(count)
         if not 1 <= count <= 2000:
@@ -2885,6 +2902,7 @@ def campaign_status(collection_id="", username=""):
     e = _collection(u, collection_id)
     if not e:
         return {"status": "error", "message": f"No campaign {collection_id!r}."}
+    collection_id = e["collection_id"]      # a campaign name resolves to its id
     prog = _campaign_progress(u, e)
     # A replica's log is under the job whose first-last range holds the replica.
     out = {"status": "ok", "collection_id": collection_id, "replicas": e["replicas"],
@@ -2906,6 +2924,7 @@ def cancel_campaign(collection_id="", confirm="", username=""):
     e = _collection(u, collection_id)
     if not e:
         return {"status": "error", "message": f"No campaign {collection_id!r}."}
+    collection_id = e["collection_id"]      # a campaign name resolves to its id
     ids = [str(j["job_id"]) for j in e.get("jobs") or []]
     prog = _campaign_progress(u, e)
     if prog.get("queue") is None:
@@ -2943,6 +2962,7 @@ def delete_campaign(collection_id="", delete_folder=False, confirm="", username=
     e = _collection(u, collection_id)
     if not e:
         return {"status": "error", "message": f"No campaign {collection_id!r}."}
+    collection_id = e["collection_id"]      # a campaign name resolves to its id
     q = _campaign_progress(u, e).get("queue")
     if q is None:
         return {"status": "error", "message": QUEUE_UNKNOWN_REFUSED}
@@ -2961,6 +2981,75 @@ def delete_campaign(collection_id="", delete_folder=False, confirm="", username=
         if re.fullmatch(r"[A-Za-z0-9._-]+", e["campaign_folder"]):
             removed = "GONE" in (_remote(u, f"rm -rf {_shq(folder)} && echo GONE", timeout=120).get("out") or "")
     return {"status": "ok", "deleted": collection_id, "folder_removed": removed}
+
+
+# ---- long analyses ----------------------------------------------------------------
+#
+# AI clients give up on a tool call after a minute or two, while a first data
+# vs theory or PDF evaluation can take several. Such a call runs in a thread of
+# its own: the call waits JOB_WAIT seconds and, if it is not done, answers with
+# a job id; analysis_result(job_id) waits again and returns the result once it
+# is there. The same request while one is running joins it instead of starting
+# a second. Jobs live in this process only; their results also land in the
+# campaign's cache, so a restarted gateway answers the next call from there.
+
+JOB_WAIT = 40                       # seconds a call waits before answering with a job id
+JOB_KEEP = 2 * 3600                 # a finished job is forgotten after this
+_JOBS = {}
+_JOBS_LOCK = threading.Lock()
+
+
+def _job_reply(job, wait):
+    if job["done"].wait(wait):
+        out = dict(job["result"]) if isinstance(job["result"], dict) else {"status": "ok", "result": job["result"]}
+        out["job_id"] = job["job_id"]
+        return out
+    return {"status": "running", "job_id": job["job_id"], "kind": job["kind"],
+            "collection_id": job["params"].get("collection_id"), "request": job["params"],
+            "elapsed_s": round(time.time() - job["started"]),
+            "message": "Still computing on the cluster (the first evaluation of these replicas takes "
+                       "minutes; later ones read the cache). Call analysis_result with this job_id to wait "
+                       "for it. Do not start the analysis again."}
+
+
+def _background(u, kind, params, fn):
+    key = json.dumps([u, kind, params], sort_keys=True, default=str)
+    now = time.time()
+    with _JOBS_LOCK:
+        for jid in [j for j, x in _JOBS.items() if x["done"].is_set() and now - x["finished"] > JOB_KEEP]:
+            del _JOBS[jid]
+        job = next((x for x in _JOBS.values() if x["key"] == key and not x["done"].is_set()), None)
+        if job is None:
+            job = {"job_id": secrets.token_hex(6), "key": key, "kind": kind, "params": params, "user": u,
+                   "started": now, "finished": None, "done": threading.Event(), "result": None}
+            _JOBS[job["job_id"]] = job
+
+            def run():
+                _tls.user = u
+                try:
+                    job["result"] = fn()
+                except Exception as exc:
+                    job["result"] = {"status": "error", "message": f"{type(exc).__name__}: {exc}"}
+                finally:
+                    job["finished"] = time.time()
+                    job["done"].set()
+
+            threading.Thread(target=run, name=f"job-{kind}", daemon=True).start()
+    return _job_reply(job, JOB_WAIT)
+
+
+def analysis_result(job_id="", username=""):
+    """The result of a long analysis (analyze_by_experiment, campaign_pdf_plots)
+    that answered with status running."""
+    u, err = _need_user(username)
+    if err:
+        return err
+    job = _JOBS.get(str(job_id or ""))
+    if not job or job["user"] != u:
+        return {"status": "error", "message": f"No analysis job {job_id!r} (jobs are kept {JOB_KEEP // 3600} h "
+                                              "and not across a gateway restart): run the analysis again; "
+                                              "what was already computed is cached."}
+    return _job_reply(job, JOB_WAIT)
 
 
 # ---- analysis ---------------------------------------------------------------------
@@ -3028,6 +3117,7 @@ def postprocess_campaign(collection_id="", username=""):
     e = _collection(u, collection_id)
     if not e:
         return {"status": "error", "message": f"No campaign {collection_id!r}."}
+    collection_id = e["collection_id"]      # a campaign name resolves to its id
     code = _fill(_POSTPROCESS, STAGE=_stage_root(u, e), TOTAL=int(e["replicas"]))
     r = _run_ifarm_py(u, code, timeout=120, cap=2000000)
     try:
@@ -3056,6 +3146,7 @@ def campaign_summary(collection_id="", username=""):
     e = _collection(u, collection_id)
     if not e:
         return {"status": "error", "message": f"No campaign {collection_id!r}."}
+    collection_id = e["collection_id"]      # a campaign name resolves to its id
     p = f"{_stage_root(u, e)}/current/fit_summary.json"
     r = _run_ifarm_py(u, f"import json; print(json.dumps(json.load(open({p!r}))))", timeout=60, cap=2000000)
     try:
@@ -3104,7 +3195,7 @@ def campaign_summary(collection_id="", username=""):
 _PDF_PLOTS = _REPLICA_STATE + r'''
 import glob, json, os, base64, uuid
 stage = __STAGE__; flavors = __FLAVORS__; q2 = __Q2__; mean_overlay = __MEAN__
-object_key = __OBJECT__
+object_key = __OBJECT__; export_png = __PNG__; cache = __CACHE__
 credible_interval = validate_credible_interval(__INTERVAL__)
 interval_text = str(credible_interval)
 if interval_text.endswith('.0'): interval_text = interval_text[:-2]
@@ -3123,7 +3214,7 @@ for p in sorted(glob.glob(os.path.join(stage, 'current', 'replica_*', 'fit_summa
         excluded[state or 'failed'] += 1
     elif not s.get('msr_path') or not os.path.isfile(s['msr_path']):
         excluded['missing_msr'] += 1
-    else: records.append(s)
+    else: records.append(dict(s, identity=os.path.basename(os.path.dirname(p))))
 notes = []
 if credible_interval == 100:
     notes.append('100% covers all available fitted replicas at each x, not the entire underlying posterior distribution.')
@@ -3142,65 +3233,98 @@ band_drawn = mean_overlay and len(records) > 1
 if len(records) < 2:
     notes.append('Only one valid fitted replica is available. At least two are required for a credible interval; no band is drawn.')
 metadata.update(band_drawn=band_drawn, note=' '.join(notes))
-import matplotlib; matplotlib.use('Agg')
-from matplotlib import pyplot as plt
 import numpy as np
-from fitlib.resman import RESMAN
-from tools.config import conf, load_config
-from tools.tools import load
-conf.clear(); load_config(os.path.join(stage, 'input.py'))
-resman = RESMAN(nworkers=1, parallel=False, datasets=False)
-pdf = conf[object_key]
 xs = np.logspace(-3, np.log10(0.9), 120)
-curves = {f: [] for f in flavors}
-try:
-    for s in records:
-        try:
-            m = load(s['msr_path'])
-            order = m['order'][0]; params = m['params'][0]
-            if order is None or params is None or not np.isfinite(np.asarray(params, dtype=float)).all():
-                raise ValueError('Missing or nonfinite fitted parameters/order.')
-            resman.parman.order = order
-            resman.parman.set_new_params(params, initial=True)
-            for f in flavors:
-                values = np.asarray([distribution_value(pdf, float(x), q2, f, object_key) for x in xs], dtype=float)
-                if values.shape != xs.shape or not np.isfinite(values).all():
-                    raise ValueError('Invalid or nonfinite plotted curve for %s %s.' % (object_key, f))
-                curves[f].append(values)
-        except (OSError, KeyError, TypeError, ValueError, ArithmeticError) as exc:
-            print(json.dumps({'status': 'error', **metadata, 'band_drawn': False,
-                              'message': 'Cannot plot fitted replica %s (%s): %s No plots were generated.'
-                                         % (s.get('replica', '?'), s['msr_path'], exc)}))
-            raise SystemExit(0)
-finally:
-    resman.shutdown()
-names = {'ub': r'\bar{u}', 'db': r'\bar{d}', 'sb': r'\bar{s}'}
-out = []
-request_id = uuid.uuid4().hex
+# Replica curves per flavor are cached (analysis/cache/pdf): a new Q2 or flavor
+# is evaluated once, every later redraw only reads them.
+sig = [[s['identity'], int(os.path.getmtime(s['msr_path']))] for s in records]
+cache_file = lambda f: os.path.join(cache, 'pdf', '%s_q2_%s_%s.json' % (object_key, ('%g' % q2).replace('.', 'p'), f))
+curves, todo = {}, []
 for f in flavors:
-    arr = np.array(curves[f], dtype=float)
-    fig, ax = plt.subplots(figsize=(6.0, 4.0))
-    for c in arr: ax.plot(xs, c, lw=1.0, alpha=0.5)
-    if band_drawn:
-        low, high = pointwise_credible_interval(arr, credible_interval)
-        ax.fill_between(xs, low, high, color='#0f172a', alpha=0.10, lw=0, label=interval_label)
-    if mean_overlay:
-        ax.plot(xs, arr.mean(axis=0), color='#111', lw=2.2, ls='--', label='mean'); ax.legend(frameon=False)
-    ax.axhline(0, color='#64748b', lw=0.8, ls='--'); ax.set_xscale('log')
-    ax.set_xlabel('$x$'); ax.set_ylabel('$x %s$' % names.get(f, f))
-    caption = interval_label if band_drawn else interval_label + ' not drawn'
-    ax.set_title('%s %s, %d replicas, $Q^2=%g$ GeV$^2$\n%s' % (object_key, f, len(arr), q2, caption)); ax.grid(alpha=0.25, which='both')
-    path = os.path.join(plot_dir, '%s_%s_q2_%g_ci_%s_%s.png' % (object_key, f, q2, interval_text, request_id))
-    fig.tight_layout(); fig.savefig(path, dpi=110); plt.close(fig)
-    out.append({'object': object_key, 'flavor': f, 'path': path, **metadata, 'interval_label': caption,
-                'png_b64': base64.b64encode(open(path, 'rb').read()).decode()})
-print(json.dumps({'status': 'success', **metadata, 'plots': out}))
+    doc = read_json(cache_file(f)) or {}
+    if doc.get('signature') == sig and len(doc.get('curves') or []) == len(records):
+        curves[f] = np.asarray(doc['curves'], dtype=float)
+    else:
+        todo.append(f)
+if todo:
+    from fitlib.resman import RESMAN
+    from tools.config import conf, load_config
+    from tools.tools import load
+    conf.clear(); load_config(os.path.join(stage, 'input.py'))
+    resman = RESMAN(nworkers=1, parallel=False, datasets=False)
+    pdf = conf[object_key]
+    fresh = {f: [] for f in todo}
+    try:
+        for s in records:
+            try:
+                m = load(s['msr_path'])
+                order = m['order'][0]; params = m['params'][0]
+                if order is None or params is None or not np.isfinite(np.asarray(params, dtype=float)).all():
+                    raise ValueError('Missing or nonfinite fitted parameters/order.')
+                resman.parman.order = order
+                resman.parman.set_new_params(params, initial=True)
+                for f in todo:
+                    values = np.asarray([distribution_value(pdf, float(x), q2, f, object_key) for x in xs], dtype=float)
+                    if values.shape != xs.shape or not np.isfinite(values).all():
+                        raise ValueError('Invalid or nonfinite plotted curve for %s %s.' % (object_key, f))
+                    fresh[f].append(values)
+            except (OSError, KeyError, TypeError, ValueError, ArithmeticError) as exc:
+                print(json.dumps({'status': 'error', **metadata, 'band_drawn': False,
+                                  'message': 'Cannot plot fitted replica %s (%s): %s No plots were generated.'
+                                             % (s.get('replica', '?'), s['msr_path'], exc)}))
+                raise SystemExit(0)
+    finally:
+        resman.shutdown()
+    for f in todo:
+        curves[f] = np.asarray(fresh[f], dtype=float)
+        write_json(cache_file(f), {'version': VERSION, 'object': object_key, 'q2': q2, 'flavor': f,
+                                   'signature': sig, 'x': xs.tolist(),
+                                   'curves': [[float('%.8g' % v) for v in c] for c in curves[f]]})
+# The interactive chart gets the mean, the bands at the offered levels and up to
+# 60 replica curves; the full set stays in the cache.
+rnd = lambda a: [float('%.6g' % v) for v in a]
+levels = sorted(set(LEVELS) | {credible_interval})
+chart = {'x': rnd(xs), 'q2': q2, 'object': object_key, 'n_replicas': len(records), 'curves': []}
+for f in flavors:
+    arr = curves[f]
+    item = {'flavor': f, 'mean': rnd(arr.mean(axis=0)), 'bands': {},
+            'replicas': [rnd(c) for c in arr[:60]]}
+    if len(arr) > 1:
+        for L in levels:
+            lo, hi = np.percentile(arr, [(100 - L) / 2, 100 - (100 - L) / 2], axis=0)
+            item['bands']['%g' % L] = [rnd(lo), rnd(hi)]
+    chart['curves'].append(item)
+out = []
+if export_png:
+    import matplotlib; matplotlib.use('Agg')
+    from matplotlib import pyplot as plt
+    names = {'ub': r'\bar{u}', 'db': r'\bar{d}', 'sb': r'\bar{s}'}
+    request_id = uuid.uuid4().hex
+    for f in flavors:
+        arr = curves[f]
+        fig, ax = plt.subplots(figsize=(6.0, 4.0))
+        for c in arr: ax.plot(xs, c, lw=1.0, alpha=0.5)
+        if band_drawn:
+            low, high = pointwise_credible_interval(arr, credible_interval)
+            ax.fill_between(xs, low, high, color='#0f172a', alpha=0.10, lw=0, label=interval_label)
+        if mean_overlay:
+            ax.plot(xs, arr.mean(axis=0), color='#111', lw=2.2, ls='--', label='mean'); ax.legend(frameon=False)
+        ax.axhline(0, color='#64748b', lw=0.8, ls='--'); ax.set_xscale('log')
+        ax.set_xlabel('$x$'); ax.set_ylabel('$x %s$' % names.get(f, f))
+        caption = interval_label if band_drawn else interval_label + ' not drawn'
+        ax.set_title('%s %s, %d replicas, $Q^2=%g$ GeV$^2$\n%s' % (object_key, f, len(arr), q2, caption)); ax.grid(alpha=0.25, which='both')
+        path = os.path.join(plot_dir, '%s_%s_q2_%g_ci_%s_%s.png' % (object_key, f, q2, interval_text, request_id))
+        fig.tight_layout(); fig.savefig(path, dpi=110); plt.close(fig)
+        out.append({'object': object_key, 'flavor': f, 'path': path, **metadata, 'interval_label': caption,
+                    'png_b64': base64.b64encode(open(path, 'rb').read()).decode()})
+print(json.dumps({'status': 'success', **metadata, 'computed_flavors': todo, 'chart': chart, 'plots': out}))
 '''
 
 
 def campaign_pdf_plots(collection_id="", flavors="", q2=10.0, mean_overlay=True, username="", object_key="",
-                       credible_interval=95):
-    """Draw fitted replicas, optionally overlaying the mean and a pointwise credible interval."""
+                       credible_interval=95, export_png=False):
+    """Fitted replicas' PDFs at Q2: the mean and pointwise credible bands for the
+    interactive chart, optionally the PNGs as well."""
     try:
         credible_interval = object_registry.validate_credible_interval(credible_interval)
     except ValueError as exc:
@@ -3211,12 +3335,13 @@ def campaign_pdf_plots(collection_id="", flavors="", q2=10.0, mean_overlay=True,
     e = _collection(u, collection_id)
     if not e:
         return {"status": "error", "message": f"No campaign {collection_id!r}."}
+    collection_id = e["collection_id"]      # a campaign name resolves to its id
     selected = [o["type"] for o in e["input_card"].get("objects", [e["input_card"].get("object", {"type": "pdf"})])]
     object_key = object_key or ("pdf" if "pdf" in selected else selected[0])
     if object_key not in selected or object_key not in SELECTABLE_OBJECTS:
         return {"status": "error", "message": f"Select a fitted distribution object from {selected}."}
     flavors = flavors or ("valence,sea,g" if object_key == "pdf-pion" else "u,d,g,s")
-    fl = list(dict.fromkeys(f.strip() for f in flavors.split(",") if f.strip()))
+    fl = list(dict.fromkeys(f.strip() for f in _names(flavors)))
     if not fl or any(f not in OBJECTS[object_key]["flavors"] for f in fl):
         return {"status": "error", "message": f"flavors for {object_key}: {OBJECTS[object_key]['flavors']}"}
     try:
@@ -3224,27 +3349,39 @@ def campaign_pdf_plots(collection_id="", flavors="", q2=10.0, mean_overlay=True,
         assert math.isfinite(q2) and q2 > 0
     except Exception:
         return {"status": "error", "message": "q2 must be a positive number"}
-    code = inspect.getsource(object_registry) + _fill(
-        _PDF_PLOTS, STAGE=_stage_root(u, e), FLAVORS=fl, Q2=q2, MEAN=bool(mean_overlay), OBJECT=object_key,
-        INTERVAL=credible_interval)
-    ws = _workspace(u)
-    r = _run_ifarm_py(u, code, apptainer=True, timeout=600, cap=20000000,
-                      env={"MPLCONFIGDIR": f"{ws}/{CAMPAIGNS_DIR}/.matplotlib"})
-    try:
-        d = json.loads(r["out"].strip().splitlines()[-1])
-    except Exception:
-        return {"status": "error", "message": "plotting failed", "detail": (r.get("err") or r.get("out") or "")[-600:]}
-    if d.get("status") != "success":
-        return d
-    metadata = {k: d[k] for k in ("credible_interval", "percentiles", "interval_kind", "central_estimator",
-                                  "mean_overlay", "band_drawn", "n_replicas", "excluded_replicas", "note")}
-    plots = [{**{k: v for k, v in p.items() if k != "png_b64"},
-              "data_url": "data:image/png;base64," + p["png_b64"]} for p in d["plots"]]
-    return {"status": "ok", "collection_id": collection_id, "q2": q2, "object": object_key,
-            **metadata,
-            "plots": [{k: v for k, v in p.items() if k != "data_url"} for p in plots],
-            "_images": [{"data": p["png_b64"], "mimeType": "image/png"} for p in d["plots"]],
-            "_panel_plots": plots}
+
+    def run():
+        code = inspect.getsource(object_registry) + "\n" + _analysis_code(
+            _PDF_PLOTS, STAGE=_stage_root(u, e), FLAVORS=fl, Q2=q2, MEAN=bool(mean_overlay), OBJECT=object_key,
+            INTERVAL=credible_interval, PNG=bool(export_png), CACHE=_cache_dir(u, e))
+        ws = _workspace(u)
+        r = _run_ifarm_py(u, code, apptainer=True, timeout=1800, cap=60000000,
+                          env={"MPLCONFIGDIR": f"{ws}/{CAMPAIGNS_DIR}/.matplotlib"})
+        d = _last_json(r)
+        if not d:
+            return {"status": "error", "message": "plotting failed",
+                    "detail": (r.get("err") or r.get("out") or "")[-600:]}
+        if d.get("status") != "success":
+            return d
+        metadata = {k: d[k] for k in ("credible_interval", "percentiles", "interval_kind", "central_estimator",
+                                      "mean_overlay", "band_drawn", "n_replicas", "excluded_replicas", "note")}
+        plots = [{**{k: v for k, v in p.items() if k != "png_b64"},
+                  "data_url": "data:image/png;base64," + p["png_b64"]} for p in d["plots"]]
+        # What the model reads: the mean at a few x per flavor, enough to talk about the curves.
+        chart = d["chart"]
+        picks = [i for i, x in enumerate(chart["x"]) if i % 20 == 0] + [len(chart["x"]) - 1]
+        summary = {c["flavor"]: [[chart["x"][i], c["mean"][i]] for i in picks] for c in chart["curves"]}
+        return {"status": "ok", "collection_id": e["collection_id"], "q2": q2, "object": object_key,
+                **metadata, "flavors": fl, "computed_flavors": d.get("computed_flavors", []),
+                "mean_at_x": summary,
+                "plots": [{k: v for k, v in p.items() if k != "data_url"} for p in plots],
+                "_images": [{"data": p["png_b64"], "mimeType": "image/png"} for p in d["plots"]],
+                "_ui": {"view": "pdf", "chart": chart, "credible_interval": credible_interval,
+                        "panel_plots": plots}}
+
+    return _background(u, "campaign_pdf_plots",
+                       {"collection_id": e["collection_id"], "object": object_key, "flavors": fl, "q2": q2,
+                        "interval": credible_interval, "mean": bool(mean_overlay), "png": bool(export_png)}, run)
 
 
 _FF_PLOTS = _REPLICA_STATE + r"""
@@ -3340,6 +3477,7 @@ def campaign_ff_plots(collection_id="", flavors="", q2=10.0, mean_overlay=True,
     entry = _collection(u, collection_id)
     if not entry:
         return {"status": "error", "message": f"No campaign {collection_id!r}."}
+    collection_id = entry["collection_id"]      # a campaign name resolves to its id
     objects = [obj.get("type") for obj in entry["input_card"].get("objects", [])]
     if not set(objects).intersection(ff_registry.FF_OBJECTS):
         return {"status": "error", "message": "This campaign has no fitted FF parameter group."}
@@ -3373,7 +3511,7 @@ def campaign_ff_plots(collection_id="", flavors="", q2=10.0, mean_overlay=True,
             "available_objects": data["available_objects"], "unavailable_objects": data["unavailable_objects"],
             "plots": [{key: value for key, value in plot.items() if key != "data_url"} for plot in plots],
             "_images": [{"data": plot["png_b64"], "mimeType": "image/png"} for plot in data["plots"]],
-            "_panel_plots": plots}
+            "_ui": {"view": "images", "panel_plots": plots}}
 
 
 _THEORY_PLOTTING = r'''
@@ -8390,148 +8528,303 @@ def render_theory_plots(points, interval, output_dir, metadata):
 '''
 
 
-# Compress only the transplanted source payload to stay below SSH's argument-size limit.
-_BY_EXPERIMENT = _REPLICA_STATE + ("\nimport base64, zlib\n"
+# Data vs theory runs on a per-campaign cache (jamai/analysis_cache.py): each
+# fitted replica's prediction for each dataset is computed once, in the
+# container (_PREDICTIONS), and read back by plain python3 in seconds
+# (_PREDICTIONS_VIEW). Only the datasets asked for are computed, and FitPack
+# loads only those: the others are dropped from the campaign's conf before
+# RESMAN reads anything.
+_PREDICTIONS = _REPLICA_STATE + r'''
+import json, os, time
+import numpy as np
+stage = __STAGE__; cache = __CACHE__; want_ds = __DATASETS__; want_exp = __EXPERIMENTS__
+started = time.time()
+records, excluded = fitted_replicas(stage, replica_state)
+if not records:
+    print(json.dumps({'status': 'missing_inputs', 'excluded_replicas': excluded,
+                      'message': 'No fitted replicas with .msr files; nothing to compare with the data.'}))
+    raise SystemExit(0)
+sig = signature(records)
+from tools.config import conf, load_config
+conf.clear(); load_config(os.path.join(stage, 'input.py')); conf['bootstrap'] = False
+ids = {key_of(r, i): (r, i) for r, spec in conf['datasets'].items() for i in (spec.get('xlsx') or {})}
+meta = read_json(os.path.join(cache, 'meta.json')) or {}
+info = meta.get('info') if meta.get('version') == VERSION else None
+if not info or set(info) != set(ids):
+    import pandas as pd
+    info = {k: v for k, v in (info or {}).items() if k in ids}
+    for k, (r, i) in ids.items():
+        if k in info: continue
+        item = {'reaction': r, 'dataset_id': str(i), 'experiment': '', 'observable': '', 'target': '', 'npts_raw': None}
+        fname = conf['datasets'][r]['xlsx'][i]
+        try:
+            t = pd.read_excel(fname if fname.startswith('./') else os.path.join(os.environ['FITPACK'], 'database', fname))
+            item['npts_raw'] = int(len(t.index))
+            for name, column in (('experiment', 'col'), ('observable', 'obs'), ('target', 'target')):
+                if column in t.columns and len(t.index) and pd.notna(t.iloc[0][column]):
+                    item[name] = str(t.iloc[0][column])
+        except Exception as exc:
+            item['note'] = str(exc)[:200]
+        info[k] = item
+    info = {k: info[k] for k in ids}
+    write_json(os.path.join(cache, 'meta.json'), {'version': VERSION, 'info': info})
+selected, unknown, unmatched = select(info, want_ds, want_exp)
+if not selected:
+    print(json.dumps({'status': 'no_match', 'unknown_datasets': unknown, 'unmatched_experiments': unmatched,
+                      'available': catalog(info)}))
+    raise SystemExit(0)
+missing = [k for k in selected if (read_json(file_of(cache, k)) or {}).get('signature') != sig]
+if missing:
+    from fitlib.resman import RESMAN
+    from tools.tools import load
+    need = {}
+    for k in missing:
+        need.setdefault(ids[k][0], set()).add(ids[k][1])
+    # A normalization tied to another reaction's ('reaction id') needs that reaction in conf.
+    for r in list(need):
+        for n in (conf['datasets'][r].get('norm') or {}).values():
+            ref = n.get('fixed')
+            if isinstance(ref, str) and len(ref.split()) == 2 and ref.split()[0] not in need:
+                rk = ref.split()[0]
+                if rk in conf['datasets'] and conf['datasets'][rk].get('xlsx'):
+                    first = sorted(conf['datasets'][rk]['xlsx'], key=str)[0]
+                    need[rk] = {first}; missing.append(key_of(rk, first))
+    for r in list(conf['datasets']):
+        if r not in need: del conf['datasets'][r]
+        else: conf['datasets'][r]['xlsx'] = {i: p for i, p in conf['datasets'][r]['xlsx'].items() if i in need[r]}
+    resman = None; context = 'loading the selected datasets'
+    try:
+        resman = RESMAN(nworkers=1, parallel=False, datasets=True)
+        residuals = {}
+        for r in need:
+            attr = {'dy-pion': 'dy_pion_res', 'pion_qT': 'pion_qTres'}.get(r, r + '_res')
+            res = getattr(resman, attr, None)
+            if res is None or not isinstance(getattr(res, 'tabs', None), dict):
+                raise ValueError('No FitPack residual tables for reaction ' + r)
+            residuals[r] = res
+        fitted_ids = {tuple(x) for x in resman.parman.order if x[0] == 1}
+        acc = {k: {'theory': [], 'shift': [], 'chi2': [], 'chi2_cor': [], 'chi2_norm': [], 'norm': [], 'columns': None}
+               for k in missing if ids[k][1] in residuals[ids[k][0]].tabs}
+        for s in records:
+            context = s['identity']
+            m = load(s['msr_path'])
+            order, params = m['order'][0], np.asarray(m['params'][0], dtype=float)
+            if params.ndim != 1 or len(order) != len(params) or not np.isfinite(params).all():
+                raise ValueError('Invalid fitted parameter array/order.')
+            if {tuple(x) for x in order if x[0] == 1} != fitted_ids:
+                raise ValueError('Fitted parameter identities do not match the campaign input.')
+            resman.parman.order = order
+            resman.get_residuals(params, initial=True)
+            for k, a in acc.items():
+                r, i = ids[k]
+                context = '%s; %s' % (s['identity'], k)
+                tab = residuals[r].tabs[i]
+                n = len(tab['value'])
+                pred = np.asarray(tab['prediction'], dtype=float)
+                if pred.shape != (n,) or not np.isfinite(pred).all():
+                    raise ValueError('Missing or nonfinite prediction.')
+                a['theory'].append(pred)
+                a['shift'].append(np.asarray(tab.get('shift', np.zeros(n)), dtype=float))
+                a['chi2'].append(float(np.sum(np.asarray(tab['residuals'], dtype=float) ** 2)))
+                rres = np.asarray(tab.get('r-residuals', []), dtype=float)
+                a['chi2_cor'].append(float(np.sum(rres ** 2))); a['ncor'] = int(rres.size)
+                spec = (conf['datasets'][r].get('norm') or {}).get(i)
+                a['norm_fitted'] = bool(spec) and spec.get('fixed') is not True
+                a['norm'].append(float(spec['value']) if spec else None)
+                nres = np.asarray(tab.get('n-residuals', [0.0]), dtype=float)
+                a['chi2_norm'].append(float(nres[0] ** 2) if spec and spec.get('fixed') is False and nres.size else 0.0)
+                if a['columns'] is None:
+                    cols = {}
+                    for name, v in tab.items():
+                        arr = np.asarray(v)
+                        if arr.ndim != 1 or len(arr) != n or name in ('residuals', 'r-residuals', 'n-residuals', 'thy',
+                                                                       'prediction', 'shift', 'Shift', 'N'):
+                            continue
+                        if arr.dtype.kind in 'iuf':
+                            cols[str(name)] = [None if not np.isfinite(x) else float('%.8g' % x) for x in arr.astype(float)]
+                        else:
+                            cols[str(name)] = [str(x) for x in arr]
+                    a['columns'] = cols
+    except (OSError, KeyError, TypeError, ValueError, ArithmeticError, SystemExit) as exc:
+        print(json.dumps({'status': 'error', 'message': 'Cannot evaluate ' + context + ': ' + str(exc) +
+                          '. Nothing was cached for these datasets.'}))
+        raise SystemExit(0)
+    finally:
+        if resman is not None: resman.shutdown()
+    rnd = lambda rows: [[float('%.8g' % x) for x in row] for row in rows]
+    for k in missing:
+        r, i = ids[k]
+        doc = {'version': VERSION, 'key': k, 'reaction': r, 'dataset_id': str(i), 'signature': sig,
+               'replicas': [s['identity'] for s in records],
+               **{f: info[k].get(f) for f in ('experiment', 'observable', 'target', 'npts_raw')}}
+        a = acc.get(k)
+        if a is None:
+            doc['unavailable'] = 'No experimental points survived the campaign reader/cuts.'
+        else:
+            doc.update(npts=len(a['columns']['value']), ncor=a['ncor'], norm_fitted=a['norm_fitted'],
+                       columns=a['columns'], theory=rnd(a['theory']), shift=rnd(a['shift']),
+                       stats={f: a[f] for f in ('chi2', 'chi2_cor', 'chi2_norm', 'norm')})
+        write_json(file_of(cache, k), doc)
+print(json.dumps({'status': 'success', 'computed': missing, 'selected': selected,
+                  'seconds': round(time.time() - started, 1)}))
+'''
+
+_PREDICTIONS_VIEW = _REPLICA_STATE + r'''
+import json, os
+stage = __STAGE__; cache = __CACHE__; want_ds = __DATASETS__; want_exp = __EXPERIMENTS__
+interval = __INTERVAL__; charts = __CHARTS__
+records, excluded = fitted_replicas(stage, replica_state)
+if not records:
+    print(json.dumps({'status': 'missing_inputs', 'excluded_replicas': excluded,
+                      'message': 'No fitted replicas with .msr files; nothing to compare with the data.'}))
+    raise SystemExit(0)
+sig = signature(records)
+meta = read_json(os.path.join(cache, 'meta.json')) or {}
+if meta.get('version') != VERSION:
+    print(json.dumps({'status': 'need_build'})); raise SystemExit(0)
+selected, unknown, unmatched = select(meta['info'], want_ds, want_exp)
+if not selected:
+    print(json.dumps({'status': 'no_match', 'unknown_datasets': unknown, 'unmatched_experiments': unmatched,
+                      'available': catalog(meta['info'])}))
+    raise SystemExit(0)
+docs = {k: read_json(file_of(cache, k)) or {} for k in selected}
+stale = [k for k, d in docs.items() if d.get('signature') != sig]
+if stale:
+    print(json.dumps({'status': 'need_build', 'stale': stale})); raise SystemExit(0)
+rows, plots, unavailable = [], [], []
+for k, d in docs.items():
+    if d.get('unavailable'):
+        unavailable.append({'dataset': k, 'reason': d['unavailable']}); continue
+    rows.append(table_row(d))
+    if charts: plots.append(chart_data(d, interval))
+print(json.dumps({'status': 'success', 'n_replicas': len(records), 'excluded_replicas': excluded,
+                  'replica_ids': [s['identity'] for s in records], 'table': rows, 'charts': plots,
+                  'unavailable_datasets': unavailable, 'unknown_datasets': unknown,
+                  'unmatched_experiments': unmatched}))
+'''
+
+# The thesis-style PNGs, from the cache: the original plotting functions are
+# fed the cached points, so FitPack is not run again. LaTeX makes them slow:
+# only on request (export_png).
+_THEORY_PNG = _REPLICA_STATE + ("\nimport base64, zlib\n"
     "exec(zlib.decompress(base64.b64decode(%r)))\n" %
     base64.b64encode(zlib.compress(_THEORY_PLOTTING.encode(), 9)).decode()) + r'''
-import glob, json, os
-stage = __STAGE__; want = __WANT__; plot = __PLOT__
+import json, os
+stage = __STAGE__; cache = __CACHE__; keys = __KEYS__
 interval = validate_credible_interval(__INTERVAL__)
-records, notes = [], []
-excluded = {'not_fitted':0, 'failed':0, 'missing_msr':0, 'missing_summary':0}
-for directory in sorted(glob.glob(os.path.join(stage,'current','replica_*'))):
-    if not os.path.isdir(directory): continue
-    state, summary = replica_state(os.path.join(directory,'fit_summary.json'))
-    if state != 'fitted':
-        excluded[state or 'missing_summary'] += 1
-    elif not summary.get('msr_path') or not os.path.isfile(summary['msr_path']):
-        excluded['missing_msr'] += 1
-    else:
-        records.append({**summary, 'identity':os.path.basename(directory)})
-metadata = {'credible_interval':interval, 'percentiles':[(100-interval)/2,100-(100-interval)/2],
-            'interval_kind':'pointwise_equal_tailed', 'central_estimator':'mean',
-            'n_replicas':len(records), 'replica_ids':[s['identity'] for s in records],
-            'excluded_replicas':excluded, 'band_drawn':False,
-            'theory_convention':'FitPack prediction: normalized theory plus profiled correlated shifts',
-            'chi2_estimator':'best fitted replica against central experimental values; not ensemble-mean chi2'}
-if not records:
-    print(json.dumps({'status':'missing_inputs', **metadata,
-                      'message':'No qualified fitted replicas with .msr files; no plots generated.'}))
-    raise SystemExit(0)
-if len(records)<2: notes.append('Only one fitted replica; mean shown without a credible band.')
-if interval==100: notes.append('100% is the pointwise envelope of available fitted replicas, not the entire underlying posterior.')
-if any(excluded.values()): notes.append('Excluded replicas: '+', '.join('%s=%d' % item for item in excluded.items()))
-from fitlib.resman import RESMAN
-from tools.config import conf, load_config
-from tools.tools import load
-def first(tab, *keys):
-    for k in keys:
-        if k in tab:
-            values=np.asarray(tab[k])
-            if values.size: return str(values.flat[0])
-    return ''
-resman = None
-context = 'initializing campaign datasets'
+points = []
+for k in keys:
+    d = read_json(file_of(cache, k)) or {}
+    if d.get('unavailable') or 'theory' not in d: continue
+    n = d['npts']
+    tab = {name: np.asarray(v) if all(isinstance(x, str) for x in v) else np.asarray(v, dtype=float)
+           for name, v in d['columns'].items()}
+    points.append({'reaction': d['reaction'],
+                   'dataset_id': int(d['dataset_id']) if str(d['dataset_id']).isdigit() else d['dataset_id'],
+                   'experiment': d.get('experiment', ''), 'tab': tab,
+                   'value': np.asarray(d['columns']['value'], dtype=float),
+                   'alpha': np.asarray(d['columns']['alpha'], dtype=float),
+                   'theory': np.asarray(d['theory'], dtype=float), 'shifts': np.asarray(d['shift'], dtype=float)})
+metadata = {'n_replicas': len(points[0]['theory']) if points else 0, 'note': ''}
 try:
-    scores=[float(s['chi2_total']) for s in records]
-    if not np.isfinite(scores).all(): raise ValueError('Nonfinite fitted-replica chi2 summary.')
-    best_record=records[int(np.argmin(scores))]
-    best=best_record['msr_path']
-    conf.clear(); load_config(os.path.join(stage,'input.py')); conf['bootstrap']=False
-    resman=RESMAN(nworkers=1,parallel=False,datasets=True)
-    residuals={}
-    unavailable=[]
-    for reaction, spec in conf['datasets'].items():
-        if not spec.get('xlsx'): continue
-        attr={'dy-pion':'dy_pion_res','pion_qT':'pion_qTres'}.get(reaction,reaction+'_res')
-        residual=getattr(resman,attr,None)
-        if residual is None or not isinstance(getattr(residual,'tabs',None),dict):
-            raise ValueError('No FitPack residual tables for selected reaction '+reaction)
-        for idx in spec['xlsx']:
-            if idx not in residual.tabs:
-                unavailable.append({'reaction':reaction,'dataset_id':str(idx),
-                                    'reason':'No experimental points survived the campaign reader/cuts.'})
-        residuals[reaction]=residual
-    points, signatures = {}, {}
-    for reaction,residual in residuals.items():
-        for idx,tab in residual.tabs.items():
-            key=(reaction,idx)
-            context='%s:%s experimental data' % key
-            value=theory_column(tab,'value')
-            if not len(value): raise ValueError('Empty experimental dataset.')
-            alpha=theory_column(tab,'alpha',len(value))
-            if np.any(alpha<0): raise ValueError('Negative experimental uncertainty.')
-            signatures[key]=theory_identity(tab)
-            points[key]={'reaction':reaction,'dataset_id':idx,'experiment':first(tab,'col') or 'unknown',
-                         'target':first(tab,'target','reaction'),'observable':first(tab,'obs'),
-                         'tab':{k:np.asarray(v).copy() for k,v in tab.items()},
-                         'value':value.copy(),'alpha':alpha.copy(),'theory':[],'norms':[],'shifts':[],
-                         'point_order_sha256':signatures[key]}
-    original_order={tuple(x) for x in resman.parman.order}
-    for s in records if plot else [best_record]:
-        context=s['identity']
-        m=load(s['msr_path'])
-        order,params=m['order'][0],np.asarray(m['params'][0],dtype=float)
-        if params.ndim!=1 or len(order)!=len(params) or not np.isfinite(params).all():
-            raise ValueError('Invalid fitted parameter array/order.')
-        if len(set(tuple(x) for x in order))!=len(order) or set(tuple(x) for x in order)!=original_order:
-            raise ValueError('Fitted parameter identities do not match the selected stage input.')
-        resman.parman.order=order
-        resman.get_residuals(params,initial=True)
-        if s['identity']==best_record['identity']: chi2=resman.get_chi2()
-        current_keys={(r,idx) for r,res in residuals.items() for idx in res.tabs}
-        if current_keys!=set(signatures): raise ValueError('Dataset identities changed between replicas.')
-        for key,p in points.items():
-            context='%s; %s:%s' % (s['identity'],*key)
-            tab=residuals[key[0]].tabs[key[1]]
-            if theory_identity(tab)!=signatures[key]:
-                raise ValueError('Experimental point ordering, kinematics or uncertainties changed between replicas.')
-            p['theory'].append(theory_column(tab,'prediction',len(p['value'])).copy())
-            p['shifts'].append(theory_column(tab,'shift',len(p['value'])).copy())
-            norm=conf['datasets'][key[0]].get('norm',{}).get(key[1],{}).get('value',1.)
-            p['norms'].append(float(norm))
-    groups={}
-    for key,p in points.items():
-        context='%s:%s chi2 diagnostic' % key
-        info=chi2[key[0]][key[1]]
-        n,c=int(info['npts']),float(info['chi2'])
-        if n!=len(p['value']) or not np.isfinite(c): raise ValueError('Invalid best-replica chi2 diagnostic.')
-        p['theory']=np.asarray(p['theory'],dtype=float)
-        p['shifts']=np.asarray(p['shifts'],dtype=float)
-        g=groups.setdefault(p['experiment'],{'experiment':p['experiment'],'datasets':[],'chi2':0.,'npts':0})
-        g['datasets'].append({'reaction':key[0],'dataset_id':str(key[1]),'target':p['target'],
-                             'observable':p['observable'],'npts':n,'chi2':c,'chi2_per_npt':c/n,
-                             'point_order_sha256':p['point_order_sha256']})
-        g['chi2']+=c; g['npts']+=n
-    rows=sorted(groups.values(),key=lambda g:-(g['chi2']/g['npts']))
-    for g in rows: g['chi2_per_npt']=g['chi2']/g['npts']
-except (OSError, KeyError, TypeError, ValueError, ArithmeticError, SystemExit) as exc:
-    print(json.dumps({'status':'error', **metadata, 'band_drawn':False,
-                      'message':'Cannot evaluate '+context+': '+str(exc)+
-                                ' No replicas were silently dropped and no plots were generated.'}))
-    raise SystemExit(0)
-finally:
-    if resman is not None: resman.shutdown()
-selected=[p for p in points.values() if not want or p['experiment'].lower() in want]
-if plot and not selected: notes.append('No datasets match the requested experiments.')
-if unavailable: notes.append('Some selected datasets have no points after campaign cuts; see unavailable_datasets.')
-metadata.update(note=' '.join(notes),band_drawn=bool(plot and selected and len(records)>1),
-                unavailable_datasets=unavailable)
-try:
-    images=render_theory_plots(selected,interval,os.path.join(os.path.dirname(os.path.dirname(stage)),
-                              'analysis','by_experiment'),metadata) if plot else []
-    if metadata.get('plot_status')=='error':
-        raise ValueError(metadata['note'])
+    images = render_theory_plots(points, interval, os.path.join(os.path.dirname(os.path.dirname(stage)),
+                                 'analysis', 'by_experiment'), metadata)
 except (OSError, KeyError, TypeError, ValueError, ArithmeticError) as exc:
-    print(json.dumps({'status':'error', **metadata, 'band_drawn':False,
-                      'message':'Theory plotting failed: '+str(exc)}))
-    raise SystemExit(0)
-print(json.dumps({'status':'success', **metadata, 'best_msr':best, 'experiments':rows, 'images':images}))
+    print(json.dumps({'status': 'error', 'message': 'Theory plotting failed: ' + str(exc)})); raise SystemExit(0)
+print(json.dumps({'status': 'success', 'images': images, 'rendering_errors': metadata.get('rendering_errors', []),
+                  'note': metadata.get('note', '')}))
 '''
 
 
-def analyze_by_experiment(collection_id="", experiments="", plot=True, username="", credible_interval=95):
-    """Best-replica chi2 diagnostics and thesis-style mean fitted theory with pointwise intervals."""
+def _analysis_code(template, **values):
+    """A cluster script: the cache helpers, then the template filled in."""
+    return inspect.getsource(analysis_cache) + "\n" + _fill(template, **values)
+
+
+def _last_json(r):
+    try:
+        return json.loads(r["out"].strip().splitlines()[-1])
+    except Exception:
+        return None
+
+
+def _cache_dir(u, e):
+    return f"{os.path.dirname(os.path.dirname(_stage_root(u, e)))}/analysis/cache"
+
+
+def _names(text):
+    """'a, b; c' or a list -> ['a', 'b', 'c']."""
+    if isinstance(text, (list, tuple)):
+        text = ",".join(str(x) for x in text)
+    return [x.strip() for x in re.split(r"[,;]", str(text or "")) if x.strip()]
+
+
+def _theory_results(u, e, datasets, experiments, interval, charts=True, export_png=False):
+    """Data vs theory for the datasets asked for: the per-dataset table, the
+    chart data and, on request, the thesis PNGs. Computes into the cache only
+    what is missing or stale."""
+    stage, cache = _stage_root(u, e), _cache_dir(u, e)
+    ws = _workspace(u)
+    args = dict(STAGE=stage, CACHE=cache, DATASETS=datasets, EXPERIMENTS=experiments)
+    view = lambda: _last_json(_run_ifarm_py(u, _analysis_code(_PREDICTIONS_VIEW, INTERVAL=interval, CHARTS=charts,
+                                                               **args), timeout=300, cap=60000000))
+    d, built = view(), None
+    if d and d.get("status") == "need_build":
+        r = _run_ifarm_py(u, _analysis_code(_PREDICTIONS, **args), apptainer=True, timeout=3600, cap=200000,
+                          env={"MPLCONFIGDIR": f"{ws}/{CAMPAIGNS_DIR}/.matplotlib"})
+        built = _last_json(r)
+        if not built:
+            return {"status": "error", "message": "computing the replica predictions failed",
+                    "detail": (r.get("err") or r.get("out") or "")[-1500:]}
+        if built.get("status") != "success":
+            return built
+        d = view()
+    if not d:
+        return {"status": "error", "message": "reading the cached predictions failed"}
+    if d.get("status") != "success":
+        return d
+    out = {"status": "ok", "collection_id": e["collection_id"], "campaign_name": e.get("campaign_name"),
+           "credible_interval": interval, "n_replicas": d["n_replicas"], "excluded_replicas": d["excluded_replicas"],
+           "table": d["table"], "unavailable_datasets": d["unavailable_datasets"],
+           "computed_now": (built or {}).get("computed", []), "compute_seconds": (built or {}).get("seconds")}
+    for k in ("unknown_datasets", "unmatched_experiments"):
+        if d.get(k):
+            out[k] = d[k]
+    notes = ["chi2 terms are means over the fitted replicas, each replica against the central data; "
+             "fitted norm is mean(std) over the replicas."]
+    if d["n_replicas"] < 2:
+        notes.append("Only one fitted replica: no credible band.")
+    if out.get("unknown_datasets") or out.get("unmatched_experiments"):
+        notes.append("Some names matched no dataset of this campaign: "
+                     + ", ".join(out.get("unknown_datasets", []) + out.get("unmatched_experiments", [])) + ".")
+    ui = {"view": "theory", "credible_interval": interval, "charts": d.get("charts") or []}
+    if export_png:
+        keys = [row["dataset"] for row in d["table"]]
+        r = _run_ifarm_py(u, inspect.getsource(object_registry) + "\n" +
+                          _analysis_code(_THEORY_PNG, STAGE=stage, CACHE=cache, KEYS=keys, INTERVAL=interval),
+                          apptainer=True, timeout=1200, cap=60000000,
+                          env={"MPLCONFIGDIR": f"{ws}/{CAMPAIGNS_DIR}/.matplotlib"})
+        p = _last_json(r) or {"status": "error", "message": "thesis plotting failed",
+                              "detail": (r.get("err") or "")[-600:]}
+        if p.get("status") == "success":
+            imgs = p.get("images") or []
+            out["plots"] = [{k: v for k, v in i.items() if k != "png_b64"} for i in imgs]
+            out["_images"] = [{"data": i["png_b64"], "mimeType": "image/png"} for i in imgs]
+            ui["panel_plots"] = [{**pl, "data_url": "data:image/png;base64," + i["png_b64"]}
+                                 for pl, i in zip(out["plots"], imgs)]
+            if p.get("rendering_errors"):
+                out["rendering_errors"] = p["rendering_errors"]
+        else:
+            notes.append("Thesis PNGs: " + (p.get("message") or "failed") + ".")
+    out["note"] = " ".join(notes)
+    out["_ui"] = ui
+    return out
+
+
+def analyze_by_experiment(collection_id="", experiments="", plot=True, username="", credible_interval=95,
+                          datasets="", export_png=False):
+    """Per-dataset table (JAM paper columns) and data vs mean fitted theory, for
+    the datasets or experiments named (empty: all)."""
     try:
         credible_interval = object_registry.validate_credible_interval(credible_interval)
     except ValueError as exc:
@@ -8542,25 +8835,13 @@ def analyze_by_experiment(collection_id="", experiments="", plot=True, username=
     e = _collection(u, collection_id)
     if not e:
         return {"status": "error", "message": f"No campaign {collection_id!r}."}
-    want = [x.strip().lower() for x in (experiments or "").split(",") if x.strip()]
-    code = inspect.getsource(object_registry) + _fill(
-        _BY_EXPERIMENT, STAGE=_stage_root(u, e), WANT=want, PLOT=bool(plot), INTERVAL=credible_interval)
-    ws = _workspace(u)
-    r = _run_ifarm_py(u, code, apptainer=True, timeout=900, cap=20000000,
-                      env={"MPLCONFIGDIR": f"{ws}/{CAMPAIGNS_DIR}/.matplotlib"})
-    try:
-        d = json.loads(r["out"].strip().splitlines()[-1])
-    except Exception:
-        return {"status": "error", "message": "analysis failed", "detail": (r.get("err") or r.get("out") or "")[-800:]}
-    if d.get("status") != "success":
-        return {**d, "detail": "\n".join(r.get("out", "").splitlines()[:-1])[-2000:]}
-    imgs = d.get("images") or []
-    plots = [{k: v for k, v in i.items() if k != "png_b64"} for i in imgs]
-    return {**{k: v for k, v in d.items() if k not in ("status", "images")},
-            "status": "ok", "collection_id": collection_id, "plots": plots,
-            "_images": [{"data": i["png_b64"], "mimeType": "image/png"} for i in imgs],
-            "_panel_plots": [{**p, "data_url": "data:image/png;base64," + i["png_b64"]}
-                             for p, i in zip(plots, imgs)]}
+    collection_id = e["collection_id"]      # a campaign name resolves to its id
+    ds, ex = _names(datasets), _names(experiments)
+    return _background(u, "analyze_by_experiment",
+                       {"collection_id": e["collection_id"], "datasets": ds, "experiments": ex,
+                        "interval": credible_interval, "plot": bool(plot), "png": bool(export_png)},
+                       lambda: _theory_results(u, e, ds, ex, credible_interval, charts=bool(plot),
+                                               export_png=bool(export_png)))
 
 
 # Each replica's state and Slurm log (Logs). Replica i's log is
@@ -8770,6 +9051,7 @@ def campaign_logs(collection_id="", replica=0, lines=80, username=""):
     e = _collection(u, collection_id)
     if not e:
         return {"status": "error", "message": f"No campaign {collection_id!r}."}
+    collection_id = e["collection_id"]      # a campaign name resolves to its id
     total = int(e.get("replicas") or 0)
     try:
         replica, lines = int(replica or 0), int(lines or 80)
@@ -8922,6 +9204,14 @@ def submit_slurm_job(name="", confirm="", username=""):
 
 
 # ── tool registry ───────────────────────────────────────────────────────────
+
+# The analysis tools render in the panel's chat widget, which calls
+# analysis_result itself while a job runs.
+WIDGET_META = {"ui": {"resourceUri": PANEL_URI}, "openai/outputTemplate": PANEL_URI_SKYBRIDGE,
+               "openai/widgetAccessible": True}
+COLLECTION_ARG = "The collection id, or the campaign name as the user says it (its newest submission)."
+ASYNC_NOTE = ("A call answers within about 40 s: when the work takes longer it returns status running with "
+              "a job_id; then call analysis_result(job_id) until it is done.")
 
 TOOLS = {
     "ping": {"desc": "Reply pong.",
@@ -9077,14 +9367,14 @@ TOOLS = {
                 "not_fitted (the optimization failed, so only chi2 at the starting values was computed) "
                 "and failed (queue is null when squeue cannot be read), its folder, and log_pattern: the "
                 "path of a replica's log. campaign_logs shows why replicas did not fit or failed.",
-        "schema": {"type": "object", "properties": {"collection_id": {"type": "string"}},
+        "schema": {"type": "object", "properties": {"collection_id": {"type": "string", "description": COLLECTION_ARG}},
                    "required": ["collection_id"]},
         "fn": lambda a: campaign_status(a.get("collection_id", ""))},
     "postprocess_campaign": {
         "desc": "Postprocess: aggregate the finished replicas into the campaign fit summary. Only the "
                 "replicas that really fitted enter the statistics; the ones that did not fit (only chi2 "
                 "at the starting values) are counted apart (not_fitted_replicas).",
-        "schema": {"type": "object", "properties": {"collection_id": {"type": "string"}},
+        "schema": {"type": "object", "properties": {"collection_id": {"type": "string", "description": COLLECTION_ARG}},
                    "required": ["collection_id"]},
         "fn": lambda a: postprocess_campaign(a.get("collection_id", ""))},
     "campaign_summary": {
@@ -9092,37 +9382,42 @@ TOOLS = {
                 "(not_fitted_replicas) and failed, chi2 statistics over the fitted ones, the best "
                 "replica, and chi2/N per dataset (worst first). note says when replicas did not fit "
                 "or the summary is out of date.",
-        "schema": {"type": "object", "properties": {"collection_id": {"type": "string"}},
+        "schema": {"type": "object", "properties": {"collection_id": {"type": "string", "description": COLLECTION_ARG}},
                    "required": ["collection_id"]},
         "fn": lambda a: campaign_summary(a.get("collection_id", ""))},
     "campaign_pdf_plots": {
-        "desc": "View PDF Plots: draw x f(x, Q2) of every fitted replica (flavors: comma list of "
-                "g, u, d, s, ub, db, sb; q2 in GeV^2; mean_overlay adds the mean and an equal-tailed "
-                "pointwise credible interval, default 95%). credible_interval is a finite percentage "
-                "greater than 0 and at most 100; at least two valid fitted replicas are needed for a band. "
-                "100% is the full pointwise envelope of available fitted replicas, not a guarantee "
-                "about the entire underlying posterior distribution. "
-                "object_key selects pdf or pdf-pion. Pion defaults are valence (ub-u), sea (u), g "
-                "in the native pi- convention. Returns the images.",
-        "schema": {"type": "object", "properties": {"collection_id": {"type": "string"},
+        "desc": "View PDF Plots: x f(x, Q2) of the fitted replicas (flavors: comma list of g, u, d, s, ub, "
+                "db, sb; q2 in GeV^2): mean and equal-tailed pointwise credible interval (default 95%), drawn "
+                "as an interactive chart in the panel (zoom, hover values, flavor toggles, interval and "
+                "log/linear switches) and the chat widget. The result gives mean_at_x, a few points of each "
+                "mean curve. credible_interval: greater than 0, at most 100 (100 = full envelope of the "
+                "fitted replicas, not the whole posterior); at least two fitted replicas for a band. "
+                "object_key selects pdf or pdf-pion; pion defaults valence (ub-u), sea (u), g in the native "
+                "pi- convention. export_png=true also returns static PNGs (for a client that shows no "
+                "widget, or to save). Curves are cached per Q2 and flavor: a repeat is fast. "
+                + ASYNC_NOTE,
+        "schema": {"type": "object", "properties": {"collection_id": {"type": "string", "description": COLLECTION_ARG},
                                                     "flavors": {"type": "string"},
                                                     "object_key": {"type": "string", "enum": list(SELECTABLE_OBJECTS)},
                                                     "q2": {"type": "number"},
                                                     "credible_interval": {"type": "number", "default": 95,
                                                                           "exclusiveMinimum": 0, "maximum": 100,
                                                                           "description": "Equal-tailed pointwise credible interval (%)."},
-                                                    "mean_overlay": {"type": "boolean"}},
+                                                    "mean_overlay": {"type": "boolean"},
+                                                    "export_png": {"type": "boolean", "default": False}},
                    "required": ["collection_id"]},
+        "meta": WIDGET_META,
         "fn": lambda a: campaign_pdf_plots(a.get("collection_id", ""), a.get("flavors", ""),
                                            a.get("q2", 10.0), a.get("mean_overlay", True),
                                            object_key=a.get("object_key", ""),
-                                           credible_interval=a.get("credible_interval", 95))},
+                                           credible_interval=a.get("credible_interval", 95),
+                                           export_png=a.get("export_png", False))},
     "campaign_ff_plots": {
         "desc": "Plot charged pion, kaon, residual and unidentified hadron zD(z,Q2), using native FitPack FFs. "
                 "Combine species inside each replica before equal-tailed pointwise uncertainty bands. "
                 "Flavors g,u,d,ub,db,s,sb,c,b; cb/bb are constrained partners. configured=true uses starting parameters without a band.",
         "schema": {"type": "object", "properties": {
-            "collection_id": {"type": "string"}, "flavors": {"type": "string"},
+            "collection_id": {"type": "string", "description": COLLECTION_ARG}, "flavors": {"type": "string"},
             "q2": {"type": "number", "exclusiveMinimum": 0},
             "credible_interval": {"type": "number", "exclusiveMinimum": 0, "maximum": 100},
             "mean_overlay": {"type": "boolean"}, "configured": {"type": "boolean"}},
@@ -9132,28 +9427,48 @@ TOOLS = {
                                           credible_interval=a.get("credible_interval", 95),
                                           configured=a.get("configured", False))},
     "analyze_by_experiment": {
-        "desc": "Analysis by experiment: chi2/N of the best replica grouped by experiment (SLAC, "
-                "BCDMS, NMC, E866 ...) and thesis-style data vs mean fitted-replica theory plots. "
-                "The chi2 table is a separate best-replica diagnostic, not chi2 of the ensemble mean. "
-                "credible_interval: independent equal-tailed pointwise interval (%), default 95; "
-                "100 is the available fitted-replica envelope, not the entire posterior. "
-                "experiments: comma list, empty = all.",
-        "schema": {"type": "object", "properties": {"collection_id": {"type": "string"},
-                                                    "experiments": {"type": "string"},
-                                                    "plot": {"type": "boolean"},
+        "desc": "Data vs theory and the per-dataset table, for the datasets and/or experiments the user "
+                "names, passed as they said them: datasets 'idis:10010, jet 10001' or bare ids; experiments "
+                "'D0, CDF, STAR' (case, accents and separators do not matter; a prefix matches). Both empty "
+                "= every dataset of the campaign. table has, per dataset (as in the JAM papers): npts / "
+                "npts_raw (after / before cuts), ncor (correlated systematics), chi2_red with its z_score, "
+                "chi2_cor, chi2_norm and the fitted norm as norm(norm_std); chi2 terms are means over the "
+                "fitted replicas. The panel and the chat widget draw interactive data vs mean-theory charts "
+                "(axis and grouping choices, ratio and pull views, credible-interval switch, zoom, hover). "
+                "plot=false: the table only. export_png=true also renders the thesis-style PNGs (slow: "
+                "LaTeX). Names that match nothing come back as unknown_datasets / unmatched_experiments; "
+                "if nothing matches, status no_match lists what the campaign has (available): choose from "
+                "it, no other tool is needed. Predictions are cached per dataset: only the first request "
+                "for a dataset evaluates the replicas. " + ASYNC_NOTE,
+        "schema": {"type": "object", "properties": {"collection_id": {"type": "string", "description": COLLECTION_ARG},
+                                                    "datasets": {"type": "string",
+                                                                 "description": "Comma list of reaction:id (or ids)."},
+                                                    "experiments": {"type": "string",
+                                                                    "description": "Comma list of experiment names."},
+                                                    "plot": {"type": "boolean", "default": True},
+                                                    "export_png": {"type": "boolean", "default": False},
                                                     "credible_interval": {"type": "number", "default": 95,
                                                                           "exclusiveMinimum": 0, "maximum": 100,
                                                                           "description": "Equal-tailed pointwise credible interval (%)."}},
                    "required": ["collection_id"]},
+        "meta": WIDGET_META,
         "fn": lambda a: analyze_by_experiment(a.get("collection_id", ""), a.get("experiments", ""),
-                                              a.get("plot", True), credible_interval=a.get("credible_interval", 95))},
+                                              a.get("plot", True), credible_interval=a.get("credible_interval", 95),
+                                              datasets=a.get("datasets", ""), export_png=a.get("export_png", False))},
+    "analysis_result": {
+        "desc": "Wait for a long analysis that answered status running (analyze_by_experiment, "
+                "campaign_pdf_plots): returns its result when done, or running again after about 40 s. "
+                "Call it again with the same job_id until it is done; never restart the analysis.",
+        "schema": {"type": "object", "properties": {"job_id": {"type": "string"}}, "required": ["job_id"]},
+        "meta": WIDGET_META,
+        "fn": lambda a: analysis_result(a.get("job_id", ""))},
     "campaign_logs": {
         "desc": "Logs of a campaign: each replica's state (fitted, not fitted, failed, running, no "
                 "output) and, for a replica that did not fit, the Python error and the end of its "
                 "Slurm log. Use it whenever replicas fail or did not fit, and explain the error to the "
                 "user.",
         "schema": {"type": "object", "properties": {
-            "collection_id": {"type": "string"},
+            "collection_id": {"type": "string", "description": COLLECTION_ARG},
             "replica": {"type": "integer",
                         "description": "0 (default): every replica, with the Python error and the end of "
                                        "the log of the first one that did not fit, failed or left no "
@@ -9167,7 +9482,7 @@ TOOLS = {
         "desc": "Generate More Replicas: add count replicas to a campaign. The first call returns "
                 "the plan and a confirmation phrase; nothing is queued until the user confirms "
                 "and the call is repeated with confirm = the phrase.",
-        "schema": {"type": "object", "properties": {"collection_id": {"type": "string"},
+        "schema": {"type": "object", "properties": {"collection_id": {"type": "string", "description": COLLECTION_ARG},
                                                     "count": {"type": "integer"},
                                                     "confirm": {"type": "string"}},
                    "required": ["collection_id", "count"]},
@@ -9176,7 +9491,7 @@ TOOLS = {
         "desc": "Stop a campaign: cancel its queued and running Slurm tasks. The first call returns "
                 "the plan and a confirmation phrase; nothing is cancelled until the user confirms "
                 "and the call is repeated with confirm = the phrase.",
-        "schema": {"type": "object", "properties": {"collection_id": {"type": "string"},
+        "schema": {"type": "object", "properties": {"collection_id": {"type": "string", "description": COLLECTION_ARG},
                                                     "confirm": {"type": "string"}},
                    "required": ["collection_id"]},
         "fn": lambda a: cancel_campaign(a.get("collection_id", ""), a.get("confirm", ""))},
@@ -9184,7 +9499,7 @@ TOOLS = {
         "desc": "Remove a campaign from Collections (delete_folder also removes its folder and "
                 "results). Refused while any of its tasks are in the Slurm queue: stop it first "
                 "with cancel_campaign. Needs the confirmation phrase from a first call.",
-        "schema": {"type": "object", "properties": {"collection_id": {"type": "string"},
+        "schema": {"type": "object", "properties": {"collection_id": {"type": "string", "description": COLLECTION_ARG},
                                                     "delete_folder": {"type": "boolean"},
                                                     "confirm": {"type": "string"}},
                    "required": ["collection_id"]},
@@ -9286,8 +9601,8 @@ INSTRUCTIONS = (
     "submit_campaign(card, confirm=<phrase>) only after the user agrees.\n"
     "9. Collections and analysis: list_campaigns (it also returns the user's Slurm queue), "
     "campaign_status, postprocess_campaign, campaign_summary (fit summary), campaign_pdf_plots "
-    "(PDF plots, returned as images), analyze_by_experiment (chi2 and data vs theory by "
-    "experiment), campaign_logs (each replica's state and log), append_replicas (always "
+    "(PDF curves as an interactive chart), analyze_by_experiment (per-dataset chi2 table and data vs "
+    "theory charts), campaign_logs (each replica's state and log), append_replicas (always "
     "confirmed with its phrase), cancel_campaign (stops its queued and running tasks) and "
     "delete_campaign (only when nothing of it is queued) — both also confirmed with their "
     "phrase. A replica counts as fitted only when its optimization ran: succeeded counts those, "
@@ -9295,6 +9610,13 @@ INSTRUCTIONS = (
     "the starting values). When replicas did not fit or failed, call campaign_logs and explain "
     "the error to the user in plain words. The panel's Collections and Analysis tabs show the "
     "same (Analysis has a Logs button).\n"
+    "Results and plots: when the user names a campaign, datasets or experiments, call the analysis "
+    "tool directly with those names as said (collection_id takes the campaign name; datasets and "
+    "experiments take the user's words) — do not look them up first with list_campaigns or "
+    "campaign_summary. A result with status running carries a job_id: call analysis_result(job_id) "
+    "until it is done; never start the same analysis again. status no_match lists what the campaign "
+    "has: pick from it. Charts are interactive in the panel and the chat widget; ask for PNGs "
+    "(export_png) only when the user wants files or the client shows no widget.\n"
     "10. Any other cluster job: draft_slurm_job with the resources agreed with the user (it "
     "runs sbatch --test-only), show the returned script exactly as written, ask the user, "
     "then submit_slurm_job with the phrase.")
@@ -9376,13 +9698,16 @@ def _tool_entry(name, spec):
 
 
 def _tool_result(out, is_error=False):
-    images = []
+    images, ui = [], None
     if isinstance(out, dict):
         # Plots travel as MCP image content (the model sees them; MCP Apps
-        # hosts and the panel render them); "_panel_plots" carries data URLs
-        # for the panel only and stays out of the text.
+        # hosts and the panel render them). "_ui" is for the panel and the chat
+        # widget only (chart data, PNG data URLs): it goes in _meta, which
+        # hosts hand to the widget and keep out of the model's context.
+        out = dict(out)
         images = out.pop("_images", None) or []
-        text_view = {k: v for k, v in out.items() if k != "_panel_plots"}
+        ui = out.pop("_ui", None)
+        text_view = out
     else:
         text_view = out
     text = json.dumps(text_view, indent=2) if isinstance(text_view, (dict, list)) else str(text_view)
@@ -9392,6 +9717,8 @@ def _tool_result(out, is_error=False):
            "isError": bool(is_error)}
     if isinstance(out, dict):
         res["structuredContent"] = out
+    if ui is not None:
+        res["_meta"] = {"jam/ui": ui}
     return res
 
 

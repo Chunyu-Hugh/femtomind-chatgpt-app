@@ -163,6 +163,30 @@
   .imgs{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;margin-top:12px;}
   .imgs figure{margin:0;background:#fff;border:1px solid var(--line);border-radius:10px;padding:6px;}
   .imgs img{width:100%;height:auto;display:block;} .imgs figcaption{font-size:11.5px;color:#5a6474;padding:4px 4px 0;}
+  /* interactive charts and the per-dataset table */
+  .chart{position:relative;border:1px solid var(--line);border-radius:10px;padding:6px 8px 8px;background:var(--surface);margin-top:10px;}
+  .chart-bar{display:flex;gap:4px;justify-content:flex-end;flex-wrap:wrap;margin-bottom:2px;}
+  .cb{font:11px var(--mono);border:1px solid var(--line);background:var(--surface-2);color:var(--muted);border-radius:6px;padding:2px 8px;cursor:pointer;}
+  .cb:hover{color:var(--fg);} .cb.on{background:var(--accent-wash);color:var(--accent);border-color:var(--accent);}
+  .chart-plot{width:100%;min-width:0;}
+  .chart-svg{display:block;max-width:100%;height:auto;touch-action:none;user-select:none;}
+  .ct-axis text{font-size:11px;font-family:var(--font);fill:var(--muted);}
+  .ct-label{font-size:12px;font-family:var(--font);fill:var(--fg);}
+  .ct-grid{stroke:var(--line);stroke-width:1;opacity:.7;} .ct-frame{fill:none;stroke:var(--line);}
+  .ct-ref{stroke:var(--muted);stroke-dasharray:4 3;} .ct-ov{fill:transparent;cursor:crosshair;}
+  .ct-sel{fill:var(--accent);fill-opacity:.12;stroke:var(--accent);} .ct-ring{fill:none;stroke-width:2;pointer-events:none;}
+  .chart-legend{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;margin-top:4px;padding:0 4px;}
+  .lg{display:inline-flex;align-items:center;gap:6px;cursor:pointer;user-select:none;} .lg.off{opacity:.35;text-decoration:line-through;}
+  .lg i{width:11px;height:11px;border-radius:3px;display:inline-block;}
+  .chart-tip{position:absolute;pointer-events:none;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:6px 9px;
+             font:11.5px/1.45 var(--mono);box-shadow:0 4px 14px rgba(0,0,0,.14);max-width:340px;z-index:5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .tv-head{display:flex;align-items:center;gap:6px;margin:12px 0 6px;} .tv-head .sp{flex:1;}
+  .tv-ctl{margin:14px 0 4px;}
+  .dtbl th.sortable{cursor:pointer;white-space:nowrap;text-transform:none;} .dtbl th sub,.dtbl td sub{font-size:.8em;}
+  .dtbl td.num{text-align:right;white-space:nowrap;} .dtbl th:nth-child(n+3){text-align:right;}
+  .dtbl tbody tr[data-ds]{cursor:pointer;} .dtbl tbody tr[data-ds]:hover{background:var(--surface-2);}
+  .dtbl tr.sel{background:var(--accent-wash);} .dtbl tr.grp td{background:var(--surface-2);font-family:var(--mono);font-size:11.5px;color:var(--muted);padding:6px 10px;}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;}
   .phrase{font-family:var(--mono);font-weight:600;}
   .rowacts{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;}
   /* replicas that did not fit or failed, datasets the cuts leave empty */
@@ -439,16 +463,21 @@
           <div class="pc"><label class="label" for="caInterval">Credible interval (%)</label><input type="number" step="any" max="100" id="caInterval" value="95" required style="width:110px"></div>
           <div class="pc"><label class="inline"><input type="checkbox" id="caMean" checked> Mean and credible interval</label></div>
           <button class="btn primary" id="caPdfGo">Draw</button>
+          <button class="btn" id="caPdfPng" title="Also render static PNG files (matplotlib)">Export PNG</button>
         </div>
         <div class="note">Equal-tailed pointwise intervals across fitted replicas, not simultaneous bands over x or z. Choose a finite percentage greater than 0 and at most 100. At 100%, the band is the full pointwise envelope of available fitted replicas, not a guarantee about the entire underlying posterior distribution. At least two valid fitted replicas are needed for a band.</div>
       </div>
       <div id="caExpBox" class="subbox" style="display:none">
         <div class="plot-controls">
-          <div class="pc" style="flex:1"><span class="label">Experiments to plot (comma list, empty = all)</span>
-            <input type="text" id="caExpList" placeholder="e.g. SLAC, BCDMS"></div>
+          <div class="pc" style="flex:1;min-width:160px"><span class="label">Experiments (comma list)</span>
+            <input type="text" id="caExpList" placeholder="e.g. SLAC, BCDMS, D0"></div>
+          <div class="pc" style="flex:1;min-width:160px"><span class="label">Datasets (comma list)</span>
+            <input type="text" id="caDsList" placeholder="e.g. idis:10010, jet 10001"></div>
           <div class="pc"><label class="label" for="caExpInterval">Credible interval (%)</label><input type="number" step="any" max="100" id="caExpInterval" value="95" required style="width:110px"></div>
           <button class="btn primary" id="caExpGo">Analyze</button>
+          <button class="btn" id="caExpPng" title="Also render the thesis-style figures (LaTeX; slow)">Export thesis PNGs</button>
         </div>
+        <div class="hint">Both empty: every dataset of the campaign. The first analysis of a dataset evaluates every fitted replica on the cluster; after that it is read from the cache in seconds.</div>
         <div class="note">Mean fitted-replica theory with an equal-tailed pointwise interval, calculated independently at every experimental point. Choose a finite percentage greater than 0 and at most 100; fractional percentages are accepted. At 100%, the band is the full envelope of available fitted replicas, not the entire underlying posterior. At least two fitted replicas are needed for a band. Experimental error bars remain separate.</div>
       </div>
       <div id="caLogsBox" class="subbox" style="display:none"></div>
@@ -489,6 +518,7 @@
     return {
       kind: "chatgpt", ready: Promise.resolve(),
       get toolOutput(){ return oai.toolOutput || {}; },
+      get toolMeta(){ return oai.toolResponseMetadata || null; },
       get widgetState(){ return oai.widgetState || {}; },
       setWidgetState(s){ try{ oai.setWidgetState && oai.setWidgetState(s); }catch(e){} },
       callTool(name, args){ return oai.callTool(name, args||{}); },
@@ -536,6 +566,7 @@
     return {
       kind: "mcp-app", ready,
       get toolOutput(){ return toolOutput; },
+      get toolMeta(){ return toolOutput && toolOutput._meta || null; },
       get widgetState(){ return state; },
       setWidgetState(s){ state = s || {}; try{ sessionStorage.setItem("jam_panel_state", JSON.stringify(state)); }catch(e){} },
       callTool(name, args){ return ready.then(()=>request("tools/call", {name, arguments: args||{}}, 600000)); },
@@ -556,6 +587,7 @@
     return {
       kind: "page", ready: Promise.resolve(),
       get toolOutput(){ return tab ? {tab} : {}; },
+      get toolMeta(){ return null; },
       get widgetState(){ return state; },
       setWidgetState(s){ state = s || {}; try{ localStorage.setItem("jam_panel_state", JSON.stringify(state)); }catch(e){} },
       hasToken(){ return !!token; },
@@ -608,10 +640,23 @@
     sharedUser = (u || "").trim().toLowerCase();
     try { if (sharedUser) sessionStorage.setItem("jam_gateway_user", sharedUser); else sessionStorage.removeItem("jam_gateway_user"); } catch(e){}
   }
+  // What a result carries for the panel only (chart data, PNG data URLs): the
+  // gateway puts it in the result's _meta, outside what the model reads.
+  function uiOf(raw){
+    for (let v = raw, i = 0; i < 3 && v && typeof v === "object"; i++, v = v.result){
+      const m = v._meta || v.meta;
+      if (m && m["jam/ui"]) return m["jam/ui"];
+    }
+    return null;
+  }
   async function call(name, args){
     args = args || {};
     if (sharedUser && !("username" in args)) args = Object.assign({username: sharedUser}, args);
-    try { return unwrap(await host.callTool(name, args)); }
+    try {
+      const raw = await host.callTool(name, args), r = unwrap(raw), ui = uiOf(raw);
+      if (r && typeof r === "object" && ui){ r._ui = ui; if (ui.panel_plots) r._panel_plots = ui.panel_plots; }
+      return r;
+    }
     catch(e){ if (e && e.auth) showTokenGate(); throw e; }
   }
   // A tool refused because the cluster chain is not open says so in words meant
@@ -1765,6 +1810,530 @@
   function imagesHtml(plots, cap){
     return '<div class="imgs">'+(plots || []).map(p=>'<figure><img alt="'+esc(cap(p))+'" src="'+esc(p.data_url)+'"><figcaption>'+esc(cap(p))+'</figcaption></figure>').join("")+'</div>';
   }
+  /* ---------- interactive charts ----------
+     A small SVG chart, enough for the analysis views: points with error bars,
+     lines with credible bands, linear or log axes. Hover shows the values, a
+     drag zooms, a double click (or reset) zooms out, a legend entry switches its
+     series off and on (double click: only that one). It works the same in the
+     browser page, ChatGPT and MCP Apps hosts: no library, no network. */
+  const SVGNS = "http://www.w3.org/2000/svg";
+  const PALETTE = ["#2560c9","#d9480f","#2b8a3e","#ae3ec9","#c92a2a","#0b7285","#e67700","#5f3dc4","#868e96","#a61e4d"];
+  const isNum = v=>typeof v === "number" && isFinite(v);
+  function svgEl(tag, attrs, parent){
+    const n = document.createElementNS(SVGNS, tag);
+    for (const k in attrs || {}) n.setAttribute(k, attrs[k]);
+    if (parent) parent.appendChild(n);
+    return n;
+  }
+  function fmtVal(v){
+    if (!isNum(v)) return "—";
+    const a = Math.abs(v);
+    return a !== 0 && (a >= 1e5 || a < 1e-3) ? v.toExponential(3) : String(+v.toPrecision(5));
+  }
+  function fmtTick(v){
+    const a = Math.abs(v);
+    return a !== 0 && (a >= 1e4 || a < 1e-3) ? v.toExponential(0).replace("e+", "e") : String(+v.toPrecision(4));
+  }
+  function minMax(a){ let lo = Infinity, hi = -Infinity; for (const v of a){ if (v < lo) lo = v; if (v > hi) hi = v; } return [lo, hi]; }
+  function linTicks(lo, hi, n){
+    const span = hi - lo;
+    if (!(span > 0)) return [lo];
+    const raw = span / n, mag = Math.pow(10, Math.floor(Math.log10(raw))), r = raw / mag;
+    const step = (r > 5 ? 10 : r > 2 ? 5 : r > 1 ? 2 : 1) * mag, out = [];
+    for (let t = Math.ceil(lo / step) * step; t <= hi + step * 1e-9; t += step) out.push(+t.toPrecision(12));
+    return out;
+  }
+  function logTicks(lo, hi){                       // lo, hi: log10 of the axis ends
+    const out = [], a = Math.floor(lo), b = Math.ceil(hi);
+    if (b - a <= 2){
+      for (let e = a; e <= b; e++) for (const m of [1, 2, 5]){ const t = e + Math.log10(m); if (t >= lo - 1e-9 && t <= hi + 1e-9) out.push(t); }
+    } else {
+      const stride = Math.max(1, Math.ceil((b - a) / 7));
+      for (let e = a; e <= b; e += stride) if (e >= lo - 1e-9 && e <= hi + 1e-9) out.push(e);
+    }
+    return out;
+  }
+  function download(text, type, name){
+    try{
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([text], {type}));
+      a.download = name; document.body.appendChild(a); a.click();
+      setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+    }catch(e){}
+  }
+  // series: {key, name, color, points:[{x, y, lo, hi, info:[...]}], markers, hollow, line, dash,
+  //          band:[{x, lo, hi}], bandStyle: "area" | "bars", width, opacity, hover}
+  function makeChart(box, opts){
+    const st = {series: [], hidden: new Set(), view: null,
+                opts: Object.assign({height: 340, xlog: false, ylog: false, xlabel: "", ylabel: "", hline: null, name: "chart"}, opts)};
+    box.className = "chart";
+    box.innerHTML = '<div class="chart-bar"></div><div class="chart-plot"></div><div class="chart-legend"></div><div class="chart-tip" hidden></div>';
+    const bar = box.querySelector(".chart-bar"), plot = box.querySelector(".chart-plot"),
+          legend = box.querySelector(".chart-legend"), tip = box.querySelector(".chart-tip");
+    const button = (label, title, fn)=>{ const b = document.createElement("button"); b.type = "button"; b.className = "cb";
+      b.textContent = label; b.title = title; b.onclick = fn; bar.appendChild(b); return b; };
+    const bx = button("log x", "Logarithmic x axis", ()=>{ st.opts.xlog = !st.opts.xlog; st.view = null; draw(); });
+    const by = button("log y", "Logarithmic y axis", ()=>{ st.opts.ylog = !st.opts.ylog; st.view = null; draw(); });
+    button("reset zoom", "Show everything again (or double-click the plot)", ()=>{ st.view = null; draw(); });
+    button("CSV", "Download the plotted values", ()=>download(csv(), "text/csv", st.opts.name+".csv"));
+    button("SVG", "Download the chart as an SVG image", ()=>download(svgText(), "image/svg+xml", st.opts.name+".svg"));
+    let svg = null, geom = null, marks = [];
+    const shown = ()=>st.series.filter(s=>!st.hidden.has(s.key));
+    const tf = (v, log)=>log ? (v > 0 ? Math.log10(v) : NaN) : v;
+    function extent(){
+      const xs = [], ys = [], X = st.opts.xlog, Y = st.opts.ylog;
+      for (const s of shown()){
+        for (const p of s.points || []){ xs.push(tf(p.x, X)); for (const v of [p.y, p.lo, p.hi]) if (isNum(v)) ys.push(tf(v, Y)); }
+        for (const p of s.band || []){ xs.push(tf(p.x, X)); ys.push(tf(p.lo, Y), tf(p.hi, Y)); }
+      }
+      const fx = xs.filter(isNum), fy = ys.filter(isNum);
+      if (!fx.length || !fy.length) return null;
+      let [x0, x1] = minMax(fx), [y0, y1] = minMax(fy);
+      if (st.opts.hline != null && !Y){ y0 = Math.min(y0, st.opts.hline); y1 = Math.max(y1, st.opts.hline); }
+      const px = (x1 - x0) || Math.abs(x0) || 1, py = (y1 - y0) || Math.abs(y0) || 1;
+      return [x0 - px * 0.03, x1 + px * 0.03, y0 - py * 0.06, y1 + py * 0.06];
+    }
+    function draw(){
+      bx.classList.toggle("on", !!st.opts.xlog); by.classList.toggle("on", !!st.opts.ylog);
+      const W = Math.max(260, Math.round(plot.clientWidth || box.clientWidth || 600)), H = st.opts.height;
+      const m = {l: 64, r: 14, t: 10, b: 44}, iw = W - m.l - m.r, ih = H - m.t - m.b;
+      plot.innerHTML = ""; marks = [];
+      svg = svgEl("svg", {width: W, height: H, viewBox: "0 0 "+W+" "+H, class: "chart-svg"}, plot);
+      const dom = st.view || extent();
+      if (!dom){
+        const t = svgEl("text", {x: W / 2, y: H / 2, "text-anchor": "middle", class: "ct-label"}, svg);
+        t.textContent = "Nothing to draw: every series is off, or no positive values on a log axis.";
+        geom = null; paintLegend(); return;
+      }
+      const [x0, x1, y0, y1] = dom;
+      const X = v=>m.l + (tf(v, st.opts.xlog) - x0) / (x1 - x0) * iw;
+      const Y = v=>m.t + ih - (tf(v, st.opts.ylog) - y0) / (y1 - y0) * ih;
+      geom = {W, H, m, iw, ih, dom};
+      const clip = "clip" + Math.random().toString(36).slice(2);
+      svgEl("rect", {x: m.l, y: m.t, width: iw, height: ih}, svgEl("clipPath", {id: clip}, svgEl("defs", {}, svg)));
+      const axis = svgEl("g", {class: "ct-axis"}, svg);
+      const xt = st.opts.xlog ? logTicks(x0, x1) : linTicks(x0, x1, Math.max(3, Math.floor(iw / 90)));
+      const yt = st.opts.ylog ? logTicks(y0, y1) : linTicks(y0, y1, Math.max(3, Math.floor(ih / 55)));
+      for (const t of xt){
+        const v = st.opts.xlog ? Math.pow(10, t) : t, x = X(v);
+        svgEl("line", {x1: x, x2: x, y1: m.t, y2: m.t + ih, class: "ct-grid"}, axis);
+        svgEl("text", {x, y: m.t + ih + 15, "text-anchor": "middle"}, axis).textContent = fmtTick(v);
+      }
+      for (const t of yt){
+        const v = st.opts.ylog ? Math.pow(10, t) : t, y = Y(v);
+        svgEl("line", {x1: m.l, x2: m.l + iw, y1: y, y2: y, class: "ct-grid"}, axis);
+        svgEl("text", {x: m.l - 6, y: y + 4, "text-anchor": "end"}, axis).textContent = fmtTick(v);
+      }
+      svgEl("rect", {x: m.l, y: m.t, width: iw, height: ih, class: "ct-frame"}, axis);
+      svgEl("text", {x: m.l + iw / 2, y: H - 8, "text-anchor": "middle", class: "ct-label"}, svg).textContent = st.opts.xlabel;
+      svgEl("text", {x: 14, y: m.t + ih / 2, "text-anchor": "middle", class: "ct-label",
+                     transform: "rotate(-90 14 "+(m.t + ih / 2)+")"}, svg).textContent = st.opts.ylabel;
+      const body = svgEl("g", {"clip-path": "url(#"+clip+")"}, svg);
+      const okY = v=>isNum(v) && isNum(tf(v, st.opts.ylog)), okX = v=>isNum(v) && isNum(tf(v, st.opts.xlog));
+      if (st.opts.hline != null && okY(st.opts.hline)){
+        const y = Y(st.opts.hline);
+        svgEl("line", {x1: m.l, x2: m.l + iw, y1: y, y2: y, class: "ct-ref"}, body);
+      }
+      for (const s of shown()){
+        const c = s.color;
+        if (s.band && s.band.length){
+          const pts = s.band.filter(p=>okX(p.x) && okY(p.lo) && okY(p.hi));
+          if (s.bandStyle === "bars"){
+            for (const p of pts) svgEl("rect", {x: X(p.x) - 3, width: 6, y: Y(p.hi), height: Math.max(1.5, Y(p.lo) - Y(p.hi)),
+                                                fill: c, "fill-opacity": 0.25}, body);
+          } else if (pts.length > 1){
+            const d = "M" + pts.map(p=>X(p.x).toFixed(1)+","+Y(p.hi).toFixed(1)).join("L") + "L"
+                    + pts.slice().reverse().map(p=>X(p.x).toFixed(1)+","+Y(p.lo).toFixed(1)).join("L") + "Z";
+            svgEl("path", {d, fill: c, "fill-opacity": 0.18, stroke: "none"}, body);
+          }
+        }
+        const pts = (s.points || []).filter(p=>okX(p.x) && okY(p.y));
+        if (s.line && pts.length > 1){
+          svgEl("path", {d: "M" + pts.map(p=>X(p.x).toFixed(1)+","+Y(p.y).toFixed(1)).join("L"), fill: "none", stroke: c,
+                         "stroke-width": s.width || 1.8, "stroke-opacity": s.opacity == null ? 1 : s.opacity,
+                         "stroke-dasharray": s.dash || "none"}, body);
+        }
+        if (s.markers){
+          for (const p of pts){
+            const x = X(p.x), y = Y(p.y);
+            if (okY(p.lo) && okY(p.hi)) svgEl("line", {x1: x, x2: x, y1: Y(p.lo), y2: Y(p.hi), stroke: c, "stroke-width": 1.2}, body);
+            svgEl("circle", {cx: x, cy: y, r: s.hollow ? 3.2 : 2.8, fill: s.hollow ? "var(--surface)" : c, stroke: c,
+                             "stroke-width": s.hollow ? 1.4 : 0}, body);
+          }
+        }
+        if (s.hover !== false) for (const p of pts) marks.push({x: X(p.x), y: Y(p.y), s, p});
+      }
+      const ov = svgEl("rect", {x: m.l, y: m.t, width: iw, height: ih, class: "ct-ov"}, svg);
+      const ring = svgEl("circle", {r: 5.5, class: "ct-ring", visibility: "hidden"}, svg);
+      const sel = svgEl("rect", {class: "ct-sel", visibility: "hidden"}, svg);
+      const at = ev=>{ const b = svg.getBoundingClientRect(); return [(ev.clientX - b.left) * W / b.width, (ev.clientY - b.top) * H / b.height]; };
+      let start = null;
+      ov.addEventListener("pointerdown", ev=>{ start = at(ev); try{ ov.setPointerCapture(ev.pointerId); }catch(e){} });
+      ov.addEventListener("pointermove", ev=>{
+        const [px, py] = at(ev);
+        if (start){
+          const [sx, sy] = start;
+          sel.setAttribute("x", Math.min(sx, px)); sel.setAttribute("y", Math.min(sy, py));
+          sel.setAttribute("width", Math.abs(px - sx)); sel.setAttribute("height", Math.abs(py - sy));
+          sel.setAttribute("visibility", "visible"); tip.hidden = true; ring.setAttribute("visibility", "hidden"); return;
+        }
+        let best = null, bd = 900;
+        for (const k of marks){ const d = (k.x - px) ** 2 + (k.y - py) ** 2; if (d < bd){ bd = d; best = k; } }
+        if (!best){ tip.hidden = true; ring.setAttribute("visibility", "hidden"); return; }
+        ring.setAttribute("cx", best.x); ring.setAttribute("cy", best.y); ring.setAttribute("stroke", best.s.color);
+        ring.setAttribute("visibility", "visible");
+        const p = best.p;
+        const lines = [best.s.name, (st.opts.xlabel || "x")+" = "+fmtVal(p.x), (st.opts.ylabel || "y")+" = "+fmtVal(p.y)
+                       + (isNum(p.lo) && isNum(p.hi) ? "  ["+fmtVal(p.lo)+", "+fmtVal(p.hi)+"]" : "")].concat(p.info || []);
+        tip.innerHTML = lines.map((t, i)=>i ? esc(t) : '<b>'+esc(t)+'</b>').join("<br>");
+        tip.hidden = false;
+        const b = svg.getBoundingClientRect(), hb = box.getBoundingClientRect();
+        const left = b.left - hb.left + best.x * b.width / W, top = b.top - hb.top + best.y * b.height / H;
+        tip.style.left = Math.max(4, Math.min(left + 12, hb.width - tip.offsetWidth - 4)) + "px";
+        tip.style.top = Math.max(4, top - tip.offsetHeight - 10) + "px";
+      });
+      const finish = ev=>{
+        if (!start) return;
+        const [sx, sy] = start, [px, py] = at(ev);
+        start = null; sel.setAttribute("visibility", "hidden");
+        if (Math.abs(px - sx) < 8 || Math.abs(py - sy) < 8) return;
+        const ix = v=>x0 + (v - m.l) / iw * (x1 - x0), iy = v=>y0 + (m.t + ih - v) / ih * (y1 - y0);
+        st.view = [ix(Math.min(sx, px)), ix(Math.max(sx, px)), iy(Math.max(sy, py)), iy(Math.min(sy, py))];
+        draw();
+      };
+      ov.addEventListener("pointerup", finish);
+      ov.addEventListener("pointercancel", ()=>{ start = null; sel.setAttribute("visibility", "hidden"); });
+      ov.addEventListener("pointerleave", ()=>{ if (!start){ tip.hidden = true; ring.setAttribute("visibility", "hidden"); } });
+      ov.addEventListener("dblclick", ()=>{ st.view = null; draw(); });
+      paintLegend();
+    }
+    function paintLegend(){
+      const seen = new Map();
+      for (const s of st.series) if (s.legend !== false && !seen.has(s.key)) seen.set(s.key, s);
+      legend.innerHTML = "";
+      for (const [key, s] of seen){
+        const item = document.createElement("span");
+        item.className = "lg" + (st.hidden.has(key) ? " off" : "");
+        item.title = "Click: show or hide. Double-click: only this one.";
+        item.innerHTML = '<i style="background:'+esc(s.color)+'"></i>'+esc(s.legendName || key);
+        item.onclick = ()=>{ if (st.hidden.has(key)) st.hidden.delete(key); else st.hidden.add(key); draw(); };
+        item.ondblclick = ()=>{ st.hidden = new Set([...seen.keys()].filter(k=>k !== key)); draw(); };
+        legend.appendChild(item);
+      }
+    }
+    function csv(){
+      const q = v=>'"'+String(v == null ? "" : v).replace(/"/g, '""')+'"';
+      const rows = [["series", st.opts.xlabel || "x", st.opts.ylabel || "y", "lower", "upper"].map(q).join(",")];
+      for (const s of shown()) for (const p of s.points || []) rows.push([s.name, p.x, p.y, p.lo, p.hi].map(q).join(","));
+      return rows.join("\n");
+    }
+    function svgText(){
+      if (!svg) return "";
+      const clone = svg.cloneNode(true), cs = getComputedStyle(document.documentElement);
+      const v = n=>cs.getPropertyValue(n).trim();
+      const style = svgEl("style", {});
+      style.textContent = ".ct-axis text{font:11px sans-serif;fill:"+v("--muted")+"}.ct-label{font:12px sans-serif;fill:"+v("--fg")+"}"
+        + ".ct-grid{stroke:"+v("--line")+"}.ct-frame{fill:none;stroke:"+v("--line")+"}.ct-ref{stroke:"+v("--muted")+";stroke-dasharray:4 3}"
+        + ".ct-ov,.ct-sel,.ct-ring{display:none}";
+      clone.insertBefore(svgEl("rect", {width: "100%", height: "100%", fill: v("--surface")}), clone.firstChild);
+      clone.insertBefore(style, clone.firstChild);
+      clone.setAttribute("xmlns", SVGNS);
+      return new XMLSerializer().serializeToString(clone);
+    }
+    let frame = 0;
+    if (window.ResizeObserver) new ResizeObserver(()=>{ cancelAnimationFrame(frame); frame = requestAnimationFrame(()=>{ if (box.isConnected) draw(); }); }).observe(plot);
+    return {
+      set(series, labels){ st.series = series; Object.assign(st.opts, labels || {}); draw(); },
+      reset(){ st.view = null; st.hidden.clear(); },
+      get opts(){ return st.opts; },
+    };
+  }
+
+  /* ---------- analysis results ---------- */
+  // A long analysis answers "running" with a job id; wait for it here (each
+  // analysis_result call itself waits up to ~40 s on the gateway).
+  async function settle(r, current, label){
+    const t0 = Date.now();
+    while (r && r.status === "running" && r.job_id){
+      if (!current()) return null;
+      $("caOut").innerHTML = '<div class="spin">'+esc(label || "Computing on the cluster")+'… '
+        + Math.round(r.elapsed_s || (Date.now() - t0) / 1000)+' s so far. The first evaluation of a campaign\'s replicas takes minutes; later ones read the cache.</div>';
+      r = await call("analysis_result", {job_id: r.job_id});
+    }
+    return current() ? r : null;
+  }
+  function noMatchHtml(r){
+    const rows = r.available || [];
+    return '<div class="note warn">Nothing in this campaign matches '
+      + esc([].concat(r.unknown_datasets || [], r.unmatched_experiments || []).join(", ") || "the request")
+      + '. Its datasets are below: click one to analyze it.</div>'
+      + '<div class="chips">'+rows.map(x=>'<span class="fl" data-ds="'+esc(x.dataset)+'">'+esc((x.experiment ? x.experiment+" · " : "")+x.dataset
+        + (x.observable ? " · "+x.observable : "")+(x.target ? " · "+x.target : ""))+'</span>').join("")+'</div>';
+  }
+  function wireNoMatch(out){
+    out.querySelectorAll("[data-ds]").forEach(n=>n.onclick = ()=>{
+      $("caDsList").value = n.dataset.ds; $("caExpList").value = ""; showBoxOpen("caExpBox"); runTheory(false);
+    });
+  }
+  function showBoxOpen(id){ if ($(id).style.display === "none") showBox(id); }
+  function renderResult(r, out){
+    out = out || $("caOut");
+    if (!r) return;
+    if (r.status === "no_match"){ out.innerHTML = noMatchHtml(r); wireNoMatch(out); return; }
+    if (r.status !== "ok"){ caWarn(msgOf(r, "No result."), r.detail); return; }
+    const ui = r._ui || {};
+    if (ui.view === "theory" || r.table) return renderTheory(r, out);
+    if (ui.view === "pdf" || r.mean_at_x) return renderPdf(r, out);
+    out.innerHTML = (r.note ? '<div class="note warn">'+esc(r.note)+'</div>' : "")
+      + imagesHtml(r._panel_plots, p=>(p.label || p.object || "")+" "+(p.flavor || (p.flavors || []).join(", "))
+        +" · Q² = "+r.q2+" GeV² · "+(p.interval_label || "")+" · "+(p.path || ""));
+  }
+  // The fitted normalization as in the papers: 1.137(34).
+  function meanStd(m, s){
+    if (!isNum(m)) return "—";
+    if (!isNum(s) || s <= 0) return m.toFixed(3);
+    const d = Math.max(0, 1 - Math.floor(Math.log10(s)));
+    return m.toFixed(d) + "(" + Math.round(s * Math.pow(10, d)) + ")";
+  }
+  const f2 = v=>isNum(v) ? v.toFixed(2) : "—";
+  const zTxt = v=>isNum(v) ? (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(2) : "—";
+  const TABLE_COLS = [
+    ["dataset", "Dataset", r=>(r.experiment || "?")+' <span class="muted mono">'+esc(r.dataset)+'</span>', r=>(r.experiment || "")+r.dataset],
+    ["observable", "Observable", r=>esc(r.observable || "")+(r.target ? ' <span class="muted">('+esc(r.target)+')</span>' : ""), r=>r.observable || ""],
+    ["npts", "N<sub>dat</sub>", r=>esc(r.npts)+"/"+esc(r.npts_raw == null ? "?" : r.npts_raw), r=>r.npts],
+    ["ncor", "N<sub>cor</sub>", r=>esc(r.ncor), r=>r.ncor],
+    ["chi2_red", "χ²<sub>red</sub> (Z)", r=>f2(r.chi2_red)+' <span class="muted">('+zTxt(r.z_score)+')</span>', r=>r.chi2_red],
+    ["chi2_cor", "χ²<sub>cor</sub>", r=>f2(r.chi2_cor), r=>r.chi2_cor],
+    ["chi2_norm", "χ²<sub>norm</sub>", r=>f2(r.chi2_norm), r=>r.chi2_norm],
+    ["norm", "fitted norm", r=>meanStd(r.norm, r.norm_std), r=>r.norm == null ? -Infinity : r.norm]];
+  function tableLatex(rows){
+    const out = ["\\begin{tabular}{llrrlrrr}", "\\hline",
+      "Dataset & Observable & $N_{\\rm dat}$ & $N_{\\rm cor}$ & $\\chi^2_{\\rm red}$ ($Z$-score) & $\\chi^2_{\\rm cor}$ & $\\chi^2_{\\rm norm}$ & fitted norm. \\\\", "\\hline"];
+    for (const r of rows) out.push([(r.experiment || r.dataset)+" ("+r.dataset+")", r.observable || "", r.npts+"/"+(r.npts_raw == null ? "?" : r.npts_raw), r.ncor,
+      f2(r.chi2_red)+" ("+(isNum(r.z_score) ? (r.z_score >= 0 ? "+" : "$-$")+Math.abs(r.z_score).toFixed(2) : "--")+")",
+      f2(r.chi2_cor), f2(r.chi2_norm), meanStd(r.norm, r.norm_std).replace("—", "--")].join(" & ")+" \\\\");
+    out.push("\\hline", "\\end{tabular}");
+    return out.join("\n");
+  }
+  function tableCsv(rows){
+    const q = v=>'"'+String(v == null ? "" : v).replace(/"/g, '""')+'"';
+    const keys = ["dataset","experiment","reaction","dataset_id","observable","target","npts","npts_raw","ncor","chi2","chi2_red","z_score","chi2_cor","chi2_norm","norm","norm_std"];
+    return [keys.join(",")].concat(rows.map(r=>keys.map(k=>q(r[k])).join(","))).join("\n");
+  }
+  function renderTheory(r, out){
+    const ui = r._ui || {}, charts = ui.charts || [];
+    const rows = r.table || [];
+    let sort = null, dir = 1, current = charts.length ? charts[0].dataset : null;
+    out.innerHTML = (r.note ? '<div class="note">'+esc(r.note)+'</div>' : "")
+      + (r.unknown_datasets || r.unmatched_experiments ? '<div class="note warn">Not in this campaign: '
+         + esc([].concat(r.unknown_datasets || [], r.unmatched_experiments || []).join(", "))+'</div>' : "")
+      + (r.unavailable_datasets && r.unavailable_datasets.length ? '<div class="note warn">'+r.unavailable_datasets.map(d=>esc(d.dataset+" — "+d.reason)).join("<br>")+'</div>' : "")
+      + '<div class="tv-head"><div class="label" style="margin:0">Datasets · '+esc(r.n_replicas)+' fitted replicas'
+      + (r.compute_seconds != null ? ' · computed now in '+esc(r.compute_seconds)+' s' : ' · from the cache')+'</div>'
+      + '<span class="sp"></span><button class="cb" id="tvLatex" type="button">Copy LaTeX</button><button class="cb" id="tvCsv" type="button">CSV</button></div>'
+      + '<div class="tblscroll"><table class="tbl dtbl" id="tvTable"></table></div>'
+      + (charts.length ? '<div class="plot-controls tv-ctl">'
+        + '<div class="pc" style="flex:1;min-width:200px"><span class="label">Dataset</span><select id="tvDs"></select></div>'
+        + '<div class="pc"><span class="label">x axis</span><select id="tvX"></select></div>'
+        + '<div class="pc"><span class="label">Group by</span><select id="tvG"></select></div>'
+        + '<div class="pc"><span class="label">Show</span><select id="tvMode"><option value="values">data and theory</option><option value="ratio">data / theory</option><option value="pull">(data − theory) / α</option></select></div>'
+        + '<div class="pc"><span class="label">Credible interval</span><select id="tvCi"></select></div>'
+        + '<div class="pc"><label class="inline"><input type="checkbox" id="tvStack"> stack groups ×2ⁱ</label></div>'
+        + '</div><div id="tvCaption" class="hint"></div><div id="tvChart"></div>'
+        : (r._ui ? "" : '<div class="note">This host did not pass the chart data to the panel; open the panel in the browser (Analysis tab) for the interactive charts.</div>'))
+      + imagesHtml(r._panel_plots, p=>p.caption || "");
+    const tbl = out.querySelector("#tvTable");
+    function paintTable(){
+      const head = '<thead><tr>'+TABLE_COLS.map(c=>'<th data-k="'+c[0]+'" class="sortable">'+c[1]+(sort === c[0] ? (dir > 0 ? " ▲" : " ▼") : "")+'</th>').join("")+'</tr></thead>';
+      let body = "";
+      const line = x=>'<tr data-ds="'+esc(x.dataset)+'"'+(x.dataset === current ? ' class="sel"' : '')+'>'+TABLE_COLS.map(c=>'<td'+(c[0] === "dataset" || c[0] === "observable" ? '' : ' class="mono num"')+'>'+c[2](x)+'</td>').join("")+'</tr>';
+      if (sort){
+        const col = TABLE_COLS.find(c=>c[0] === sort);
+        body = rows.slice().sort((a, b)=>{ const p = col[3](a), q = col[3](b); return (p > q ? 1 : p < q ? -1 : 0) * dir; }).map(line).join("");
+      } else {
+        const groups = new Map();
+        rows.forEach(x=>{ if (!groups.has(x.reaction)) groups.set(x.reaction, []); groups.get(x.reaction).push(x); });
+        for (const [reaction, xs] of groups){
+          const n = xs.reduce((a, x)=>a + x.npts, 0), c2 = xs.reduce((a, x)=>a + (x.chi2 || 0), 0);
+          body += '<tr class="grp"><td colspan="'+TABLE_COLS.length+'">'+esc(reaction)+' · '+xs.length+' datasets · '+n+' points · χ²/N '+f2(c2 / n)+'</td></tr>' + xs.map(line).join("");
+        }
+      }
+      tbl.innerHTML = head + '<tbody>'+body+'</tbody>';
+      tbl.querySelectorAll("th[data-k]").forEach(th=>th.onclick = ()=>{
+        const k = th.dataset.k;
+        if (sort === k){ if (dir < 0){ sort = null; dir = 1; } else dir = -1; } else { sort = k; dir = 1; }
+        paintTable();
+      });
+      tbl.querySelectorAll("tr[data-ds]").forEach(tr=>tr.onclick = ()=>{ if (charts.some(c=>c.dataset === tr.dataset.ds)){ current = tr.dataset.ds; $("tvDs").value = current; pickDataset(); } });
+    }
+    paintTable();
+    const copy = (text, btn)=>{ try{ navigator.clipboard.writeText(text).then(()=>{ btn.textContent = "Copied"; setTimeout(()=>btn.textContent = "Copy LaTeX", 1500); }); }catch(e){ download(text, "text/plain", "table.tex"); } };
+    out.querySelector("#tvLatex").onclick = (ev)=>copy(tableLatex(rows), ev.currentTarget);
+    out.querySelector("#tvCsv").onclick = ()=>download(tableCsv(rows), "text/csv", (r.campaign_name || "campaign")+"_datasets.csv");
+    if (!charts.length) return;
+    const byKey = new Map(charts.map(c=>[c.dataset, c]));
+    $("tvDs").innerHTML = charts.map(c=>'<option value="'+esc(c.dataset)+'">'+esc((c.experiment || "?")+" · "+c.dataset+(c.observable ? " · "+c.observable : "")+(c.target ? " · "+c.target : ""))+'</option>').join("");
+    const levels = Object.keys(charts[0].bands || {}).sort((a, b)=>a - b);
+    $("tvCi").innerHTML = levels.length ? levels.map(l=>'<option value="'+esc(l)+'"'+(Number(l) === Number(ui.credible_interval) ? " selected" : "")+'>'+esc(l)+'%</option>').join("")
+                                        : '<option value="">none (one replica)</option>';
+    const chart = makeChart($("tvChart"), {name: "data_vs_theory"});
+    const XPREF = ["X","x","pT","pt","PT","xF","Y","y","eta","z","Q2","qT","M","W2"];
+    const GPREF = ["Q2","eta","Y","y","rs","M","Q","z","x","X"];
+    function pickDataset(){
+      const c = byKey.get($("tvDs").value); current = c.dataset; paintTable();
+      const numeric = Object.keys(c.columns).filter(k=>typeof c.columns[k].find(v=>v != null) === "number");
+      const xDefault = XPREF.find(k=>numeric.includes(k)) || numeric[0] || "";
+      $("tvX").innerHTML = (numeric.length ? "" : '<option value="">point index</option>') + numeric.map(k=>'<option'+(k === xDefault ? " selected" : "")+'>'+esc(k)+'</option>').join("");
+      const all = Object.keys(c.columns);
+      const gDefault = GPREF.find(k=>all.includes(k) && k !== xDefault) || "";
+      $("tvG").innerHTML = '<option value="">none</option>' + all.map(k=>'<option'+(k === gDefault ? " selected" : "")+'>'+esc(k)+'</option>').join("");
+      chart.reset(); chart.opts.ylog = false; chart.opts.xlog = false;
+      if (xDefault === "X" || xDefault === "x"){ const xs = c.columns[xDefault].filter(isNum); chart.opts.xlog = xs.length && Math.min(...xs.slice(0, 2000)) > 0 && Math.max(...xs.slice(0, 2000)) / Math.min(...xs.slice(0, 2000)) > 30; }
+      paintChart();
+    }
+    function groupsOf(c, key){
+      const n = c.npts, idx = [...Array(n).keys()];
+      if (!key) return [{label: "all points", idx}];
+      const col = c.columns[key];
+      if (typeof col.find(v=>v != null) !== "number"){
+        const m = new Map(); idx.forEach(j=>{ const k = String(col[j]); if (!m.has(k)) m.set(k, []); m.get(k).push(j); });
+        return [...m].map(([k, js])=>({label: key+" = "+k, idx: js}));
+      }
+      const r3 = v=>v == null ? null : +Number(v).toPrecision(3);
+      const distinct = [...new Set(idx.map(j=>r3(col[j])))].filter(v=>v != null).sort((a, b)=>a - b);
+      if (distinct.length <= 8)
+        return distinct.map(v=>({label: key+" = "+fmtVal(v), idx: idx.filter(j=>r3(col[j]) === v)}));
+      const sorted = idx.filter(j=>isNum(col[j])).map(j=>col[j]).sort((a, b)=>a - b), edges = [];
+      for (let i = 0; i <= 6; i++) edges.push(sorted[Math.min(sorted.length - 1, Math.round(i * (sorted.length - 1) / 6))]);
+      const out = [];
+      for (let i = 0; i < 6; i++){
+        const lo = edges[i], hi = edges[i + 1];
+        if (i && lo === edges[i - 1] && hi === lo) continue;
+        const js = idx.filter(j=>isNum(col[j]) && col[j] >= lo && (i === 5 ? col[j] <= hi : col[j] < hi));
+        if (js.length) out.push({label: key+" ∈ ["+fmtVal(lo)+", "+fmtVal(hi)+(i === 5 ? "]" : ")"), idx: js});
+      }
+      return out;
+    }
+    function paintChart(){
+      const c = byKey.get($("tvDs").value), xKey = $("tvX").value, gKey = $("tvG").value, mode = $("tvMode").value;
+      const band = c.bands[$("tvCi").value] || null, stack = $("tvStack").checked && mode === "values";
+      $("tvStack").disabled = mode !== "values";
+      const xs = xKey ? c.columns[xKey] : [...Array(c.npts).keys()];
+      const series = [];
+      groupsOf(c, gKey).forEach((g, gi)=>{
+        const color = PALETTE[gi % PALETTE.length], f = stack ? Math.pow(2, gi) : 1;
+        const key = g.label + (stack && gi ? "  (×2^"+gi+")" : "");
+        const data = [], thy = [];
+        for (const j of g.idx){
+          const mu = c.mean[j], v = c.value[j], a = c.alpha[j], lo = band ? band[0][j] : null, hi = band ? band[1][j] : null;
+          let y, e, tm, tl, th;
+          if (mode === "ratio"){ y = v / mu; e = a / Math.abs(mu); tm = 1; tl = lo == null ? null : lo / mu; th = hi == null ? null : hi / mu; if (mu < 0){ const t = tl; tl = th; th = t; } }
+          else if (mode === "pull"){ y = (v - mu) / a; e = 1; tm = 0; tl = lo == null ? null : (lo - mu) / a; th = hi == null ? null : (hi - mu) / a; }
+          else { y = v * f; e = a * f; tm = mu * f; tl = lo == null ? null : lo * f; th = hi == null ? null : hi * f; }
+          const info = Object.keys(c.columns).filter(k=>k !== xKey).slice(0, 8).map(k=>k+" = "+(typeof c.columns[k][j] === "number" ? fmtVal(c.columns[k][j]) : c.columns[k][j]))
+            .concat(["data "+fmtVal(v)+" ± "+fmtVal(a), "theory "+fmtVal(mu)+(lo == null ? "" : "  ["+fmtVal(lo)+", "+fmtVal(hi)+"]"), "shift "+fmtVal(c.shift[j])]);
+          data.push({x: xs[j], y, lo: y - e, hi: y + e, info});
+          thy.push({x: xs[j], y: tm, lo: tl, hi: th, info});
+        }
+        thy.sort((p, q)=>p.x - q.x);
+        const asLine = mode === "values" && new Set(thy.map(p=>p.x)).size === thy.length;
+        const bandPts = band ? thy.filter(p=>p.lo != null).map(p=>({x: p.x, lo: Math.min(p.lo, p.hi), hi: Math.max(p.lo, p.hi)})) : [];
+        series.push({key, name: g.label+" · theory", color, points: thy.map(p=>({x: p.x, y: p.y, info: p.info})), line: asLine, markers: !asLine && mode === "values",
+                     hollow: true, band: bandPts, bandStyle: asLine ? "area" : "bars", hover: mode === "values", legendName: key});
+        series.push({key, name: g.label+" · data", color, points: data, markers: true, legend: false});
+      });
+      const obs = c.observable || "value";
+      chart.set(series, {xlabel: xKey || "point", ylabel: mode === "ratio" ? "data / theory" : mode === "pull" ? "(data − theory) / α" : obs,
+                         hline: mode === "ratio" ? 1 : mode === "pull" ? 0 : null, name: c.dataset.replace(":", "_")});
+      const consts = Object.entries(c.constants || {}).slice(0, 6).map(([k, v])=>k+" = "+(typeof v === "number" ? fmtVal(v) : v)).join(" · ");
+      $("tvCaption").textContent = (c.experiment || "")+" "+c.dataset+" · "+c.npts+" points · "+c.n_replicas+" replicas"
+        + (band ? " · theory band: "+$("tvCi").value+"% pointwise credible interval" : " · no band (one replica)")
+        + (consts ? " · "+consts : "") + ". Filled points: data ± α (uncorrelated); open points or line: mean theory (FitPack prediction incl. correlated shifts).";
+    }
+    $("tvDs").onchange = pickDataset;
+    // A new axis, grouping or view changes what the coordinates mean: zoom out.
+    ["tvX","tvG","tvMode"].forEach(id=>$(id).onchange = ()=>{ chart.reset(); paintChart(); });
+    ["tvCi","tvStack"].forEach(id=>$(id).onchange = paintChart);
+    pickDataset();
+  }
+  function renderPdf(r, out){
+    const ui = r._ui || {}, ch = ui.chart;
+    out.innerHTML = (r.note ? '<div class="note warn">'+esc(r.note)+'</div>' : "")
+      + (ch ? '<div class="plot-controls tv-ctl">'
+        + '<div class="pc"><span class="label">Credible interval</span><select id="pvCi"></select></div>'
+        + '<div class="pc"><label class="inline"><input type="checkbox" id="pvReps"> replica curves</label></div>'
+        + '<div class="pc"><label class="inline"><input type="checkbox" id="pvSplit"> one chart per flavor</label></div>'
+        + '</div><div class="hint" id="pvCaption"></div><div id="pvCharts"></div>'
+        : '<div class="note">This host did not pass the chart data to the panel; open the panel in the browser for the interactive chart.</div>')
+      + imagesHtml(r._panel_plots, p=>(p.object || "")+" "+(p.flavor || "")+" · "+p.n_replicas+" replicas · Q² = "+r.q2+" GeV² · "+(p.interval_label || ""));
+    if (!ch) return;
+    const levels = Object.keys(ch.curves[0] && ch.curves[0].bands || {}).sort((a, b)=>a - b);
+    $("pvCi").innerHTML = levels.length ? levels.map(l=>'<option value="'+esc(l)+'"'+(Number(l) === Number(ui.credible_interval) ? " selected" : "")+'>'+esc(l)+'%</option>').join("")
+                                        : '<option value="">none (one replica)</option>';
+    let charts = [];
+    const names = {ub: "ū", db: "d̄", sb: "s̄"};
+    function paint(){
+      const split = $("pvSplit").checked, reps = $("pvReps").checked, ci = $("pvCi").value;
+      const box = $("pvCharts");
+      const groups = split ? ch.curves.map(c=>[c]) : [ch.curves];
+      if (charts.length !== groups.length){
+        box.innerHTML = groups.map(()=>'<div></div>').join("");
+        charts = [...box.children].map((n, i)=>makeChart(n, {xlog: true, height: split ? 280 : 360, name: "pdf_q2_"+ch.q2+(split ? "_"+groups[i][0].flavor : "")}));
+      }
+      groups.forEach((cs, gi)=>{
+        const series = [];
+        cs.forEach(c=>{
+          const color = PALETTE[ch.curves.indexOf(c) % PALETTE.length], label = names[c.flavor] || c.flavor;
+          if (reps) c.replicas.forEach((row, i)=>series.push({key: c.flavor, name: label+" replica "+(i + 1), color, line: true, width: 0.7, opacity: 0.35,
+            points: ch.x.map((x, j)=>({x, y: row[j]})), hover: false, legend: false}));
+          const b = c.bands[ci];
+          series.push({key: c.flavor, legendName: label, name: label+" mean", color, line: true, width: 2,
+            band: b ? ch.x.map((x, j)=>({x, lo: b[0][j], hi: b[1][j]})) : [],
+            points: ch.x.map((x, j)=>({x, y: c.mean[j], lo: b ? b[0][j] : null, hi: b ? b[1][j] : null}))});
+        });
+        charts[gi].set(series, {xlabel: "x", ylabel: split ? "x "+(names[cs[0].flavor] || cs[0].flavor)+"(x, Q²)" : "x f(x, Q²)", hline: 0});
+      });
+      $("pvCaption").textContent = (ch.object || "pdf")+" at Q² = "+ch.q2+" GeV² · "+ch.n_replicas+" fitted replicas · line: mean"
+        + (ci ? " · band: "+ci+"% equal-tailed pointwise credible interval" : " · no band (one replica)")
+        + (reps && ch.n_replicas > 60 ? " · first 60 replica curves shown" : "") + ".";
+    }
+    $("pvCi").onchange = paint; $("pvReps").onchange = paint;
+    $("pvSplit").onchange = ()=>{ charts = []; paint(); };
+    paint();
+  }
+  // A result the chat host rendered this widget for (a tool call in the
+  // conversation): show it on the Analysis tab, waiting for a running job.
+  function showToolResult(raw){
+    const out = unwrap(raw), ui = uiOf(raw) || uiOf({_meta: host.toolMeta});
+    if (!out || typeof out !== "object" || !(out.job_id || ui || out.status === "no_match")) return false;
+    if (ui){ out._ui = ui; if (ui.panel_plots) out._panel_plots = ui.panel_plots; }
+    // A running job names its campaign in request.
+    const cid = out.collection_id || (out.request && out.request.collection_id);
+    if (cid) analysisCampaign = cid;
+    active = "analysis"; syncTabs();
+    const seq = ++theoryPlotSeq; theoryPlotVisible = true;
+    settle(out, ()=>seq === theoryPlotSeq).then(r=>{ if (r) renderResult(r); })
+      .catch(e=>{ if (seq === theoryPlotSeq) caWarn("Analysis failed: "+(e && e.message || e)); });
+    return true;
+  }
+  async function runTheory(png){
+    if (!analysisCampaign) return;
+    invalidateTheoryPlots();
+    const credibleInterval = Number($("caExpInterval").value);
+    if (!$("caExpInterval").value.trim() || !Number.isFinite(credibleInterval) || credibleInterval <= 0 || credibleInterval > 100){
+      caWarn("Credible interval (%) must be greater than 0 and at most 100."); return;
+    }
+    caBusy(png ? "Rendering the thesis figures (LaTeX)…" : "Loading data vs theory…");
+    const cid = analysisCampaign, seq = ++theoryPlotSeq;
+    theoryPlotVisible = true;
+    const current = ()=>cid === analysisCampaign && seq === theoryPlotSeq;
+    try{
+      let r = await call("analyze_by_experiment", {collection_id: cid, experiments: $("caExpList").value, datasets: $("caDsList").value,
+                                                   plot: true, credible_interval: credibleInterval, export_png: !!png});
+      r = await settle(r, current, "Evaluating the fitted replicas against the data");
+      if (r) renderResult(r);
+    } catch(e){ if (current()) caWarn("Analysis failed: "+(e && e.message || e)); }
+  }
   const FF_FLAVORS = ["g","u","d","ub","db","s","sb","c","b"];
   const ffPlotSelected = ()=>$("caObject").value === "ff";
   function renderFlavs(){
@@ -1788,25 +2357,26 @@
     resetFlavors(); showBox("caPdfBox");
   };
   let pdfPlotSeq = 0;
-  $("caPdfGo").onclick = async ()=>{
+  async function runPdf(png){
     if (!analysisCampaign || !pdfOn.size) return;
     const seq = ++pdfPlotSeq, credibleInterval = Number($("caInterval").value);
     if (!$("caInterval").value.trim() || !Number.isFinite(credibleInterval) || credibleInterval <= 0 || credibleInterval > 100){
       caWarn("Credible interval (%) must be greater than 0 and at most 100."); return;
     }
-    caBusy(ffPlotSelected() ? "Evaluating fragmentation functions at the selected Q²…" : "Evaluating every fitted replica's PDFs on the cluster… this takes a minute.");
-    const cid = analysisCampaign;
-    try{ const r = await call(ffPlotSelected() ? "campaign_ff_plots" : "campaign_pdf_plots", {collection_id: cid, flavors: Array.from(pdfOn).join(","),
-                                                     ...(ffPlotSelected() ? {configured: $("caFfSource").value === "configured"} : {}),
+    const ff = ffPlotSelected();
+    caBusy(ff ? "Evaluating fragmentation functions at the selected Q²…" : "Evaluating the fitted replicas' PDFs…");
+    const cid = analysisCampaign, current = ()=>cid === analysisCampaign && seq === pdfPlotSeq;
+    try{ let r = await call(ff ? "campaign_ff_plots" : "campaign_pdf_plots", {collection_id: cid, flavors: Array.from(pdfOn).join(","),
+                                                     ...(ff ? {configured: $("caFfSource").value === "configured"} : {export_png: !!png}),
                                                      object_key: $("caObject").value,
                                                      credible_interval: credibleInterval,
                                                      q2: Number($("caQ2").value) || 10, mean_overlay: $("caMean").checked});
-      if (cid !== analysisCampaign || seq !== pdfPlotSeq) return;
-      if (!r || r.status !== "ok"){ caWarn(msgOf(r, "No plots."), r && r.detail); return; }
-      $("caOut").innerHTML = (r.note ? '<div class="note warn">'+esc(r.note)+'</div>' : "")
-        + imagesHtml(r._panel_plots, p=>(p.label || p.object || "pdf")+" "+(p.flavor || (p.flavors || []).join(", "))+" · "+p.n_replicas+" replicas · Q² = "+r.q2+" GeV² · "+p.interval_label+" · "+p.path);
-    } catch(e){ if (cid === analysisCampaign && seq === pdfPlotSeq) caWarn("Plotting failed: "+(e && e.message || e)); }
-  };
+      r = await settle(r, current, "Evaluating the fitted replicas' PDFs");
+      if (r) renderResult(r);
+    } catch(e){ if (current()) caWarn("Plotting failed: "+(e && e.message || e)); }
+  }
+  $("caPdfGo").onclick = ()=>runPdf(false);
+  $("caPdfPng").onclick = ()=>runPdf(true);
   $("caExp").onclick = ()=>showBox("caExpBox");
   function invalidateTheoryPlots(){
     theoryPlotSeq++;
@@ -1815,31 +2385,9 @@
   }
   $("caExpInterval").oninput = invalidateTheoryPlots;
   $("caExpList").oninput = invalidateTheoryPlots;
-  $("caExpGo").onclick = async ()=>{
-    if (!analysisCampaign) return;
-    invalidateTheoryPlots();
-    const credibleInterval = Number($("caExpInterval").value);
-    if (!$("caExpInterval").value.trim() || !Number.isFinite(credibleInterval) || credibleInterval <= 0 || credibleInterval > 100){
-      caWarn("Credible interval (%) must be greater than 0 and at most 100."); return;
-    }
-    caBusy("Evaluating every fitted replica against the central experimental data… this takes a minute.");
-    const cid = analysisCampaign, seq = ++theoryPlotSeq, experiments = $("caExpList").value;
-    theoryPlotVisible = true;
-    try{ const r = await call("analyze_by_experiment", {collection_id: cid, experiments, plot: true, credible_interval: credibleInterval});
-      if (cid !== analysisCampaign || seq !== theoryPlotSeq) return;
-      if (!r || r.status !== "ok"){ caWarn(msgOf(r, "No analysis."), r && r.detail); return; }
-      const ex = r.experiments || [];
-      $("caOut").innerHTML = (r.note ? '<div class="note warn">'+esc(r.note)+'</div>' : "")
-        + '<div class="note">Plots: arithmetic mean of '+esc(r.n_replicas)+' fitted replicas using FitPack normalized, profiled predictions. The χ² table is a separate best-replica diagnostic, not χ² of the ensemble mean.</div>'
-        + (r.unavailable_datasets?.length ? '<div class="note warn">'+r.unavailable_datasets.map(d=>esc(d.reaction+":"+d.dataset_id+" — "+d.reason)).join("<br>")+'</div>' : "")
-        + '<div class="label" style="margin:4px 0 6px">χ²/N by experiment: best replica against the central data values</div>'
-        + '<table class="tbl"><thead><tr><th>Experiment</th><th>Datasets</th><th>Points</th><th style="text-transform:none">χ²/N</th></tr></thead><tbody>'
-        + ex.map(g=>'<tr><td><b>'+esc(g.experiment)+'</b></td><td class="mono" style="font-size:11.5px">'
-          + esc(g.datasets.map(d=>d.reaction+":"+d.dataset_id+" ("+(d.chi2_per_npt == null ? "—" : fmtNum(d.chi2_per_npt))+")").join(", "))+'</td>'
-          + '<td class="mono">'+esc(g.npts)+'</td><td class="mono">'+esc(g.chi2_per_npt == null ? "—" : fmtNum(g.chi2_per_npt))+'</td></tr>').join("")+'</tbody></table>'
-        + imagesHtml(r._panel_plots, p=>p.caption || ("Data vs mean theory · "+p.interval_label));
-    } catch(e){ if (cid === analysisCampaign && seq === theoryPlotSeq) caWarn("Analysis failed: "+(e && e.message || e)); }
-  };
+  $("caDsList").oninput = invalidateTheoryPlots;
+  $("caExpGo").onclick = ()=>runTheory(false);
+  $("caExpPng").onclick = ()=>runTheory(true);
 
   /* Logs (campaign_logs): every replica's state and, for one that did not fit, failed
      or wrote no output, its Python error and the end of its Slurm log. The first such
@@ -1964,9 +2512,11 @@
     const out = unwrap(raw);
     if (!out) return;
     if (out.connection) paintConnection(out.connection);
+    if (showToolResult(raw)){ onEnter("analysis"); return; }
     if (out.tab && out.tab !== active && TABS.some(t=>t[0] === out.tab)){ active = out.tab; syncTabs(); onEnter(active); }
   }
   host.onToolOutput(applyBoot);
+  showToolResult(host.toolOutput);
   host.ready.then(()=>{
     if (host.kind === "page" && !host.hasToken()){ paintConnection(NO_TOKEN); showTokenGate(); return; }
     recheck().then(()=>onEnter(active));
