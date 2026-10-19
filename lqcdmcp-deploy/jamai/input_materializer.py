@@ -174,6 +174,11 @@ def _render_stage_override_block(stage: ResolvedStage) -> str:
         *([f"conf['grid path'] = {stage.qcd.get('grid_path')!r}"] if stage.qcd.get('grid_path') else []),
         f"conf['bootstrap'] = {bool(stage.job.get('bootstrap', False))!r}",
         "conf['resample version'] = 0",
+        # Mandatory for every new stage, after any template/library defaults.
+        "conf['pdf positivity'] = True",
+        "conf['ffpion positivity'] = True",
+        "conf['ffkaon positivity'] = True",
+        "conf['ffhadron positivity'] = True",
         f"conf['jamai parameter initialization'] = {stage.params.get('initializationMode') or stage.params.get('initialization', 'default_prior')!r}",
         f"conf['jamai parameter random seed'] = {stage.params.get('randomSeed', None)!r}",
         f"conf['jamai per replica seed'] = {bool(stage.params.get('perReplicaSeed', True))!r}",

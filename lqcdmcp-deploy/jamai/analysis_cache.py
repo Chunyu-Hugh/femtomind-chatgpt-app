@@ -25,7 +25,7 @@ import os
 import re
 from statistics import NormalDist
 
-VERSION = 1
+VERSION = 2                         # 2: datasets carry the point-identity check
 # Credible intervals offered by the interactive charts, besides the requested one.
 LEVELS = (68.27, 90.0, 95.0, 99.0, 100.0)
 # Columns that are uncertainties or bookkeeping, never a kinematic axis.
@@ -214,14 +214,17 @@ def z_score(chi2, npts):
     return ((chi2 / npts) ** (1 / 3.0) - (1 - s)) / math.sqrt(s)
 
 
-def table_row(doc):
+def table_row(doc, best=None):
     """One line of the per-dataset table (as in the JAM papers): points after and
     before cuts, correlated systematics, reduced chi2 and its Z-score, the
     chi2 of the correlated shifts and of the normalization, and the fitted
     normalization as mean(std). chi2 terms are means over the fitted
-    replicas, each replica against the central data."""
+    replicas, each replica against the central data; chi2_best is the best
+    replica's (the replica identity best, lowest total chi2)."""
     st, n = doc['stats'], doc['npts']
     chi2 = mean(st['chi2'])
+    replicas = doc.get('replicas') or []
+    chi2_best = st['chi2'][replicas.index(best)] if best in replicas else None
     norm = [v for v in st.get('norm') or [] if v is not None]
     return {'dataset': doc['key'], 'reaction': doc['reaction'], 'dataset_id': doc['dataset_id'],
             'experiment': doc.get('experiment', ''), 'observable': doc.get('observable', ''),
@@ -229,7 +232,30 @@ def table_row(doc):
             'ncor': doc.get('ncor', 0), 'chi2': chi2, 'chi2_red': chi2 / n if n else None,
             'z_score': z_score(chi2, n), 'chi2_cor': mean(st['chi2_cor']), 'chi2_norm': mean(st['chi2_norm']),
             'norm': mean(norm) if doc.get('norm_fitted') and norm else None,
-            'norm_std': std(norm) if doc.get('norm_fitted') and norm else None}
+            'norm_std': std(norm) if doc.get('norm_fitted') and norm else None,
+            'chi2_best': chi2_best, 'point_order_sha256': doc.get('point_order_sha256')}
+
+
+def by_experiment(rows):
+    """chi2/N of the best replica grouped by experiment, worst first: the
+    analysis-by-experiment table (a best-replica diagnostic, not the chi2 of
+    the ensemble mean)."""
+    groups = {}
+    for r in rows:
+        if r.get('chi2_best') is None:
+            continue
+        g = groups.setdefault(r['experiment'] or 'unknown',
+                              {'experiment': r['experiment'] or 'unknown', 'datasets': [], 'chi2': 0.0, 'npts': 0})
+        g['datasets'].append({'reaction': r['reaction'], 'dataset_id': r['dataset_id'], 'target': r['target'],
+                              'observable': r['observable'], 'npts': r['npts'], 'chi2': r['chi2_best'],
+                              'chi2_per_npt': r['chi2_best'] / r['npts'] if r['npts'] else None,
+                              'point_order_sha256': r.get('point_order_sha256')})
+        g['chi2'] += r['chi2_best']
+        g['npts'] += r['npts']
+    out = list(groups.values())
+    for g in out:
+        g['chi2_per_npt'] = g['chi2'] / g['npts'] if g['npts'] else None
+    return sorted(out, key=lambda g: -(g['chi2_per_npt'] or 0))
 
 
 def _r(v):

@@ -60,7 +60,7 @@ import urllib.parse
 import urllib.request
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from jamai import analysis_cache, object_registry, ff_registry, ff_plotting
+from jamai import analysis_cache, object_registry, ff_registry, ff_plotting, pdf_plotting
 from jamai.dataset_catalog import (CONFIGURATION_DATASETS, CONFIGURATION_METADATA,
                                   CONFIGURATION_ONLY_REACTIONS, configuration_dataset_block)
 from jamai.object_registry import OBJECTS, SELECTABLE_OBJECTS
@@ -2887,7 +2887,10 @@ def list_campaigns(username=""):
                     "not_fitted": not_fitted, "failed": prog.get("failed"),
                     "queue": q, "queued": queued, "reactions": e["input_card"]["reactions"],
                     "datasets": e["input_card"]["datasets"],
-                    "objects": e["input_card"].get("objects", [e["input_card"].get("object", {"type": "pdf"})])})
+                    "objects": e["input_card"].get("objects", [e["input_card"].get("object", {"type": "pdf"})]),
+                    "available_ff_hadrons": ff_plotting.ff_available_hadrons(
+                        [obj.get("type") for obj in e["input_card"].get("objects", [])]
+                        + e["input_card"].get("frozen_objects", []))})
     queue = _slurm_queue(u)
     res = {"status": "ok", "campaigns": out, "count": len(out), "queue": queue}
     if queue is None or any(c["queued"] is None for c in out):
@@ -3321,10 +3324,148 @@ print(json.dumps({'status': 'success', **metadata, 'computed_flavors': todo, 'ch
 '''
 
 
-def campaign_pdf_plots(collection_id="", flavors="", q2=10.0, mean_overlay=True, username="", object_key="",
-                       credible_interval=95, export_png=False):
+_PROTON_PDF_PLOTS = _REPLICA_STATE + r'''
+import glob, json, os, base64, uuid
+import numpy as np
+stage = __STAGE__; flavors = __FLAVORS__; q2 = __Q2__
+options = __DISPLAY__; mean_overlay = __MEAN__; interval = __INTERVAL__
+campaign_name = __CAMPAIGN__; export_png = __PNG__; cache = __CACHE__
+plot_dir = os.path.join(os.path.dirname(os.path.dirname(stage)), 'analysis', 'pdf_plots')
+os.makedirs(plot_dir, exist_ok=True)
+os.environ['MPLCONFIGDIR'] = os.path.join(plot_dir, '.matplotlib')
+import matplotlib; matplotlib.use('Agg')
+from matplotlib import pyplot as plt
+from matplotlib.colors import to_rgba
+try:
+    to_rgba(options['band_color'])
+except ValueError:
+    print(json.dumps({'status': 'error', 'message': 'Unknown band color; use a Matplotlib named color or hexadecimal color.'}))
+    raise SystemExit(0)
+records = []
+excluded = {'not_fitted': 0, 'failed': 0, 'missing_msr': 0}
+for p in sorted(glob.glob(os.path.join(stage, 'current', 'replica_*', 'fit_summary.json'))):
+    state, s = replica_state(p)
+    if state != 'fitted':
+        excluded[state or 'failed'] += 1
+    elif not s.get('msr_path') or not os.path.isfile(s['msr_path']):
+        excluded['missing_msr'] += 1
+    else: records.append(dict(s, identity=os.path.basename(os.path.dirname(p))))
+metadata = {'credible_interval': interval, 'percentiles': [(100-interval)/2, 100-(100-interval)/2],
+            'interval_kind': 'pointwise_equal_tailed', 'central_estimator': 'mean',
+            'mean_overlay': mean_overlay, 'band_drawn': False,
+            'n_replicas': len(records), 'excluded_replicas': excluded, **options}
+if len(records) < 2:
+    print(json.dumps({'status': 'missing_inputs', **metadata,
+                      'message': 'At least two valid fitted replicas with .msr files are required for a proton PDF credible interval.'}))
+    raise SystemExit(0)
+xs = proton_x_grid(options['x_min'], options['x_max'])
+# Replica curves (and the d/u display breaks) are cached per flavor, Q2 and x
+# range (analysis/cache/pdf): only flavors not seen before run FitPack.
+sig = [[s['identity'], int(os.path.getmtime(s['msr_path']))] for s in records]
+tag = lambda v: ('%g' % v).replace('.', 'p')
+cache_file = lambda f: os.path.join(cache, 'pdf', 'proton_q2_%s_x_%s_%s_%s.json'
+                                    % (tag(q2), tag(options['x_min']), tag(options['x_max']), f.replace('/', 'over')))
+curves, display_breaks, todo = {}, {}, []
+for f in flavors:
+    doc = read_json(cache_file(f)) or {}
+    if doc.get('signature') == sig and len(doc.get('curves') or []) == len(records) and len(doc.get('x') or []) == len(xs):
+        curves[f] = [np.asarray([np.nan if v is None else v for v in row], dtype=float) for row in doc['curves']]
+        if doc.get('breaks') is not None: display_breaks[f] = np.asarray(doc['breaks'], dtype=bool)
+    else:
+        todo.append(f)
+if todo:
+    from fitlib.resman import RESMAN
+    from tools.config import conf, load_config
+    from tools.tools import load
+    conf.clear(); load_config(os.path.join(stage, 'input.py'))
+    resman = RESMAN(nworkers=1, parallel=False, datasets=False)
+    pdf = conf['pdf']
+    fresh = {f: [] for f in todo}; fresh_breaks = {}
+    try:
+        for s in records:
+            try:
+                m = load(s['msr_path'])
+                order = m['order'][0]; params = m['params'][0]
+                if order is None or params is None or not np.isfinite(np.asarray(params, dtype=float)).all():
+                    raise ValueError('Missing or nonfinite fitted parameters/order.')
+                resman.parman.order = order
+                resman.parman.set_new_params(params, initial=True)
+                replica_breaks = {}
+                replica = evaluate_proton_curves(pdf, xs, q2, todo, display_breaks=replica_breaks)
+                for f, breaks in replica_breaks.items():
+                    fresh_breaks[f] = fresh_breaks.get(f, np.zeros(len(xs), dtype=bool)) | breaks
+                for f in todo: fresh[f].append(replica[f])
+            except (OSError, KeyError, TypeError, ValueError, ArithmeticError) as exc:
+                print(json.dumps({'status': 'error', **metadata,
+                                  'message': 'Cannot plot fitted replica %s (%s): %s No plots were generated.'
+                                             % (s.get('replica', '?'), s['msr_path'], exc)}))
+                raise SystemExit(0)
+    finally:
+        resman.shutdown()
+    for f in todo:
+        curves[f] = fresh[f]
+        if f in fresh_breaks: display_breaks[f] = fresh_breaks[f]
+        write_json(cache_file(f), {'version': VERSION, 'object': 'pdf', 'q2': q2, 'flavor': f, 'signature': sig,
+                                   'x': [float(x) for x in xs],
+                                   'curves': [[None if not np.isfinite(v) else float('%.8g' % v) for v in c] for c in fresh[f]],
+                                   'breaks': fresh_breaks[f].tolist() if f in fresh_breaks else None})
+try:
+    bands = proton_bands(curves, interval, pointwise_credible_interval)
+    for f, breaks in display_breaks.items():
+        bands[f]['break_before'] = breaks
+except ValueError as exc:
+    print(json.dumps({'status': 'error', **metadata, 'message': str(exc)})); raise SystemExit(0)
+interval_label = '%g%% pointwise credible interval' % interval
+notes = []
+if interval == 100:
+    interval_label += ' (full replica envelope)'
+    notes.append('100% covers all available fitted replicas at each x, not the entire underlying posterior distribution.')
+if any(excluded.values()): notes.append('Excluded replica summaries: ' + str(excluded))
+omitted = {f: [float(x) for x in xs[~bands[f]['valid']]] for f in flavors if not bands[f]['valid'].all()}
+if omitted:
+    notes.append('Numerically unresolved ratio points omitted for the entire ensemble (no replicas dropped): '
+                 + ', '.join('%s: %d x points' % (f, len(points)) for f, points in omitted.items()))
+metadata.update(band_drawn=True, note=' '.join(notes), omitted_ratio_points=omitted)
+# The interactive chart: the same ensemble rule as the figure (an x where any
+# replica is unresolved is left out for all), at each offered interval.
+rnd = lambda a: [None if not np.isfinite(v) else float('%.6g' % v) for v in a]
+chart = {'x': rnd(xs), 'q2': q2, 'object': 'pdf', 'n_replicas': len(records), 'curves': []}
+for f in flavors:
+    arr = np.asarray(curves[f], dtype=float)
+    item = {'flavor': f, 'mean': rnd(bands[f]['mean']), 'bands': {},
+            'breaks': display_breaks[f].tolist() if f in display_breaks else None,
+            'replicas': [rnd(c) for c in arr[:60]]}
+    for L in sorted(set(LEVELS) | {interval}):
+        b = proton_bands({f: arr}, L, pointwise_credible_interval)[f]
+        item['bands']['%g' % L] = [rnd(b['low']), rnd(b['high'])]
+    chart['curves'].append(item)
+plots = []
+if export_png:
+    # The figure needs real LaTeX (draw_proton_figure refuses any other
+    # renderer). If it cannot be drawn, the chart still comes back and the
+    # reason is reported; nothing is drawn another way.
+    try:
+        fig, layout = draw_proton_figure(xs, bands, flavors, q2, campaign_name, interval_label,
+                                         mean_overlay=mean_overlay, **options)
+        path = os.path.join(plot_dir, 'pdf_combined_q2_%g_%s.png' % (q2, uuid.uuid4().hex))
+        fig.savefig(path, dpi=150); plt.close(fig)
+        plots.append({'object': 'pdf', 'flavors': flavors, 'path': path, **metadata,
+                      'interval_label': interval_label, 'layout': layout,
+                      'png_b64': base64.b64encode(open(path, 'rb').read()).decode()})
+    except (RuntimeError, ValueError, OSError) as exc:
+        plt.close('all')
+        metadata['figure_error'] = str(exc)
+        metadata['note'] = (metadata['note'] + ' Proton PDF figure not rendered: ' + str(exc)).strip()
+print(json.dumps({'status': 'success', **metadata, 'computed_flavors': todo, 'chart': chart, 'plots': plots}))
+'''
+
+
+def campaign_pdf_plots(collection_id="", flavors="", q2=10.0, mean_overlay=None, username="", object_key="",
+                       credible_interval=95, x_min=0.01, x_max=1.0, band_color="red", band_alpha=0.95,
+                       export_png=True):
     """Fitted replicas' PDFs at Q2: the mean and pointwise credible bands for the
-    interactive chart, optionally the PNGs as well."""
+    interactive chart, and the figure (proton: the two-column band figure; pion:
+    the replica plot) unless export_png is false."""
     try:
         credible_interval = object_registry.validate_credible_interval(credible_interval)
     except ValueError as exc:
@@ -3342,18 +3483,32 @@ def campaign_pdf_plots(collection_id="", flavors="", q2=10.0, mean_overlay=True,
         return {"status": "error", "message": f"Select a fitted distribution object from {selected}."}
     flavors = flavors or ("valence,sea,g" if object_key == "pdf-pion" else "u,d,g,s")
     fl = list(dict.fromkeys(f.strip() for f in _names(flavors)))
-    if not fl or any(f not in OBJECTS[object_key]["flavors"] for f in fl):
-        return {"status": "error", "message": f"flavors for {object_key}: {OBJECTS[object_key]['flavors']}"}
+    allowed = pdf_plotting.PROTON_FLAVORS if object_key == "pdf" else OBJECTS[object_key]["flavors"]
+    if not fl or any(f not in allowed for f in fl):
+        return {"status": "error", "message": f"flavors for {object_key}: {allowed}"}
+    if mean_overlay is None:
+        mean_overlay = object_key != "pdf"
     try:
         q2 = float(q2)
         assert math.isfinite(q2) and q2 > 0
     except Exception:
         return {"status": "error", "message": "q2 must be a positive number"}
+    if object_key == "pdf":
+        try:
+            display = pdf_plotting.validate_pdf_display(x_min, x_max, band_color, band_alpha)
+        except ValueError as exc:
+            return {"status": "error", "message": str(exc)}
 
     def run():
-        code = inspect.getsource(object_registry) + "\n" + _analysis_code(
-            _PDF_PLOTS, STAGE=_stage_root(u, e), FLAVORS=fl, Q2=q2, MEAN=bool(mean_overlay), OBJECT=object_key,
-            INTERVAL=credible_interval, PNG=bool(export_png), CACHE=_cache_dir(u, e))
+        if object_key == "pdf":
+            code = inspect.getsource(object_registry) + inspect.getsource(pdf_plotting) + "\n" + _analysis_code(
+                _PROTON_PDF_PLOTS, STAGE=_stage_root(u, e), FLAVORS=fl, Q2=q2,
+                MEAN=bool(mean_overlay), INTERVAL=credible_interval, DISPLAY=display, PNG=bool(export_png),
+                CACHE=_cache_dir(u, e), CAMPAIGN=e.get("campaign_name") or e["input_card"].get("name") or collection_id)
+        else:
+            code = inspect.getsource(object_registry) + "\n" + _analysis_code(
+                _PDF_PLOTS, STAGE=_stage_root(u, e), FLAVORS=fl, Q2=q2, MEAN=bool(mean_overlay), OBJECT=object_key,
+                INTERVAL=credible_interval, PNG=bool(export_png), CACHE=_cache_dir(u, e))
         ws = _workspace(u)
         r = _run_ifarm_py(u, code, apptainer=True, timeout=1800, cap=60000000,
                           env={"MPLCONFIGDIR": f"{ws}/{CAMPAIGNS_DIR}/.matplotlib"})
@@ -3365,6 +3520,10 @@ def campaign_pdf_plots(collection_id="", flavors="", q2=10.0, mean_overlay=True,
             return d
         metadata = {k: d[k] for k in ("credible_interval", "percentiles", "interval_kind", "central_estimator",
                                       "mean_overlay", "band_drawn", "n_replicas", "excluded_replicas", "note")}
+        if object_key == "pdf":
+            metadata.update({k: d[k] for k in ("x_min", "x_max", "band_color", "band_alpha", "omitted_ratio_points")})
+            if d.get("figure_error"):
+                metadata["figure_error"] = d["figure_error"]
         plots = [{**{k: v for k, v in p.items() if k != "png_b64"},
                   "data_url": "data:image/png;base64," + p["png_b64"]} for p in d["plots"]]
         # What the model reads: the mean at a few x per flavor, enough to talk about the curves.
@@ -3379,15 +3538,18 @@ def campaign_pdf_plots(collection_id="", flavors="", q2=10.0, mean_overlay=True,
                 "_ui": {"view": "pdf", "chart": chart, "credible_interval": credible_interval,
                         "panel_plots": plots}}
 
-    return _background(u, "campaign_pdf_plots",
-                       {"collection_id": e["collection_id"], "object": object_key, "flavors": fl, "q2": q2,
-                        "interval": credible_interval, "mean": bool(mean_overlay), "png": bool(export_png)}, run)
+    request = {"collection_id": e["collection_id"], "object": object_key, "flavors": fl, "q2": q2,
+               "interval": credible_interval, "mean": bool(mean_overlay), "png": bool(export_png)}
+    if object_key == "pdf":
+        request["display"] = display
+    return _background(u, "campaign_pdf_plots", request, run)
 
 
 _FF_PLOTS = _REPLICA_STATE + r"""
 import glob, json, os, base64, uuid
-stage = __STAGE__; flavors = __FLAVORS__; q2 = __Q2__; mean_overlay = __MEAN__
+stage = __STAGE__; flavors = __FLAVORS__; q2 = __Q2__
 configured = __CONFIGURED__; credible_interval = validate_credible_interval(__INTERVAL__)
+options = __DISPLAY__; campaign_name = __CAMPAIGN__
 plot_dir = os.path.join(os.path.dirname(os.path.dirname(stage)), 'analysis', 'ff_plots')
 os.makedirs(plot_dir, exist_ok=True)
 os.environ['MPLCONFIGDIR'] = os.path.join(plot_dir, '.matplotlib')
@@ -3399,17 +3561,23 @@ if not configured:
         if state != 'fitted': excluded[state or 'failed'] += 1
         elif not record.get('msr_path') or not os.path.isfile(record['msr_path']): excluded['missing_msr'] += 1
         else: records.append(record)
-    if not records:
-        print(json.dumps({'status': 'missing_inputs', 'message': 'No fitted FF replicas are available. Choose configured parameters for a starting-value curve.'})); raise SystemExit(0)
+    if len(records) < 2:
+        print(json.dumps({'status': 'missing_inputs', 'message': 'At least two fitted FF replicas are required for a credible interval. Configured parameters are a separate deterministic preview.'})); raise SystemExit(0)
 import matplotlib; matplotlib.use('Agg')
 from matplotlib import pyplot as plt
+from matplotlib.colors import to_rgba
 import numpy as np
+try:
+    to_rgba(options['band_color'])
+    typography = _pdf_typography()
+except (ValueError, RuntimeError) as exc:
+    print(json.dumps({'status':'error','message':str(exc)}));raise SystemExit(0)
 from fitlib.resman import RESMAN
 from tools.config import conf, load_config
 from tools.tools import load
 conf.clear(); load_config(os.path.join(stage, 'input.py'))
 resman = RESMAN(nworkers=1, parallel=False, datasets=False)
-zs = np.linspace(0.01, 0.99, 120)
+zs = np.linspace(options['z_min'], options['z_max'], 181)
 curves = {}
 try:
     for record in ([None] if configured else records):
@@ -3423,95 +3591,92 @@ try:
         evaluated = evaluate_ff_curves(conf, zs, q2, flavors)
         for key, rows in evaluated.items():
             for flavor, values in rows.items(): curves.setdefault(key, {}).setdefault(flavor, []).append(values)
+except (OSError, KeyError, TypeError, ValueError, ArithmeticError) as exc:
+    print(json.dumps({'status':'error','message':'Cannot evaluate FF replica: '+str(exc)+'. No replicas were silently dropped.'}));raise SystemExit(0)
 finally:
     resman.shutdown()
+available = ff_available_hadrons(curves)
+hadrons = options['hadrons'] or available
+if not hadrons or any(h not in available for h in hadrons):
+    print(json.dumps({'status':'error','message':'Select available hadrons: '+', '.join(available),'available_ff_hadrons':available}));raise SystemExit(0)
+try:
+    bands = ff_bands(curves, hadrons, flavors, credible_interval, pointwise_credible_interval, configured)
+    figures = draw_ff_figures(zs, bands, flavors, hadrons, options['modes'], q2, campaign_name,
+                              credible_interval, typography=typography, band_color=options['band_color'],
+                              band_alpha=options['band_alpha'], configured=configured)
+except (ValueError, RuntimeError, OSError) as exc:
+    print(json.dumps({'status':'error','message':'FF plotting failed: '+str(exc)}));raise SystemExit(0)
 nreplicas = len(records) if not configured else 0
-band_drawn = not configured and mean_overlay and nreplicas > 1
-interval_text = '%g' % credible_interval
-label = interval_text + '% pointwise credible interval'
-if configured: note = 'Configured starting parameters, not fitted results; no uncertainty band.'
-elif nreplicas < 2: note = 'Only one fitted replica; no uncertainty band.'
-else: note = 'Replica predictions are combined before the pointwise equal-tailed interval is computed.'
-if credible_interval == 100 and band_drawn: note += ' 100% is the full available replica envelope, not the entire posterior.'
-unavailable = [key for key in FF_PLOT_OBJECTS if key not in curves]
-if unavailable:
-    note += ' Unavailable FF plots (required component objects absent): ' + ', '.join(unavailable) + '.'
-metadata = {'available_objects': list(curves), 'unavailable_objects': unavailable,
-            'n_replicas': nreplicas, 'configured': configured, 'band_drawn': band_drawn,
-            'credible_interval': credible_interval, 'interval_label': label if band_drawn else 'no uncertainty band',
+band_drawn = not configured
+label = '%g%% C.I.' % credible_interval if band_drawn else 'Configured values; no uncertainty band'
+note = ('Configured starting parameters, not fitted results; no uncertainty band.' if configured else
+        'Replica combinations precede the equal-tailed pointwise intervals; no individual replica curves.')
+if credible_interval == 100 and band_drawn: note += ' 100% is the available replica envelope, not the entire posterior.'
+metadata = {'available_objects': list(curves), 'unavailable_objects': [key for key in FF_PLOT_OBJECTS if key not in curves],
+            'available_ff_hadrons':available, 'hadrons':hadrons, 'modes':options['modes'],
+            'n_replicas': nreplicas, 'configured': configured, 'band_drawn': band_drawn, 'mean_overlay':False,
+            'credible_interval': credible_interval, 'interval_label': label,
             'quantity': 'zD(z,Q2)', 'charge_convention': 'native positive charged hadron; no extra factor of two',
-            'excluded_replicas': excluded, 'note': note}
-plots = []; request_id = uuid.uuid4().hex
-for key in FF_PLOT_OBJECTS:
-    if key not in curves: continue
-    fig, ax = plt.subplots(figsize=(7.0, 4.8))
-    for index, flavor in enumerate(flavors):
-        values = np.asarray(curves[key][flavor], dtype=float)
-        color = 'C%d' % (index % 10)
-        if band_drawn:
-            low, high = pointwise_credible_interval(values, credible_interval)
-            ax.fill_between(zs, low, high, color=color, alpha=0.18, lw=0)
-        if mean_overlay or configured:
-            ax.plot(zs, values.mean(axis=0), color=color, lw=1.7, label=flavor)
-        else:
-            for replica_index, row in enumerate(values):
-                ax.plot(zs, row, color=color, lw=0.8, alpha=0.5, label=flavor if replica_index == 0 else None)
-    ax.axhline(0, color='#64748b', lw=0.8, ls='--')
-    ax.set_xlabel('$z$'); ax.set_ylabel('$z D(z,Q^2)$')
-    ax.set_title('%s, $Q^2=%g$ GeV$^2$' % (FF_PLOT_LABELS[key], q2))
-    ax.grid(alpha=0.25); ax.legend(frameon=False, ncol=3)
-    path = os.path.join(plot_dir, '%s_q2_%g_%s_%s.png' % (key, q2, 'configured' if configured else 'replicas', request_id))
-    fig.tight_layout(); fig.savefig(path, dpi=110); plt.close(fig)
-    plots.append({'object': key, 'label': FF_PLOT_LABELS[key], 'flavors': flavors, 'path': path, **metadata,
-                  'png_b64': base64.b64encode(open(path, 'rb').read()).decode()})
-print(json.dumps({'status': 'success', **metadata, 'plots': plots}))
+            'excluded_replicas': excluded, 'note': note, 'z_min':options['z_min'],'z_max':options['z_max'],
+            'dpi':FF_PREVIEW_DPI}
+plots = []; request_id = uuid.uuid4().hex; limitations=[]
+for fig, info in figures:
+    name = info['mode'] + ('_'+info['hadrons'][0] if info['mode']=='individual' else '')
+    path = os.path.join(plot_dir, 'ff_%s_q2_%g_%s.png' % (name,q2,request_id))
+    fig.savefig(path, dpi=FF_PREVIEW_DPI); plt.close(fig)
+    limitations.extend(item for item in info['log_limitations'] if item['nonpositive_lower'] or item['nonpositive_upper'])
+    plots.append({'object':'ff', 'label':name.replace('_',' '), 'flavors':flavors, 'path':path, **metadata, **info,
+                  'png_b64':base64.b64encode(open(path,'rb').read()).decode()})
+if limitations:
+    metadata['note'] += ' Log-axis limitation: intervals crossing zero extend below the display frame; intervals entirely nonpositive are not drawable. Numerical values are unchanged; see log_limitations.'
+metadata['log_limitations']=limitations
+print(json.dumps({'status':'success', **metadata, 'plots':plots}))
 """
 
 
-def campaign_ff_plots(collection_id="", flavors="", q2=10.0, mean_overlay=True,
-                      username="", credible_interval=95, configured=False):
-    """Plot FitPack FF objects, combining charged species within each replica."""
+def campaign_ff_plots(collection_id="", flavors="", q2=100.0, mean_overlay=False,
+                      username="", credible_interval=95, configured=False, modes="combined",
+                      hadrons="", z_min=0.02, z_max=0.9, band_color="red", band_alpha=0.9):
+    """Native fitted FF bands, with independently selectable combined/individual art."""
     u, error = _need_user(username)
     if error:
         return error
     entry = _collection(u, collection_id)
     if not entry:
-        return {"status": "error", "message": f"No campaign {collection_id!r}."}
+        return {"status":"error", "message":f"No campaign {collection_id!r}."}
     collection_id = entry["collection_id"]      # a campaign name resolves to its id
-    objects = [obj.get("type") for obj in entry["input_card"].get("objects", [])]
+    objects = [obj.get("type") for obj in entry['input_card'].get('objects',[])]
     if not set(objects).intersection(ff_registry.FF_OBJECTS):
-        return {"status": "error", "message": "This campaign has no fitted FF parameter group."}
-    fl = list(dict.fromkeys(part.strip() for part in (flavors or ",".join(ff_plotting.FF_FLAVORS)).split(",") if part.strip()))
+        return {"status":"error", "message":"This campaign has no fitted FF parameter group."}
+    fl = list(dict.fromkeys(part.strip() for part in (flavors or 'up,dp,sp,c,b,g').split(',') if part.strip()))
     try:
         interval = object_registry.validate_credible_interval(credible_interval)
         q2 = float(q2)
         if not math.isfinite(q2) or q2 <= 0:
-            raise ValueError("Q² must be positive and finite.")
+            raise ValueError('Q² must be positive and finite')
         if not fl or any(flavor not in ff_plotting.FF_FLAVORS for flavor in fl):
-            raise ValueError("FF flavors: " + ", ".join(ff_plotting.FF_FLAVORS))
+            raise ValueError('FF flavors: '+', '.join(ff_plotting.FF_FLAVORS))
         if type(configured) is not bool:
-            raise ValueError("configured must be true or false")
-    except (TypeError, ValueError) as exc:
-        return {"status": "error", "message": str(exc)}
-    code = _object_registry_source() + "\n" + inspect.getsource(ff_plotting) + _fill(
-        _FF_PLOTS, STAGE=_stage_root(u, entry), FLAVORS=fl, Q2=q2,
-        MEAN=bool(mean_overlay), INTERVAL=interval, CONFIGURED=configured)
-    result = _run_ifarm_py(u, code, apptainer=True, timeout=600, cap=20000000,
-                           env={"MPLCONFIGDIR": f"{_workspace(u)}/{CAMPAIGNS_DIR}/.matplotlib"})
+            raise ValueError('configured must be true or false')
+        display = ff_plotting.validate_ff_display(z_min,z_max,modes,hadrons,band_color,band_alpha)
+    except (ValueError,TypeError,OverflowError) as exc:
+        return {'status':'error','message':str(exc)}
+    code = _object_registry_source()+'\n'+inspect.getsource(pdf_plotting)+'\n'+inspect.getsource(ff_plotting)+_fill(
+        _FF_PLOTS, STAGE=_stage_root(u,entry),FLAVORS=fl,Q2=q2,INTERVAL=interval,CONFIGURED=configured,
+        DISPLAY=display,CAMPAIGN=entry.get('campaign_name') or entry['input_card'].get('name') or collection_id)
+    result = _run_ifarm_py(u,code,apptainer=True,timeout=600,cap=20000000,
+                           env={'MPLCONFIGDIR':f'{_workspace(u)}/{CAMPAIGNS_DIR}/.matplotlib'})
     try:
-        data = json.loads(result["out"].strip().splitlines()[-1])
-    except (ValueError, IndexError, KeyError):
-        return {"status": "error", "message": "FF plotting failed",
-                "detail": (result.get("err") or result.get("out") or "")[-600:]}
-    if data.get("status") != "success":
-        return data
-    plots = [{**{key: value for key, value in plot.items() if key != "png_b64"},
-              "data_url": "data:image/png;base64," + plot["png_b64"]} for plot in data["plots"]]
-    return {"status": "ok", "collection_id": collection_id, "q2": q2, "note": data["note"],
-            "available_objects": data["available_objects"], "unavailable_objects": data["unavailable_objects"],
-            "plots": [{key: value for key, value in plot.items() if key != "data_url"} for plot in plots],
-            "_images": [{"data": plot["png_b64"], "mimeType": "image/png"} for plot in data["plots"]],
-            "_ui": {"view": "images", "panel_plots": plots}}
+        data = json.loads(result['out'].strip().splitlines()[-1])
+    except (ValueError,IndexError,KeyError):
+        return {'status':'error','message':'FF plotting failed','detail':(result.get('err') or result.get('out') or '')[-600:]}
+    if data.get('status')!='success': return data
+    plots = [{**{k:v for k,v in row.items() if k!='png_b64'},
+              'data_url':'data:image/png;base64,'+row['png_b64']} for row in data['plots']]
+    return {**{k:v for k,v in data.items() if k not in ('status','plots')},'status':'ok',
+            'collection_id':collection_id,'q2':q2,
+            'plots':[{k:v for k,v in row.items() if k!='data_url'} for row in plots],
+            '_images':[{'data':row['png_b64'],'mimeType':'image/png'} for row in data['plots']], '_ui':{'view':'images','panel_plots':plots}}
 
 
 _THEORY_PLOTTING = r'''
@@ -3566,7 +3731,9 @@ def theory_plot_factors(tab):
 
 def theory_identity(tab):
     import hashlib
-    dynamic = {'thy', 'prediction', 'shift', 'Shift', 'N', 'residuals', 'r-residuals', 'n-residuals'}
+    # SIA get_theory creates sigtot (the inclusive theory cross section).
+    # It is not an experimental column; every data/kinematic/error field stays exact.
+    dynamic = {'thy', 'prediction', 'shift', 'Shift', 'N', 'residuals', 'r-residuals', 'n-residuals', 'sigtot'}
     original = {str(k): np.asarray(v).tolist() for k, v in tab.items() if k not in dynamic}
     return hashlib.sha256(json.dumps(original, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
@@ -8573,7 +8740,15 @@ if not selected:
     print(json.dumps({'status': 'no_match', 'unknown_datasets': unknown, 'unmatched_experiments': unmatched,
                       'available': catalog(info)}))
     raise SystemExit(0)
-missing = [k for k in selected if (read_json(file_of(cache, k)) or {}).get('signature') != sig]
+missing = [k for k in selected if (lambda d: d.get('signature') != sig or d.get('version') != VERSION)(read_json(file_of(cache, k)) or {})]
+import hashlib
+# Columns FitPack rewrites for each replica; sigtot is SIA's inclusive theory
+# cross section. Every other column (data, kinematics, uncertainties) must be
+# identical for every replica.
+DYNAMIC = {'thy', 'prediction', 'shift', 'Shift', 'N', 'residuals', 'r-residuals', 'n-residuals', 'sigtot'}
+def point_identity(tab):
+    original = {str(k): np.asarray(v).tolist() for k, v in tab.items() if k not in DYNAMIC}
+    return hashlib.sha256(json.dumps(original, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 if missing:
     from fitlib.resman import RESMAN
     from tools.tools import load
@@ -8620,6 +8795,9 @@ if missing:
                 context = '%s; %s' % (s['identity'], k)
                 tab = residuals[r].tabs[i]
                 n = len(tab['value'])
+                identity = point_identity(tab)
+                if a.setdefault('identity', identity) != identity:
+                    raise ValueError('Experimental point ordering, kinematics or uncertainties changed between replicas.')
                 pred = np.asarray(tab['prediction'], dtype=float)
                 if pred.shape != (n,) or not np.isfinite(pred).all():
                     raise ValueError('Missing or nonfinite prediction.')
@@ -8637,8 +8815,9 @@ if missing:
                     cols = {}
                     for name, v in tab.items():
                         arr = np.asarray(v)
+                        # sigtot: SIA's inclusive theory cross section, not a data column.
                         if arr.ndim != 1 or len(arr) != n or name in ('residuals', 'r-residuals', 'n-residuals', 'thy',
-                                                                       'prediction', 'shift', 'Shift', 'N'):
+                                                                       'prediction', 'shift', 'Shift', 'N', 'sigtot'):
                             continue
                         if arr.dtype.kind in 'iuf':
                             cols[str(name)] = [None if not np.isfinite(x) else float('%.8g' % x) for x in arr.astype(float)]
@@ -8662,6 +8841,7 @@ if missing:
             doc['unavailable'] = 'No experimental points survived the campaign reader/cuts.'
         else:
             doc.update(npts=len(a['columns']['value']), ncor=a['ncor'], norm_fitted=a['norm_fitted'],
+                       point_order_sha256=a['identity'],
                        columns=a['columns'], theory=rnd(a['theory']), shift=rnd(a['shift']),
                        stats={f: a[f] for f in ('chi2', 'chi2_cor', 'chi2_norm', 'norm')})
         write_json(file_of(cache, k), doc)
@@ -8688,17 +8868,19 @@ if not selected:
                       'available': catalog(meta['info'])}))
     raise SystemExit(0)
 docs = {k: read_json(file_of(cache, k)) or {} for k in selected}
-stale = [k for k, d in docs.items() if d.get('signature') != sig]
+stale = [k for k, d in docs.items() if d.get('signature') != sig or d.get('version') != VERSION]
 if stale:
     print(json.dumps({'status': 'need_build', 'stale': stale})); raise SystemExit(0)
+best = min(records, key=lambda s: float(s.get('chi2_total') if s.get('chi2_total') is not None else 'inf'))
 rows, plots, unavailable = [], [], []
 for k, d in docs.items():
     if d.get('unavailable'):
         unavailable.append({'dataset': k, 'reason': d['unavailable']}); continue
-    rows.append(table_row(d))
+    rows.append(table_row(d, best['identity']))
     if charts: plots.append(chart_data(d, interval))
 print(json.dumps({'status': 'success', 'n_replicas': len(records), 'excluded_replicas': excluded,
                   'replica_ids': [s['identity'] for s in records], 'table': rows, 'charts': plots,
+                  'best_replica': best['identity'], 'best_msr': best['msr_path'], 'experiments': by_experiment(rows),
                   'unavailable_datasets': unavailable, 'unknown_datasets': unknown,
                   'unmatched_experiments': unmatched}))
 '''
@@ -8785,7 +8967,14 @@ def _theory_results(u, e, datasets, experiments, interval, charts=True, export_p
         return d
     out = {"status": "ok", "collection_id": e["collection_id"], "campaign_name": e.get("campaign_name"),
            "credible_interval": interval, "n_replicas": d["n_replicas"], "excluded_replicas": d["excluded_replicas"],
-           "table": d["table"], "unavailable_datasets": d["unavailable_datasets"],
+           "percentiles": [(100 - interval) / 2, 100 - (100 - interval) / 2],
+           "interval_kind": "pointwise_equal_tailed", "central_estimator": "mean",
+           "theory_convention": "FitPack prediction: normalized theory plus profiled correlated shifts",
+           "chi2_estimator": ("table: mean over the fitted replicas, each against the central data; "
+                              "experiments: best fitted replica against the central data (not ensemble-mean chi2)"),
+           "replica_ids": d["replica_ids"], "best_replica": d["best_replica"], "best_msr": d["best_msr"],
+           "band_drawn": bool(charts and d["n_replicas"] > 1),
+           "table": d["table"], "experiments": d["experiments"], "unavailable_datasets": d["unavailable_datasets"],
            "computed_now": (built or {}).get("computed", []), "compute_seconds": (built or {}).get("seconds")}
     for k in ("unknown_datasets", "unmatched_experiments"):
         if d.get(k):
@@ -9386,16 +9575,19 @@ TOOLS = {
                    "required": ["collection_id"]},
         "fn": lambda a: campaign_summary(a.get("collection_id", ""))},
     "campaign_pdf_plots": {
-        "desc": "View PDF Plots: x f(x, Q2) of the fitted replicas (flavors: comma list of g, u, d, s, ub, "
-                "db, sb; q2 in GeV^2): mean and equal-tailed pointwise credible interval (default 95%), drawn "
-                "as an interactive chart in the panel (zoom, hover values, flavor toggles, interval and "
-                "log/linear switches) and the chat widget. The result gives mean_at_x, a few points of each "
-                "mean curve. credible_interval: greater than 0, at most 100 (100 = full envelope of the "
-                "fitted replicas, not the whole posterior); at least two fitted replicas for a band. "
-                "object_key selects pdf or pdf-pion; pion defaults valence (ub-u), sea (u), g in the native "
-                "pi- convention. export_png=true also returns static PNGs (for a client that shows no "
-                "widget, or to save). Curves are cached per Q2 and flavor: a repeat is fast. "
-                + ASYNC_NOTE,
+        "desc": "View PDF Plots: x f(x, Q2) of the fitted replicas at q2 (GeV^2). Proton (object_key pdf) flavors, "
+                "in the requested order: u,d,g,s,ub,db,sb,uv,dv,d/u,db+ub,db-ub,sp,sm,Rs,up,dp; sums are xPDFs, "
+                "d/u and Rs are dimensionless; each fitted replica is transformed before the intervals. "
+                "The result is drawn twice: an interactive chart in the panel and the chat widget (zoom, hover "
+                "values, flavor toggles, interval and log/linear switches) and the figure (proton: one "
+                "two-column band figure without replica lines, display x_min=0.01, x_max=1, band_color=red, "
+                "band_alpha=0.95; pion: the replica plot). export_png=false skips the figure. mean_overlay "
+                "adds a mean line to the figure (off by default for proton, on for pion). The result gives "
+                "mean_at_x, a few points of each mean curve. The equal-tailed pointwise credible interval "
+                "defaults to 95%; greater than 0, at most 100 (100 = full envelope of the fitted replicas, "
+                "not the whole posterior); at least two fitted replicas for a band. object_key selects pdf "
+                "or pdf-pion; pion defaults valence (ub-u), sea (u), g in the native pi- convention. Curves "
+                "are cached per Q2 and flavor: a repeat is fast. " + ASYNC_NOTE,
         "schema": {"type": "object", "properties": {"collection_id": {"type": "string", "description": COLLECTION_ARG},
                                                     "flavors": {"type": "string"},
                                                     "object_key": {"type": "string", "enum": list(SELECTABLE_OBJECTS)},
@@ -9404,28 +9596,41 @@ TOOLS = {
                                                                           "exclusiveMinimum": 0, "maximum": 100,
                                                                           "description": "Equal-tailed pointwise credible interval (%)."},
                                                     "mean_overlay": {"type": "boolean"},
-                                                    "export_png": {"type": "boolean", "default": False}},
+                                                    "x_min": {"type": "number", "exclusiveMinimum": 0, "default": 0.01},
+                                                    "x_max": {"type": "number", "maximum": 1, "default": 1},
+                                                    "band_color": {"type": "string", "default": "red"},
+                                                    "band_alpha": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.95},
+                                                    "export_png": {"type": "boolean", "default": True}},
                    "required": ["collection_id"]},
         "meta": WIDGET_META,
         "fn": lambda a: campaign_pdf_plots(a.get("collection_id", ""), a.get("flavors", ""),
-                                           a.get("q2", 10.0), a.get("mean_overlay", True),
+                                           a.get("q2", 10.0), a.get("mean_overlay"),
                                            object_key=a.get("object_key", ""),
                                            credible_interval=a.get("credible_interval", 95),
-                                           export_png=a.get("export_png", False))},
+                                           x_min=a.get("x_min", 0.01), x_max=a.get("x_max", 1),
+                                           band_color=a.get("band_color", "red"), band_alpha=a.get("band_alpha", 0.95),
+                                           export_png=a.get("export_png", True))},
     "campaign_ff_plots": {
-        "desc": "Plot charged pion, kaon, residual and unidentified hadron zD(z,Q2), using native FitPack FFs. "
-                "Combine species inside each replica before equal-tailed pointwise uncertainty bands. "
-                "Flavors g,u,d,ub,db,s,sb,c,b; cb/bb are constrained partners. configured=true uses starting parameters without a band.",
-        "schema": {"type": "object", "properties": {
-            "collection_id": {"type": "string", "description": COLLECTION_ARG}, "flavors": {"type": "string"},
-            "q2": {"type": "number", "exclusiveMinimum": 0},
-            "credible_interval": {"type": "number", "exclusiveMinimum": 0, "maximum": 100},
-            "mean_overlay": {"type": "boolean"}, "configured": {"type": "boolean"}},
-            "required": ["collection_id"]},
-        "fn": lambda a: campaign_ff_plots(a.get("collection_id", ""), a.get("flavors", ""),
-                                          a.get("q2", 10.0), a.get("mean_overlay", True),
-                                          credible_interval=a.get("credible_interval", 95),
-                                          configured=a.get("configured", False))},
+        "desc": "Native positive-hadron zD bands in three columns. Modes combined/individual may both be selected. "
+                "Hadrons pion,kaon,rhadron(residual),hadron(total) require actual components. "
+                "Flavors g,u,d,s,ub,db,sb,c,b,up,dp,sp; combinations are formed per replica. "
+                "Defaults Q2=100, z=.02 to .9, 95% pointwise equal-tailed intervals. No replica lines. "
+                "configured=true is an explicit deterministic starting-value preview without a band.",
+        "schema": {"type":"object", "properties": {
+            "collection_id":{"type":"string","description":COLLECTION_ARG}, "flavors":{"type":"string"},
+            "q2":{"type":"number","exclusiveMinimum":0,"default":100},
+            "credible_interval":{"type":"number","exclusiveMinimum":0,"maximum":100,"default":95},
+            "configured":{"type":"boolean"}, "mean_overlay":{"type":"boolean","description":"Legacy argument; fitted FF outputs are bands only."},
+            "modes":{"type":"string","default":"combined"}, "hadrons":{"type":"string"},
+            "z_min":{"type":"number","exclusiveMinimum":0,"default":.02},
+            "z_max":{"type":"number","exclusiveMaximum":1,"default":.9},
+            "band_color":{"type":"string","default":"red"},
+            "band_alpha":{"type":"number","minimum":0,"maximum":1,"default":.9}},"required":["collection_id"]},
+        "fn": lambda a: campaign_ff_plots(a.get("collection_id",""),a.get("flavors",""),a.get("q2",100),
+                                          a.get("mean_overlay",False),credible_interval=a.get("credible_interval",95),
+                                          configured=a.get("configured",False),modes=a.get("modes","combined"),
+                                          hadrons=a.get("hadrons",""),z_min=a.get("z_min",.02),z_max=a.get("z_max",.9),
+                                          band_color=a.get("band_color","red"),band_alpha=a.get("band_alpha",.9))},
     "analyze_by_experiment": {
         "desc": "Data vs theory and the per-dataset table, for the datasets and/or experiments the user "
                 "names, passed as they said them: datasets 'idis:10010, jet 10001' or bare ids; experiments "
@@ -9433,7 +9638,8 @@ TOOLS = {
                 "= every dataset of the campaign. table has, per dataset (as in the JAM papers): npts / "
                 "npts_raw (after / before cuts), ncor (correlated systematics), chi2_red with its z_score, "
                 "chi2_cor, chi2_norm and the fitted norm as norm(norm_std); chi2 terms are means over the "
-                "fitted replicas. The panel and the chat widget draw interactive data vs mean-theory charts "
+                "fitted replicas. experiments: chi2/N of the best replica grouped by experiment (SLAC, BCDMS, "
+                "NMC, E866 ...), a separate best-replica diagnostic, not chi2 of the ensemble mean. The panel and the chat widget draw interactive data vs mean-theory charts "
                 "(axis and grouping choices, ratio and pull views, credible-interval switch, zoom, hover). "
                 "plot=false: the table only. export_png=true also renders the thesis-style PNGs (slow: "
                 "LaTeX). Names that match nothing come back as unknown_datasets / unmatched_experiments; "
@@ -9707,6 +9913,8 @@ def _tool_result(out, is_error=False):
         out = dict(out)
         images = out.pop("_images", None) or []
         ui = out.pop("_ui", None)
+        if "_panel_plots" in out:           # the older spelling of _ui's panel_plots
+            ui = dict(ui or {}, panel_plots=out.pop("_panel_plots"))
         text_view = out
     else:
         text_view = out
