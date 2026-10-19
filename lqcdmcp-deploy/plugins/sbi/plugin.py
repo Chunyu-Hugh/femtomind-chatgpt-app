@@ -30,7 +30,7 @@ UI_URI = "ui://nesap/sbi-panel"
 UI_URI_SKYBRIDGE = "ui://nesap/sbi-panel.skybridge"
 
 ROUTING = (
-    "NESAP SBI (tools sbi_options, sbi_infer, sbi_validation): inferring the QCD coupling alpha_s "
+    "NESAP SBI (tools sbi_options, sbi_infer, sbi_validation, sbi_panel): inferring the QCD coupling alpha_s "
     "from fixed Pythia simulation benchmarks (benchmark-1 to benchmark-5) with a neural event "
     "classifier: likelihood, best fit, confidence intervals, comparison with the generating truth, "
     "the method's validation. Questions about simulation-based inference (SBI), the classifier, "
@@ -60,8 +60,16 @@ DESCRIPTIONS = {
         "HPC sign-in, workspace or Slurm."),
 }
 
+PANEL_DESCRIPTION = (
+    "NESAP SBI only. The browser link of the SBI page on this gateway, like the JAM panel's link: "
+    "the interactive likelihood plot with both confidence sets, the generating truth on request, "
+    "the other benchmarks and the result JSON. With a benchmark_id the page opens on that "
+    "benchmark and draws it. Give the link when the user wants a web page, or when this client "
+    "cannot show the SBI panel itself (for example a terminal client). The page asks once for the "
+    "user's LQCDMCP dashboard token. No HPC sign-in, workspace or Slurm.")
+
 INSTRUCTIONS = (
-    "NESAP SBI (tools sbi_options, sbi_infer, sbi_validation) is a separate workflow from the JAM "
+    "NESAP SBI (tools sbi_options, sbi_infer, sbi_validation, sbi_panel) is a separate workflow from the JAM "
     "steps above: it needs no check_hpc_connection, connect_hpc, workspace, campaign or Slurm call.\n"
     "Use sbi_options to discover the supported fixed NESAP SBI workflow. Only alpha_s and "
     "benchmark-1 through benchmark-5 are currently supported. If no sample is specified, state that "
@@ -86,9 +94,53 @@ INSTRUCTIONS = (
        "download the result JSON. Point the user to it instead of describing the plot."
        if PANEL else
        "If the user wants the curve or the full result, give the returned numbers (curve.alpha and "
-       "curve.twice_delta_log_likelihood) rather than describing a plot you cannot show."))
+       "curve.twice_delta_log_likelihood) rather than describing a plot you cannot show.")
+    + "\nWhen the user asks for a web page or a link, or this client shows no SBI panel (a terminal "
+    "client such as Claude Code or Codex), call sbi_panel with the same benchmark_id and give the "
+    "returned panel_url: the page draws that benchmark's likelihood. The page asks for the LQCDMCP "
+    "dashboard token; never ask for the token in chat.")
 
 _backend = _server = None
+_page_url = None
+
+# The browser page is upstream's panel. Served on its own (not inside an MCP
+# host) the panel calls /api/<kind> with a bearer token and shows its token
+# form on HTTP 401. This script, put in front of it, answers those calls with
+# the gateway's own tools/call on this URL, as the JAM panel's page does, and
+# keeps the token in this browser tab (sessionStorage, the JAM panel's key).
+# ?benchmark=<id> preselects that benchmark and runs it once.
+PAGE_SHIM = r"""<script>
+(()=>{'use strict';
+const KEY='jam_gateway_token',realFetch=window.fetch.bind(window),TOOLS={options:'sbi_options',validation:'sbi_validation',infer:'sbi_infer'};
+const wanted=new URLSearchParams(location.search).get('benchmark')||'';let sid='',autorun=false;
+const reply=(status,data)=>new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json'}});
+function header(h,name){if(!h)return'';if(typeof h.get==='function')return h.get(name)||'';for(const k in h)if(k.toLowerCase()===name.toLowerCase())return h[k];return''}
+function runOnce(){if(autorun)return;autorun=true;let tries=0;const t=setInterval(()=>{const b=document.getElementById('run');if(b&&!b.disabled){clearInterval(t);b.click()}else if(++tries>100)clearInterval(t)},50)}
+window.fetch=async(url,opt={})=>{
+ const m=typeof url==='string'&&url.match(/^\/api\/(options|validation|infer)$/);if(!m)return realFetch(url,opt);
+ let token=header(opt.headers,'Authorization').replace(/^bearer\s+/i,'').trim();
+ if(token){try{sessionStorage.setItem(KEY,token)}catch(e){}}else{try{token=sessionStorage.getItem(KEY)||''}catch(e){}}
+ if(!token)return reply(401,{error:'The LQCDMCP dashboard token is needed.'});
+ const headers={'Content-Type':'application/json','Accept':'application/json, text/event-stream','Authorization':'Bearer '+token};if(sid)headers['Mcp-Session-Id']=sid;
+ let d;try{const r=await realFetch(location.pathname,{method:'POST',headers,body:JSON.stringify({jsonrpc:'2.0',id:Date.now()%1e9,method:'tools/call',params:{name:TOOLS[m[1]],arguments:m[1]==='infer'?JSON.parse(opt.body||'{}'):{}}})});
+  const s=r.headers.get('Mcp-Session-Id');if(s)sid=s;d=await r.json()}catch(e){return reply(502,{error:'The gateway did not answer.'})}
+ if(d.error)return reply(502,{error:d.error.message||'The gateway refused the request.'});
+ const res=d.result||{};
+ if(res.structuredContent&&res.structuredContent.status==='unauthorized'){try{sessionStorage.removeItem(KEY)}catch(e){}return reply(401,{error:'The gateway did not accept this token.'})}
+ if(res.isError)return reply(400,{error:(res.content||[]).map(c=>c.text||'').join(' ').replace(/^error:\s*/,'')||'The tool failed.'});
+ const out=res.structuredContent;
+ if(m[1]==='options'&&wanted&&out&&(out.benchmarks||[]).some(b=>b.id===wanted)){out.default_benchmark_id=wanted;runOnce()}
+ return reply(200,out)};
+document.addEventListener('DOMContentLoaded',()=>{const l=document.querySelector('label[for="token"]');if(l)l.textContent='LQCDMCP dashboard token';
+ const n=document.querySelector('#auth p');if(n)n.textContent='The same token the JAM panel asks for. Kept in this browser tab only.'});
+})();
+</script>
+"""
+
+
+def configure(page_url):
+    global _page_url
+    _page_url = page_url
 
 
 def _import(name):
@@ -124,7 +176,36 @@ def tools():
         out[t["name"]] = {"desc": desc, "schema": copy.deepcopy(t["inputSchema"]),
                           "annotations": copy.deepcopy(t.get("annotations")), "meta": meta or None,
                           "fn": lambda a, name=t["name"]: _call(name, a)}
+    if _page_url:
+        out["sbi_panel"] = {
+            "desc": PANEL_DESCRIPTION,
+            "schema": {"type": "object", "additionalProperties": False,
+                       "properties": {"benchmark_id": {"type": "string"}}},
+            "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False},
+            "meta": None, "fn": _panel_link}
     return out
+
+
+def _panel_link(args):
+    args = {k: v for k, v in (args or {}).items() if k != "username"}
+    if set(args) - {"benchmark_id"}:
+        raise ValueError("Unsupported arguments")
+    benchmark = args.get("benchmark_id") or ""
+    if benchmark and benchmark not in [b["id"] for b in _backend.get_options()["benchmarks"]]:
+        raise ValueError("Unknown benchmark_id. Choose benchmark-1 through benchmark-5.")
+    return {"panel_url": _page_url(benchmark=benchmark), "benchmark_id": benchmark or None,
+            "guidance": "Give the user this link to open in a browser. The page asks once for the "
+                        "LQCDMCP dashboard token (the JAM panel's token); never ask for it in chat. "
+                        + ("It opens on " + benchmark + " and draws its likelihood." if benchmark else
+                           "The user picks a benchmark there and presses Run inference.")}
+
+
+def page():
+    html = _panel()
+    head = '<meta charset="utf-8">'
+    if head not in html:
+        raise ValueError("unexpected panel.html: no charset meta")
+    return html.replace(head, head + "\n" + PAGE_SHIM, 1)
 
 
 def _panel():
@@ -135,7 +216,7 @@ def _panel():
 def resources():
     if not PANEL:
         return {}
-    meta ={"ui": {"prefersBorder": True}, "openai/widgetPrefersBorder": True}
+    meta = {"ui": {"prefersBorder": True}, "openai/widgetPrefersBorder": True}
     return {UI_URI: {"name": "sbi-panel", "mimeType": _server.UI_MIME, "text": _panel, "meta": meta,
                      "description": "NESAP SBI likelihood panel"},
             UI_URI_SKYBRIDGE: {"name": "sbi-panel-chatgpt", "mimeType": "text/html+skybridge",

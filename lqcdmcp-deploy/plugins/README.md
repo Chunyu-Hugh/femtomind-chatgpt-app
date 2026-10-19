@@ -25,7 +25,16 @@ confidence sets, the generating truth on request, another benchmark run from
 the panel and the result JSON (resources `ui://nesap/sbi-panel` and
 `ui://nesap/sbi-panel.skybridge`). It draws the conversation's result, which
 upstream's panel does from commit `f41c675`. `PANEL = False` in
-`sbi/plugin.py` turns the panel off, for text only. The science stays in the SBI repository,
+`sbi/plugin.py` turns the panel off, for text only.
+
+**Browser page.** Like the JAM panel, SBI has a page of its own:
+`<gateway URL>?app=sbi`, with `&benchmark=benchmark-N` to open on that
+benchmark and draw it. Any other browser request still gets the JAM panel.
+The page is upstream's panel with a short script in front (`PAGE_SHIM` in
+`sbi/plugin.py`) that turns its `/api/...` calls into the gateway's own
+`tools/call` and keeps the dashboard token in the browser tab, as the JAM
+panel does. The tool `sbi_panel` returns this link, for terminal clients
+(Claude Code, Codex) and whenever the user asks for a web page. The science stays in the SBI repository,
 which is not modified here; `plugin.py` only maps its tools onto the gateway,
 removes `username` (a shared gateway applies it first) and appends the SBI
 guidance to the MCP instructions. Only the runtime files named in `SHIP`
@@ -81,7 +90,8 @@ when the task is unclear.
 ## Adding a plugin
 
 Create `plugins/<name>/plugin.py` (`<name>`: lowercase letters and digits)
-with `NAME`, `SHIP`, `ROUTING`, `INSTRUCTIONS`, `load()`, `tools()` and `resources()`, as
+with `NAME`, `SHIP`, `ROUTING`, `INSTRUCTIONS`, `load()`, `tools()` and `resources()`
+(optionally `configure()` and `page()` for a browser page at `?app=<name>`), as
 described at the top of `__init__.py`. Tool names must start with `<name>_`
 and must not exist yet; resource URIs must be new `ui://` URIs. A plugin that
 breaks any rule, or raises in `load()`, is left out whole and the gateway
@@ -103,7 +113,14 @@ plugins:
 - With SBI: the same 29 JAM tools, panel resources and calls are identical;
   the JAM instructions are unchanged, preceded by the routing note and
   followed by the SBI text (in shared mode the shared-gateway note stays
-  last). Three tools and the two panel resources are added.
+  last). Four tools (`sbi_panel` included) and the two panel resources are
+  added. Browser requests without `app=sbi` (none, `?tab=campaign`,
+  `?app=nope`) get the same JAM page with the same headers. `?app=sbi` gets
+  the SBI page with the JAM page's security headers.
+- The SBI page, loaded in jsdom from the local gateway and calling it: asks
+  for the token, refuses a wrong one, then opens on the linked benchmark and
+  draws it, fills the validation table, runs another benchmark, toggles the
+  truth and downloads the JSON. Reloaded in the same tab it needs no token.
 - `sbi_infer` gives the archived Benchmark 3 result (best fit 0.11023130887189442,
   68% set [0.109866, 0.110594]); unknown benchmarks and extra arguments are
   tool errors; `username` is accepted in shared mode.

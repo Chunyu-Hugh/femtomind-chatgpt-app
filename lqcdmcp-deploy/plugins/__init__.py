@@ -13,6 +13,13 @@ Each plugin is a folder plugins/<name>/ with a plugin.py that defines:
                 (desc, schema, fn, optional meta and annotations)
   resources()   {uri: {"name", "mimeType", "description", "text": callable, "meta"}}
 
+and optionally:
+
+  configure(page_url)  called before load(); page_url(**query) is the browser
+                URL of this plugin's page on this gateway (?app=<NAME>&...)
+  page()        the HTML of that page, which a browser GET of
+                <gateway URL>?app=<NAME> receives instead of the JAM panel
+
 The gateway (JAM) itself is not a plugin and is unchanged by them. A plugin
 that fails to load is left out as a whole and the gateway runs without it.
 JAM_GW_PLUGINS chooses plugins: unset loads every folder found, "none" or ""
@@ -120,16 +127,19 @@ def ship_files():
     return files, skipped
 
 
-def attach(tools, reserved_uris):
+def attach(tools, reserved_uris, page_url=None):
     """Load the selected plugins and add their tools to `tools` (the gateway's
-    TOOLS). Returns (resources, routing lines, instructions, status). A plugin
-    is added whole or not at all; a tool name or resource URI that is taken is
-    an error."""
-    resources, texts, routing = {}, [], []
+    TOOLS). page_url(app, query) builds a browser URL of the gateway. Returns
+    (resources, pages, routing lines, instructions, status), pages being
+    {plugin name: callable returning HTML}. A plugin is added whole or not at
+    all; a tool name or resource URI that is taken is an error."""
+    resources, pages, texts, routing = {}, {}, [], []
     status = {"loaded": [], "errors": {}}
     for name in selected():
         try:
             module = _module(name)
+            if hasattr(module, "configure"):
+                module.configure(page_url=lambda name=name, **query: page_url(name, query))
             module.load()
             new_tools = module.tools()
             for tool, spec in new_tools.items():
@@ -148,12 +158,16 @@ def attach(tools, reserved_uris):
                     raise ValueError(f"resource {uri!r} needs mimeType and text")
             if not (isinstance(module.ROUTING, str) and module.ROUTING.strip()):
                 raise ValueError("ROUTING must be a nonempty line")
+            if hasattr(module, "page") and not callable(module.page):
+                raise ValueError("page must be a function returning HTML")
         except Exception as e:
             status["errors"][name] = f"{type(e).__name__}: {e}"
             continue
         tools.update(new_tools)
         resources.update(new_resources)
+        if hasattr(module, "page"):
+            pages[name] = module.page
         routing.append("- " + module.ROUTING.strip())
         texts.append(module.INSTRUCTIONS.strip())
         status["loaded"].append(name)
-    return resources, routing, "".join("\n\n" + t for t in texts), status
+    return resources, pages, routing, "".join("\n\n" + t for t in texts), status

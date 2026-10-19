@@ -9305,7 +9305,15 @@ INSTRUCTIONS = (
 # a plugin that fails to load is left out and the gateway runs without it.
 
 PLUGIN_RESOURCES = {}
+PLUGIN_PAGES = {}                   # plugin name -> its browser page (GET ?app=<name>)
 PLUGIN_STATUS = {"loaded": [], "errors": {}}
+
+
+def _page_url(app, query):
+    q = urllib.parse.urlencode({"app": app, **{k: v for k, v in query.items() if v}})
+    return (PUBLIC_URL or f"{PROXY}/cloud/{MCP_NAME}/mcp") + "?" + q
+
+
 _PLUGINS_INIT = os.path.join(HERE, "plugins", "__init__.py")
 if os.path.isfile(_PLUGINS_INIT):
     try:
@@ -9313,8 +9321,8 @@ if os.path.isfile(_PLUGINS_INIT):
         _plugins = importlib.util.module_from_spec(_spec)
         sys.modules["jam_plugins"] = _plugins
         _spec.loader.exec_module(_plugins)
-        PLUGIN_RESOURCES, _routing, _plugin_text, PLUGIN_STATUS = _plugins.attach(
-            TOOLS, {PANEL_URI, PANEL_URI_SKYBRIDGE})
+        PLUGIN_RESOURCES, PLUGIN_PAGES, _routing, _plugin_text, PLUGIN_STATUS = _plugins.attach(
+            TOOLS, {PANEL_URI, PANEL_URI_SKYBRIDGE}, _page_url)
         if _routing:
             # Models choose tools by what they read first: with several tasks on
             # one gateway, say up front which questions go where.
@@ -9398,7 +9406,13 @@ class H(BaseHTTPRequestHandler):
               f"ua={self.headers.get('User-Agent', '')[:40]!r}")
         accept = self.headers.get("Accept") or ""
         if "text/html" in accept:
-            body = _panel_html().encode()
+            # ?app=<plugin> is that plugin's page; every other page request gets the JAM panel.
+            app = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("app", [""])[0]
+            page = PLUGIN_PAGES.get(app)
+            try:
+                body = (page() if page else _panel_html()).encode()
+            except Exception:
+                body = _panel_html().encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
