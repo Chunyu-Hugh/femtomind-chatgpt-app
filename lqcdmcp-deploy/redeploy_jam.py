@@ -211,9 +211,8 @@ def main():
                              f"try again first.")
         print(out)
         print(f"\nyour gateway: {gw_auth.URL}\npanel:        {gw_auth.URL} (in a browser)\n"
-              "The job usually starts within minutes; outside the daily window (about 10:00–16:00 US "
-              "Eastern) or while a colleague's gateway holds the reservation, it waits in the queue and "
-              "starts by itself. python3 deploy_and_verify.py --check shows when your gateway is up.")
+              "The job usually starts within minutes; while a colleague's gateway holds the reservation "
+              "it waits in the queue and starts by itself. It runs for JAM_GW_HOURS (6 h) at most. python3 deploy_and_verify.py --check shows when your gateway is up.")
     else:
         print(tool_call("check_mcp_server_status_by_name", {"mcp_name": MCP_NAME})[0])
 

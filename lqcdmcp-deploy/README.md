@@ -33,7 +33,8 @@ python3 deploy_and_verify.py   # launch, wait, verify
 
 The job script carries the gateway, the panel and `jamai/` (zlib + base64)
 and no credential. It asks for partition `24s`, reservation `chen_mcp_daily`
-(about 10:00–16:00 US Eastern), 6 h and 2 CPUs (`JAM_GW_PARTITION`,
+(no time window since 2026-10-16; before, about 10:00–16:00 US Eastern), 6 h
+and 2 CPUs (`JAM_GW_PARTITION`,
 `JAM_GW_RESERVATION`, `JAM_GW_HOURS` override; `JAM_GW_ACCOUNT` adds
 `--account`, for a user whose default Slurm account cannot use the
 partition). The job unpacks the files into `~/.jam_gateway/app`, and a

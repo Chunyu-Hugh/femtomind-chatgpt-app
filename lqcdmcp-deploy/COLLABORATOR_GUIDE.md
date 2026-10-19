@@ -105,9 +105,10 @@ time you sign in to the dashboard.
 
 ## Part 2 — Every day you use it
 
-The platform runs gateways in a daily window, about **10:00–16:00 US
-Eastern**. Your files and results on ifarm stay between days, and fits keep
-running after the window closes.
+A gateway runs for **6 hours** from the moment its job starts (any time of
+day since 2026-10-16; before, only in a 10:00–16:00 US Eastern window). Your
+files and results on ifarm stay, and fits keep running after the gateway
+stops.
 
 > **One gateway at a time.** So far the platform's reservation has run only
 > one gateway job at a time. If a colleague's gateway is running, yours waits
@@ -547,9 +548,9 @@ platform does not offer. Use Codex (4.2) with your ChatGPT account instead.
 | "the dashboard refused this token" | The dashboard token expired or was copied incompletely. Sign in to the dashboard again, copy the token, export it (1.5) and run the command again. Ctrl-C stops a script that is still waiting. |
 | "could not reach the dashboard", "timed out", "did not answer" or "the connection to the dashboard dropped" | A network problem. Check your network connection, then run the command again (after a failed launch, read the next row first). |
 | "stop: the launch request failed" | The lines above it say why (token or network: see the rows above). If the request timed out or the connection dropped, a job may still have been queued: run `python3 deploy_and_verify.py --check` before launching again. |
-| "your gateway job is waiting in the queue" | Another gateway holds the reservation, or the daily window has not opened yet. Yours starts by itself: run `python3 deploy_and_verify.py --check` later, or ask your colleagues whether one of them can stop theirs. |
+| "your gateway job is waiting in the queue" | Another gateway holds the reservation. Yours starts by itself: run `python3 deploy_and_verify.py --check` later, or ask your colleagues whether one of them can stop theirs. |
 | "the gateway is not up yet: its job runs but the gateway does not answer" | Wait a few minutes, then run `python3 deploy_and_verify.py --check`. If it still does not answer: `python3 redeploy_jam.py cancel`, then `python3 deploy_and_verify.py`. |
-| "the gateway is not up yet, and the job launched above is no longer queued or running" | Gateway jobs end when the daily window closes (about 16:00 US Eastern): start again the next day. Earlier in the day, send the report to Chunyu. |
+| "the gateway is not up yet, and the job launched above is no longer queued or running" | Gateway jobs end 6 hours after they start: start a new one. If yours ended much earlier than that, send the report to Chunyu. |
 | "the gateway is not up yet: you have no gateway job queued or running" | Run `python3 deploy_and_verify.py` without `--check`. |
 | `jam-gateway-<you> (owner <you>) is NOT in the list` | Your gateway is not running (do step 2.1), or the token comes from another account's dashboard login. |
 | `the dashboard does not confirm this token as <you>'s` | The end of the line says why: the token is another account's or `JAM_GW_USER` is not your JLab username; MCP servers are not enabled for you (step 1.2); or the dashboard answered with an error (sign in again and copy a new token). |
