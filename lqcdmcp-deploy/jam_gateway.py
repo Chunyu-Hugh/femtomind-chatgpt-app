@@ -42,6 +42,7 @@ import base64
 import getpass
 import hashlib
 import hmac
+import importlib.util
 import inspect
 import json
 import math
@@ -51,6 +52,7 @@ import secrets
 import socket
 import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -9297,6 +9299,26 @@ INSTRUCTIONS = (
     "runs sbatch --test-only), show the returned script exactly as written, ask the user, "
     "then submit_slurm_job with the phrase.")
 
+# ── plugins ─────────────────────────────────────────────────────────────────
+# Other physics tasks (plugins/<name>/, see plugins/__init__.py) add their own
+# tools, resources and instructions here. The JAM tools above are not touched;
+# a plugin that fails to load is left out and the gateway runs without it.
+
+PLUGIN_RESOURCES = {}
+PLUGIN_STATUS = {"loaded": [], "errors": {}}
+_PLUGINS_INIT = os.path.join(HERE, "plugins", "__init__.py")
+if os.path.isfile(_PLUGINS_INIT):
+    try:
+        _spec = importlib.util.spec_from_file_location("jam_plugins", _PLUGINS_INIT)
+        _plugins = importlib.util.module_from_spec(_spec)
+        sys.modules["jam_plugins"] = _plugins
+        _spec.loader.exec_module(_plugins)
+        PLUGIN_RESOURCES, _plugin_text, PLUGIN_STATUS = _plugins.attach(
+            TOOLS, {PANEL_URI, PANEL_URI_SKYBRIDGE})
+        INSTRUCTIONS += _plugin_text
+    except Exception as e:
+        PLUGIN_STATUS = {"loaded": [], "errors": {"plugins": f"{type(e).__name__}: {e}"}}
+
 if SHARED:
     for _name, _spec in TOOLS.items():
         if _name != "node_diag":
@@ -9329,6 +9351,8 @@ def _tool_entry(name, spec):
     entry = {"name": name, "description": spec["desc"], "inputSchema": spec["schema"]}
     if spec.get("meta"):
         entry["_meta"] = spec["meta"]
+    if spec.get("annotations"):
+        entry["annotations"] = spec["annotations"]
     return entry
 
 
@@ -9457,12 +9481,22 @@ class H(BaseHTTPRequestHandler):
                  "description": "FemtoMind operations panel"},
                 {"uri": PANEL_URI_SKYBRIDGE, "name": "jam-panel-chatgpt",
                  "mimeType": "text/html+skybridge",
-                 "description": "FemtoMind operations panel (ChatGPT widget)"}]}
+                 "description": "FemtoMind operations panel (ChatGPT widget)"}] + [
+                {"uri": uri, "name": r.get("name", uri), "mimeType": r["mimeType"],
+                 "description": r.get("description", "")} for uri, r in PLUGIN_RESOURCES.items()]}
         elif method == "resources/read":
             uri = params.get("uri", "")
             mime = {PANEL_URI: PANEL_MIME,
                     PANEL_URI_SKYBRIDGE: "text/html+skybridge"}.get(uri)
-            if not mime:
+            plugin_res = PLUGIN_RESOURCES.get(uri) if isinstance(uri, str) else None
+            if plugin_res:
+                try:
+                    result = {"contents": [{"uri": uri, "mimeType": plugin_res["mimeType"],
+                                            "text": plugin_res["text"](),
+                                            "_meta": plugin_res.get("meta") or {}}]}
+                except Exception as e:
+                    error = {"code": -32603, "message": f"resource unavailable: {uri} ({type(e).__name__})"}
+            elif not mime:
                 error = {"code": -32002, "message": f"resource not found: {uri}"}
             else:
                 result = {"contents": [{"uri": uri, "mimeType": mime, "text": _panel_html(),
@@ -9548,6 +9582,10 @@ if __name__ == "__main__":
     server, port = _bind()
     print(f"jam-gateway '{MCP_NAME}' (owner {GATEWAY_OWNER}, site {SITE['id']}) "
           f"listening on {port}, host {socket.getfqdn()}", flush=True)
+    if PLUGIN_STATUS["loaded"] or PLUGIN_STATUS["errors"]:
+        print(f"plugins loaded: {', '.join(PLUGIN_STATUS['loaded']) or 'none'}"
+              + "".join(f"; {n} left out ({why})" for n, why in PLUGIN_STATUS["errors"].items()),
+              flush=True)
     if os.environ.get("SLURM_JOB_ID"):
         register(port)
     server.serve_forever()

@@ -1,0 +1,4 @@
+[submodule "lqcdmcp-deploy/plugins/sbi/upstream"]
+	path = lqcdmcp-deploy/plugins/sbi/upstream
+	url = https://github.com/FelixRinger/femtomind-nesap-sbi.git
+	branch = felix/sbi-likelihood-diagnosis

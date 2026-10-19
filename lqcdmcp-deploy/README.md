@@ -18,7 +18,8 @@ This file is for whoever maintains the gateway.
 | `jamai/` | Turns a campaign into a FitPack input card and runs one replica (`run_replica.py`); uploaded to `<workspace>/.jamai/` at every submit. `object_registry.py` (the objects, their libraries, cuts and plot helpers; its source is also shipped to the cluster for reading libraries and plotting) and `reaction_registry.py` (which objects each reaction needs) are the physics maps. |
 | `deploy_and_verify.py` | Launch your gateway unless your gateway job is already queued or running, wait for it (it stops early when the job stays queued, or when a job it launched ends), and check it end to end (`--check`: check only). Prints a shareable report without credentials. |
 | `redeploy_jam.py` | `launch` / `cancel` / `status` through the dashboard API; `script` writes the job script for the dashboard page. |
-| `hot_redeploy.py` | Replace a running gateway's code (gateway, panel, `jamai/`) inside the same job. |
+| `hot_redeploy.py` | Replace a running gateway's code (gateway, panel, `jamai/`, `plugins/`) inside the same job. |
+| `plugins/` | Other physics tasks on the same gateway, each in its own folder (NESAP SBI: a git submodule). See [plugins/README.md](plugins/README.md). |
 | `check_dashboard_token.py` | Make the dashboard calls the gateway's access check makes, and print the decision. |
 | `gw_auth.py` | Gateway name, URL and token for the scripts: `JAM_GW_USER`, `LQCDMCP_TOKEN`; `JAM_GW_NAME`, `JAM_GW_URL`, `JAM_GW_TOKEN` for a test gateway. |
 | `COLLABORATOR_GUIDE.md` | The step-by-step guide for collaborators. |

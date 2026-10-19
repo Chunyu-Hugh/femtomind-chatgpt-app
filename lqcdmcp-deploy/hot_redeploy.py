@@ -20,6 +20,7 @@ the swap, runs the uploaded file and still accepts the token.
 """
 import base64
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -108,6 +109,14 @@ def deployment_files():
                 sys.exit(f"refusing a symlink in the application package: {path}")
             rel = "jamai/" + os.path.relpath(path, src).replace(os.sep, "/")
             files[rel] = path
+    # The plugins' files, as plugins/__init__.py lists them (the same as the job script).
+    spec = importlib.util.spec_from_file_location("jam_plugins", os.path.join(HERE, "plugins", "__init__.py"))
+    plugins = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(plugins)
+    shipped, skipped = plugins.ship_files()
+    for name, why in skipped.items():
+        print(f"note: plugin {name} is left out of the gateway: {why}")
+    files.update(shipped)
     return files
 
 
@@ -130,12 +139,16 @@ for rel, expected in args['hashes'].items():
         raise RuntimeError('staged hash mismatch: ' + rel)
     if path.suffix == '.py':
         compile(path.read_bytes(), str(path), 'exec')
-importlib.import_module('jam_gateway')
+gateway = importlib.import_module('jam_gateway')
 for name, module in list(sys.modules.items()):
-    if name == 'jam_gateway' or name == 'jamai' or name.startswith('jamai.'):
+    if (name == 'jam_gateway' or name == 'jamai' or name.startswith('jamai.')
+            or name == 'jam_plugins' or name.startswith('jam_plugin_')):
         path = pathlib.Path(module.__file__).resolve()
         if stage not in path.parents:
             raise RuntimeError('import escaped staged application: ' + name)
+errors = getattr(gateway, 'PLUGIN_STATUS', {}).get('errors') or {}
+if errors:
+    raise RuntimeError('plugin failed to load: ' + '; '.join(n + ': ' + w for n, w in errors.items()))
 print('IMPORT-OK')
 """
 
@@ -149,13 +162,15 @@ backup = app / '.hot_redeploy.previous'
 if backup.exists():
     shutil.rmtree(backup)
 backup.mkdir(mode=0o700)
-components = ('jamai', 'jam_panel.html', 'jam_gateway.py')
+components = ('jamai', 'plugins', 'jam_panel.html', 'jam_gateway.py')
 saved, installed = [], []
 try:
     for name in components:
         if (app / name).exists():
             shutil.move(str(app / name), str(backup / name))
             saved.append(name)
+        if name == 'plugins' and not (stage / name).exists():
+            continue                # an application without plugins
         shutil.move(str(stage / name), str(app / name))
         installed.append(name)
 except BaseException:

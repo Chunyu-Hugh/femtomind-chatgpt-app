@@ -20,6 +20,7 @@ partition; default: none, i.e. Slurm's default account for you).
 """
 import base64
 import http.client
+import importlib.util
 import json
 import os
 import re
@@ -123,6 +124,18 @@ JAMAI_SRC = os.path.join(HERE, "jamai")          # the campaign materializer and
 APP_DIR = "~/.jam_gateway/app"
 
 
+def plugin_files():
+    """{relative path: local path} of the plugins' files (plugins/__init__.py
+    says which); a plugin that cannot be shipped is left out with a note."""
+    spec = importlib.util.spec_from_file_location("jam_plugins", os.path.join(HERE, "plugins", "__init__.py"))
+    plugins = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(plugins)
+    files, skipped = plugins.ship_files()
+    for name, why in skipped.items():
+        print(f"note: plugin {name} is left out of the gateway: {why}", file=sys.stderr)
+    return files
+
+
 def _payload():
     """{relative path: base64} of everything the gateway needs on the node."""
     files = {"jam_gateway.py": GATEWAY_SRC, "jam_panel.html": PANEL_SRC}
@@ -132,6 +145,7 @@ def _payload():
                 continue
             full = os.path.join(dirpath, n)
             files["jamai/" + os.path.relpath(full, JAMAI_SRC).replace(os.sep, "/")] = full
+    files.update(plugin_files())
     # zlib first: the job script travels through the dashboard API, and the
     # gateway, panel and package are mostly source text.
     return {k: base64.b64encode(zlib.compress(open(v, "rb").read(), 9)).decode()
