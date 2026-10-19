@@ -3238,6 +3238,7 @@ resman = RESMAN(nworkers=1, parallel=False, datasets=False)
 pdf = conf['pdf']
 xs = proton_x_grid(options['x_min'], options['x_max'])
 curves = {f: [] for f in flavors}
+display_breaks = {}
 try:
     for s in records:
         try:
@@ -3247,7 +3248,10 @@ try:
                 raise ValueError('Missing or nonfinite fitted parameters/order.')
             resman.parman.order = order
             resman.parman.set_new_params(params, initial=True)
-            replica = evaluate_proton_curves(pdf, xs, q2, flavors)
+            replica_breaks = {}
+            replica = evaluate_proton_curves(pdf, xs, q2, flavors, display_breaks=replica_breaks)
+            for f, breaks in replica_breaks.items():
+                display_breaks[f] = display_breaks.get(f, np.zeros(len(xs), dtype=bool)) | breaks
             for f in flavors: curves[f].append(replica[f])
         except (OSError, KeyError, TypeError, ValueError, ArithmeticError) as exc:
             print(json.dumps({'status': 'error', **metadata,
@@ -3258,6 +3262,8 @@ finally:
     resman.shutdown()
 try:
     bands = proton_bands(curves, interval, pointwise_credible_interval)
+    for f, breaks in display_breaks.items():
+        bands[f]['break_before'] = breaks
 except ValueError as exc:
     print(json.dumps({'status': 'error', **metadata, 'message': str(exc)})); raise SystemExit(0)
 interval_label = '%g%% pointwise credible interval' % interval
@@ -3270,8 +3276,6 @@ omitted = {f: [float(x) for x in xs[~bands[f]['valid']]] for f in flavors if not
 if omitted:
     notes.append('Numerically unresolved ratio points omitted for the entire ensemble (no replicas dropped): '
                  + ', '.join('%s: %d x points' % (f, len(points)) for f, points in omitted.items()))
-if options['x_max'] == 1:
-    notes.append('x=1 is the display boundary; Mellin inversion and ratios are evaluated only at x<1.')
 fig, layout = draw_proton_figure(xs, bands, flavors, q2, campaign_name, interval_label,
                                  mean_overlay=mean_overlay, **options)
 path = os.path.join(plot_dir, 'pdf_combined_q2_%g_%s.png' % (q2, uuid.uuid4().hex))
@@ -3529,7 +3533,9 @@ def theory_plot_factors(tab):
 
 def theory_identity(tab):
     import hashlib
-    dynamic = {'thy', 'prediction', 'shift', 'Shift', 'N', 'residuals', 'r-residuals', 'n-residuals'}
+    # SIA get_theory creates sigtot (the inclusive theory cross section).
+    # It is not an experimental column; every data/kinematic/error field stays exact.
+    dynamic = {'thy', 'prediction', 'shift', 'Shift', 'N', 'residuals', 'r-residuals', 'n-residuals', 'sigtot'}
     original = {str(k): np.asarray(v).tolist() for k, v in tab.items() if k not in dynamic}
     return hashlib.sha256(json.dumps(original, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
@@ -9198,7 +9204,7 @@ TOOLS = {
         "fn": lambda a: campaign_summary(a.get("collection_id", ""))},
     "campaign_pdf_plots": {
         "desc": "View PDF Plots: proton PDFs use one two-column band figure, without replica lines. "
-                "Flavors in requested order: u,d,g,s,ub,db,sb,d/u,db+ub,db-ub,sp,sm,Rs,up,dp. "
+                "Flavors in requested order: u,d,g,s,ub,db,sb,uv,dv,d/u,db+ub,db-ub,sp,sm,Rs,up,dp. "
                 "Sums are xPDFs, d/u and Rs are dimensionless; transform each fitted replica before intervals. "
                 "Proton display: x_min=0.01, x_max=1, band_color=red, band_alpha=0.95; "
                 "mean_overlay optionally adds a mean line (off by default for proton, on for pion). "

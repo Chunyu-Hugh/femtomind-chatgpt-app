@@ -5,7 +5,7 @@ Pion PDF and fragmentation-function plots do not use this module.
 """
 
 PROTON_FLAVORS = ('u', 'd', 'g', 's', 'ub', 'db', 'sb',
-                 'd/u', 'db+ub', 'db-ub', 'sp', 'sm', 'Rs', 'up', 'dp')
+                 'uv', 'dv', 'd/u', 'db+ub', 'db-ub', 'sp', 'sm', 'Rs', 'up', 'dp')
 PDF_LABELS = {
     'u': r'$xu$', 'd': r'$xd$', 'g': r'$xg$', 's': r'$xs$',
     'ub': r'$x\bar{u}$', 'db': r'$x\bar{d}$', 'sb': r'$x\bar{s}$',
@@ -26,8 +26,13 @@ def _pdf_flavor_label(flavor):
     return r'\boldmath' + PDF_LABELS[flavor]
 
 
+def _pdf_regular_math(text):
+    """Reset TeX weight locally, using the same regular math face for all numbers."""
+    return r'{\normalfont\mdseries\unboldmath$' + text + '$}'
+
+
 def _pdf_y_ticks(ax, limits):
-    """At most two decimals, plain negative text and math nonnegative text."""
+    """At most two decimals; both signs use the same explicit regular math face."""
     import numpy as np
     from matplotlib.ticker import MaxNLocator, FixedLocator, FuncFormatter
     locator = MaxNLocator(nbins=4, steps=[1, 2, 5, 10], prune='both', min_n_ticks=3)
@@ -43,7 +48,7 @@ def _pdf_y_ticks(ax, limits):
         value /= scale
         if abs(value) < 0.5 * 10**(-precision): value = 0.0
         text = ('%.*f' % (precision, value))
-        return text if value < 0 else '$' + text + '$'
+        return _pdf_regular_math(text)
     class ConciseFormatter(FuncFormatter):
         def get_offset(self):
             return r'$\times10^{%d}$' % exponent if exponent else ''
@@ -113,7 +118,7 @@ def proton_x_grid(x_min, x_max):
     return xs[xs < 1.0]
 
 
-def evaluate_proton_curves(pdf, xs, q2, flavors):
+def evaluate_proton_curves(pdf, xs, q2, flavors, display_breaks=None):
     """Native u/d are full quarks; their valence parts are u-ub and d-db.
 
     All base values already include x. Thus sums retain x and ratios cancel
@@ -121,7 +126,7 @@ def evaluate_proton_curves(pdf, xs, q2, flavors):
     """
     import numpy as np
     needed = {
-        'd/u': ('d', 'u'), 'db+ub': ('db', 'ub'), 'db-ub': ('db', 'ub'),
+        'uv': ('u', 'ub'), 'dv': ('d', 'db'), 'd/u': ('d', 'u'), 'db+ub': ('db', 'ub'), 'db-ub': ('db', 'ub'),
         'sp': ('s', 'sb'), 'sm': ('s', 'sb'), 'Rs': ('s', 'sb', 'ub', 'db'),
         'up': ('u', 'ub'), 'dp': ('d', 'db'),
     }
@@ -146,6 +151,16 @@ def evaluate_proton_curves(pdf, xs, q2, flavors):
         result[~np.isfinite(result)] = np.nan
         return result
 
+    if display_breaks is not None:
+        # Connectivity metadata only: do not change ratio samples or intervals.
+        for flavor in flavors:
+            if flavor == 'd/u':
+                denominator = base['u']
+                breaks = np.zeros(len(xs), dtype=bool)
+                breaks[1:] = ((np.signbit(denominator[1:]) != np.signbit(denominator[:-1]))
+                              | (denominator[1:] == 0) | (denominator[:-1] == 0))
+                display_breaks[flavor] = breaks
+
     curves = {}
     for flavor in flavors:
         if flavor == 'd/u': curves[flavor] = ratio(base['d'], base['u'], np.abs(base['u']))
@@ -154,7 +169,7 @@ def evaluate_proton_curves(pdf, xs, q2, flavors):
                                    np.abs(base['ub']) + np.abs(base['db']))
         elif flavor in ('db+ub', 'sp', 'up', 'dp'):
             a, b = needed[flavor]; curves[flavor] = base[a] + base[b]
-        elif flavor in ('db-ub', 'sm'):
+        elif flavor in ('uv', 'dv', 'db-ub', 'sm'):
             a, b = needed[flavor]; curves[flavor] = base[a] - base[b]
         else: curves[flavor] = base[flavor]
         if flavor not in ('d/u', 'Rs') and not np.isfinite(curves[flavor]).all():
@@ -239,6 +254,21 @@ def proton_display_limits(xs, band, flavor, x_min, x_max):
     }
 
 
+def _pdf_display_paths(band, limits):
+    """Break drawing paths at gaps/poles, leaving every stored band value intact."""
+    import numpy as np
+    low, high, mean = [np.array(band[key], dtype=float, copy=True) for key in ('low', 'high', 'mean')]
+    lo, hi = limits
+    valid = np.asarray(band['valid']) & np.isfinite(low) & np.isfinite(high)
+    visible = valid & (high >= lo) & (low <= hi)
+    low[~visible] = np.nan
+    high[~visible] = np.nan
+    # A dashed mean must end before a clipped excursion, rather than drawing
+    # a near-vertical segment from below the frame to above it (or back).
+    mean[~valid | ~np.isfinite(mean) | (mean < lo) | (mean > hi)] = np.nan
+    return low, high, mean
+
+
 def draw_proton_figure(xs, bands, flavors, q2, campaign_name, interval_label,
                        x_min=0.01, x_max=1.0, band_color='red', band_alpha=0.95,
                        mean_overlay=False):
@@ -279,11 +309,29 @@ def _draw_proton_figure(xs, bands, flavors, q2, campaign_name, interval_label,
     layout = []
     for i, flavor in enumerate(flavors):
         ax = axes.flat[i]; band = bands[flavor]
-        ax.fill_between(xs, band['low'], band['high'], facecolor=band_color,
-                        edgecolor=band_color, alpha=band_alpha, linewidth=1.0)
-        if mean_overlay:
-            ax.plot(xs, band['mean'], color=band_color, lw=1.5, ls='--')
         limits, display_info = proton_display_limits(xs, band, flavor, x_min, x_max)
+        if flavor == 'Rs':
+            # Preserve the published Rs display, including its optional mean.
+            ax.fill_between(xs, band['low'], band['high'], facecolor=band_color,
+                            edgecolor=band_color, alpha=band_alpha, linewidth=1.0)
+            if mean_overlay:
+                ax.plot(xs, band['mean'], color=band_color, lw=1.5, ls='--')
+        else:
+            # Rendering copies only: never connect an off-screen pole across the
+            # visible plot. NaNs also preserve every unresolved-point gap.
+            low, high, mean = _pdf_display_paths(band, limits)
+            # A crossing in any replica's denominator splits the entire display
+            # ensemble between the sampled points, without dropping either sample.
+            starts = [0] + list(np.flatnonzero(band.get('break_before', np.zeros(len(xs), dtype=bool))))
+            for start, stop in zip(starts, starts[1:] + [len(xs)]):
+                if stop - start < 2:
+                    continue
+                ratio = flavor in ('Rs', 'd/u')
+                ax.fill_between(xs[start:stop], low[start:stop], high[start:stop], facecolor=band_color,
+                                edgecolor='none' if ratio else band_color, alpha=band_alpha,
+                                linewidth=0 if ratio else 1.0)
+                if mean_overlay:
+                    ax.plot(xs[start:stop], mean[start:stop], color=band_color, lw=1.5, ls='--')
         ax.set_ylim(*limits)
         if limits[0] <= 0 <= limits[1] or flavor in ('sm', 'db-ub'):
             # Above the opaque band so s-minus retains a visible zero guide.
@@ -344,8 +392,8 @@ def _draw_proton_figure(xs, bands, flavors, q2, campaign_name, interval_label,
     # Treat the two annotations as one centered block. Test full rendered band
     # polygons, rather than sampled points, so a narrow edge cannot be missed.
     from matplotlib.transforms import Bbox
-    annotation_texts = [r'$Q^{2} = %g\,\mathrm{GeV}^{2}$' % q2,
-                        _tex_literal(str(interval_label).split('%', 1)[0].strip() + '% C.I.')]
+    annotation_texts = [_pdf_regular_math(r'Q^{2} = %g\,\mathrm{GeV}^{2}' % q2),
+                        _pdf_regular_math(str(interval_label).split('%', 1)[0].strip() + r'\%\;\mathrm{C.I.}')]
     placements = []
     gap = 4 * fig.dpi / 72
     margin = 6 * fig.dpi / 72
