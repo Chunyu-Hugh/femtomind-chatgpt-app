@@ -2868,7 +2868,10 @@ def list_campaigns(username=""):
                     "not_fitted": not_fitted, "failed": prog.get("failed"),
                     "queue": q, "queued": queued, "reactions": e["input_card"]["reactions"],
                     "datasets": e["input_card"]["datasets"],
-                    "objects": e["input_card"].get("objects", [e["input_card"].get("object", {"type": "pdf"})])})
+                    "objects": e["input_card"].get("objects", [e["input_card"].get("object", {"type": "pdf"})]),
+                    "available_ff_hadrons": ff_plotting.ff_available_hadrons(
+                        [obj.get("type") for obj in e["input_card"].get("objects", [])]
+                        + e["input_card"].get("frozen_objects", []))})
     queue = _slurm_queue(u)
     res = {"status": "ok", "campaigns": out, "count": len(out), "queue": queue}
     if queue is None or any(c["queued"] is None for c in out):
@@ -3354,8 +3357,9 @@ def campaign_pdf_plots(collection_id="", flavors="", q2=10.0, mean_overlay=None,
 
 _FF_PLOTS = _REPLICA_STATE + r"""
 import glob, json, os, base64, uuid
-stage = __STAGE__; flavors = __FLAVORS__; q2 = __Q2__; mean_overlay = __MEAN__
+stage = __STAGE__; flavors = __FLAVORS__; q2 = __Q2__
 configured = __CONFIGURED__; credible_interval = validate_credible_interval(__INTERVAL__)
+options = __DISPLAY__; campaign_name = __CAMPAIGN__
 plot_dir = os.path.join(os.path.dirname(os.path.dirname(stage)), 'analysis', 'ff_plots')
 os.makedirs(plot_dir, exist_ok=True)
 os.environ['MPLCONFIGDIR'] = os.path.join(plot_dir, '.matplotlib')
@@ -3367,17 +3371,23 @@ if not configured:
         if state != 'fitted': excluded[state or 'failed'] += 1
         elif not record.get('msr_path') or not os.path.isfile(record['msr_path']): excluded['missing_msr'] += 1
         else: records.append(record)
-    if not records:
-        print(json.dumps({'status': 'missing_inputs', 'message': 'No fitted FF replicas are available. Choose configured parameters for a starting-value curve.'})); raise SystemExit(0)
+    if len(records) < 2:
+        print(json.dumps({'status': 'missing_inputs', 'message': 'At least two fitted FF replicas are required for a credible interval. Configured parameters are a separate deterministic preview.'})); raise SystemExit(0)
 import matplotlib; matplotlib.use('Agg')
 from matplotlib import pyplot as plt
+from matplotlib.colors import to_rgba
 import numpy as np
+try:
+    to_rgba(options['band_color'])
+    typography = _pdf_typography()
+except (ValueError, RuntimeError) as exc:
+    print(json.dumps({'status':'error','message':str(exc)}));raise SystemExit(0)
 from fitlib.resman import RESMAN
 from tools.config import conf, load_config
 from tools.tools import load
 conf.clear(); load_config(os.path.join(stage, 'input.py'))
 resman = RESMAN(nworkers=1, parallel=False, datasets=False)
-zs = np.linspace(0.01, 0.99, 120)
+zs = np.linspace(options['z_min'], options['z_max'], 181)
 curves = {}
 try:
     for record in ([None] if configured else records):
@@ -3391,94 +3401,91 @@ try:
         evaluated = evaluate_ff_curves(conf, zs, q2, flavors)
         for key, rows in evaluated.items():
             for flavor, values in rows.items(): curves.setdefault(key, {}).setdefault(flavor, []).append(values)
+except (OSError, KeyError, TypeError, ValueError, ArithmeticError) as exc:
+    print(json.dumps({'status':'error','message':'Cannot evaluate FF replica: '+str(exc)+'. No replicas were silently dropped.'}));raise SystemExit(0)
 finally:
     resman.shutdown()
+available = ff_available_hadrons(curves)
+hadrons = options['hadrons'] or available
+if not hadrons or any(h not in available for h in hadrons):
+    print(json.dumps({'status':'error','message':'Select available hadrons: '+', '.join(available),'available_ff_hadrons':available}));raise SystemExit(0)
+try:
+    bands = ff_bands(curves, hadrons, flavors, credible_interval, pointwise_credible_interval, configured)
+    figures = draw_ff_figures(zs, bands, flavors, hadrons, options['modes'], q2, campaign_name,
+                              credible_interval, typography=typography, band_color=options['band_color'],
+                              band_alpha=options['band_alpha'], configured=configured)
+except (ValueError, RuntimeError, OSError) as exc:
+    print(json.dumps({'status':'error','message':'FF plotting failed: '+str(exc)}));raise SystemExit(0)
 nreplicas = len(records) if not configured else 0
-band_drawn = not configured and mean_overlay and nreplicas > 1
-interval_text = '%g' % credible_interval
-label = interval_text + '% pointwise credible interval'
-if configured: note = 'Configured starting parameters, not fitted results; no uncertainty band.'
-elif nreplicas < 2: note = 'Only one fitted replica; no uncertainty band.'
-else: note = 'Replica predictions are combined before the pointwise equal-tailed interval is computed.'
-if credible_interval == 100 and band_drawn: note += ' 100% is the full available replica envelope, not the entire posterior.'
-unavailable = [key for key in FF_PLOT_OBJECTS if key not in curves]
-if unavailable:
-    note += ' Unavailable FF plots (required component objects absent): ' + ', '.join(unavailable) + '.'
-metadata = {'available_objects': list(curves), 'unavailable_objects': unavailable,
-            'n_replicas': nreplicas, 'configured': configured, 'band_drawn': band_drawn,
-            'credible_interval': credible_interval, 'interval_label': label if band_drawn else 'no uncertainty band',
+band_drawn = not configured
+label = '%g%% C.I.' % credible_interval if band_drawn else 'Configured values; no uncertainty band'
+note = ('Configured starting parameters, not fitted results; no uncertainty band.' if configured else
+        'Replica combinations precede the equal-tailed pointwise intervals; no individual replica curves.')
+if credible_interval == 100 and band_drawn: note += ' 100% is the available replica envelope, not the entire posterior.'
+metadata = {'available_objects': list(curves), 'unavailable_objects': [key for key in FF_PLOT_OBJECTS if key not in curves],
+            'available_ff_hadrons':available, 'hadrons':hadrons, 'modes':options['modes'],
+            'n_replicas': nreplicas, 'configured': configured, 'band_drawn': band_drawn, 'mean_overlay':False,
+            'credible_interval': credible_interval, 'interval_label': label,
             'quantity': 'zD(z,Q2)', 'charge_convention': 'native positive charged hadron; no extra factor of two',
-            'excluded_replicas': excluded, 'note': note}
-plots = []; request_id = uuid.uuid4().hex
-for key in FF_PLOT_OBJECTS:
-    if key not in curves: continue
-    fig, ax = plt.subplots(figsize=(7.0, 4.8))
-    for index, flavor in enumerate(flavors):
-        values = np.asarray(curves[key][flavor], dtype=float)
-        color = 'C%d' % (index % 10)
-        if band_drawn:
-            low, high = pointwise_credible_interval(values, credible_interval)
-            ax.fill_between(zs, low, high, color=color, alpha=0.18, lw=0)
-        if mean_overlay or configured:
-            ax.plot(zs, values.mean(axis=0), color=color, lw=1.7, label=flavor)
-        else:
-            for replica_index, row in enumerate(values):
-                ax.plot(zs, row, color=color, lw=0.8, alpha=0.5, label=flavor if replica_index == 0 else None)
-    ax.axhline(0, color='#64748b', lw=0.8, ls='--')
-    ax.set_xlabel('$z$'); ax.set_ylabel('$z D(z,Q^2)$')
-    ax.set_title('%s, $Q^2=%g$ GeV$^2$' % (FF_PLOT_LABELS[key], q2))
-    ax.grid(alpha=0.25); ax.legend(frameon=False, ncol=3)
-    path = os.path.join(plot_dir, '%s_q2_%g_%s_%s.png' % (key, q2, 'configured' if configured else 'replicas', request_id))
-    fig.tight_layout(); fig.savefig(path, dpi=110); plt.close(fig)
-    plots.append({'object': key, 'label': FF_PLOT_LABELS[key], 'flavors': flavors, 'path': path, **metadata,
-                  'png_b64': base64.b64encode(open(path, 'rb').read()).decode()})
-print(json.dumps({'status': 'success', **metadata, 'plots': plots}))
+            'excluded_replicas': excluded, 'note': note, 'z_min':options['z_min'],'z_max':options['z_max'],
+            'dpi':FF_PREVIEW_DPI}
+plots = []; request_id = uuid.uuid4().hex; limitations=[]
+for fig, info in figures:
+    name = info['mode'] + ('_'+info['hadrons'][0] if info['mode']=='individual' else '')
+    path = os.path.join(plot_dir, 'ff_%s_q2_%g_%s.png' % (name,q2,request_id))
+    fig.savefig(path, dpi=FF_PREVIEW_DPI); plt.close(fig)
+    limitations.extend(item for item in info['log_limitations'] if item['nonpositive_lower'] or item['nonpositive_upper'])
+    plots.append({'object':'ff', 'label':name.replace('_',' '), 'flavors':flavors, 'path':path, **metadata, **info,
+                  'png_b64':base64.b64encode(open(path,'rb').read()).decode()})
+if limitations:
+    metadata['note'] += ' Log-axis limitation: intervals crossing zero extend below the display frame; intervals entirely nonpositive are not drawable. Numerical values are unchanged; see log_limitations.'
+metadata['log_limitations']=limitations
+print(json.dumps({'status':'success', **metadata, 'plots':plots}))
 """
 
 
-def campaign_ff_plots(collection_id="", flavors="", q2=10.0, mean_overlay=True,
-                      username="", credible_interval=95, configured=False):
-    """Plot FitPack FF objects, combining charged species within each replica."""
+def campaign_ff_plots(collection_id="", flavors="", q2=100.0, mean_overlay=False,
+                      username="", credible_interval=95, configured=False, modes="combined",
+                      hadrons="", z_min=0.02, z_max=0.9, band_color="red", band_alpha=0.9):
+    """Native fitted FF bands, with independently selectable combined/individual art."""
     u, error = _need_user(username)
     if error:
         return error
     entry = _collection(u, collection_id)
     if not entry:
-        return {"status": "error", "message": f"No campaign {collection_id!r}."}
-    objects = [obj.get("type") for obj in entry["input_card"].get("objects", [])]
+        return {"status":"error", "message":f"No campaign {collection_id!r}."}
+    objects = [obj.get("type") for obj in entry['input_card'].get('objects',[])]
     if not set(objects).intersection(ff_registry.FF_OBJECTS):
-        return {"status": "error", "message": "This campaign has no fitted FF parameter group."}
-    fl = list(dict.fromkeys(part.strip() for part in (flavors or ",".join(ff_plotting.FF_FLAVORS)).split(",") if part.strip()))
+        return {"status":"error", "message":"This campaign has no fitted FF parameter group."}
+    fl = list(dict.fromkeys(part.strip() for part in (flavors or 'up,dp,sp,c,b,g').split(',') if part.strip()))
     try:
         interval = object_registry.validate_credible_interval(credible_interval)
         q2 = float(q2)
         if not math.isfinite(q2) or q2 <= 0:
-            raise ValueError("Q² must be positive and finite.")
+            raise ValueError('Q² must be positive and finite')
         if not fl or any(flavor not in ff_plotting.FF_FLAVORS for flavor in fl):
-            raise ValueError("FF flavors: " + ", ".join(ff_plotting.FF_FLAVORS))
+            raise ValueError('FF flavors: '+', '.join(ff_plotting.FF_FLAVORS))
         if type(configured) is not bool:
-            raise ValueError("configured must be true or false")
-    except (TypeError, ValueError) as exc:
-        return {"status": "error", "message": str(exc)}
-    code = _object_registry_source() + "\n" + inspect.getsource(ff_plotting) + _fill(
-        _FF_PLOTS, STAGE=_stage_root(u, entry), FLAVORS=fl, Q2=q2,
-        MEAN=bool(mean_overlay), INTERVAL=interval, CONFIGURED=configured)
-    result = _run_ifarm_py(u, code, apptainer=True, timeout=600, cap=20000000,
-                           env={"MPLCONFIGDIR": f"{_workspace(u)}/{CAMPAIGNS_DIR}/.matplotlib"})
+            raise ValueError('configured must be true or false')
+        display = ff_plotting.validate_ff_display(z_min,z_max,modes,hadrons,band_color,band_alpha)
+    except (ValueError,TypeError,OverflowError) as exc:
+        return {'status':'error','message':str(exc)}
+    code = _object_registry_source()+'\n'+inspect.getsource(pdf_plotting)+'\n'+inspect.getsource(ff_plotting)+_fill(
+        _FF_PLOTS, STAGE=_stage_root(u,entry),FLAVORS=fl,Q2=q2,INTERVAL=interval,CONFIGURED=configured,
+        DISPLAY=display,CAMPAIGN=entry.get('campaign_name') or entry['input_card'].get('name') or collection_id)
+    result = _run_ifarm_py(u,code,apptainer=True,timeout=600,cap=20000000,
+                           env={'MPLCONFIGDIR':f'{_workspace(u)}/{CAMPAIGNS_DIR}/.matplotlib'})
     try:
-        data = json.loads(result["out"].strip().splitlines()[-1])
-    except (ValueError, IndexError, KeyError):
-        return {"status": "error", "message": "FF plotting failed",
-                "detail": (result.get("err") or result.get("out") or "")[-600:]}
-    if data.get("status") != "success":
-        return data
-    plots = [{**{key: value for key, value in plot.items() if key != "png_b64"},
-              "data_url": "data:image/png;base64," + plot["png_b64"]} for plot in data["plots"]]
-    return {"status": "ok", "collection_id": collection_id, "q2": q2, "note": data["note"],
-            "available_objects": data["available_objects"], "unavailable_objects": data["unavailable_objects"],
-            "plots": [{key: value for key, value in plot.items() if key != "data_url"} for plot in plots],
-            "_images": [{"data": plot["png_b64"], "mimeType": "image/png"} for plot in data["plots"]],
-            "_panel_plots": plots}
+        data = json.loads(result['out'].strip().splitlines()[-1])
+    except (ValueError,IndexError,KeyError):
+        return {'status':'error','message':'FF plotting failed','detail':(result.get('err') or result.get('out') or '')[-600:]}
+    if data.get('status')!='success': return data
+    plots = [{**{k:v for k,v in row.items() if k!='png_b64'},
+              'data_url':'data:image/png;base64,'+row['png_b64']} for row in data['plots']]
+    return {**{k:v for k,v in data.items() if k not in ('status','plots')},'status':'ok',
+            'collection_id':collection_id,'q2':q2,
+            'plots':[{k:v for k,v in row.items() if k!='data_url'} for row in plots],
+            '_images':[{'data':row['png_b64'],'mimeType':'image/png'} for row in data['plots']], '_panel_plots':plots}
 
 
 _THEORY_PLOTTING = r'''
@@ -9235,19 +9242,26 @@ TOOLS = {
                                            x_min=a.get("x_min", 0.01), x_max=a.get("x_max", 1),
                                            band_color=a.get("band_color", "red"), band_alpha=a.get("band_alpha", 0.95))},
     "campaign_ff_plots": {
-        "desc": "Plot charged pion, kaon, residual and unidentified hadron zD(z,Q2), using native FitPack FFs. "
-                "Combine species inside each replica before equal-tailed pointwise uncertainty bands. "
-                "Flavors g,u,d,ub,db,s,sb,c,b; cb/bb are constrained partners. configured=true uses starting parameters without a band.",
-        "schema": {"type": "object", "properties": {
-            "collection_id": {"type": "string"}, "flavors": {"type": "string"},
-            "q2": {"type": "number", "exclusiveMinimum": 0},
-            "credible_interval": {"type": "number", "exclusiveMinimum": 0, "maximum": 100},
-            "mean_overlay": {"type": "boolean"}, "configured": {"type": "boolean"}},
-            "required": ["collection_id"]},
-        "fn": lambda a: campaign_ff_plots(a.get("collection_id", ""), a.get("flavors", ""),
-                                          a.get("q2", 10.0), a.get("mean_overlay", True),
-                                          credible_interval=a.get("credible_interval", 95),
-                                          configured=a.get("configured", False))},
+        "desc": "Native positive-hadron zD bands in three columns. Modes combined/individual may both be selected. "
+                "Hadrons pion,kaon,rhadron(residual),hadron(total) require actual components. "
+                "Flavors g,u,d,s,ub,db,sb,c,b,up,dp,sp; combinations are formed per replica. "
+                "Defaults Q2=100, z=.02 to .9, 95% pointwise equal-tailed intervals. No replica lines. "
+                "configured=true is an explicit deterministic starting-value preview without a band.",
+        "schema": {"type":"object", "properties": {
+            "collection_id":{"type":"string"}, "flavors":{"type":"string"},
+            "q2":{"type":"number","exclusiveMinimum":0,"default":100},
+            "credible_interval":{"type":"number","exclusiveMinimum":0,"maximum":100,"default":95},
+            "configured":{"type":"boolean"}, "mean_overlay":{"type":"boolean","description":"Legacy argument; fitted FF outputs are bands only."},
+            "modes":{"type":"string","default":"combined"}, "hadrons":{"type":"string"},
+            "z_min":{"type":"number","exclusiveMinimum":0,"default":.02},
+            "z_max":{"type":"number","exclusiveMaximum":1,"default":.9},
+            "band_color":{"type":"string","default":"red"},
+            "band_alpha":{"type":"number","minimum":0,"maximum":1,"default":.9}},"required":["collection_id"]},
+        "fn": lambda a: campaign_ff_plots(a.get("collection_id",""),a.get("flavors",""),a.get("q2",100),
+                                          a.get("mean_overlay",False),credible_interval=a.get("credible_interval",95),
+                                          configured=a.get("configured",False),modes=a.get("modes","combined"),
+                                          hadrons=a.get("hadrons",""),z_min=a.get("z_min",.02),z_max=a.get("z_max",.9),
+                                          band_color=a.get("band_color","red"),band_alpha=a.get("band_alpha",.9))},
     "analyze_by_experiment": {
         "desc": "Analysis by experiment: chi2/N of the best replica grouped by experiment (SLAC, "
                 "BCDMS, NMC, E866 ...) and thesis-style data vs mean fitted-replica theory plots. "

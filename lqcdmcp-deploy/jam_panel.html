@@ -106,7 +106,7 @@
   .plot-controls{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px;}
   .pc{display:flex;flex-direction:column;gap:5px;} .pc .label{margin:0;font-size:11.5px;}
   .flavs{display:flex;gap:6px;flex-wrap:wrap;}
-  .fl{font-family:var(--mono);font-size:12px;padding:5px 10px;border:1px solid var(--line);border-radius:7px;cursor:pointer;background:var(--chip);}
+  .fl{font-family:var(--mono);font-size:12px;padding:5px 10px;border:1px solid var(--line);border-radius:7px;cursor:pointer;background:var(--chip);color:var(--fg);}
   .fl.on{background:var(--chip-on);border-color:var(--green);color:var(--green);}
   .empty{color:var(--muted);font-size:13px;text-align:center;padding:28px 12px;}
   .spin{color:var(--muted);font-size:13px;padding:14px 0;}
@@ -436,8 +436,23 @@
           <div class="pc"><span class="label">Flavors</span><div class="flavs" id="caFlavs"></div></div>
           <div class="pc" id="caFfSourceBox" style="display:none"><span class="label">FF parameters</span><select id="caFfSource"><option value="replicas">Fitted replicas</option><option value="configured">Configured starting values</option></select></div>
           <div class="pc"><span class="label">Q² (GeV²)</span><input type="number" step="any" id="caQ2" value="10" style="width:110px"></div>
-          <div class="pc"><label class="label" for="caInterval">Credible interval (%)</label><input type="number" step="any" max="100" id="caInterval" value="95" required style="width:110px"></div>
-          <div class="pc"><label class="inline"><input type="checkbox" id="caMean" checked> <span id="caMeanLabel">Mean and credible interval</span></label></div>
+          <div class="pc" id="caIntervalBox"><label class="label" for="caInterval">Credible interval (%)</label><input type="number" step="any" max="100" id="caInterval" value="95" required style="width:110px"></div>
+          <div class="pc" id="caMeanBox"><label class="inline"><input type="checkbox" id="caMean" checked> <span id="caMeanLabel">Mean and credible interval</span></label></div>
+          <div class="pc" id="caFfDisplay" style="display:none">
+            <div class="label">FF figures</div>
+            <label class="inline"><input type="checkbox" id="caFfCombined" checked> Combined FF plot</label>
+            <label class="inline"><input type="checkbox" id="caFfIndividual"> Individual FF plots</label>
+            <div class="hint">Combined overlays the selected hadrons; Individual creates one figure per hadron. Both may be selected.</div>
+            <div class="label" style="margin-top:8px">Available hadrons</div>
+            <div class="flavs" id="caFfHadrons"></div>
+            <div class="hint" id="caFfAvailability"></div>
+            <label>z min <input type="number" step="any" id="caZMin" value="0.02" style="width:100px"></label>
+            <label>z max <input type="number" step="any" id="caZMax" value="0.9" style="width:100px"></label>
+            <label>Individual band color <input type="text" id="caFfBandColor" value="red" placeholder="red or #d62728" style="width:120px"></label>
+            <label>Band opacity <input type="number" min="0" max="1" step="0.05" id="caFfBandAlpha" value="0.9" style="width:80px"></label>
+            <div class="hint">Three columns, linear z-axis, logarithmic FF-axis. Combined colors: pion red, kaon blue, residual orange, total green.</div>
+            <div class="hint" id="caFfFlavorOrder"></div>
+          </div>
           <div class="pc" id="caProtonDisplay" style="display:none">
             <div class="label">Proton PDF display</div>
             <label>x min <input type="number" step="any" id="caXMin" value="0.01" style="width:100px"></label>
@@ -448,7 +463,8 @@
           </div>
           <button class="btn primary" id="caPdfGo">Draw</button>
         </div>
-        <div class="note">Equal-tailed pointwise intervals across fitted replicas, not simultaneous bands over x or z. Choose a finite percentage greater than 0 and at most 100. At 100%, the band is the full pointwise envelope of available fitted replicas, not a guarantee about the entire underlying posterior distribution. At least two valid fitted replicas are needed for a band.</div>
+        <div class="note" id="caIntervalNote">Equal-tailed pointwise intervals across fitted replicas, not simultaneous bands over x or z. Choose a finite percentage greater than 0 and at most 100. At 100%, the band is the full pointwise envelope of available fitted replicas, not a guarantee about the entire underlying posterior distribution. At least two valid fitted replicas are needed for a band.</div>
+        <div class="note" id="caConfiguredNote" style="display:none">Configured starting values show one deterministic FF prediction, without a credible interval. Select Fitted replicas for credible interval bands.</div>
       </div>
       <div id="caExpBox" class="subbox" style="display:none">
         <div class="plot-controls">
@@ -1697,7 +1713,10 @@
       + (failed ? '<span>Failed <b class="wn">'+failed+'</b></span>' : '')
       + '<span>Job ID <b>'+esc((c.job_ids || []).join(", "))+'</b></span></div>';
   }
-  $("caSel").onchange = ()=>{ pickAnalysis($("caSel").value); persist(); paintCaHead(); };
+  $("caSel").onchange = ()=>{
+    pickAnalysis($("caSel").value); persist(); paintCaHead();
+    if ($("caPdfBox").style.display !== "none") refreshPlotObjects();
+  };
   function caBusy(t){ theoryPlotSeq++; theoryPlotVisible = false; $("caOut").innerHTML = '<div class="spin">'+esc(t)+'</div>'; }
   function caWarn(t, cause){ $("caOut").innerHTML = '<div class="note warn">'+esc(t)+causePre(cause)+'</div>'; }
   function showBox(id){
@@ -1773,11 +1792,11 @@
   function imagesHtml(plots, cap){
     return '<div class="imgs">'+(plots || []).map(p=>'<figure><img alt="'+esc(cap(p))+'" src="'+esc(p.data_url)+'"><figcaption>'+esc(cap(p))+'</figcaption></figure>').join("")+'</div>';
   }
-  const FF_FLAVORS = ["g","u","d","ub","db","s","sb","c","b"];
+  const FF_FLAVORS = ["g","u","d","s","ub","db","sb","c","b","up","dp","sp"];
   const PROTON_FLAVORS = [...FLAVORS,"uv","dv","d/u","db+ub","db-ub","sp","sm","Rs","up","dp"];
   // Native MathML keeps these display labels independent of request IDs.
   const PROTON_FLAVOR_MATH = {
-    u:'<mi>u</mi>', d:'<mi>d</mi>', g:'<mi>g</mi>', s:'<mi>s</mi>',
+    u:'<mi>u</mi>', d:'<mi>d</mi>', g:'<mi>g</mi>', s:'<mi>s</mi>', c:'<mi>c</mi>', b:'<mi>b</mi>',
     ub:'<mover accent="true"><mi>u</mi><mo>¯</mo></mover>',
     db:'<mover accent="true"><mi>d</mi><mo>¯</mo></mover>',
     sb:'<mover accent="true"><mi>s</mi><mo>¯</mo></mover>',
@@ -1792,38 +1811,105 @@
     +PROTON_FLAVOR_MATH[f]+'</math>';
   const ffPlotSelected = ()=>$("caObject").value === "ff";
   const protonPlotSelected = ()=>$("caObject").value === "pdf";
+  const FF_HADRONS = ["pion","kaon","rhadron","hadron"];
+  const FF_HADRON_MATH = {
+    pion:'<msup><mi>π</mi><mo>+</mo></msup>', kaon:'<msup><mi>K</mi><mo>+</mo></msup>',
+    rhadron:'<mi>δ</mi><msup><mi>h</mi><mo>+</mo></msup>', hadron:'<msup><mi>h</mi><mo>+</mo></msup>',
+  };
+  const FF_HADRON_NAMES = {pion:"Pion",kaon:"Kaon",rhadron:"Residual hadrons",hadron:"Total unidentified hadrons"};
+  const ffHadronsOn = new Set();
+  let ffHadronCampaign = "";
+  function availableFfHadrons(campaign){
+    if (Array.isArray(campaign?.available_ff_hadrons)) return FF_HADRONS.filter(h=>campaign.available_ff_hadrons.includes(h));
+    // Older gateways expose selected objects only. Frozen objects count only
+    // when the campaign explicitly supplies them; reaction names are not evidence.
+    const objects = new Set([...(campaign?.objects || []), ...(campaign?.frozen_objects || [])]
+      .map(o=>typeof o === "string" ? o : o.type));
+    return FF_HADRONS.filter(h=>h === "pion" ? objects.has("ffpion") : h === "kaon" ? objects.has("ffkaon")
+      : ["ffpion","ffkaon","ffhadron"].every(k=>objects.has(k)));
+  }
+  function renderFfHadrons(){
+    const campaign = campaignsCache?.find(c=>c.collection_id === analysisCampaign), available = availableFfHadrons(campaign);
+    if (ffHadronCampaign !== analysisCampaign){
+      ffHadronsOn.clear(); available.forEach(h=>ffHadronsOn.add(h)); ffHadronCampaign = analysisCampaign;
+    }
+    Array.from(ffHadronsOn).filter(h=>!available.includes(h)).forEach(h=>ffHadronsOn.delete(h));
+    $("caFfHadrons").innerHTML = available.map(h=>'<label class="inline"><input type="checkbox" data-h="'+h+'"'
+      +(ffHadronsOn.has(h) ? ' checked' : '')+'> <math xmlns="http://www.w3.org/1998/Math/MathML" aria-label="'+FF_HADRON_NAMES[h]+'">'
+      +FF_HADRON_MATH[h]+'</math><span>'+FF_HADRON_NAMES[h]+'</span></label>').join("");
+    $("caFfHadrons").querySelectorAll("input").forEach(el=>el.onchange = ()=>{
+      if (el.checked) ffHadronsOn.add(el.dataset.h); else ffHadronsOn.delete(el.dataset.h);
+    });
+    $("caFfAvailability").textContent = available.length
+      ? "Choices follow this campaign’s FF objects. Residual and total hadrons require pion, kaon, and total-hadron components."
+      : "No available FF hadron categories are recorded for this campaign.";
+  }
+  function syncFfSource(){
+    const configured = ffPlotSelected() && $("caFfSource").value === "configured";
+    $("caIntervalBox").style.display = configured ? "none" : "";
+    $("caInterval").disabled = configured;
+    $("caIntervalNote").style.display = configured ? "none" : "";
+    $("caConfiguredNote").style.display = configured ? "" : "none";
+  }
+  $("caFfSource").onchange = syncFfSource;
   function renderFlavs(){
     const flavors = ffPlotSelected() ? FF_FLAVORS : $("caObject").value === "pdf-pion" ? ["valence","sea",...FLAVORS] : PROTON_FLAVORS;
     $("caFfSourceBox").style.display = ffPlotSelected() ? "" : "none";
+    $("caFfDisplay").style.display = ffPlotSelected() ? "" : "none";
     $("caProtonDisplay").style.display = protonPlotSelected() ? "" : "none";
+    $("caMeanBox").style.display = ffPlotSelected() ? "none" : "";
+    $("caMean").disabled = ffPlotSelected();
     $("caMeanLabel").textContent = protonPlotSelected() ? "Show mean line (optional)" : "Mean and credible interval";
-    $("caFlavorOrder").innerHTML = "Subplot order: " + Array.from(pdfOn).map(f=>protonPlotSelected() ? protonFlavorLabel(f) : esc(f)).join(", ") + ". Deselect and reselect flavors to change their order.";
-    $("caFlavs").innerHTML = flavors.map(f=>'<span class="fl'+(pdfOn.has(f) ? " on" : "")+'" data-f="'+f+'">'+(protonPlotSelected() ? protonFlavorLabel(f) : esc(f))+'</span>').join("");
+    const mathLabels = protonPlotSelected() || ffPlotSelected();
+    const order = "Subplot order: " + Array.from(pdfOn).map(f=>mathLabels ? protonFlavorLabel(f) : esc(f)).join(", ") + ". Deselect and reselect flavors to change their order.";
+    $("caFlavorOrder").innerHTML = order; $("caFfFlavorOrder").innerHTML = order;
+    $("caFlavs").innerHTML = flavors.map(f=>'<button type="button" class="fl'+(pdfOn.has(f) ? " on" : "")+'" data-f="'+f+'" aria-pressed="'+pdfOn.has(f)+'">'+(mathLabels ? protonFlavorLabel(f) : esc(f))+'</button>').join("");
     $("caFlavs").querySelectorAll(".fl").forEach(el=>el.onclick = ()=>{ const f = el.dataset.f; if (pdfOn.has(f)) pdfOn.delete(f); else pdfOn.add(f); renderFlavs(); });
+    if (ffPlotSelected()) renderFfHadrons();
+    syncFfSource();
   }
   function resetFlavors(){
     pdfOn.clear();
-    $("caMean").checked = !protonPlotSelected();
-    (ffPlotSelected() ? ["u","d","g","s","c","b"] : $("caObject").value === "pdf-pion" ? ["valence","sea","g"] : ["u","d","g","s"]).forEach(f=>pdfOn.add(f));
+    $("caMean").checked = !protonPlotSelected() && !ffPlotSelected();
+    $("caQ2").value = ffPlotSelected() ? "100" : "10";
+    (ffPlotSelected() ? ["up","dp","sp","c","b","g"] : $("caObject").value === "pdf-pion" ? ["valence","sea","g"] : ["u","d","g","s"]).forEach(f=>pdfOn.add(f));
     renderFlavs();
   }
   $("caObject").onchange = resetFlavors;
-  $("caPdf").onclick = ()=>{
+  function refreshPlotObjects(){
     const campaign = campaignsCache?.find(c=>c.collection_id === analysisCampaign);
     const objects = campaign?.objects || [{type:"pdf",label:"Unpolarized PDF"}];
     const pdfObjects = objects.filter(o=>!["ffpion","ffkaon","ffhadron"].includes(o.type));
     $("caObject").innerHTML = pdfObjects.map(o=>'<option value="'+esc(o.type)+'">'+esc(o.label || o.type)+'</option>').join("")
-      + (objects.some(o=>["ffpion","ffkaon","ffhadron"].includes(o.type)) ? '<option value="ff">Fragmentation functions</option>' : '');
-    resetFlavors(); showBox("caPdfBox");
+      + (availableFfHadrons(campaign).length ? '<option value="ff">Fragmentation functions</option>' : '');
+    resetFlavors();
+  }
+  $("caPdf").onclick = ()=>{
+    refreshPlotObjects(); showBox("caPdfBox");
   };
   let pdfPlotSeq = 0;
   $("caPdfGo").onclick = async ()=>{
     if (!analysisCampaign || !pdfOn.size) return;
-    const seq = ++pdfPlotSeq, credibleInterval = Number($("caInterval").value);
-    if (!$("caInterval").value.trim() || !Number.isFinite(credibleInterval) || credibleInterval <= 0 || credibleInterval > 100){
+    const seq = ++pdfPlotSeq, isFf = ffPlotSelected(), configured = isFf && $("caFfSource").value === "configured";
+    const credibleInterval = configured ? 95 : Number($("caInterval").value);
+    if (!configured && (!$("caInterval").value.trim() || !Number.isFinite(credibleInterval) || credibleInterval <= 0 || credibleInterval > 100)){
       caWarn("Credible interval (%) must be greater than 0 and at most 100."); return;
     }
     let display = {};
+    if (isFf){
+      const modes = [$("caFfCombined").checked ? "combined" : "", $("caFfIndividual").checked ? "individual" : ""].filter(Boolean);
+      const available = availableFfHadrons(campaignsCache?.find(c=>c.collection_id === analysisCampaign));
+      const hadrons = Array.from(ffHadronsOn).filter(h=>available.includes(h));
+      const zMin = Number($("caZMin").value), zMax = Number($("caZMax").value), alpha = Number($("caFfBandAlpha").value);
+      const q2 = Number($("caQ2").value), color = $("caFfBandColor").value.trim();
+      if (!modes.length || !hadrons.length){ caWarn("Select at least one FF plot mode and one available hadron category."); return; }
+      if (!["caZMin","caZMax","caFfBandAlpha","caQ2"].every(id=>$(id).value.trim()) ||
+          ![zMin,zMax,alpha,q2].every(Number.isFinite) || !(0 < zMin && zMin < zMax && zMax < 1) ||
+          alpha < 0 || alpha > 1 || q2 <= 0 || !color){
+        caWarn("Require 0 < z min < z max < 1, opacity from 0 to 1, a band color, and positive Q²."); return;
+      }
+      display = {modes:modes.join(","), hadrons:hadrons.join(","), z_min:zMin, z_max:zMax, band_color:color, band_alpha:alpha};
+    }
     if (protonPlotSelected()){
       const xMin = Number($("caXMin").value), xMax = Number($("caXMax").value), alpha = Number($("caBandAlpha").value);
       const q2 = Number($("caQ2").value), color = $("caBandColor").value.trim();
@@ -1834,18 +1920,21 @@
       }
       display = {x_min:xMin, x_max:xMax, band_color:color, band_alpha:alpha};
     }
-    caBusy(ffPlotSelected() ? "Evaluating fragmentation functions at the selected Q²…" : "Evaluating every fitted replica's PDFs on the cluster… this takes a minute.");
+    caBusy(isFf ? "Evaluating fragmentation functions at the selected Q²…" : "Evaluating every fitted replica's PDFs on the cluster… this takes a minute.");
     const cid = analysisCampaign;
-    try{ const r = await call(ffPlotSelected() ? "campaign_ff_plots" : "campaign_pdf_plots", {collection_id: cid, flavors: Array.from(pdfOn).join(","),
+    try{ const r = await call(isFf ? "campaign_ff_plots" : "campaign_pdf_plots", {collection_id: cid, flavors: Array.from(pdfOn).join(","),
                                                      ...display,
-                                                     ...(ffPlotSelected() ? {configured: $("caFfSource").value === "configured"} : {}),
+                                                     ...(isFf ? {configured} : {}),
                                                      object_key: $("caObject").value,
                                                      credible_interval: credibleInterval,
-                                                     q2: Number($("caQ2").value) || 10, mean_overlay: $("caMean").checked});
+                                                     q2: Number($("caQ2").value) || 10, mean_overlay: isFf ? false : $("caMean").checked});
       if (cid !== analysisCampaign || seq !== pdfPlotSeq) return;
       if (!r || r.status !== "ok"){ caWarn(msgOf(r, "No plots."), r && r.detail); return; }
       $("caOut").innerHTML = (r.note ? '<div class="note warn">'+esc(r.note)+'</div>' : "")
-        + imagesHtml(r._panel_plots, p=>(p.label || p.object || "pdf")+" "+(p.flavor || (p.flavors || []).join(", "))+" · "+p.n_replicas+" replicas · Q² = "+r.q2+" GeV² · "+p.interval_label+" · "+p.path);
+        + imagesHtml(r._panel_plots, p=>(p.label || p.object || "pdf")+" "+(p.flavor || (p.flavors || []).join(", "))
+          +(p.mode ? " · "+(p.mode === "combined" ? "Combined" : "Individual") : "")
+          +" · "+(configured ? "Configured starting values" : p.n_replicas+" replicas")+" · Q² = "+r.q2+" GeV²"
+          +(!configured && p.interval_label ? " · "+p.interval_label : "")+" · "+p.path);
     } catch(e){ if (cid === analysisCampaign && seq === pdfPlotSeq) caWarn("Plotting failed: "+(e && e.message || e)); }
   };
   $("caExp").onclick = ()=>showBox("caExpBox");
