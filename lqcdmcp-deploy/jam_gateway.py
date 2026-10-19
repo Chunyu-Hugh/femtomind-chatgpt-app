@@ -58,7 +58,7 @@ import urllib.parse
 import urllib.request
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from jamai import object_registry, ff_registry, ff_plotting
+from jamai import object_registry, ff_registry, ff_plotting, pdf_plotting
 from jamai.dataset_catalog import (CONFIGURATION_DATASETS, CONFIGURATION_METADATA,
                                   CONFIGURATION_ONLY_REACTIONS, configuration_dataset_block)
 from jamai.object_registry import OBJECTS, SELECTABLE_OBJECTS
@@ -3196,9 +3196,97 @@ print(json.dumps({'status': 'success', **metadata, 'plots': out}))
 '''
 
 
-def campaign_pdf_plots(collection_id="", flavors="", q2=10.0, mean_overlay=True, username="", object_key="",
-                       credible_interval=95):
-    """Draw fitted replicas, optionally overlaying the mean and a pointwise credible interval."""
+_PROTON_PDF_PLOTS = _REPLICA_STATE + r'''
+import glob, json, os, base64, uuid
+import numpy as np
+stage = __STAGE__; flavors = __FLAVORS__; q2 = __Q2__
+options = __DISPLAY__; mean_overlay = __MEAN__; interval = __INTERVAL__
+campaign_name = __CAMPAIGN__
+plot_dir = os.path.join(os.path.dirname(os.path.dirname(stage)), 'analysis', 'pdf_plots')
+os.makedirs(plot_dir, exist_ok=True)
+os.environ['MPLCONFIGDIR'] = os.path.join(plot_dir, '.matplotlib')
+import matplotlib; matplotlib.use('Agg')
+from matplotlib import pyplot as plt
+from matplotlib.colors import to_rgba
+try:
+    to_rgba(options['band_color'])
+except ValueError:
+    print(json.dumps({'status': 'error', 'message': 'Unknown band color; use a Matplotlib named color or hexadecimal color.'}))
+    raise SystemExit(0)
+records = []
+excluded = {'not_fitted': 0, 'failed': 0, 'missing_msr': 0}
+for p in sorted(glob.glob(os.path.join(stage, 'current', 'replica_*', 'fit_summary.json'))):
+    state, s = replica_state(p)
+    if state != 'fitted':
+        excluded[state or 'failed'] += 1
+    elif not s.get('msr_path') or not os.path.isfile(s['msr_path']):
+        excluded['missing_msr'] += 1
+    else: records.append(s)
+metadata = {'credible_interval': interval, 'percentiles': [(100-interval)/2, 100-(100-interval)/2],
+            'interval_kind': 'pointwise_equal_tailed', 'central_estimator': 'mean',
+            'mean_overlay': mean_overlay, 'band_drawn': False,
+            'n_replicas': len(records), 'excluded_replicas': excluded, **options}
+if len(records) < 2:
+    print(json.dumps({'status': 'missing_inputs', **metadata,
+                      'message': 'At least two valid fitted replicas with .msr files are required for a proton PDF credible interval.'}))
+    raise SystemExit(0)
+from fitlib.resman import RESMAN
+from tools.config import conf, load_config
+from tools.tools import load
+conf.clear(); load_config(os.path.join(stage, 'input.py'))
+resman = RESMAN(nworkers=1, parallel=False, datasets=False)
+pdf = conf['pdf']
+xs = proton_x_grid(options['x_min'], options['x_max'])
+curves = {f: [] for f in flavors}
+try:
+    for s in records:
+        try:
+            m = load(s['msr_path'])
+            order = m['order'][0]; params = m['params'][0]
+            if order is None or params is None or not np.isfinite(np.asarray(params, dtype=float)).all():
+                raise ValueError('Missing or nonfinite fitted parameters/order.')
+            resman.parman.order = order
+            resman.parman.set_new_params(params, initial=True)
+            replica = evaluate_proton_curves(pdf, xs, q2, flavors)
+            for f in flavors: curves[f].append(replica[f])
+        except (OSError, KeyError, TypeError, ValueError, ArithmeticError) as exc:
+            print(json.dumps({'status': 'error', **metadata,
+                              'message': 'Cannot plot fitted replica %s (%s): %s No plots were generated.'
+                                         % (s.get('replica', '?'), s['msr_path'], exc)}))
+            raise SystemExit(0)
+finally:
+    resman.shutdown()
+try:
+    bands = proton_bands(curves, interval, pointwise_credible_interval)
+except ValueError as exc:
+    print(json.dumps({'status': 'error', **metadata, 'message': str(exc)})); raise SystemExit(0)
+interval_label = '%g%% pointwise credible interval' % interval
+notes = []
+if interval == 100:
+    interval_label += ' (full replica envelope)'
+    notes.append('100% covers all available fitted replicas at each x, not the entire underlying posterior distribution.')
+if any(excluded.values()): notes.append('Excluded replica summaries: ' + str(excluded))
+omitted = {f: [float(x) for x in xs[~bands[f]['valid']]] for f in flavors if not bands[f]['valid'].all()}
+if omitted:
+    notes.append('Numerically unresolved ratio points omitted for the entire ensemble (no replicas dropped): '
+                 + ', '.join('%s: %d x points' % (f, len(points)) for f, points in omitted.items()))
+if options['x_max'] == 1:
+    notes.append('x=1 is the display boundary; Mellin inversion and ratios are evaluated only at x<1.')
+fig, layout = draw_proton_figure(xs, bands, flavors, q2, campaign_name, interval_label,
+                                 mean_overlay=mean_overlay, **options)
+path = os.path.join(plot_dir, 'pdf_combined_q2_%g_%s.png' % (q2, uuid.uuid4().hex))
+fig.savefig(path, dpi=150); plt.close(fig)
+metadata.update(band_drawn=True, note=' '.join(notes), omitted_ratio_points=omitted)
+out = {'object': 'pdf', 'flavors': flavors, 'path': path, **metadata,
+       'interval_label': interval_label, 'layout': layout,
+       'png_b64': base64.b64encode(open(path, 'rb').read()).decode()}
+print(json.dumps({'status': 'success', **metadata, 'plots': [out]}))
+'''
+
+
+def campaign_pdf_plots(collection_id="", flavors="", q2=10.0, mean_overlay=None, username="", object_key="",
+                       credible_interval=95, x_min=0.01, x_max=1.0, band_color="red", band_alpha=0.95):
+    """Proton bands in one figure; preserve the existing pion plot workflow."""
     try:
         credible_interval = object_registry.validate_credible_interval(credible_interval)
     except ValueError as exc:
@@ -3215,16 +3303,29 @@ def campaign_pdf_plots(collection_id="", flavors="", q2=10.0, mean_overlay=True,
         return {"status": "error", "message": f"Select a fitted distribution object from {selected}."}
     flavors = flavors or ("valence,sea,g" if object_key == "pdf-pion" else "u,d,g,s")
     fl = list(dict.fromkeys(f.strip() for f in flavors.split(",") if f.strip()))
-    if not fl or any(f not in OBJECTS[object_key]["flavors"] for f in fl):
-        return {"status": "error", "message": f"flavors for {object_key}: {OBJECTS[object_key]['flavors']}"}
+    allowed = pdf_plotting.PROTON_FLAVORS if object_key == "pdf" else OBJECTS[object_key]["flavors"]
+    if not fl or any(f not in allowed for f in fl):
+        return {"status": "error", "message": f"flavors for {object_key}: {allowed}"}
+    if mean_overlay is None:
+        mean_overlay = object_key != "pdf"
     try:
         q2 = float(q2)
         assert math.isfinite(q2) and q2 > 0
     except Exception:
         return {"status": "error", "message": "q2 must be a positive number"}
-    code = inspect.getsource(object_registry) + _fill(
-        _PDF_PLOTS, STAGE=_stage_root(u, e), FLAVORS=fl, Q2=q2, MEAN=bool(mean_overlay), OBJECT=object_key,
-        INTERVAL=credible_interval)
+    if object_key == "pdf":
+        try:
+            display = pdf_plotting.validate_pdf_display(x_min, x_max, band_color, band_alpha)
+        except ValueError as exc:
+            return {"status": "error", "message": str(exc)}
+        code = inspect.getsource(object_registry) + inspect.getsource(pdf_plotting) + _fill(
+            _PROTON_PDF_PLOTS, STAGE=_stage_root(u, e), FLAVORS=fl, Q2=q2,
+            MEAN=bool(mean_overlay), INTERVAL=credible_interval, DISPLAY=display,
+            CAMPAIGN=e.get("campaign_name") or e["input_card"].get("name") or collection_id)
+    else:
+        code = inspect.getsource(object_registry) + _fill(
+            _PDF_PLOTS, STAGE=_stage_root(u, e), FLAVORS=fl, Q2=q2, MEAN=bool(mean_overlay), OBJECT=object_key,
+            INTERVAL=credible_interval)
     ws = _workspace(u)
     r = _run_ifarm_py(u, code, apptainer=True, timeout=600, cap=20000000,
                       env={"MPLCONFIGDIR": f"{ws}/{CAMPAIGNS_DIR}/.matplotlib"})
@@ -3236,6 +3337,8 @@ def campaign_pdf_plots(collection_id="", flavors="", q2=10.0, mean_overlay=True,
         return d
     metadata = {k: d[k] for k in ("credible_interval", "percentiles", "interval_kind", "central_estimator",
                                   "mean_overlay", "band_drawn", "n_replicas", "excluded_replicas", "note")}
+    if object_key == "pdf":
+        metadata.update({k: d[k] for k in ("x_min", "x_max", "band_color", "band_alpha", "omitted_ratio_points")})
     plots = [{**{k: v for k, v in p.items() if k != "png_b64"},
               "data_url": "data:image/png;base64," + p["png_b64"]} for p in d["plots"]]
     return {"status": "ok", "collection_id": collection_id, "q2": q2, "object": object_key,
@@ -9094,9 +9197,13 @@ TOOLS = {
                    "required": ["collection_id"]},
         "fn": lambda a: campaign_summary(a.get("collection_id", ""))},
     "campaign_pdf_plots": {
-        "desc": "View PDF Plots: draw x f(x, Q2) of every fitted replica (flavors: comma list of "
-                "g, u, d, s, ub, db, sb; q2 in GeV^2; mean_overlay adds the mean and an equal-tailed "
-                "pointwise credible interval, default 95%). credible_interval is a finite percentage "
+        "desc": "View PDF Plots: proton PDFs use one two-column band figure, without replica lines. "
+                "Flavors in requested order: u,d,g,s,ub,db,sb,d/u,db+ub,db-ub,sp,sm,Rs,up,dp. "
+                "Sums are xPDFs, d/u and Rs are dimensionless; transform each fitted replica before intervals. "
+                "Proton display: x_min=0.01, x_max=1, band_color=red, band_alpha=0.95; "
+                "mean_overlay optionally adds a mean line (off by default for proton, on for pion). "
+                "q2 in GeV^2. The equal-tailed pointwise credible interval defaults to 95%. "
+                "credible_interval is a finite percentage "
                 "greater than 0 and at most 100; at least two valid fitted replicas are needed for a band. "
                 "100% is the full pointwise envelope of available fitted replicas, not a guarantee "
                 "about the entire underlying posterior distribution. "
@@ -9109,12 +9216,18 @@ TOOLS = {
                                                     "credible_interval": {"type": "number", "default": 95,
                                                                           "exclusiveMinimum": 0, "maximum": 100,
                                                                           "description": "Equal-tailed pointwise credible interval (%)."},
-                                                    "mean_overlay": {"type": "boolean"}},
+                                                    "mean_overlay": {"type": "boolean"},
+                                                    "x_min": {"type": "number", "exclusiveMinimum": 0, "default": 0.01},
+                                                    "x_max": {"type": "number", "maximum": 1, "default": 1},
+                                                    "band_color": {"type": "string", "default": "red"},
+                                                    "band_alpha": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.95}},
                    "required": ["collection_id"]},
         "fn": lambda a: campaign_pdf_plots(a.get("collection_id", ""), a.get("flavors", ""),
-                                           a.get("q2", 10.0), a.get("mean_overlay", True),
+                                           a.get("q2", 10.0), a.get("mean_overlay"),
                                            object_key=a.get("object_key", ""),
-                                           credible_interval=a.get("credible_interval", 95))},
+                                           credible_interval=a.get("credible_interval", 95),
+                                           x_min=a.get("x_min", 0.01), x_max=a.get("x_max", 1),
+                                           band_color=a.get("band_color", "red"), band_alpha=a.get("band_alpha", 0.95))},
     "campaign_ff_plots": {
         "desc": "Plot charged pion, kaon, residual and unidentified hadron zD(z,Q2), using native FitPack FFs. "
                 "Combine species inside each replica before equal-tailed pointwise uncertainty bands. "

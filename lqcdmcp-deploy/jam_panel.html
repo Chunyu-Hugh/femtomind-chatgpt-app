@@ -437,7 +437,15 @@
           <div class="pc" id="caFfSourceBox" style="display:none"><span class="label">FF parameters</span><select id="caFfSource"><option value="replicas">Fitted replicas</option><option value="configured">Configured starting values</option></select></div>
           <div class="pc"><span class="label">Q² (GeV²)</span><input type="number" step="any" id="caQ2" value="10" style="width:110px"></div>
           <div class="pc"><label class="label" for="caInterval">Credible interval (%)</label><input type="number" step="any" max="100" id="caInterval" value="95" required style="width:110px"></div>
-          <div class="pc"><label class="inline"><input type="checkbox" id="caMean" checked> Mean and credible interval</label></div>
+          <div class="pc"><label class="inline"><input type="checkbox" id="caMean" checked> <span id="caMeanLabel">Mean and credible interval</span></label></div>
+          <div class="pc" id="caProtonDisplay" style="display:none">
+            <div class="label">Proton PDF display</div>
+            <label>x min <input type="number" step="any" id="caXMin" value="0.01" style="width:100px"></label>
+            <label>x max <input type="number" step="any" id="caXMax" value="1" style="width:100px"></label>
+            <label>Band color <input type="text" id="caBandColor" value="red" placeholder="red or #d62728" style="width:120px"></label>
+            <label>Opacity <input type="number" min="0" max="1" step="0.05" id="caBandAlpha" value="0.95" style="width:80px"></label>
+            <div class="hint" id="caFlavorOrder"></div>
+          </div>
           <button class="btn primary" id="caPdfGo">Draw</button>
         </div>
         <div class="note">Equal-tailed pointwise intervals across fitted replicas, not simultaneous bands over x or z. Choose a finite percentage greater than 0 and at most 100. At 100%, the band is the full pointwise envelope of available fitted replicas, not a guarantee about the entire underlying posterior distribution. At least two valid fitted replicas are needed for a band.</div>
@@ -1766,15 +1774,21 @@
     return '<div class="imgs">'+(plots || []).map(p=>'<figure><img alt="'+esc(cap(p))+'" src="'+esc(p.data_url)+'"><figcaption>'+esc(cap(p))+'</figcaption></figure>').join("")+'</div>';
   }
   const FF_FLAVORS = ["g","u","d","ub","db","s","sb","c","b"];
+  const PROTON_FLAVORS = [...FLAVORS,"d/u","db+ub","db-ub","sp","sm","Rs","up","dp"];
   const ffPlotSelected = ()=>$("caObject").value === "ff";
+  const protonPlotSelected = ()=>$("caObject").value === "pdf";
   function renderFlavs(){
-    const flavors = ffPlotSelected() ? FF_FLAVORS : $("caObject").value === "pdf-pion" ? ["valence","sea",...FLAVORS] : FLAVORS;
+    const flavors = ffPlotSelected() ? FF_FLAVORS : $("caObject").value === "pdf-pion" ? ["valence","sea",...FLAVORS] : PROTON_FLAVORS;
     $("caFfSourceBox").style.display = ffPlotSelected() ? "" : "none";
+    $("caProtonDisplay").style.display = protonPlotSelected() ? "" : "none";
+    $("caMeanLabel").textContent = protonPlotSelected() ? "Show mean line (optional)" : "Mean and credible interval";
+    $("caFlavorOrder").textContent = "Subplot order: " + Array.from(pdfOn).join(", ") + ". Deselect and reselect flavors to change their order.";
     $("caFlavs").innerHTML = flavors.map(f=>'<span class="fl'+(pdfOn.has(f) ? " on" : "")+'" data-f="'+f+'">'+esc(f)+'</span>').join("");
     $("caFlavs").querySelectorAll(".fl").forEach(el=>el.onclick = ()=>{ const f = el.dataset.f; if (pdfOn.has(f)) pdfOn.delete(f); else pdfOn.add(f); renderFlavs(); });
   }
   function resetFlavors(){
     pdfOn.clear();
+    $("caMean").checked = !protonPlotSelected();
     (ffPlotSelected() ? ["u","d","g","s","c","b"] : $("caObject").value === "pdf-pion" ? ["valence","sea","g"] : ["u","d","g","s"]).forEach(f=>pdfOn.add(f));
     renderFlavs();
   }
@@ -1794,9 +1808,21 @@
     if (!$("caInterval").value.trim() || !Number.isFinite(credibleInterval) || credibleInterval <= 0 || credibleInterval > 100){
       caWarn("Credible interval (%) must be greater than 0 and at most 100."); return;
     }
+    let display = {};
+    if (protonPlotSelected()){
+      const xMin = Number($("caXMin").value), xMax = Number($("caXMax").value), alpha = Number($("caBandAlpha").value);
+      const q2 = Number($("caQ2").value), color = $("caBandColor").value.trim();
+      if (!["caXMin","caXMax","caBandAlpha","caQ2"].every(id=>$(id).value.trim()) ||
+          ![xMin,xMax,alpha,q2].every(Number.isFinite) || !(0 < xMin && xMin < xMax && xMax <= 1) ||
+          alpha < 0 || alpha > 1 || q2 <= 0 || !color){
+        caWarn("Require 0 < x min < x max ≤ 1, opacity from 0 to 1, a band color, and positive Q²."); return;
+      }
+      display = {x_min:xMin, x_max:xMax, band_color:color, band_alpha:alpha};
+    }
     caBusy(ffPlotSelected() ? "Evaluating fragmentation functions at the selected Q²…" : "Evaluating every fitted replica's PDFs on the cluster… this takes a minute.");
     const cid = analysisCampaign;
     try{ const r = await call(ffPlotSelected() ? "campaign_ff_plots" : "campaign_pdf_plots", {collection_id: cid, flavors: Array.from(pdfOn).join(","),
+                                                     ...display,
                                                      ...(ffPlotSelected() ? {configured: $("caFfSource").value === "configured"} : {}),
                                                      object_key: $("caObject").value,
                                                      credible_interval: credibleInterval,
