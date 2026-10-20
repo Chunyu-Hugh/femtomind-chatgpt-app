@@ -208,9 +208,16 @@ def _panel_link(args):
 WIDGET = "dashboard"
 
 
+# The gateway's shared chart code, inlined where the dashboard marks it.
+CHARTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "jamai", "static", "jamcharts.js")
+
+
 def _dashboard():
-    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html"), encoding="utf-8") as fh:
-        return fh.read()
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "dashboard.html"), encoding="utf-8") as fh:
+        html = fh.read()
+    with open(CHARTS, encoding="utf-8") as fh:
+        return html.replace("/*@jamcharts*/", fh.read(), 1)
 
 
 def _widget():

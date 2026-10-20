@@ -188,6 +188,13 @@
   .dtbl tbody tr[data-ds]{cursor:pointer;} .dtbl tbody tr[data-ds]:hover{background:var(--surface-2);}
   .dtbl tr.sel{background:var(--accent-wash);} .dtbl tr.grp td{background:var(--surface-2);font-family:var(--mono);font-size:11.5px;color:var(--muted);padding:6px 10px;}
   .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;}
+  .slicers{display:flex;gap:18px;flex-wrap:wrap;margin:10px 0 4px;} .slicers .sl{display:flex;flex-direction:column;gap:2px;min-width:0;}
+  .slicers .sl > span{font-size:11.5px;color:var(--muted);font-weight:560;} .slicers .chips{margin-top:4px;}
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin:12px 0 4px;}
+  .kpi{background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:8px 12px;min-width:0;}
+  .kpi.link{cursor:pointer;} .kpi.link:hover{border-color:var(--accent);}
+  .kpi .k{font-size:11.5px;color:var(--muted);font-weight:560;} .kpi .v{font:600 18px var(--mono);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .kpi .d{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .chart-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(380px,100%),1fr));gap:10px;} .chart-grid > .chart{margin-top:0;min-width:0;}
   .phrase{font-family:var(--mono);font-weight:600;}
   .rowacts{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;}
@@ -1854,259 +1861,7 @@
   function imagesHtml(plots, cap){
     return '<div class="imgs">'+(plots || []).map(p=>'<figure><img alt="'+esc(cap(p))+'" src="'+esc(p.data_url)+'"><figcaption>'+esc(cap(p))+'</figcaption></figure>').join("")+'</div>';
   }
-  /* ---------- interactive charts ----------
-     A small SVG chart, enough for the analysis views: points with error bars,
-     lines with credible bands, linear or log axes. Hover shows the values, a
-     drag zooms, a double click (or reset) zooms out, a legend entry switches its
-     series off and on (double click: only that one). It works the same in the
-     browser page, ChatGPT and MCP Apps hosts: no library, no network. */
-  const SVGNS = "http://www.w3.org/2000/svg";
-  const PALETTE = ["#2560c9","#d9480f","#2b8a3e","#ae3ec9","#c92a2a","#0b7285","#e67700","#5f3dc4","#868e96","#a61e4d"];
-  const isNum = v=>typeof v === "number" && isFinite(v);
-  // A CSS variable is not resolved in an SVG presentation attribute: those go in style.
-  function svgEl(tag, attrs, parent){
-    const n = document.createElementNS(SVGNS, tag);
-    for (const k in attrs || {}){ const v = attrs[k]; if (typeof v === "string" && v.indexOf("var(") >= 0) n.style.setProperty(k, v); else n.setAttribute(k, v); }
-    if (parent) parent.appendChild(n);
-    return n;
-  }
-  function fmtVal(v){
-    if (!isNum(v)) return "—";
-    const a = Math.abs(v);
-    return a !== 0 && (a >= 1e5 || a < 1e-3) ? v.toExponential(3) : String(+v.toPrecision(5));
-  }
-  function fmtTick(v){
-    const a = Math.abs(v);
-    return a !== 0 && (a >= 1e4 || a < 1e-3) ? v.toExponential(0).replace("e+", "e") : String(+v.toPrecision(4));
-  }
-  // A line or band is drawn in runs: a missing value (a ratio left out for the
-  // whole ensemble) or a point marked breakBefore (d/u where u changes sign)
-  // ends one run, so nothing is drawn across the gap.
-  function runs(points, ok){
-    const out = []; let cur = [];
-    for (const p of points){
-      if (!ok(p) || p.breakBefore){ if (cur.length) out.push(cur); cur = []; }
-      if (ok(p)) cur.push(p);
-    }
-    if (cur.length) out.push(cur);
-    return out;
-  }
-  function minMax(a){ let lo = Infinity, hi = -Infinity; for (const v of a){ if (v < lo) lo = v; if (v > hi) hi = v; } return [lo, hi]; }
-  function linTicks(lo, hi, n){
-    const span = hi - lo;
-    if (!(span > 0)) return [lo];
-    const raw = span / n, mag = Math.pow(10, Math.floor(Math.log10(raw))), r = raw / mag;
-    const step = (r > 5 ? 10 : r > 2 ? 5 : r > 1 ? 2 : 1) * mag, out = [];
-    for (let t = Math.ceil(lo / step) * step; t <= hi + step * 1e-9; t += step) out.push(+t.toPrecision(12));
-    return out;
-  }
-  function logTicks(lo, hi){                       // lo, hi: log10 of the axis ends
-    const out = [], a = Math.floor(lo), b = Math.ceil(hi);
-    if (b - a <= 2){
-      for (let e = a; e <= b; e++) for (const m of [1, 2, 5]){ const t = e + Math.log10(m); if (t >= lo - 1e-9 && t <= hi + 1e-9) out.push(t); }
-    } else {
-      const stride = Math.max(1, Math.ceil((b - a) / 7));
-      for (let e = a; e <= b; e += stride) if (e >= lo - 1e-9 && e <= hi + 1e-9) out.push(e);
-    }
-    return out;
-  }
-  function download(text, type, name){
-    try{
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(new Blob([text], {type}));
-      a.download = name; document.body.appendChild(a); a.click();
-      setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 1000);
-    }catch(e){}
-  }
-  // series: {key, name, color, points:[{x, y, lo, hi, info:[...]}], markers, hollow, line, dash,
-  //          band:[{x, lo, hi}], bandStyle: "area" | "bars", width, opacity, hover}
-  function makeChart(box, opts){
-    const st = {series: [], hidden: new Set(), view: null,
-                opts: Object.assign({height: 340, xlog: false, ylog: false, xlabel: "", ylabel: "", hline: null, name: "chart"}, opts)};
-    box.className = "chart";
-    box.innerHTML = '<div class="chart-bar"></div><div class="chart-plot"></div><div class="chart-legend"></div><div class="chart-tip" hidden></div>';
-    const bar = box.querySelector(".chart-bar"), plot = box.querySelector(".chart-plot"),
-          legend = box.querySelector(".chart-legend"), tip = box.querySelector(".chart-tip");
-    const button = (label, title, fn)=>{ const b = document.createElement("button"); b.type = "button"; b.className = "cb";
-      b.textContent = label; b.title = title; b.onclick = fn; bar.appendChild(b); return b; };
-    const bx = button("log x", "Logarithmic x axis", ()=>{ st.opts.xlog = !st.opts.xlog; st.view = null; draw(); });
-    const by = button("log y", "Logarithmic y axis", ()=>{ st.opts.ylog = !st.opts.ylog; st.view = null; draw(); });
-    button("reset zoom", "Show everything again (or double-click the plot)", ()=>{ st.view = null; draw(); });
-    button("CSV", "Download the plotted values", ()=>download(csv(), "text/csv", st.opts.name+".csv"));
-    button("SVG", "Download the chart as an SVG image", ()=>download(svgText(), "image/svg+xml", st.opts.name+".svg"));
-    let svg = null, geom = null, marks = [];
-    const shown = ()=>st.series.filter(s=>!st.hidden.has(s.key));
-    const tf = (v, log)=>log ? (v > 0 ? Math.log10(v) : NaN) : v;
-    function extent(){
-      const xs = [], ys = [], X = st.opts.xlog, Y = st.opts.ylog;
-      for (const s of shown()){
-        for (const p of s.points || []){ xs.push(tf(p.x, X)); for (const v of [p.y, p.lo, p.hi]) if (isNum(v)) ys.push(tf(v, Y)); }
-        for (const p of s.band || []){ xs.push(tf(p.x, X)); ys.push(tf(p.lo, Y), tf(p.hi, Y)); }
-      }
-      const fx = xs.filter(isNum), fy = ys.filter(isNum);
-      if (!fx.length || !fy.length) return null;
-      let [x0, x1] = minMax(fx), [y0, y1] = minMax(fy);
-      if (st.opts.hline != null && !Y){ y0 = Math.min(y0, st.opts.hline); y1 = Math.max(y1, st.opts.hline); }
-      const px = (x1 - x0) || Math.abs(x0) || 1, py = (y1 - y0) || Math.abs(y0) || 1;
-      return [x0 - px * 0.03, x1 + px * 0.03, y0 - py * 0.06, y1 + py * 0.06];
-    }
-    function draw(){
-      bx.classList.toggle("on", !!st.opts.xlog); by.classList.toggle("on", !!st.opts.ylog);
-      const W = Math.max(260, Math.round(plot.clientWidth || box.clientWidth || 600)), H = st.opts.height;
-      const m = {l: 64, r: 14, t: 10, b: 44}, iw = W - m.l - m.r, ih = H - m.t - m.b;
-      plot.innerHTML = ""; marks = [];
-      svg = svgEl("svg", {width: W, height: H, viewBox: "0 0 "+W+" "+H, class: "chart-svg"}, plot);
-      const dom = st.view || extent();
-      if (!dom){
-        const t = svgEl("text", {x: W / 2, y: H / 2, "text-anchor": "middle", class: "ct-label"}, svg);
-        t.textContent = "Nothing to draw: every series is off, or no positive values on a log axis.";
-        geom = null; paintLegend(); return;
-      }
-      const [x0, x1, y0, y1] = dom;
-      const X = v=>m.l + (tf(v, st.opts.xlog) - x0) / (x1 - x0) * iw;
-      const Y = v=>m.t + ih - (tf(v, st.opts.ylog) - y0) / (y1 - y0) * ih;
-      geom = {W, H, m, iw, ih, dom};
-      const clip = "clip" + Math.random().toString(36).slice(2);
-      svgEl("rect", {x: m.l, y: m.t, width: iw, height: ih}, svgEl("clipPath", {id: clip}, svgEl("defs", {}, svg)));
-      const axis = svgEl("g", {class: "ct-axis"}, svg);
-      const xt = st.opts.xlog ? logTicks(x0, x1) : linTicks(x0, x1, Math.max(3, Math.floor(iw / 90)));
-      const yt = st.opts.ylog ? logTicks(y0, y1) : linTicks(y0, y1, Math.max(3, Math.floor(ih / 55)));
-      for (const t of xt){
-        const v = st.opts.xlog ? Math.pow(10, t) : t, x = X(v);
-        svgEl("line", {x1: x, x2: x, y1: m.t, y2: m.t + ih, class: "ct-grid"}, axis);
-        svgEl("text", {x, y: m.t + ih + 15, "text-anchor": "middle"}, axis).textContent = fmtTick(v);
-      }
-      for (const t of yt){
-        const v = st.opts.ylog ? Math.pow(10, t) : t, y = Y(v);
-        svgEl("line", {x1: m.l, x2: m.l + iw, y1: y, y2: y, class: "ct-grid"}, axis);
-        svgEl("text", {x: m.l - 6, y: y + 4, "text-anchor": "end"}, axis).textContent = fmtTick(v);
-      }
-      svgEl("rect", {x: m.l, y: m.t, width: iw, height: ih, class: "ct-frame"}, axis);
-      svgEl("text", {x: m.l + iw / 2, y: H - 8, "text-anchor": "middle", class: "ct-label"}, svg).textContent = st.opts.xlabel;
-      svgEl("text", {x: 14, y: m.t + ih / 2, "text-anchor": "middle", class: "ct-label",
-                     transform: "rotate(-90 14 "+(m.t + ih / 2)+")"}, svg).textContent = st.opts.ylabel;
-      const body = svgEl("g", {"clip-path": "url(#"+clip+")"}, svg);
-      const okY = v=>isNum(v) && isNum(tf(v, st.opts.ylog)), okX = v=>isNum(v) && isNum(tf(v, st.opts.xlog));
-      if (st.opts.hline != null && okY(st.opts.hline)){
-        const y = Y(st.opts.hline);
-        svgEl("line", {x1: m.l, x2: m.l + iw, y1: y, y2: y, class: "ct-ref"}, body);
-      }
-      for (const s of shown()){
-        const c = s.color;
-        if (s.band && s.band.length){
-          const pts = s.band.filter(p=>okX(p.x) && okY(p.lo) && okY(p.hi));
-          if (s.bandStyle === "bars"){
-            for (const p of pts) svgEl("rect", {x: X(p.x) - 3, width: 6, y: Y(p.hi), height: Math.max(1.5, Y(p.lo) - Y(p.hi)),
-                                                fill: c, "fill-opacity": 0.25}, body);
-          } else {
-            for (const run of runs(s.band, p=>okX(p.x) && okY(p.lo) && okY(p.hi))) if (run.length > 1){
-              const d = "M" + run.map(p=>X(p.x).toFixed(1)+","+Y(p.hi).toFixed(1)).join("L") + "L"
-                      + run.slice().reverse().map(p=>X(p.x).toFixed(1)+","+Y(p.lo).toFixed(1)).join("L") + "Z";
-              svgEl("path", {d, fill: c, "fill-opacity": 0.18, stroke: "none"}, body);
-            }
-          }
-        }
-        const pts = (s.points || []).filter(p=>okX(p.x) && okY(p.y));
-        if (s.line) for (const run of runs(s.points || [], p=>okX(p.x) && okY(p.y))) if (run.length > 1){
-          svgEl("path", {d: "M" + run.map(p=>X(p.x).toFixed(1)+","+Y(p.y).toFixed(1)).join("L"), fill: "none", stroke: c,
-                         "stroke-width": s.width || 1.8, "stroke-opacity": s.opacity == null ? 1 : s.opacity,
-                         "stroke-dasharray": s.dash || "none"}, body);
-        }
-        if (s.markers){
-          for (const p of pts){
-            const x = X(p.x), y = Y(p.y);
-            if (okY(p.lo) && okY(p.hi)) svgEl("line", {x1: x, x2: x, y1: Y(p.lo), y2: Y(p.hi), stroke: c, "stroke-width": 1.2}, body);
-            svgEl("circle", {cx: x, cy: y, r: s.hollow ? 3.2 : 2.8, fill: s.hollow ? "var(--surface)" : c, stroke: c,
-                             "stroke-width": s.hollow ? 1.4 : 0}, body);
-          }
-        }
-        if (s.hover !== false) for (const p of pts) marks.push({x: X(p.x), y: Y(p.y), s, p});
-      }
-      const ov = svgEl("rect", {x: m.l, y: m.t, width: iw, height: ih, class: "ct-ov"}, svg);
-      const ring = svgEl("circle", {r: 5.5, class: "ct-ring", visibility: "hidden"}, svg);
-      const sel = svgEl("rect", {class: "ct-sel", visibility: "hidden"}, svg);
-      const at = ev=>{ const b = svg.getBoundingClientRect(); return [(ev.clientX - b.left) * W / b.width, (ev.clientY - b.top) * H / b.height]; };
-      let start = null;
-      ov.addEventListener("pointerdown", ev=>{ start = at(ev); try{ ov.setPointerCapture(ev.pointerId); }catch(e){} });
-      ov.addEventListener("pointermove", ev=>{
-        const [px, py] = at(ev);
-        if (start){
-          const [sx, sy] = start;
-          sel.setAttribute("x", Math.min(sx, px)); sel.setAttribute("y", Math.min(sy, py));
-          sel.setAttribute("width", Math.abs(px - sx)); sel.setAttribute("height", Math.abs(py - sy));
-          sel.setAttribute("visibility", "visible"); tip.hidden = true; ring.setAttribute("visibility", "hidden"); return;
-        }
-        let best = null, bd = 900;
-        for (const k of marks){ const d = (k.x - px) ** 2 + (k.y - py) ** 2; if (d < bd){ bd = d; best = k; } }
-        if (!best){ tip.hidden = true; ring.setAttribute("visibility", "hidden"); return; }
-        ring.setAttribute("cx", best.x); ring.setAttribute("cy", best.y); ring.setAttribute("stroke", best.s.color);
-        ring.setAttribute("visibility", "visible");
-        const p = best.p;
-        const lines = [best.s.name, (st.opts.xlabel || "x")+" = "+fmtVal(p.x), (st.opts.ylabel || "y")+" = "+fmtVal(p.y)
-                       + (isNum(p.lo) && isNum(p.hi) ? "  ["+fmtVal(p.lo)+", "+fmtVal(p.hi)+"]" : "")].concat(p.info || []);
-        tip.innerHTML = lines.map((t, i)=>i ? esc(t) : '<b>'+esc(t)+'</b>').join("<br>");
-        tip.hidden = false;
-        const b = svg.getBoundingClientRect(), hb = box.getBoundingClientRect();
-        const left = b.left - hb.left + best.x * b.width / W, top = b.top - hb.top + best.y * b.height / H;
-        tip.style.left = Math.max(4, Math.min(left + 12, hb.width - tip.offsetWidth - 4)) + "px";
-        tip.style.top = Math.max(4, top - tip.offsetHeight - 10) + "px";
-      });
-      const finish = ev=>{
-        if (!start) return;
-        const [sx, sy] = start, [px, py] = at(ev);
-        start = null; sel.setAttribute("visibility", "hidden");
-        if (Math.abs(px - sx) < 8 || Math.abs(py - sy) < 8) return;
-        const ix = v=>x0 + (v - m.l) / iw * (x1 - x0), iy = v=>y0 + (m.t + ih - v) / ih * (y1 - y0);
-        st.view = [ix(Math.min(sx, px)), ix(Math.max(sx, px)), iy(Math.max(sy, py)), iy(Math.min(sy, py))];
-        draw();
-      };
-      ov.addEventListener("pointerup", finish);
-      ov.addEventListener("pointercancel", ()=>{ start = null; sel.setAttribute("visibility", "hidden"); });
-      ov.addEventListener("pointerleave", ()=>{ if (!start){ tip.hidden = true; ring.setAttribute("visibility", "hidden"); } });
-      ov.addEventListener("dblclick", ()=>{ st.view = null; draw(); });
-      paintLegend();
-    }
-    function paintLegend(){
-      const seen = new Map();
-      for (const s of st.series) if (s.legend !== false && !seen.has(s.key)) seen.set(s.key, s);
-      legend.innerHTML = "";
-      for (const [key, s] of seen){
-        const item = document.createElement("span");
-        item.className = "lg" + (st.hidden.has(key) ? " off" : "");
-        item.title = "Click: show or hide. Double-click: only this one.";
-        item.innerHTML = '<i style="background:'+esc(s.color)+'"></i>'+esc(s.legendName || key);
-        item.onclick = ()=>{ if (st.hidden.has(key)) st.hidden.delete(key); else st.hidden.add(key); draw(); };
-        item.ondblclick = ()=>{ st.hidden = new Set([...seen.keys()].filter(k=>k !== key)); draw(); };
-        legend.appendChild(item);
-      }
-    }
-    function csv(){
-      const q = v=>'"'+String(v == null ? "" : v).replace(/"/g, '""')+'"';
-      const rows = [["series", st.opts.xlabel || "x", st.opts.ylabel || "y", "lower", "upper"].map(q).join(",")];
-      for (const s of shown()) for (const p of s.points || []) rows.push([s.name, p.x, p.y, p.lo, p.hi].map(q).join(","));
-      return rows.join("\n");
-    }
-    function svgText(){
-      if (!svg) return "";
-      const clone = svg.cloneNode(true), cs = getComputedStyle(document.documentElement);
-      const v = n=>cs.getPropertyValue(n).trim();
-      const style = svgEl("style", {});
-      style.textContent = ".ct-axis text{font:11px sans-serif;fill:"+v("--muted")+"}.ct-label{font:12px sans-serif;fill:"+v("--fg")+"}"
-        + ".ct-grid{stroke:"+v("--line")+"}.ct-frame{fill:none;stroke:"+v("--line")+"}.ct-ref{stroke:"+v("--muted")+";stroke-dasharray:4 3}"
-        + ".ct-ov,.ct-sel,.ct-ring{display:none}";
-      clone.insertBefore(svgEl("rect", {width: "100%", height: "100%", fill: v("--surface")}), clone.firstChild);
-      clone.insertBefore(style, clone.firstChild);
-      clone.setAttribute("xmlns", SVGNS);
-      return new XMLSerializer().serializeToString(clone);
-    }
-    let frame = 0;
-    if (window.ResizeObserver) new ResizeObserver(()=>{ cancelAnimationFrame(frame); frame = requestAnimationFrame(()=>{ if (box.isConnected) draw(); }); }).observe(plot);
-    return {
-      set(series, labels){ st.series = series; Object.assign(st.opts, labels || {}); draw(); },
-      reset(){ st.view = null; st.hidden.clear(); },
-      get opts(){ return st.opts; },
-    };
-  }
+  /*@jamcharts*/  // jamai/static/jamcharts.js, inlined by the gateway when it serves this page
 
   /* ---------- analysis results ---------- */
   // A long analysis answers "running" with a job id; wait for it here (each
@@ -2188,6 +1943,12 @@
       + (r.unknown_datasets || r.unmatched_experiments ? '<div class="note warn">Not in this campaign: '
          + esc([].concat(r.unknown_datasets || [], r.unmatched_experiments || []).join(", "))+'</div>' : "")
       + (r.unavailable_datasets && r.unavailable_datasets.length ? '<div class="note warn">'+r.unavailable_datasets.map(d=>esc(d.dataset+" — "+d.reason)).join("<br>")+'</div>' : "")
+      + '<div class="kpis" id="tvKpis"></div>'
+      + '<div class="slicers"><div class="sl"><span>Reactions</span><div class="chips" id="tvR"></div></div>'
+      + '<div class="sl"><span>Experiments (click: on or off · double-click: only this)</span><div class="chips" id="tvE"></div></div></div>'
+      + '<div class="tv-head"><div class="label" style="margin:0">Overview by dataset · click a point to draw that dataset below</div><span class="sp"></span>'
+      + '<select id="tvOvY"><option value="chi2_red">χ²_red</option><option value="z_score">Z-score</option><option value="norm">fitted norm</option><option value="chi2_cor">χ²_cor</option></select></div>'
+      + '<div id="tvOverview"></div>'
       + '<div class="tv-head"><div class="label" style="margin:0">Datasets · '+esc(r.n_replicas)+' fitted replicas'
       + (r.compute_seconds != null ? ' · computed now in '+esc(r.compute_seconds)+' s' : ' · from the cache')+'</div>'
       + '<span class="sp"></span><button class="cb" id="tvLatex" type="button">Copy LaTeX</button><button class="cb" id="tvCsv" type="button">CSV</button></div>'
@@ -2208,6 +1969,11 @@
         + '</div><div id="tvCaption" class="hint"></div><div id="tvChart"></div>'
         : (r._ui ? "" : '<div class="note">This host did not pass the chart data to the panel; open the panel in the browser (Analysis tab) for the interactive charts.</div>'))
       + imagesHtml(r._panel_plots, p=>p.caption || "");
+    // Slicers: reactions and experiments; every part of the view follows them.
+    const reactions = [...new Set(rows.map(x=>x.reaction))], exps = [...new Set(rows.map(x=>x.experiment || "?"))];
+    const onR = new Set(reactions), onE = new Set(exps);
+    const view = ()=>rows.filter(x=>onR.has(x.reaction) && onE.has(x.experiment || "?"));
+    let chartReady = false;
     const tbl = out.querySelector("#tvTable");
     function paintTable(){
       const head = '<thead><tr>'+TABLE_COLS.map(c=>'<th data-k="'+c[0]+'" class="sortable">'+c[1]+(sort === c[0] ? (dir > 0 ? " ▲" : " ▼") : "")+'</th>').join("")+'</tr></thead>';
@@ -2215,10 +1981,10 @@
       const line = x=>'<tr data-ds="'+esc(x.dataset)+'"'+(x.dataset === current ? ' class="sel"' : '')+'>'+TABLE_COLS.map(c=>'<td'+(c[0] === "dataset" || c[0] === "observable" ? '' : ' class="mono num"')+'>'+c[2](x)+'</td>').join("")+'</tr>';
       if (sort){
         const col = TABLE_COLS.find(c=>c[0] === sort);
-        body = rows.slice().sort((a, b)=>{ const p = col[3](a), q = col[3](b); return (p > q ? 1 : p < q ? -1 : 0) * dir; }).map(line).join("");
+        body = view().slice().sort((a, b)=>{ const p = col[3](a), q = col[3](b); return (p > q ? 1 : p < q ? -1 : 0) * dir; }).map(line).join("");
       } else {
         const groups = new Map();
-        rows.forEach(x=>{ if (!groups.has(x.reaction)) groups.set(x.reaction, []); groups.get(x.reaction).push(x); });
+        view().forEach(x=>{ if (!groups.has(x.reaction)) groups.set(x.reaction, []); groups.get(x.reaction).push(x); });
         for (const [reaction, xs] of groups){
           const n = xs.reduce((a, x)=>a + x.npts, 0), c2 = xs.reduce((a, x)=>a + (x.chi2 || 0), 0);
           body += '<tr class="grp"><td colspan="'+TABLE_COLS.length+'">'+esc(reaction)+' · '+xs.length+' datasets · '+n+' points · χ²/N '+f2(c2 / n)+'</td></tr>' + xs.map(line).join("");
@@ -2230,19 +1996,66 @@
         if (sort === k){ if (dir < 0){ sort = null; dir = 1; } else dir = -1; } else { sort = k; dir = 1; }
         paintTable();
       });
-      tbl.querySelectorAll("tr[data-ds]").forEach(tr=>tr.onclick = ()=>{ if (charts.some(c=>c.dataset === tr.dataset.ds)){ current = tr.dataset.ds; $("tvDs").value = current; pickDataset(); } });
+      tbl.querySelectorAll("tr[data-ds]").forEach(tr=>tr.onclick = ()=>focusDataset(tr.dataset.ds));
     }
-    paintTable();
+    function focusDataset(id){ if (charts.some(c=>c.dataset === id)){ current = id; $("tvDs").value = current; pickDataset(); } }
+    function paintSlicers(){
+      const chip = (kind, v, on)=>'<span class="fl'+(on ? " on" : "")+'" data-'+kind+'="'+esc(v)+'">'+esc(v)+'</span>';
+      $("tvR").innerHTML = reactions.map(v=>chip("r", v, onR.has(v))).join("");
+      $("tvE").innerHTML = exps.map(v=>chip("e", v, onE.has(v))).join("");
+      const wire = (sel, set, all)=>out.querySelectorAll(sel).forEach(n=>{
+        const v = n.dataset.r || n.dataset.e; let t = 0;
+        n.onclick = ()=>{ clearTimeout(t); t = setTimeout(()=>{ if (set.has(v)){ if (set.size > 1) set.delete(v); } else set.add(v); refresh(); }, 220); };
+        n.ondblclick = ()=>{ clearTimeout(t); set.clear(); set.add(v); refresh(); };
+      });
+      wire("#tvR [data-r]", onR, reactions); wire("#tvE [data-e]", onE, exps);
+    }
+    function paintKpis(){
+      const v = view(), n = v.reduce((a, x)=>a + x.npts, 0), raw = v.reduce((a, x)=>a + (x.npts_raw || 0), 0), c2 = v.reduce((a, x)=>a + (x.chi2 || 0), 0);
+      const worst = v.slice().sort((a, b)=>(b.chi2_red || 0) - (a.chi2_red || 0))[0], tension = v.filter(x=>isNum(x.z_score) && Math.abs(x.z_score) > 3).length;
+      const tiles = [["Datasets", v.length + " / " + rows.length, reactions.filter(x=>onR.has(x)).join(", ")],
+        ["Points", String(n), raw ? "of " + raw + " before cuts" : ""], ["χ²/N", n ? f2(c2 / n) : "—", "mean over " + esc(r.n_replicas) + " fitted replicas"],
+        ["Worst χ²_red", worst ? f2(worst.chi2_red) : "—", worst ? (worst.experiment || "") + " " + worst.dataset : "", worst ? worst.dataset : ""],
+        ["|Z| > 3", String(tension), tension ? "datasets in tension" : "no dataset in tension"]];
+      $("tvKpis").innerHTML = tiles.map(t=>'<div class="kpi'+(t[3] ? " link" : "")+'"'+(t[3] ? ' data-ds="'+esc(t[3])+'" title="Draw this dataset"' : "")+'><div class="k">'+esc(t[0])+'</div><div class="v">'+esc(t[1])+'</div><div class="d">'+esc(t[2])+'</div></div>').join("");
+      out.querySelectorAll("#tvKpis [data-ds]").forEach(n=>n.onclick = ()=>focusDataset(n.dataset.ds));
+    }
+    const overview = makeChart($("tvOverview"), {name: "datasets_overview", height: 240, logButtons: false, xlabel: "dataset", xpad: 0.04,
+                                                 onPick: p=>focusDataset(p.tag)});
+    function paintOverview(){
+      const key = $("tvOvY").value, v = view(), label = {chi2_red: "χ²_red", z_score: "Z-score", norm: "fitted norm", chi2_cor: "χ²_cor"}[key];
+      const series = reactions.filter(x=>onR.has(x)).map((reaction, ri)=>({key: reaction, name: reaction, color: PALETTE[ri % PALETTE.length], markers: true, r: 4,
+        points: v.map((x, i)=>({x, i})).filter(o=>o.x.reaction === reaction).map(o=>{ const x = o.x, y = key === "norm" ? x.norm : x[key];
+          return {x: o.i + 1, y, lo: key === "norm" && isNum(x.norm_std) ? x.norm - x.norm_std : null, hi: key === "norm" && isNum(x.norm_std) ? x.norm + x.norm_std : null, tag: x.dataset,
+            info: [(x.experiment || "?") + " " + x.dataset + (x.observable ? " · " + x.observable : ""), "χ²_red " + f2(x.chi2_red) + " (Z " + zTxt(x.z_score) + ")",
+                   "points " + x.npts + (x.npts_raw ? " / " + x.npts_raw : ""), "χ²_cor " + f2(x.chi2_cor) + " · χ²_norm " + f2(x.chi2_norm), "fitted norm " + meanStd(x.norm, x.norm_std)]}; })}));
+      const lines = {chi2_red: [{y: 1, label: "1"}], z_score: [{y: 0, label: "0"}, {y: 3, label: "+3"}, {y: -3, label: "−3"}], norm: [{y: 1, label: "1"}], chi2_cor: []}[key];
+      overview.set(series, {ylabel: label, hlines: lines, infoOnly: true, ymin: key === "chi2_red" || key === "chi2_cor" ? 0 : undefined,
+                            xticks: v.length <= 30 ? v.map((x, i)=>({v: i + 1, label: String(x.dataset_id)})) : null});
+    }
+    function refresh(){
+      paintSlicers(); paintKpis(); paintTable(); paintOverview();
+      if (charts.length) fillDs();
+    }
+    $("tvOvY").onchange = ()=>{ overview.resetZoom(); paintOverview(); };
+    paintSlicers(); paintKpis(); paintTable(); paintOverview();
     const copy = (text, btn)=>{ try{ navigator.clipboard.writeText(text).then(()=>{ btn.textContent = "Copied"; setTimeout(()=>btn.textContent = "Copy LaTeX", 1500); }); }catch(e){ download(text, "text/plain", "table.tex"); } };
-    out.querySelector("#tvLatex").onclick = (ev)=>copy(tableLatex(rows), ev.currentTarget);
-    out.querySelector("#tvCsv").onclick = ()=>download(tableCsv(rows), "text/csv", (r.campaign_name || "campaign")+"_datasets.csv");
+    out.querySelector("#tvLatex").onclick = (ev)=>copy(tableLatex(view()), ev.currentTarget);
+    out.querySelector("#tvCsv").onclick = ()=>download(tableCsv(view()), "text/csv", (r.campaign_name || "campaign")+"_datasets.csv");
     if (!charts.length) return;
     const byKey = new Map(charts.map(c=>[c.dataset, c]));
-    $("tvDs").innerHTML = charts.map(c=>'<option value="'+esc(c.dataset)+'">'+esc((c.experiment || "?")+" · "+c.dataset+(c.observable ? " · "+c.observable : "")+(c.target ? " · "+c.target : ""))+'</option>').join("");
+    function fillDs(){
+      const keep = new Set(view().map(x=>x.dataset)), list = charts.filter(c=>keep.has(c.dataset));
+      $("tvDs").innerHTML = list.map(c=>'<option value="'+esc(c.dataset)+'">'+esc((c.experiment || "?")+" · "+c.dataset+(c.observable ? " · "+c.observable : "")+(c.target ? " · "+c.target : ""))+'</option>').join("");
+      if (list.length && !keep.has(current)){ current = list[0].dataset; $("tvDs").value = current; if (chartReady) pickDataset(); }
+      else if (current) $("tvDs").value = current;
+    }
+    fillDs();
     const levels = Object.keys(charts[0].bands || {}).sort((a, b)=>a - b);
     $("tvCi").innerHTML = levels.length ? levels.map(l=>'<option value="'+esc(l)+'"'+(Number(l) === Number(ui.credible_interval) ? " selected" : "")+'>'+esc(l)+'%</option>').join("")
                                         : '<option value="">none (one replica)</option>';
     const chart = makeChart($("tvChart"), {name: "data_vs_theory"});
+    chartReady = true;
     const XPREF = ["X","x","pT","pt","PT","xF","Y","y","eta","z","Q2","qT","M","W2"];
     const GPREF = ["Q2","eta","Y","y","rs","M","Q","z","x","X"];
     function pickDataset(){

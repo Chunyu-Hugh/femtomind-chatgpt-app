@@ -65,7 +65,7 @@
   .muted{color:var(--muted);} ul.lim{margin:6px 0 0;padding-left:18px;color:var(--muted);font-size:12.5px;}
   pre{font:11px var(--mono);background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:10px;max-height:260px;overflow:auto;white-space:pre-wrap;}
   .placeholder{color:var(--muted);font-size:13px;text-align:center;padding:40px 10px;border:1px dashed var(--line);border-radius:10px;margin-top:10px;}
-  /* charts (the JAM panel's chart, kept in step with jam_panel.html) */
+  /* charts (jamai/static/jamcharts.js; the customize panel styles come with it) */
   .chart{position:relative;border:1px solid var(--line);border-radius:10px;padding:6px 8px 8px;background:var(--surface);margin-top:8px;}
   .chart-bar{display:flex;gap:4px;justify-content:flex-end;flex-wrap:wrap;margin-bottom:2px;}
   .cb{font:11px var(--mono);border:1px solid var(--line);background:var(--surface-2);color:var(--muted);border-radius:6px;padding:2px 8px;cursor:pointer;}
@@ -215,139 +215,7 @@ async function call(name, args){
   return unwrap(res);
 }
 
-/* ---------- chart (the JAM panel's, plus reference lines, ticks and picking) ---------- */
-const SVGNS = "http://www.w3.org/2000/svg";
-const isNum = v=>typeof v === "number" && isFinite(v);
-// A CSS variable is not resolved in an SVG presentation attribute: those go in style.
-function svgEl(tag, attrs, parent){ const n = document.createElementNS(SVGNS, tag);
-  for (const k in attrs || {}){ const v = attrs[k]; if (typeof v === "string" && v.indexOf("var(") >= 0) n.style.setProperty(k, v); else n.setAttribute(k, v); }
-  if (parent) parent.appendChild(n); return n; }
-function fmtVal(v, d){ if (!isNum(v)) return "—"; if (d != null) return v.toFixed(d); const a = Math.abs(v);
-  return a !== 0 && (a >= 1e5 || a < 1e-3) ? v.toExponential(3) : String(+v.toPrecision(5)); }
-function fmtTick(v){ const a = Math.abs(v); return a !== 0 && (a >= 1e4 || a < 1e-3) ? v.toExponential(0).replace("e+", "e") : String(+v.toPrecision(4)); }
-function minMax(a){ let lo = Infinity, hi = -Infinity; for (const v of a){ if (v < lo) lo = v; if (v > hi) hi = v; } return [lo, hi]; }
-function linTicks(lo, hi, n){ const span = hi - lo; if (!(span > 0)) return [lo];
-  const raw = span / n, mag = Math.pow(10, Math.floor(Math.log10(raw))), r = raw / mag, step = (r > 5 ? 10 : r > 2 ? 5 : r > 1 ? 2 : 1) * mag, out = [];
-  for (let t = Math.ceil(lo / step) * step; t <= hi + step * 1e-9; t += step) out.push(+t.toPrecision(12)); return out; }
-function download(text, type, name){ try{ const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([text], {type})); a.download = name;
-  document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 1000); }catch(e){} }
-function runs(points, ok){ const out = []; let cur = []; for (const p of points){ if (!ok(p) || p.breakBefore){ if (cur.length) out.push(cur); cur = []; } if (ok(p)) cur.push(p); } if (cur.length) out.push(cur); return out; }
-// series: {key, name, color, points:[{x,y,lo,hi,lo2,hi2,info,tag}], line, width, opacity, dash, markers, hollow, shape, legend, legendName, hover}
-// opts: xlabel, ylabel, height, hlines:[{y,label}], vlines:[{x,color,dash,width,label}], xticks:[{v,label}], xpad, onPick(point, series)
-function makeChart(box, opts){
-  const st = {series: [], hidden: new Set(), view: null, opts: Object.assign({height: 320, name: "chart", hlines: [], vlines: []}, opts)};
-  box.className = "chart";
-  box.innerHTML = '<div class="chart-bar"></div><div class="chart-plot"></div><div class="chart-legend"></div><div class="chart-tip" hidden></div>';
-  const bar = box.querySelector(".chart-bar"), plot = box.querySelector(".chart-plot"), legend = box.querySelector(".chart-legend"), tip = box.querySelector(".chart-tip");
-  const button = (label, title, fn)=>{ const b = document.createElement("button"); b.type = "button"; b.className = "cb"; b.textContent = label; b.title = title; b.onclick = fn; bar.appendChild(b); return b; };
-  button("reset zoom", "Show everything again (or double-click the plot)", ()=>{ st.view = null; draw(); });
-  button("CSV", "Download the plotted values", ()=>download(csv(), "text/csv", st.opts.name + ".csv"));
-  button("SVG", "Download the chart as an SVG image", ()=>download(svgText(), "image/svg+xml", st.opts.name + ".svg"));
-  let svg = null, marks = [];
-  const shown = ()=>st.series.filter(s=>!st.hidden.has(s.key));
-  function extent(){
-    const xs = [], ys = [];
-    for (const s of shown()) for (const p of s.points || []){ xs.push(p.x); for (const v of [p.y, p.lo, p.hi, p.lo2, p.hi2]) if (isNum(v)) ys.push(v); }
-    for (const l of st.opts.vlines) if (isNum(l.x)) xs.push(l.x);
-    for (const l of st.opts.hlines) if (isNum(l.y) && l.fit !== false) ys.push(l.y);
-    const fx = xs.filter(isNum), fy = ys.filter(isNum); if (!fx.length || !fy.length) return null;
-    let [x0, x1] = minMax(fx), [y0, y1] = minMax(fy);
-    if (st.opts.ymin != null) y0 = Math.min(y0, st.opts.ymin); if (st.opts.ymax != null) y1 = st.opts.ymax;
-    const px = (x1 - x0) || Math.abs(x0) || 1, py = (y1 - y0) || Math.abs(y0) || 1, xp = st.opts.xpad == null ? 0.03 : st.opts.xpad;
-    return [x0 - px * xp, x1 + px * xp, y0 - py * 0.05, y1 + py * 0.06];
-  }
-  function draw(){
-    const W = Math.max(260, Math.round(plot.clientWidth || box.clientWidth || 600)), H = st.opts.height;
-    const m = {l: 64, r: 14, t: 12, b: 44}, iw = W - m.l - m.r, ih = H - m.t - m.b;
-    plot.innerHTML = ""; marks = [];
-    svg = svgEl("svg", {width: W, height: H, viewBox: "0 0 " + W + " " + H, class: "chart-svg"}, plot);
-    const dom = st.view || extent();
-    if (!dom){ svgEl("text", {x: W / 2, y: H / 2, "text-anchor": "middle", class: "ct-label"}, svg).textContent = "Nothing to draw: every series is off."; paintLegend(); return; }
-    const [x0, x1, y0, y1] = dom, X = v=>m.l + (v - x0) / (x1 - x0) * iw, Y = v=>m.t + ih - (v - y0) / (y1 - y0) * ih;
-    const clip = "clip" + Math.random().toString(36).slice(2);
-    svgEl("rect", {x: m.l, y: m.t, width: iw, height: ih}, svgEl("clipPath", {id: clip}, svgEl("defs", {}, svg)));
-    const axis = svgEl("g", {class: "ct-axis"}, svg);
-    const xt = st.opts.xticks ? st.opts.xticks.filter(t=>t.v >= x0 && t.v <= x1) : linTicks(x0, x1, Math.max(3, Math.floor(iw / 90))).map(v=>({v, label: fmtTick(v)}));
-    for (const t of xt){ const x = X(t.v); svgEl("line", {x1: x, x2: x, y1: m.t, y2: m.t + ih, class: "ct-grid"}, axis);
-      svgEl("text", {x, y: m.t + ih + 15, "text-anchor": "middle"}, axis).textContent = t.label; }
-    for (const v of linTicks(y0, y1, Math.max(3, Math.floor(ih / 55)))){ const y = Y(v); svgEl("line", {x1: m.l, x2: m.l + iw, y1: y, y2: y, class: "ct-grid"}, axis);
-      svgEl("text", {x: m.l - 6, y: y + 4, "text-anchor": "end"}, axis).textContent = fmtTick(v); }
-    svgEl("rect", {x: m.l, y: m.t, width: iw, height: ih, class: "ct-frame"}, axis);
-    svgEl("text", {x: m.l + iw / 2, y: H - 8, "text-anchor": "middle", class: "ct-label"}, svg).textContent = st.opts.xlabel || "";
-    svgEl("text", {x: 14, y: m.t + ih / 2, "text-anchor": "middle", class: "ct-label", transform: "rotate(-90 14 " + (m.t + ih / 2) + ")"}, svg).textContent = st.opts.ylabel || "";
-    const body = svgEl("g", {"clip-path": "url(#" + clip + ")"}, svg);
-    for (const l of st.opts.hlines){ if (!isNum(l.y) || l.y < y0 || l.y > y1) continue; const y = Y(l.y);
-      svgEl("line", {x1: m.l, x2: m.l + iw, y1: y, y2: y, class: "ct-ref"}, body);
-      if (l.label) svgEl("text", {x: m.l + iw - 4, y: y - 4, "text-anchor": "end", class: "ct-reftext"}, body).textContent = l.label; }
-    for (const l of st.opts.vlines){ if (!isNum(l.x) || l.x < x0 || l.x > x1) continue; const x = X(l.x);
-      svgEl("line", {x1: x, x2: x, y1: m.t, y2: m.t + ih, stroke: l.color || "var(--muted)", "stroke-width": l.width || 1.2, "stroke-dasharray": l.dash || "none", opacity: l.opacity == null ? 0.9 : l.opacity}, body); }
-    const ok = p=>isNum(p.x) && isNum(p.y);
-    for (const s of shown()){
-      const c = s.color, pts = (s.points || []).filter(ok);
-      if (s.line) for (const run of runs(s.points || [], ok)) if (run.length > 1)
-        svgEl("path", {d: "M" + run.map(p=>X(p.x).toFixed(1) + "," + Y(p.y).toFixed(1)).join("L"), fill: "none", stroke: c,
-          "stroke-width": s.width || 1.8, "stroke-opacity": s.opacity == null ? 1 : s.opacity, "stroke-dasharray": s.dash || "none"}, body);
-      if (s.markers) for (const p of pts){
-        const x = X(p.x), y = Y(p.y);
-        if (isNum(p.lo2) && isNum(p.hi2)) svgEl("line", {x1: x, x2: x, y1: Y(p.lo2), y2: Y(p.hi2), stroke: c, "stroke-width": 1.2, opacity: 0.8}, body);
-        if (isNum(p.lo) && isNum(p.hi)) svgEl("line", {x1: x, x2: x, y1: Y(p.lo), y2: Y(p.hi), stroke: c, "stroke-width": s.errWidth || 1.2}, body);
-        if (s.shape === "diamond") svgEl("path", {d: "M" + x + "," + (y - 5) + "L" + (x + 5) + "," + y + "L" + x + "," + (y + 5) + "L" + (x - 5) + "," + y + "Z",
-          fill: s.hollow ? "var(--surface)" : c, stroke: c, "stroke-width": 1.6}, body);
-        else svgEl("circle", {cx: x, cy: y, r: s.r || 3.4, fill: s.hollow ? "var(--surface)" : c, stroke: c, "stroke-width": s.hollow ? 1.5 : 0}, body);
-      }
-      if (s.hover !== false) for (const p of pts) marks.push({x: X(p.x), y: Y(p.y), s, p});
-    }
-    const ov = svgEl("rect", {x: m.l, y: m.t, width: iw, height: ih, class: "ct-ov" + (st.opts.onPick ? " pick" : "")}, svg);
-    const ring = svgEl("circle", {r: 5.5, class: "ct-ring", visibility: "hidden"}, svg), sel = svgEl("rect", {class: "ct-sel", visibility: "hidden"}, svg);
-    const at = ev=>{ const b = svg.getBoundingClientRect(); return [(ev.clientX - b.left) * W / b.width, (ev.clientY - b.top) * H / b.height]; };
-    const nearest = (px, py)=>{ let best = null, bd = 900; for (const k of marks){ const d = (k.x - px) ** 2 + (k.y - py) ** 2; if (d < bd){ bd = d; best = k; } } return best; };
-    let start = null;
-    ov.addEventListener("pointerdown", ev=>{ start = at(ev); try{ ov.setPointerCapture(ev.pointerId); }catch(e){} });
-    ov.addEventListener("pointermove", ev=>{
-      const [px, py] = at(ev);
-      if (start){ const [sx, sy] = start; sel.setAttribute("x", Math.min(sx, px)); sel.setAttribute("y", Math.min(sy, py));
-        sel.setAttribute("width", Math.abs(px - sx)); sel.setAttribute("height", Math.abs(py - sy)); sel.setAttribute("visibility", "visible");
-        tip.hidden = true; ring.setAttribute("visibility", "hidden"); return; }
-      const best = nearest(px, py);
-      if (!best){ tip.hidden = true; ring.setAttribute("visibility", "hidden"); return; }
-      ring.setAttribute("cx", best.x); ring.setAttribute("cy", best.y); ring.style.stroke = best.s.color; ring.setAttribute("visibility", "visible");
-      const p = best.p, lines = [best.s.name].concat(p.info || [(st.opts.xlabel || "x") + " = " + fmtVal(p.x), (st.opts.ylabel || "y") + " = " + fmtVal(p.y)]);
-      tip.innerHTML = lines.map((t, i)=>i ? esc(t) : "<b>" + esc(t) + "</b>").join("<br>"); tip.hidden = false;
-      const b = svg.getBoundingClientRect(), hb = box.getBoundingClientRect();
-      const left = b.left - hb.left + best.x * b.width / W, top = b.top - hb.top + best.y * b.height / H;
-      tip.style.left = Math.max(4, Math.min(left + 12, hb.width - tip.offsetWidth - 4)) + "px"; tip.style.top = Math.max(4, top - tip.offsetHeight - 10) + "px";
-    });
-    ov.addEventListener("pointerup", ev=>{
-      if (!start) return; const [sx, sy] = start, [px, py] = at(ev); start = null; sel.setAttribute("visibility", "hidden");
-      if (Math.abs(px - sx) < 8 && Math.abs(py - sy) < 8){ const best = nearest(px, py); if (best && st.opts.onPick) st.opts.onPick(best.p, best.s); return; }
-      if (Math.abs(px - sx) < 8 || Math.abs(py - sy) < 8) return;
-      const ix = v=>x0 + (v - m.l) / iw * (x1 - x0), iy = v=>y0 + (m.t + ih - v) / ih * (y1 - y0);
-      st.view = [ix(Math.min(sx, px)), ix(Math.max(sx, px)), iy(Math.max(sy, py)), iy(Math.min(sy, py))]; draw();
-    });
-    ov.addEventListener("pointercancel", ()=>{ start = null; sel.setAttribute("visibility", "hidden"); });
-    ov.addEventListener("pointerleave", ()=>{ if (!start){ tip.hidden = true; ring.setAttribute("visibility", "hidden"); } });
-    ov.addEventListener("dblclick", ()=>{ st.view = null; draw(); });
-    paintLegend();
-  }
-  function paintLegend(){
-    const seen = new Map(); for (const s of st.series) if (s.legend !== false && !seen.has(s.key)) seen.set(s.key, s);
-    legend.innerHTML = "";
-    for (const [key, s] of seen){ const item = document.createElement("span"); item.className = "lg" + (st.hidden.has(key) ? " off" : "");
-      item.innerHTML = '<i style="background:' + esc(s.color) + '"></i>' + esc(s.legendName || key);
-      item.onclick = ()=>{ if (st.hidden.has(key)) st.hidden.delete(key); else st.hidden.add(key); draw(); }; legend.appendChild(item); }
-  }
-  function csv(){ const q = v=>'"' + String(v == null ? "" : v).replace(/"/g, '""') + '"';
-    const rows = [["series", st.opts.xlabel || "x", st.opts.ylabel || "y", "lower", "upper"].map(q).join(",")];
-    for (const s of shown()) for (const p of s.points || []) rows.push([s.name, p.x, p.y, p.lo, p.hi].map(q).join(",")); return rows.join("\n"); }
-  function svgText(){ if (!svg) return ""; const clone = svg.cloneNode(true), cs = getComputedStyle(document.documentElement), v = n=>cs.getPropertyValue(n).trim();
-    const style = svgEl("style", {}); style.textContent = ".ct-axis text,.ct-reftext{font:11px sans-serif;fill:" + v("--muted") + "}.ct-label{font:12px sans-serif;fill:" + v("--fg") + "}"
-      + ".ct-grid{stroke:" + v("--line") + "}.ct-frame{fill:none;stroke:" + v("--line") + "}.ct-ref{stroke:" + v("--muted") + ";stroke-dasharray:4 3}.ct-ov,.ct-sel,.ct-ring{display:none}";
-    clone.insertBefore(svgEl("rect", {width: "100%", height: "100%", fill: v("--surface")}), clone.firstChild); clone.insertBefore(style, clone.firstChild);
-    clone.setAttribute("xmlns", SVGNS); return new XMLSerializer().serializeToString(clone).replace(/var\(--surface\)/g, v("--surface")).replace(/var\(--muted\)/g, v("--muted")); }
-  let frame = 0;
-  if (window.ResizeObserver) new ResizeObserver(()=>{ cancelAnimationFrame(frame); frame = requestAnimationFrame(()=>{ if (box.isConnected) draw(); }); }).observe(plot);
-  return { set(series, o){ st.series = series; Object.assign(st.opts, o || {}); draw(); }, resetZoom(){ st.view = null; } };
-}
+/*@jamcharts*/  // jamai/static/jamcharts.js, inlined by the SBI plugin when it serves this page
 
 /* ---------- statistics shown on the page (display only) ---------- */
 // The confidence level of a 2ΔlnL value with one parameter: P(χ²₁ ≤ q) = erf(√(q/2)).
@@ -360,7 +228,6 @@ const Y_MODES = {
   lr: {label: "L / L_max", f: q=>Math.exp(-q / 2), lines: [{y: Math.exp(-Q68 / 2), label: "68%"}, {y: Math.exp(-Q95 / 2), label: "95%"}], ymax: 1},
   cl: {label: "confidence level", f: cl, lines: [{y: 0.6827, label: "68%"}, {y: 0.95, label: "95%"}], ymax: 1},
 };
-const PALETTE = ["#2560c9", "#d9480f", "#2b8a3e", "#ae3ec9", "#0b7285", "#e67700", "#c92a2a", "#5f3dc4"];
 
 /* ---------- state ---------- */
 let options = null, validation = null, focus = "", reveal = false;
@@ -377,10 +244,10 @@ const ivText = comps=>comps.length ? comps.map(c=>"[" + c[0].toFixed(5) + ", " +
 
 let cProfile, cFits, cPull, cVal;
 function charts(){
-  cProfile = makeChart($("cProfile"), {height: 360, name: "sbi_likelihood", xlabel: "α_s", onPick: p=>setFocus(p.tag)});
-  cFits = makeChart($("cFits"), {height: 280, name: "sbi_best_fits", xlabel: "benchmark", ylabel: "α_s", xpad: 0.12, onPick: p=>setFocus(p.tag)});
-  cPull = makeChart($("cPull"), {height: 280, name: "sbi_pulls", xlabel: "benchmark", ylabel: "pull", xpad: 0.12, onPick: p=>setFocus(p.tag)});
-  cVal = makeChart($("cVal"), {height: 280, name: "sbi_validation", xlabel: "truth α_s", xpad: 0.08});
+  cProfile = makeChart($("cProfile"), {logButtons: false, infoOnly: true, height: 360, name: "sbi_likelihood", xlabel: "α_s", onPick: p=>setFocus(p.tag)});
+  cFits = makeChart($("cFits"), {logButtons: false, infoOnly: true, height: 280, name: "sbi_best_fits", xlabel: "benchmark", ylabel: "α_s", xpad: 0.12, onPick: p=>setFocus(p.tag)});
+  cPull = makeChart($("cPull"), {logButtons: false, infoOnly: true, height: 280, name: "sbi_pulls", xlabel: "benchmark", ylabel: "pull", xpad: 0.12, onPick: p=>setFocus(p.tag)});
+  cVal = makeChart($("cVal"), {logButtons: false, infoOnly: true, height: 280, name: "sbi_validation", xlabel: "truth α_s", xpad: 0.08});
 }
 
 function setFocus(id){ if (!id || !results[id]) return; focus = id; visible.add(id); paint(); }
@@ -443,7 +310,7 @@ function paintFits(){
 function paintPull(){
   const box = $("cPull");
   if (!reveal){ box.dataset.placeholder = "1"; box.className = ""; box.innerHTML = '<div class="placeholder">Reveal the simulator truths to compare the fits with them.</div>'; cPull = null; return; }
-  if (!cPull || box.dataset.placeholder){ delete box.dataset.placeholder; cPull = makeChart(box, {height: 280, name: "sbi_pulls", xlabel: "benchmark", ylabel: "pull", xpad: 0.12, onPick: p=>setFocus(p.tag)}); }
+  if (!cPull || box.dataset.placeholder){ delete box.dataset.placeholder; cPull = makeChart(box, {logButtons: false, infoOnly: true, height: 280, name: "sbi_pulls", xlabel: "benchmark", ylabel: "pull", xpad: 0.12, onPick: p=>setFocus(p.tag)}); }
   const list = options.benchmarks.filter(b=>results[b.id] && visible.has(b.id));
   cPull.set(list.map(b=>{ const r = results[b.id], p = pull(r);
     return {key: b.label, name: b.label, color: colorOf(b.id), markers: true, errWidth: 2, r: b.id === focus ? 5 : 3.6,

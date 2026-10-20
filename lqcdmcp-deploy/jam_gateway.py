@@ -10017,10 +10017,23 @@ PANEL_CSP = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-
              "base-uri 'none'; form-action 'none'")
 
 
+CHARTS_FILE = os.path.join(HERE, "jamai", "static", "jamcharts.js")
+CHARTS_MARK = "/*@jamcharts*/"
+
+
+def inline_charts(html):
+    """A page with the shared chart code (jamai/static/jamcharts.js) in place of
+    its /*@jamcharts*/ mark: the JAM panel here, the SBI dashboard in its plugin."""
+    if CHARTS_MARK not in html:
+        return html
+    with open(CHARTS_FILE, encoding="utf-8") as fh:
+        return html.replace(CHARTS_MARK, fh.read(), 1)
+
+
 def _panel_html():
     try:
         with open(PANEL_FILE, encoding="utf-8") as fh:
-            return fh.read()
+            return inline_charts(fh.read())
     except OSError:
         return _FALLBACK_PANEL
 
