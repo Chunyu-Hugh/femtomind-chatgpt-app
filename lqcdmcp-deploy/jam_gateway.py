@@ -3555,7 +3555,7 @@ _FF_PLOTS = _REPLICA_STATE + r"""
 import glob, json, os, base64, uuid
 stage = __STAGE__; flavors = __FLAVORS__; q2 = __Q2__
 configured = __CONFIGURED__; credible_interval = validate_credible_interval(__INTERVAL__)
-options = __DISPLAY__; campaign_name = __CAMPAIGN__
+options = __DISPLAY__; campaign_name = __CAMPAIGN__; export_png = __PNG__; cache = __CACHE__
 plot_dir = os.path.join(os.path.dirname(os.path.dirname(stage)), 'analysis', 'ff_plots')
 os.makedirs(plot_dir, exist_ok=True)
 os.environ['MPLCONFIGDIR'] = os.path.join(plot_dir, '.matplotlib')
@@ -3566,7 +3566,7 @@ if not configured:
         state, record = replica_state(path)
         if state != 'fitted': excluded[state or 'failed'] += 1
         elif not record.get('msr_path') or not os.path.isfile(record['msr_path']): excluded['missing_msr'] += 1
-        else: records.append(record)
+        else: records.append(dict(record, identity=os.path.basename(os.path.dirname(path))))
     if len(records) < 2:
         print(json.dumps({'status': 'missing_inputs', 'message': 'At least two fitted FF replicas are required for a credible interval. Configured parameters are a separate deterministic preview.'})); raise SystemExit(0)
 import matplotlib; matplotlib.use('Agg')
@@ -3575,41 +3575,64 @@ from matplotlib.colors import to_rgba
 import numpy as np
 try:
     to_rgba(options['band_color'])
-    typography = _pdf_typography()
-except (ValueError, RuntimeError) as exc:
+except ValueError as exc:
     print(json.dumps({'status':'error','message':str(exc)}));raise SystemExit(0)
-from fitlib.resman import RESMAN
-from tools.config import conf, load_config
-from tools.tools import load
-conf.clear(); load_config(os.path.join(stage, 'input.py'))
-resman = RESMAN(nworkers=1, parallel=False, datasets=False)
 zs = np.linspace(options['z_min'], options['z_max'], 181)
-curves = {}
-try:
-    for record in ([None] if configured else records):
-        if record is not None:
-            replica = load(record['msr_path'])
-            order, params = replica['order'][0], replica['params'][0]
-            if order is None or params is None or not np.isfinite(np.asarray(params, dtype=float)).all():
-                raise ValueError('Missing or nonfinite fitted FF parameters/order')
-            resman.parman.order = order
-            resman.parman.set_new_params(params, initial=True)
-        evaluated = evaluate_ff_curves(conf, zs, q2, flavors)
-        for key, rows in evaluated.items():
-            for flavor, values in rows.items(): curves.setdefault(key, {}).setdefault(flavor, []).append(values)
-except (OSError, KeyError, TypeError, ValueError, ArithmeticError) as exc:
-    print(json.dumps({'status':'error','message':'Cannot evaluate FF replica: '+str(exc)+'. No replicas were silently dropped.'}));raise SystemExit(0)
-finally:
-    resman.shutdown()
+# Each replica's curves (every FF object) are cached per flavor, Q2 and z range
+# (analysis/cache/ff): a redraw, another interval or other hadrons only read
+# them; a new flavor, Q2 or z range runs FitPack for what is missing.
+if configured:
+    sig = [['configured', int(os.path.getmtime(os.path.join(stage, 'input.py')))]]
+else:
+    sig = [[s['identity'], int(os.path.getmtime(s['msr_path']))] for s in records]
+tag = lambda v: ('%g' % v).replace('.', 'p')
+cache_file = lambda f: os.path.join(cache, 'ff', '%s_q2_%s_z_%s_%s_%s.json' % (
+    'configured' if configured else 'replicas', tag(q2), tag(options['z_min']), tag(options['z_max']), f))
+nrows = 1 if configured else len(records)
+curves, todo = {}, []
+for f in flavors:
+    doc = read_json(cache_file(f)) or {}
+    if (doc.get('version') == VERSION and doc.get('signature') == sig and doc.get('curves')
+            and all(len(rows) == nrows for rows in doc['curves'].values())):
+        for key, rows in doc['curves'].items(): curves.setdefault(key, {})[f] = rows
+    else:
+        todo.append(f)
+if todo:
+    from fitlib.resman import RESMAN
+    from tools.config import conf, load_config
+    from tools.tools import load
+    conf.clear(); load_config(os.path.join(stage, 'input.py'))
+    resman = RESMAN(nworkers=1, parallel=False, datasets=False)
+    fresh = {}
+    try:
+        for record in ([None] if configured else records):
+            if record is not None:
+                replica = load(record['msr_path'])
+                order, params = replica['order'][0], replica['params'][0]
+                if order is None or params is None or not np.isfinite(np.asarray(params, dtype=float)).all():
+                    raise ValueError('Missing or nonfinite fitted FF parameters/order')
+                resman.parman.order = order
+                resman.parman.set_new_params(params, initial=True)
+            evaluated = evaluate_ff_curves(conf, zs, q2, todo)
+            for key, rows in evaluated.items():
+                for flavor, values in rows.items(): fresh.setdefault(key, {}).setdefault(flavor, []).append(values)
+    except (OSError, KeyError, TypeError, ValueError, ArithmeticError) as exc:
+        print(json.dumps({'status':'error','message':'Cannot evaluate FF replica: '+str(exc)+'. No replicas were silently dropped.'}));raise SystemExit(0)
+    finally:
+        resman.shutdown()
+    for f in todo:
+        rows = {key: fresh[key][f] for key in fresh}
+        for key, values in rows.items(): curves.setdefault(key, {})[f] = values
+        write_json(cache_file(f), {'version': VERSION, 'q2': q2, 'flavor': f, 'configured': configured,
+                                   'signature': sig, 'z': [float(z) for z in zs],
+                                   'curves': {key: [[float('%.8g' % v) for v in row] for row in values]
+                                              for key, values in rows.items()}})
 available = ff_available_hadrons(curves)
 hadrons = options['hadrons'] or available
 if not hadrons or any(h not in available for h in hadrons):
     print(json.dumps({'status':'error','message':'Select available hadrons: '+', '.join(available),'available_ff_hadrons':available}));raise SystemExit(0)
 try:
     bands = ff_bands(curves, hadrons, flavors, credible_interval, pointwise_credible_interval, configured)
-    figures = draw_ff_figures(zs, bands, flavors, hadrons, options['modes'], q2, campaign_name,
-                              credible_interval, typography=typography, band_color=options['band_color'],
-                              band_alpha=options['band_alpha'], configured=configured)
 except (ValueError, RuntimeError, OSError) as exc:
     print(json.dumps({'status':'error','message':'FF plotting failed: '+str(exc)}));raise SystemExit(0)
 nreplicas = len(records) if not configured else 0
@@ -3625,25 +3648,49 @@ metadata = {'available_objects': list(curves), 'unavailable_objects': [key for k
             'quantity': 'zD(z,Q2)', 'charge_convention': 'native positive charged hadron; no extra factor of two',
             'excluded_replicas': excluded, 'note': note, 'z_min':options['z_min'],'z_max':options['z_max'],
             'dpi':FF_PREVIEW_DPI}
+# The interactive chart: Trey's bands (ff_bands) at each offered interval; a
+# configured preview has one curve and no band.
+rnd = lambda a: [float('%.6g' % v) for v in a]
+level_bands = {} if configured else {('%g' % L): ff_bands(curves, hadrons, flavors, L, pointwise_credible_interval)
+                                     for L in sorted(set(LEVELS) | {credible_interval})}
+chart = {'z': rnd(zs), 'q2': q2, 'configured': configured, 'n_replicas': nreplicas, 'hadrons': hadrons,
+         'flavors': flavors, 'modes': options['modes'],
+         'colors': {h: FF_HADRONS[h][2] for h in hadrons},
+         'curves': [{'hadron': h, 'flavor': f, 'mean': rnd(bands[h][f]['mean']),
+                     'bands': {L: [rnd(b[h][f]['low']), rnd(b[h][f]['high'])] for L, b in level_bands.items()}}
+                    for h in hadrons for f in flavors]}
 plots = []; request_id = uuid.uuid4().hex; limitations=[]
-for fig, info in figures:
-    name = info['mode'] + ('_'+info['hadrons'][0] if info['mode']=='individual' else '')
-    path = os.path.join(plot_dir, 'ff_%s_q2_%g_%s.png' % (name,q2,request_id))
-    fig.savefig(path, dpi=FF_PREVIEW_DPI); plt.close(fig)
-    limitations.extend(item for item in info['log_limitations'] if item['nonpositive_lower'] or item['nonpositive_upper'])
-    plots.append({'object':'ff', 'label':name.replace('_',' '), 'flavors':flavors, 'path':path, **metadata, **info,
-                  'png_b64':base64.b64encode(open(path,'rb').read()).decode()})
+if export_png:
+    # The figures need real LaTeX (_pdf_typography refuses any other renderer).
+    # If they cannot be drawn, the chart still comes back with the reason.
+    try:
+        typography = _pdf_typography()
+        figures = draw_ff_figures(zs, bands, flavors, hadrons, options['modes'], q2, campaign_name,
+                                  credible_interval, typography=typography, band_color=options['band_color'],
+                                  band_alpha=options['band_alpha'], configured=configured)
+        for fig, info in figures:
+            name = info['mode'] + ('_'+info['hadrons'][0] if info['mode']=='individual' else '')
+            path = os.path.join(plot_dir, 'ff_%s_q2_%g_%s.png' % (name,q2,request_id))
+            fig.savefig(path, dpi=FF_PREVIEW_DPI); plt.close(fig)
+            limitations.extend(item for item in info['log_limitations'] if item['nonpositive_lower'] or item['nonpositive_upper'])
+            plots.append({'object':'ff', 'label':name.replace('_',' '), 'flavors':flavors, 'path':path, **metadata, **info,
+                          'png_b64':base64.b64encode(open(path,'rb').read()).decode()})
+    except (ValueError, RuntimeError, OSError) as exc:
+        plt.close('all')
+        metadata['figure_error'] = str(exc)
+        metadata['note'] += ' FF figures not rendered: ' + str(exc)
 if limitations:
     metadata['note'] += ' Log-axis limitation: intervals crossing zero extend below the display frame; intervals entirely nonpositive are not drawable. Numerical values are unchanged; see log_limitations.'
 metadata['log_limitations']=limitations
-print(json.dumps({'status':'success', **metadata, 'plots':plots}))
+print(json.dumps({'status':'success', **metadata, 'computed_flavors': todo, 'chart': chart, 'plots':plots}))
 """
 
 
 def campaign_ff_plots(collection_id="", flavors="", q2=100.0, mean_overlay=False,
                       username="", credible_interval=95, configured=False, modes="combined",
-                      hadrons="", z_min=0.02, z_max=0.9, band_color="red", band_alpha=0.9):
-    """Native fitted FF bands, with independently selectable combined/individual art."""
+                      hadrons="", z_min=0.02, z_max=0.9, band_color="red", band_alpha=0.9, export_png=True):
+    """Native fitted FF bands, with independently selectable combined/individual art,
+    and the same bands as an interactive chart; replica curves are cached."""
     u, error = _need_user(username)
     if error:
         return error
@@ -3667,22 +3714,34 @@ def campaign_ff_plots(collection_id="", flavors="", q2=100.0, mean_overlay=False
         display = ff_plotting.validate_ff_display(z_min,z_max,modes,hadrons,band_color,band_alpha)
     except (ValueError,TypeError,OverflowError) as exc:
         return {'status':'error','message':str(exc)}
-    code = _object_registry_source()+'\n'+inspect.getsource(pdf_plotting)+'\n'+inspect.getsource(ff_plotting)+_fill(
-        _FF_PLOTS, STAGE=_stage_root(u,entry),FLAVORS=fl,Q2=q2,INTERVAL=interval,CONFIGURED=configured,
-        DISPLAY=display,CAMPAIGN=entry.get('campaign_name') or entry['input_card'].get('name') or collection_id)
-    result = _run_ifarm_py(u,code,apptainer=True,timeout=600,cap=20000000,
-                           env={'MPLCONFIGDIR':f'{_workspace(u)}/{CAMPAIGNS_DIR}/.matplotlib'})
-    try:
-        data = json.loads(result['out'].strip().splitlines()[-1])
-    except (ValueError,IndexError,KeyError):
-        return {'status':'error','message':'FF plotting failed','detail':(result.get('err') or result.get('out') or '')[-600:]}
-    if data.get('status')!='success': return data
-    plots = [{**{k:v for k,v in row.items() if k!='png_b64'},
-              'data_url':'data:image/png;base64,'+row['png_b64']} for row in data['plots']]
-    return {**{k:v for k,v in data.items() if k not in ('status','plots')},'status':'ok',
-            'collection_id':collection_id,'q2':q2,
-            'plots':[{k:v for k,v in row.items() if k!='data_url'} for row in plots],
-            '_images':[{'data':row['png_b64'],'mimeType':'image/png'} for row in data['plots']], '_ui':{'view':'images','panel_plots':plots}}
+
+    def run():
+        code = (_object_registry_source()+'\n'+inspect.getsource(pdf_plotting)+'\n'+inspect.getsource(ff_plotting)
+                + '\n' + _analysis_code(
+                    _FF_PLOTS, STAGE=_stage_root(u,entry),FLAVORS=fl,Q2=q2,INTERVAL=interval,CONFIGURED=configured,
+                    DISPLAY=display,CAMPAIGN=entry.get('campaign_name') or entry['input_card'].get('name') or collection_id,
+                    PNG=bool(export_png), CACHE=_cache_dir(u, entry)))
+        result = _run_ifarm_py(u,code,apptainer=True,timeout=1800,cap=60000000,
+                               env={'MPLCONFIGDIR':f'{_workspace(u)}/{CAMPAIGNS_DIR}/.matplotlib'})
+        data = _last_json(result)
+        if not data:
+            return {'status':'error','message':'FF plotting failed','detail':(result.get('err') or result.get('out') or '')[-600:]}
+        if data.get('status')!='success': return data
+        plots = [{**{k:v for k,v in row.items() if k!='png_b64'},
+                  'data_url':'data:image/png;base64,'+row['png_b64']} for row in data['plots']]
+        chart = data['chart']
+        # What the model reads: the mean at a few z per hadron and flavor.
+        picks = [i for i in range(len(chart['z'])) if i % 45 == 0] + [len(chart['z']) - 1]
+        summary = {c['hadron']+':'+c['flavor']: [[chart['z'][i], c['mean'][i]] for i in picks] for c in chart['curves']}
+        return {**{k:v for k,v in data.items() if k not in ('status','plots','chart')},'status':'ok',
+                'collection_id':collection_id,'q2':q2, 'mean_at_z': summary,
+                'plots':[{k:v for k,v in row.items() if k!='data_url'} for row in plots],
+                '_images':[{'data':row['png_b64'],'mimeType':'image/png'} for row in data['plots']],
+                '_ui':{'view':'ff','chart':chart,'credible_interval':interval,'panel_plots':plots}}
+
+    return _background(u, "campaign_ff_plots",
+                       {"collection_id": collection_id, "flavors": fl, "q2": q2, "interval": interval,
+                        "configured": configured, "display": display, "png": bool(export_png)}, run)
 
 
 _THEORY_PLOTTING = r'''
@@ -9674,7 +9733,11 @@ TOOLS = {
                 "Hadrons pion,kaon,rhadron(residual),hadron(total) require actual components. "
                 "Flavors g,u,d,s,ub,db,sb,c,b,up,dp,sp; combinations are formed per replica. "
                 "Defaults Q2=100, z=.02 to .9, 95% pointwise equal-tailed intervals. No replica lines. "
-                "configured=true is an explicit deterministic starting-value preview without a band.",
+                "configured=true is an explicit deterministic starting-value preview without a band. "
+                "The bands are also drawn as an interactive chart in the panel and the chat widget (by flavor "
+                "with hadrons overlaid, or by hadron; hover values, zoom, interval and log/linear switches); "
+                "export_png=false skips the figures. Replica curves are cached per Q2, z range and flavor: a "
+                "redraw or another interval or hadron choice is fast. " + ASYNC_NOTE,
         "schema": {"type":"object", "properties": {
             "collection_id":{"type":"string","description":COLLECTION_ARG}, "flavors":{"type":"string"},
             "q2":{"type":"number","exclusiveMinimum":0,"default":100},
@@ -9684,12 +9747,15 @@ TOOLS = {
             "z_min":{"type":"number","exclusiveMinimum":0,"default":.02},
             "z_max":{"type":"number","exclusiveMaximum":1,"default":.9},
             "band_color":{"type":"string","default":"red"},
-            "band_alpha":{"type":"number","minimum":0,"maximum":1,"default":.9}},"required":["collection_id"]},
+            "band_alpha":{"type":"number","minimum":0,"maximum":1,"default":.9},
+            "export_png":{"type":"boolean","default":True}},"required":["collection_id"]},
+        "meta": WIDGET_META,
         "fn": lambda a: campaign_ff_plots(a.get("collection_id",""),a.get("flavors",""),a.get("q2",100),
                                           a.get("mean_overlay",False),credible_interval=a.get("credible_interval",95),
                                           configured=a.get("configured",False),modes=a.get("modes","combined"),
                                           hadrons=a.get("hadrons",""),z_min=a.get("z_min",.02),z_max=a.get("z_max",.9),
-                                          band_color=a.get("band_color","red"),band_alpha=a.get("band_alpha",.9))},
+                                          band_color=a.get("band_color","red"),band_alpha=a.get("band_alpha",.9),
+                                          export_png=a.get("export_png",True))},
     "analyze_by_experiment": {
         "desc": "Data vs theory and the per-dataset table, for the datasets and/or experiments the user "
                 "names, passed as they said them: datasets 'idis:10010, jet 10001' or bare ids; experiments "
