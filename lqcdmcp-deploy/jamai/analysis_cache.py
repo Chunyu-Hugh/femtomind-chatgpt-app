@@ -83,6 +83,81 @@ def signature(records):
     return [[s['identity'], int(os.path.getmtime(s['msr_path']))] for s in records]
 
 
+# ---- replica selection ------------------------------------------------------
+#
+# The statistics can use a subset of the fitted replicas, as JAM analyses do
+# when they leave out replicas with a poor fit. The selection never changes a
+# fit or the cache (which keeps every replica); only what is averaged and what
+# the bands are made of. Rules, applied in this order, each to what is left:
+#   only     [numbers]   keep just these replicas
+#   exclude  [numbers]   leave these out
+#   chi2_max x           leave out replicas whose total chi2 is above x
+#   sigma    k           leave out outliers: total chi2 above median + k * 1.4826 * MAD
+#   best     n           keep the n replicas with the lowest total chi2
+
+SELECTION_KEYS = ('only', 'exclude', 'chi2_max', 'sigma', 'best')
+
+
+def replica_number(identity):
+    m = re.search(r'(\d+)$', str(identity))
+    return int(m.group(1)) if m else None
+
+
+def select_replicas(records, selection):
+    """(kept, dropped) for records with identity and chi2_total: kept in their
+    original order; dropped as [{replica, chi2_total, reason}]."""
+    if not selection:
+        return list(records), []
+    kept, dropped = list(records), []
+    chi2 = lambda s: float(s['chi2_total']) if s.get('chi2_total') is not None else float('inf')
+
+    def drop(rule, keep):
+        nonlocal kept
+        out = [s for s in kept if not keep(s)]
+        dropped.extend({'replica': replica_number(s['identity']), 'chi2_total': s.get('chi2_total'), 'reason': rule} for s in out)
+        kept = [s for s in kept if keep(s)]
+
+    if selection.get('only'):
+        only = set(int(i) for i in selection['only'])
+        drop('not in only', lambda s: replica_number(s['identity']) in only)
+    if selection.get('exclude'):
+        ex = set(int(i) for i in selection['exclude'])
+        drop('excluded', lambda s: replica_number(s['identity']) not in ex)
+    if selection.get('chi2_max') is not None:
+        cap = float(selection['chi2_max'])
+        drop('chi2 > %g' % cap, lambda s: chi2(s) <= cap)
+    if selection.get('sigma') is not None and len(kept) > 2:
+        values = sorted(chi2(s) for s in kept)
+        med = values[len(values) // 2] if len(values) % 2 else (values[len(values) // 2 - 1] + values[len(values) // 2]) / 2
+        dev = sorted(abs(v - med) for v in values)
+        mad = dev[len(dev) // 2] if len(dev) % 2 else (dev[len(dev) // 2 - 1] + dev[len(dev) // 2]) / 2
+        cut = med + float(selection['sigma']) * 1.4826 * mad
+        drop('chi2 > median + %g sigma (%.6g)' % (float(selection['sigma']), cut), lambda s: chi2(s) <= cut)
+    if selection.get('best') is not None:
+        n = int(selection['best'])
+        best = set(id(s) for s in sorted(kept, key=chi2)[:n])
+        drop('not among the best %d' % n, lambda s: id(s) in best)
+    return kept, dropped
+
+
+def selection_report(selection, kept, total, dropped):
+    return {'applied': selection, 'kept': len(kept), 'of': total,
+            'kept_replicas': [replica_number(s['identity']) for s in kept], 'dropped': dropped}
+
+
+def subset_doc(doc, keep):
+    """A cached dataset limited to the replicas (identities) in keep."""
+    ids = doc.get('replicas') or []
+    idx = [i for i, r in enumerate(ids) if r in keep]
+    if len(idx) == len(ids):
+        return doc
+    out = dict(doc, replicas=[ids[i] for i in idx])
+    for k in ('theory', 'shift'):
+        out[k] = [doc[k][i] for i in idx]
+    out['stats'] = {k: [v[i] for i in idx] for k, v in doc['stats'].items()}
+    return out
+
+
 # ---- names as people say them ------------------------------------------------
 
 def norm_name(text):

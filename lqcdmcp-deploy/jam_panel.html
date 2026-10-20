@@ -197,6 +197,9 @@
   .kpi .d{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .chart-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(380px,100%),1fr));gap:10px;} .chart-grid > .chart{margin-top:0;min-width:0;}
   .phrase{font-family:var(--mono);font-weight:600;}
+  .selbox{margin-top:10px;} .selrow{display:flex;gap:10px 14px;flex-wrap:wrap;align-items:center;font-size:12.5px;}
+  .selrow label{display:inline-flex;align-items:center;gap:5px;color:var(--muted);}
+  .selrow input{width:86px;padding:4px 6px;font-family:var(--mono);font-size:12px;} .selbox.on{border-color:var(--accent);border-style:solid;}
   .rowacts{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;}
   /* replicas that did not fit or failed, datasets the cuts leave empty */
   .wn,.kv b.wn{color:var(--warn);}
@@ -457,9 +460,21 @@
       <p class="sub">Inspect submitted campaigns and prepare the analysis products.</p>
       <div class="field"><div class="label sm">Campaign</div><select id="caSel"><option value="">loading…</option></select></div>
       <div id="caHead"></div>
+      <div class="subbox selbox">
+        <div class="selrow">
+          <span class="label sm" style="margin:0">Replicas used for statistics</span>
+          <label>best N <input type="number" min="2" step="1" id="selBest" placeholder="all"></label>
+          <label>total χ² ≤ <input type="number" step="any" id="selChi2" placeholder="no cap"></label>
+          <label>drop outliers beyond <input type="number" min="0.5" step="0.5" id="selSigma" placeholder="off"> σ</label>
+          <label>exclude <input type="text" id="selExclude" placeholder="e.g. 3,7"></label>
+          <label>only <input type="text" id="selOnly" placeholder="e.g. 1-20"></label>
+          <button class="btn sm" id="selClear" type="button">all replicas</button>
+        </div>
+        <div class="hint" id="selHint">All fitted replicas. A selection applies to Load Fit Summary, PDF / FF plots and By experiment; nothing is refit.</div>
+      </div>
       <div class="actions">
         <button class="btn" id="caPost">Postprocess</button>
-        <button class="btn" id="caMore">Generate More Replicas</button>
+        <button class="btn" id="caMore">More / Rerun Replicas</button>
         <button class="btn" id="caSum">Load Fit Summary</button>
         <button class="btn" id="caPdf">View PDF / FF Plots</button>
         <button class="btn" id="caExp">By experiment</button>
@@ -469,6 +484,11 @@
         <div class="grid2"><div class="field"><div class="label sm">Additional replicas</div><input type="number" min="1" max="2000" id="caMoreN" value="10"></div>
           <div class="field"><button class="btn" id="caMorePlan" style="margin-top:22px">Plan</button></div></div>
         <div id="caMoreOut"></div>
+        <div class="grid2" style="margin-top:12px"><div class="field"><div class="label sm">Rerun replicas under their own numbers</div>
+          <input type="text" id="caRerunN" value="failed" placeholder="failed, or numbers such as 3,7,12"></div>
+          <div class="field"><button class="btn" id="caRerunPlan" style="margin-top:22px">Plan rerun</button></div></div>
+        <div class="hint">"failed" takes every replica that failed, did not fit or left no output. Replicas still queued are never resubmitted; earlier results are kept in previous/.</div>
+        <div id="caRerunOut"></div>
       </div>
       <div id="caPdfBox" class="subbox" style="display:none">
         <div class="plot-controls">
@@ -1786,6 +1806,32 @@
     pickAnalysis($("caSel").value); persist(); paintCaHead();
     if ($("caPdfBox").style.display !== "none") refreshPlotObjects();
   };
+  // The replica selection (sent as replicas with every analysis call), or null for all.
+  function replicaSelection(){
+    const v = id=>$(id).value.trim(), sel = {};
+    if (v("selBest")) sel.best = Number(v("selBest"));
+    if (v("selChi2")) sel.chi2_max = Number(v("selChi2"));
+    if (v("selSigma")) sel.sigma = Number(v("selSigma"));
+    if (v("selExclude")) sel.exclude = v("selExclude");
+    if (v("selOnly")) sel.only = v("selOnly");
+    return Object.keys(sel).length ? sel : null;
+  }
+  function paintSelHint(){
+    const sel = replicaSelection(), box = document.querySelector(".selbox");
+    box.classList.toggle("on", !!sel);
+    $("selHint").textContent = sel ? "Selection: " + Object.entries(sel).map(([k, v])=>k + " " + v).join(" · ")
+      + ". Applies to Load Fit Summary, PDF / FF plots and By experiment; nothing is refit."
+      : "All fitted replicas. A selection applies to Load Fit Summary, PDF / FF plots and By experiment; nothing is refit.";
+  }
+  ["selBest","selChi2","selSigma","selExclude","selOnly"].forEach(id=>$(id).oninput = paintSelHint);
+  $("selClear").onclick = ()=>{ ["selBest","selChi2","selSigma","selExclude","selOnly"].forEach(id=>$(id).value = ""); paintSelHint(); };
+  // What a result says about the replicas it used.
+  function selectionNote(rs){
+    if (!rs) return "";
+    const dropped = rs.dropped || [], shown = dropped.slice(0, 12).map(d=>"#"+d.replica+" ("+d.reason+")").join(", ");
+    return '<div class="note">Replica selection: '+esc(rs.kept)+' of '+esc(rs.of)+' fitted replicas used'
+      + (dropped.length ? '; left out '+esc(shown)+(dropped.length > 12 ? ' and '+(dropped.length - 12)+' more' : '') : '')+'.</div>';
+  }
   function caBusy(t){ theoryPlotSeq++; theoryPlotVisible = false; $("caOut").innerHTML = '<div class="spin">'+esc(t)+'</div>'; }
   function caWarn(t, cause){ $("caOut").innerHTML = '<div class="note warn">'+esc(t)+causePre(cause)+'</div>'; }
   function showBox(id){
@@ -1841,7 +1887,7 @@
   $("caSum").onclick = async ()=>{
     if (!analysisCampaign) return; caBusy("Loading the fit summary…");
     const cid = analysisCampaign;
-    try{ const r = await call("campaign_summary", {collection_id: cid});
+    try{ const sel = replicaSelection(), r = await call("campaign_summary", Object.assign({collection_id: cid}, sel ? {replicas: sel} : {}));
       if (cid !== analysisCampaign) return;
       // The gateway's notes here name its tool (postprocess_campaign); the panel names the button.
       const nfNote = notFitNote(r);
@@ -1851,7 +1897,7 @@
       const rows = r.datasets || [], mx = Math.max(...rows.map(x=>x.chi2_per_npt || 0), 1e-9);
       const stale = r.stale ? '<div class="note warn">This summary aggregates '+esc(r.summary.completed_replicas)
         + ' replicas and is out of date: press Postprocess to update it.</div>' : "";
-      $("caOut").innerHTML = stale + nfNote + summaryHtml(r.summary) + (rows.length ? '<div class="label" style="margin:16px 0 6px">χ² per dataset, fitted pseudo-data (mean over replicas)</div>'
+      $("caOut").innerHTML = stale + nfNote + selectionNote(r.replica_selection) + summaryHtml(r.summary) + (rows.length ? '<div class="label" style="margin:16px 0 6px">χ² per dataset, fitted pseudo-data (mean over replicas)</div>'
         + '<table class="tbl"><thead><tr><th>Dataset</th><th style="text-transform:none">χ²/N</th><th style="text-transform:none">χ²</th><th>Points</th><th style="width:30%"></th></tr></thead><tbody>'
         + rows.map(x=>'<tr><td class="mono">'+esc(x.reaction+":"+x.dataset_id)+'</td><td class="mono">'+esc(x.chi2_per_npt == null ? "—" : fmtNum(x.chi2_per_npt))+'</td>'
           + '<td class="mono">'+esc(x.chi2 == null ? "—" : fmtNum(x.chi2))+'</td><td class="mono">'+esc(x.npts == null ? "—" : x.npts)+'</td>'
@@ -1896,9 +1942,11 @@
     if (r.status === "no_match"){ out.innerHTML = noMatchHtml(r); wireNoMatch(out); return; }
     if (r.status !== "ok"){ caWarn(msgOf(r, "No result."), r.detail); return; }
     const ui = r._ui || {};
+    if (r.replica_selection){ const draw = ()=>out.insertAdjacentHTML("afterbegin", selectionNote(r.replica_selection));
+      if (ui.view === "theory" || r.table){ renderTheory(r, out); draw(); return; } }
     if (ui.view === "theory" || r.table) return renderTheory(r, out);
-    if (ui.view === "ff" || r.mean_at_z) return renderFf(r, out);
-    if (ui.view === "pdf" || r.mean_at_x) return renderPdf(r, out);
+    if (ui.view === "ff" || r.mean_at_z){ renderFf(r, out); if (r.replica_selection) out.insertAdjacentHTML("afterbegin", selectionNote(r.replica_selection)); return; }
+    if (ui.view === "pdf" || r.mean_at_x){ renderPdf(r, out); if (r.replica_selection) out.insertAdjacentHTML("afterbegin", selectionNote(r.replica_selection)); return; }
     out.innerHTML = (r.note ? '<div class="note warn">'+esc(r.note)+'</div>' : "")
       + imagesHtml(r._panel_plots, p=>(p.label || p.object || "")+" "+(p.flavor || (p.flavors || []).join(", "))
         +" · Q² = "+r.q2+" GeV² · "+(p.interval_label || "")+" · "+(p.path || ""));
@@ -2268,7 +2316,8 @@
     theoryPlotVisible = true;
     const current = ()=>cid === analysisCampaign && seq === theoryPlotSeq;
     try{
-      let r = await call("analyze_by_experiment", {collection_id: cid, experiments: $("caExpList").value, datasets: $("caDsList").value,
+      const sel = replicaSelection();
+      let r = await call("analyze_by_experiment", {collection_id: cid, experiments: $("caExpList").value, datasets: $("caDsList").value, ...(sel ? {replicas: sel} : {}),
                                                    plot: true, credible_interval: credibleInterval, export_png: !!png});
       r = await settle(r, current, "Evaluating the fitted replicas against the data");
       if (r) renderResult(r);
@@ -2404,7 +2453,8 @@
     }
     caBusy(isFf ? "Evaluating fragmentation functions at the selected Q²…" : "Evaluating the fitted replicas' PDFs…");
     const cid = analysisCampaign, current = ()=>cid === analysisCampaign && seq === pdfPlotSeq;
-    try{ let r = await call(isFf ? "campaign_ff_plots" : "campaign_pdf_plots", {collection_id: cid, flavors: Array.from(pdfOn).join(","),
+    const sel = replicaSelection();
+    try{ let r = await call(isFf ? "campaign_ff_plots" : "campaign_pdf_plots", {collection_id: cid, flavors: Array.from(pdfOn).join(","), ...(sel ? {replicas: sel} : {}),
                                                      ...display,
                                                      ...(isFf ? {configured} : {}), export_png: $("caPdfPng").checked,
                                                      object_key: $("caObject").value,
@@ -2541,6 +2591,36 @@
         } catch(e){ if (go.isConnected) $("caMoreOut").innerHTML = '<div class="note warn">Launch failed: '+esc(e && e.message || e)+'</div>'; }
       };
     } catch(e){ if (cid === analysisCampaign) $("caMoreOut").innerHTML = '<div class="note warn">'+esc(e && e.message || e)+'</div>'; }
+  };
+
+  $("caRerunPlan").onclick = async ()=>{
+    if (!analysisCampaign) return;
+    $("caRerunOut").innerHTML = '<div class="spin">Reading the replicas…</div>';
+    const cid = analysisCampaign, spec = $("caRerunN").value.trim() || "failed";
+    try{ const r = await call("rerun_replicas", {collection_id: cid, replicas: spec});
+      if (cid !== analysisCampaign) return;
+      if (!r || r.status !== "needs_confirmation"){ $("caRerunOut").innerHTML = '<div class="note'+(r && r.status === "ok" ? "" : " warn")+'">'+esc(msgOf(r, "Could not plan."))+'</div>'; return; }
+      const p = r.plan;
+      $("caRerunOut").innerHTML = '<div class="rev">'+[["Replicas to rerun", p.array + "  (" + p.count + ")"],
+          ["Their state", Object.entries(p.states).map(([k, v])=>"#"+k+" "+v.replace("_", " ")).join(", ")],
+          ...(p.still_queued_not_resubmitted ? [["Still queued (left alone)", p.still_queued_not_resubmitted.join(", ")]] : []), ["Partition", p.partition]]
+        .map(x=>'<div class="row"><span class="k">'+esc(x[0])+'</span><span class="v">'+esc(x[1])+'</span></div>').join("")+'</div>'
+        + '<div class="note">Type <span class="phrase">'+esc(r.confirmation_phrase)+'</span> to confirm. Their earlier results move to previous/.</div>'
+        + '<div class="grid2"><input type="text" id="caRerunPhrase" placeholder="confirmation phrase"><button class="btn primary" id="caRerunGo">Launch rerun</button></div>'
+        + '<div class="err" id="caRerunErr"></div>';
+      $("caRerunGo").onclick = async ()=>{
+        const go = $("caRerunGo"), err = $("caRerunErr");
+        go.disabled = true; err.textContent = "";
+        try{ const s = await call("rerun_replicas", {collection_id: cid, replicas: spec, confirm: $("caRerunPhrase").value.trim()});
+          if (!go.isConnected){ loadAnalysisCampaigns(); return; }
+          if (s && s.status === "needs_confirmation"){ err.textContent = "The phrase did not match; nothing was queued."; go.disabled = false; return; }
+          $("caRerunOut").innerHTML = s && s.status === "submitted"
+            ? '<div class="note">Queued replicas '+esc(s.array)+' again as job '+esc(s.job_id)+'. Press Postprocess when they finish.</div>'
+            : '<div class="note warn">'+esc(msgOf(s, "Not launched."))+causePre(s && s.detail)+'</div>';
+          loadAnalysisCampaigns();
+        } catch(e){ if (go.isConnected) $("caRerunOut").innerHTML = '<div class="note warn">Launch failed: '+esc(e && e.message || e)+'</div>'; }
+      };
+    } catch(e){ if (cid === analysisCampaign) $("caRerunOut").innerHTML = '<div class="note warn">'+esc(e && e.message || e)+'</div>'; }
   };
 
   /* ---------- init ---------- */

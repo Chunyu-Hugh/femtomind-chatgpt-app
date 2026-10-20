@@ -2163,8 +2163,22 @@ def _campaign_yaml(ws, folder, norm, nreplicas):
                             "campaignName": norm["job"]["campaignName"]}}]}, indent=2)
 
 
-def _array_script(ws, folder, norm, first, last):
-    """The Slurm job array: one replica per task, inside the site's image."""
+def _array_ranges(numbers):
+    """[3, 4, 5, 9] -> '3-5,9' (a Slurm --array list)."""
+    out, nums = [], sorted(set(numbers))
+    i = 0
+    while i < len(nums):
+        j = i
+        while j + 1 < len(nums) and nums[j + 1] == nums[j] + 1:
+            j += 1
+        out.append(str(nums[i]) if i == j else f"{nums[i]}-{nums[j]}")
+        i = j + 1
+    return ",".join(out)
+
+
+def _array_script(ws, folder, norm, first, last, indices=None):
+    """The Slurm job array: one replica per task, inside the site's image
+    (replicas first-last, or exactly the replica numbers in indices)."""
     sl, c = norm["slurm"], SITE["container"]
     stage = f"{ws}/{CAMPAIGNS_DIR}/{folder}/stages/{STAGE}"
     binds = " ".join(f"--bind {b}" for b in c.get("binds", []))
@@ -2177,7 +2191,7 @@ def _array_script(ws, folder, norm, first, last):
 #SBATCH --time={sl["time"]}
 #SBATCH --mem={sl["mem"]}
 #SBATCH --cpus-per-task={sl["cpus"]}
-#SBATCH --array={first}-{last}
+#SBATCH --array={_array_ranges(indices) if indices else f"{first}-{last}"}
 #SBATCH --output={stage}/logs/stage_%A_%a.out
 set -euo pipefail
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
@@ -2763,6 +2777,111 @@ def append_replicas(collection_id="", count=0, confirm="", username=""):
     return {"status": "submitted", "job_id": m.group(1), **plan}
 
 
+# Each replica's state and whether it is still in the Slurm queue (rerun_replicas).
+_RERUN_STATE = r'''
+import json, os, subprocess
+stage = __STAGE__; total = __TOTAL__; jobs = __JOBS__
+ended = {'COMPLETED', 'CANCELLED', 'FAILED', 'TIMEOUT', 'PREEMPTED', 'BOOT_FAIL', 'NODE_FAIL',
+         'DEADLINE', 'OUT_OF_MEMORY', 'REVOKED', 'SPECIAL_EXIT'}
+ids = {str(j.get('job_id')) for j in jobs}
+queued, read = set(), True
+try:
+    q = subprocess.run(['squeue', '-h', '-r', '-u', __USER__, '-o', '%F|%K|%T'], capture_output=True,
+                       text=True, timeout=30) if ids else None
+    if q and q.returncode != 0:
+        raise RuntimeError(q.stderr)
+    for line in (q.stdout if q else '').splitlines():
+        job, task, s = (line.strip().split('|') + ['', ''])[:3]
+        if job in ids and task.isdigit() and s and s not in ended:
+            queued.add(int(task))
+except Exception:
+    read = False
+states = {}
+for i in range(1, total + 1):
+    state, summary = replica_state(os.path.join(stage, 'current', 'replica_%d' % i, 'fit_summary.json'))
+    states[str(i)] = 'queued' if i in queued else (state or 'no_output')
+print(json.dumps({'queue_read': read, 'states': states}))
+'''
+
+RERUNNABLE = ("failed", "not_fitted", "no_output")
+
+
+def rerun_replicas(collection_id="", replicas="failed", confirm="", username=""):
+    """Run replicas of a campaign again under their own numbers: the failed
+    ones, the ones that did not fit or left no output (replicas='failed'),
+    or the numbers given. Replicas still queued or running are never
+    resubmitted; earlier results are moved to stages/<stage>/previous/, not
+    deleted. Always asks for the confirmation phrase first."""
+    u, err = _need_user(username)
+    if err:
+        return err
+    e = _collection(u, collection_id)
+    if not e:
+        return {"status": "error", "message": f"No campaign {collection_id!r}; list_campaigns shows them."}
+    collection_id = e["collection_id"]      # a campaign name resolves to its id
+    total = int(e.get("replicas") or 0)
+    r = _run_ifarm_py(u, _analysis_code(_REPLICA_STATE + _RERUN_STATE, STAGE=_stage_root(u, e), TOTAL=total,
+                                        JOBS=e.get("jobs") or [], USER=u), timeout=90, cap=2000000)
+    d = _last_json(r)
+    if not d:
+        return {"status": "error", "message": "Could not read the replicas' state.", "detail": (r.get("err") or "")[-400:]}
+    if not d["queue_read"]:
+        return {"status": "error", "message": QUEUE_UNKNOWN_REFUSED}
+    states = {int(k): v for k, v in d["states"].items()}
+    spec = str(replicas or "failed").strip().lower()
+    if spec in ("failed", "problems", "not_fitted", "all_failed"):
+        wanted = [i for i, st in states.items() if st in RERUNNABLE]
+    else:
+        try:
+            wanted = sorted(set(_numbers(replicas)))
+        except ValueError:
+            return {"status": "error", "message": "replicas: 'failed' or replica numbers such as 3,7 or 10-12."}
+        outside = [i for i in wanted if not 1 <= i <= total]
+        if outside:
+            return {"status": "error", "message": f"This campaign has replicas 1-{total}; no replica {outside}."}
+    busy = [i for i in wanted if states.get(i) == "queued"]
+    wanted = [i for i in wanted if states.get(i) != "queued"]
+    if not wanted:
+        return {"status": "ok", "rerun": [], "still_queued": busy,
+                "message": "Nothing to rerun: no failed, unfitted or missing replica" + (
+                    " outside the ones still queued or running." if busy else ".")}
+    plan = {"collection_id": collection_id, "replicas": wanted, "count": len(wanted),
+            "array": _array_ranges(wanted), "states": {i: states.get(i) for i in wanted},
+            "partition": (e["input_card"].get("slurm") or {}).get("partition_effective")}
+    if busy:
+        plan["still_queued_not_resubmitted"] = busy
+    phrase = _confirm_phrase("RERUN", {"collection_id": collection_id, "replicas": wanted})
+    if (confirm or "").strip() != phrase:
+        return {"status": "needs_confirmation", "plan": plan, "confirmation_phrase": phrase,
+                "message": "Nothing is queued yet. Show the user which replicas run again (their earlier "
+                           "results are kept in previous/) and ask them to confirm with the phrase."}
+    ws = _workspace(u)
+    stage = _stage_root(u, e)
+    qs, stamp = _shq(stage), time.strftime("%Y%m%dT%H%M%S", time.gmtime())
+    name = f"rerun_{stamp}"
+    sb = base64.b64encode(_array_script(ws, e["campaign_folder"], e["input_card"], min(wanted), max(wanted),
+                                        indices=wanted).encode()).decode()
+    # The script is written first; earlier results move aside just before sbatch
+    # and move back if sbatch refuses, so a failed submission changes nothing.
+    moves = " ; ".join(f"if [ -e {qs}/current/replica_{i} ]; then mv {qs}/current/replica_{i} {qs}/previous/replica_{i}_{stamp}; fi"
+                       for i in wanted)
+    back = " ; ".join(f"if [ -e {qs}/previous/replica_{i}_{stamp} ]; then mv {qs}/previous/replica_{i}_{stamp} {qs}/current/replica_{i}; fi"
+                      for i in wanted)
+    r = _remote(u, f"mkdir -p {qs}/previous {qs}/slurm && echo {sb} | base64 -d > {qs}/slurm/{name}.sh && "
+                   f"{{ {moves} ; }} && {{ sbatch {qs}/slurm/{name}.sh || {{ {back} ; false; }} ; }}", timeout=90)
+    m = re.search(r"Submitted batch job (\d+)", (r.get("out") or "") + (r.get("err") or ""))
+    if not m:
+        return {"status": "error", "message": "sbatch refused the job.", "detail": (r.get("err") or r.get("out"))[-400:]}
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    e["jobs"] = list(e.get("jobs") or []) + [{"job_id": m.group(1), "first": min(wanted), "last": max(wanted),
+                                              "replicas": wanted, "rerun": True, "submitted_at": now}]
+    e.update(updated_at=now, slurm_job_id=m.group(1), status="submitted")
+    _registry(u, {"kind": "upsert", "entry": e})
+    return {"status": "submitted", "job_id": m.group(1), **plan,
+            "previous_results": f"{stage}/previous/replica_<n>_{stamp}",
+            "message": "Queued. Run postprocess_campaign once they finish to update the fit summary."}
+
+
 # ---- collections and status ----------------------------------------------------
 
 # squeue can fail (a busy controller, a timeout). The queue is then unknown,
@@ -3067,14 +3186,27 @@ _POSTPROCESS = _REPLICA_STATE + r'''
 import glob, json, os, statistics
 stage = __STAGE__
 total = __TOTAL__
+selection = __SELECTION__; write = __WRITE__
 paths = sorted(glob.glob(os.path.join(stage, 'current', 'replica_*', 'fit_summary.json')))
+# A replica selection (select_replicas) restricts the statistics to some fitted
+# replicas; the others are counted as deselected. Only the unselected summary
+# is written to the campaign.
+fitted = []
+for p in paths:
+    state, s = replica_state(p)
+    if state == 'fitted' and s.get('chi2_total') is not None:
+        fitted.append(dict(s, identity=os.path.basename(os.path.dirname(p))))
+kept, dropped = select_replicas(fitted, selection)
+keep = {s['identity'] for s in kept}
 # Only replicas that really fitted enter the statistics; those that did not fit
 # (chi2 at the starting values only) are counted apart from the failed ones.
-completed = failed = not_fitted = 0; chi2s = []; best = None; per = {}; cv = []
+completed = failed = not_fitted = deselected = 0; chi2s = []; best = None; per = {}; cv = []
 for p in paths:
     state, s = replica_state(p)
     if state == 'not_fitted':
         not_fitted += 1
+    elif state == 'fitted' and s.get('chi2_total') is not None and os.path.basename(os.path.dirname(p)) not in keep:
+        deselected += 1
     elif state == 'fitted' and s.get('chi2_total') is not None:
         completed += 1
         c = float(s['chi2_total']); chi2s.append(c)
@@ -3098,12 +3230,16 @@ agg = {'status': 'success' if completed else 'failed', 'mode': 'aggregate', 'sta
        'min_total_chi2': min(chi2s) if chi2s else None, 'max_total_chi2': max(chi2s) if chi2s else None,
        'mean_central_value_chi2_per_point': statistics.mean(cv) if cv else None,
        'chi2_per_dataset': {}}
+if selection:
+    agg['deselected_replicas'] = deselected
+    agg['replica_selection'] = selection_report(selection, kept, len(fitted), dropped)
 for k, b in per.items():
     m = statistics.mean(b['chi2']); n = statistics.mean(b['npts']) if b['npts'] else None
     agg['chi2_per_dataset'][k] = {'mean': m, 'min': min(b['chi2']), 'max': max(b['chi2']),
                                   'npts': int(n) if n else None, 'chi2_per_npts': m / n if n else None}
-os.makedirs(os.path.join(stage, 'current'), exist_ok=True)
-json.dump(agg, open(agg['summary_path'], 'w'), indent=2, sort_keys=True)
+if write:
+    os.makedirs(os.path.join(stage, 'current'), exist_ok=True)
+    json.dump(agg, open(agg['summary_path'], 'w'), indent=2, sort_keys=True)
 print(json.dumps(agg))
 '''
 
@@ -3127,7 +3263,7 @@ def postprocess_campaign(collection_id="", username=""):
     if not e:
         return {"status": "error", "message": f"No campaign {collection_id!r}."}
     collection_id = e["collection_id"]      # a campaign name resolves to its id
-    code = _fill(_POSTPROCESS, STAGE=_stage_root(u, e), TOTAL=int(e["replicas"]))
+    code = _analysis_code(_POSTPROCESS, STAGE=_stage_root(u, e), TOTAL=int(e["replicas"]), SELECTION=None, WRITE=True)
     r = _run_ifarm_py(u, code, timeout=120, cap=2000000)
     try:
         agg = json.loads(r["out"].strip().splitlines()[-1])
@@ -3145,7 +3281,7 @@ def postprocess_campaign(collection_id="", username=""):
     return out
 
 
-def campaign_summary(collection_id="", username=""):
+def campaign_summary(collection_id="", username="", replicas=None):
     """The fit summary: replicas fitted (completed) / not fitted / failed, chi2
     statistics over the fitted ones, best replica, and chi2 per dataset (Load
     Fit Summary)."""
@@ -3156,8 +3292,17 @@ def campaign_summary(collection_id="", username=""):
     if not e:
         return {"status": "error", "message": f"No campaign {collection_id!r}."}
     collection_id = e["collection_id"]      # a campaign name resolves to its id
-    p = f"{_stage_root(u, e)}/current/fit_summary.json"
-    r = _run_ifarm_py(u, f"import json; print(json.dumps(json.load(open({p!r}))))", timeout=60, cap=2000000)
+    try:
+        selection = _replica_selection(replicas)
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc)}
+    if selection:
+        # The selected replicas' statistics, computed now and not stored.
+        r = _run_ifarm_py(u, _analysis_code(_POSTPROCESS, STAGE=_stage_root(u, e), TOTAL=int(e["replicas"]),
+                                            SELECTION=selection, WRITE=False), timeout=120, cap=2000000)
+    else:
+        p = f"{_stage_root(u, e)}/current/fit_summary.json"
+        r = _run_ifarm_py(u, f"import json; print(json.dumps(json.load(open({p!r}))))", timeout=60, cap=2000000)
     try:
         agg = json.loads(r["out"].strip().splitlines()[-1])
     except Exception:
@@ -3171,18 +3316,21 @@ def campaign_summary(collection_id="", username=""):
     rows.sort(key=lambda x: -(x["chi2_per_npt"] or 0))
     out = {"status": "ok", "collection_id": collection_id,
            "objects": e["input_card"].get("objects", [e["input_card"].get("object", {"type": "pdf"})]),
-           "summary": {k: agg[k] for k in agg if k != "chi2_per_dataset"}, "datasets": rows}
+           "summary": {k: agg[k] for k in agg if k not in ("chi2_per_dataset", "replica_selection")}, "datasets": rows}
+    if agg.get("replica_selection"):
+        out["replica_selection"] = agg["replica_selection"]
     prog, total, notes = _campaign_progress(u, e), int(e["replicas"]), []
     # A summary from before replicas that did not fit were counted apart may
     # count them as completed; replicas that finished after the last
     # postprocess are not in it yet.
-    counted = sum(agg.get(k) or 0 for k in ("completed_replicas", "not_fitted_replicas", "failed_replicas"))
+    counted = sum(agg.get(k) or 0 for k in ("completed_replicas", "not_fitted_replicas", "failed_replicas",
+                                            "deselected_replicas"))
     finished = prog.get("finished")
     if "not_fitted_replicas" not in agg:
         notes.append("This summary was made before the gateway told replicas that fitted from replicas "
                      "that did not fit, so it may count both as completed: run postprocess_campaign to "
                      "redo it.")
-    elif ((prog.get("succeeded") or 0) > (agg.get("completed_replicas") or 0)
+    elif ((prog.get("succeeded") or 0) > (agg.get("completed_replicas") or 0) + (agg.get("deselected_replicas") or 0)
           or (finished or 0) > counted or total != agg.get("total_replicas")):
         notes.append(f"This summary covers {counted} finished replicas, but "
                      + (f"{finished} of {total} have finished now" if finished is not None
@@ -3289,11 +3437,22 @@ if todo:
         write_json(cache_file(f), {'version': VERSION, 'object': object_key, 'q2': q2, 'flavor': f,
                                    'signature': sig, 'x': xs.tolist(),
                                    'curves': [[float('%.8g' % v) for v in c] for c in curves[f]]})
+# A replica selection keeps a subset of the (cached, complete) replica curves.
+selection = __SELECTION__
+kept, dropped = select_replicas(records, selection)
+if selection:
+    idx = [records.index(s) for s in kept]
+    if not idx:
+        print(json.dumps({'status': 'error', **metadata, 'message': 'The replica selection leaves no fitted replica.'})); raise SystemExit(0)
+    curves = {f: np.asarray(curves[f])[idx] for f in curves}
+    band_drawn = mean_overlay and len(idx) > 1
+    metadata.update(n_replicas=len(idx), band_drawn=band_drawn,
+                    replica_selection=selection_report(selection, kept, len(records), dropped))
 # The interactive chart gets the mean, the bands at the offered levels and up to
 # 60 replica curves; the full set stays in the cache.
 rnd = lambda a: [float('%.6g' % v) for v in a]
 levels = sorted(set(LEVELS) | {credible_interval})
-chart = {'x': rnd(xs), 'q2': q2, 'object': object_key, 'n_replicas': len(records), 'curves': []}
+chart = {'x': rnd(xs), 'q2': q2, 'object': object_key, 'n_replicas': metadata['n_replicas'], 'curves': []}
 for f in flavors:
     arr = curves[f]
     item = {'flavor': f, 'mean': rnd(arr.mean(axis=0)), 'bands': {},
@@ -3415,6 +3574,14 @@ if todo:
                                    'x': [float(x) for x in xs],
                                    'curves': [[None if not np.isfinite(v) else float('%.8g' % v) for v in c] for c in fresh[f]],
                                    'breaks': fresh_breaks[f].tolist() if f in fresh_breaks else None})
+selection = __SELECTION__
+kept, dropped = select_replicas(records, selection)
+if selection:
+    idx = [records.index(s) for s in kept]
+    if len(idx) < 2:
+        print(json.dumps({'status': 'error', **metadata, 'message': 'The replica selection keeps fewer than two fitted replicas; a band needs two.'})); raise SystemExit(0)
+    curves = {f: [curves[f][i] for i in idx] for f in curves}
+    metadata.update(n_replicas=len(idx), replica_selection=selection_report(selection, kept, len(records), dropped))
 try:
     bands = proton_bands(curves, interval, pointwise_credible_interval)
     for f, breaks in display_breaks.items():
@@ -3435,7 +3602,7 @@ metadata.update(band_drawn=True, note=' '.join(notes), omitted_ratio_points=omit
 # The interactive chart: the same ensemble rule as the figure (an x where any
 # replica is unresolved is left out for all), at each offered interval.
 rnd = lambda a: [None if not np.isfinite(v) else float('%.6g' % v) for v in a]
-chart = {'x': rnd(xs), 'q2': q2, 'object': 'pdf', 'n_replicas': len(records), 'curves': []}
+chart = {'x': rnd(xs), 'q2': q2, 'object': 'pdf', 'n_replicas': metadata['n_replicas'], 'curves': []}
 for f in flavors:
     arr = np.asarray(curves[f], dtype=float)
     item = {'flavor': f, 'mean': rnd(bands[f]['mean']), 'bands': {},
@@ -3468,7 +3635,7 @@ print(json.dumps({'status': 'success', **metadata, 'computed_flavors': todo, 'ch
 
 def campaign_pdf_plots(collection_id="", flavors="", q2=10.0, mean_overlay=None, username="", object_key="",
                        credible_interval=95, x_min=0.01, x_max=1.0, band_color="red", band_alpha=0.95,
-                       export_png=True):
+                       export_png=True, replicas=None):
     """Fitted replicas' PDFs at Q2: the mean and pointwise credible bands for the
     interactive chart, and the figure (proton: the two-column band figure; pion:
     the replica plot) unless export_png is false."""
@@ -3495,6 +3662,10 @@ def campaign_pdf_plots(collection_id="", flavors="", q2=10.0, mean_overlay=None,
     if mean_overlay is None:
         mean_overlay = object_key != "pdf"
     try:
+        selection = _replica_selection(replicas)
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc)}
+    try:
         q2 = float(q2)
         assert math.isfinite(q2) and q2 > 0
     except Exception:
@@ -3510,11 +3681,12 @@ def campaign_pdf_plots(collection_id="", flavors="", q2=10.0, mean_overlay=None,
             code = inspect.getsource(object_registry) + inspect.getsource(pdf_plotting) + "\n" + _analysis_code(
                 _PROTON_PDF_PLOTS, STAGE=_stage_root(u, e), FLAVORS=fl, Q2=q2,
                 MEAN=bool(mean_overlay), INTERVAL=credible_interval, DISPLAY=display, PNG=bool(export_png),
-                CACHE=_cache_dir(u, e), CAMPAIGN=e.get("campaign_name") or e["input_card"].get("name") or collection_id)
+                CACHE=_cache_dir(u, e), CAMPAIGN=e.get("campaign_name") or e["input_card"].get("name") or collection_id,
+                SELECTION=selection)
         else:
             code = inspect.getsource(object_registry) + "\n" + _analysis_code(
                 _PDF_PLOTS, STAGE=_stage_root(u, e), FLAVORS=fl, Q2=q2, MEAN=bool(mean_overlay), OBJECT=object_key,
-                INTERVAL=credible_interval, PNG=bool(export_png), CACHE=_cache_dir(u, e))
+                INTERVAL=credible_interval, PNG=bool(export_png), CACHE=_cache_dir(u, e), SELECTION=selection)
         ws = _workspace(u)
         r = _run_ifarm_py(u, code, apptainer=True, timeout=1800, cap=60000000,
                           env={"MPLCONFIGDIR": f"{ws}/{CAMPAIGNS_DIR}/.matplotlib"})
@@ -3526,6 +3698,7 @@ def campaign_pdf_plots(collection_id="", flavors="", q2=10.0, mean_overlay=None,
             return d
         metadata = {k: d[k] for k in ("credible_interval", "percentiles", "interval_kind", "central_estimator",
                                       "mean_overlay", "band_drawn", "n_replicas", "excluded_replicas", "note")}
+        metadata["replica_selection"] = d.get("replica_selection")
         if object_key == "pdf":
             metadata.update({k: d[k] for k in ("x_min", "x_max", "band_color", "band_alpha", "omitted_ratio_points")})
             if d.get("figure_error"):
@@ -3545,7 +3718,7 @@ def campaign_pdf_plots(collection_id="", flavors="", q2=10.0, mean_overlay=None,
                         "panel_plots": plots}}
 
     request = {"collection_id": e["collection_id"], "object": object_key, "flavors": fl, "q2": q2,
-               "interval": credible_interval, "mean": bool(mean_overlay), "png": bool(export_png)}
+               "interval": credible_interval, "mean": bool(mean_overlay), "png": bool(export_png), "replicas": selection}
     if object_key == "pdf":
         request["display"] = display
     return _background(u, "campaign_pdf_plots", request, run)
@@ -3627,6 +3800,13 @@ if todo:
                                    'signature': sig, 'z': [float(z) for z in zs],
                                    'curves': {key: [[float('%.8g' % v) for v in row] for row in values]
                                               for key, values in rows.items()}})
+selection = None if configured else __SELECTION__
+kept, dropped = select_replicas(records, selection)
+if selection:
+    idx = [records.index(s) for s in kept]
+    if len(idx) < 2:
+        print(json.dumps({'status': 'error', 'message': 'The replica selection keeps fewer than two fitted replicas; a band needs two.'})); raise SystemExit(0)
+    curves = {key: {f: [rows[i] for i in idx] for f, rows in by_flavor.items()} for key, by_flavor in curves.items()}
 available = ff_available_hadrons(curves)
 hadrons = options['hadrons'] or available
 if not hadrons or any(h not in available for h in hadrons):
@@ -3635,7 +3815,7 @@ try:
     bands = ff_bands(curves, hadrons, flavors, credible_interval, pointwise_credible_interval, configured)
 except (ValueError, RuntimeError, OSError) as exc:
     print(json.dumps({'status':'error','message':'FF plotting failed: '+str(exc)}));raise SystemExit(0)
-nreplicas = len(records) if not configured else 0
+nreplicas = len(kept) if not configured else 0
 band_drawn = not configured
 label = '%g%% C.I.' % credible_interval if band_drawn else 'Configured values; no uncertainty band'
 note = ('Configured starting parameters, not fitted results; no uncertainty band.' if configured else
@@ -3647,7 +3827,8 @@ metadata = {'available_objects': list(curves), 'unavailable_objects': [key for k
             'credible_interval': credible_interval, 'interval_label': label,
             'quantity': 'zD(z,Q2)', 'charge_convention': 'native positive charged hadron; no extra factor of two',
             'excluded_replicas': excluded, 'note': note, 'z_min':options['z_min'],'z_max':options['z_max'],
-            'dpi':FF_PREVIEW_DPI}
+            'dpi':FF_PREVIEW_DPI,
+            'replica_selection': selection_report(selection, kept, len(records), dropped) if selection else None}
 # The interactive chart: Trey's bands (ff_bands) at each offered interval; a
 # configured preview has one curve and no band.
 rnd = lambda a: [float('%.6g' % v) for v in a]
@@ -3688,7 +3869,8 @@ print(json.dumps({'status':'success', **metadata, 'computed_flavors': todo, 'cha
 
 def campaign_ff_plots(collection_id="", flavors="", q2=100.0, mean_overlay=False,
                       username="", credible_interval=95, configured=False, modes="combined",
-                      hadrons="", z_min=0.02, z_max=0.9, band_color="red", band_alpha=0.9, export_png=True):
+                      hadrons="", z_min=0.02, z_max=0.9, band_color="red", band_alpha=0.9, export_png=True,
+                      replicas=None):
     """Native fitted FF bands, with independently selectable combined/individual art,
     and the same bands as an interactive chart; replica curves are cached."""
     u, error = _need_user(username)
@@ -3712,6 +3894,7 @@ def campaign_ff_plots(collection_id="", flavors="", q2=100.0, mean_overlay=False
         if type(configured) is not bool:
             raise ValueError('configured must be true or false')
         display = ff_plotting.validate_ff_display(z_min,z_max,modes,hadrons,band_color,band_alpha)
+        selection = _replica_selection(replicas)
     except (ValueError,TypeError,OverflowError) as exc:
         return {'status':'error','message':str(exc)}
 
@@ -3720,7 +3903,7 @@ def campaign_ff_plots(collection_id="", flavors="", q2=100.0, mean_overlay=False
                 + '\n' + _analysis_code(
                     _FF_PLOTS, STAGE=_stage_root(u,entry),FLAVORS=fl,Q2=q2,INTERVAL=interval,CONFIGURED=configured,
                     DISPLAY=display,CAMPAIGN=entry.get('campaign_name') or entry['input_card'].get('name') or collection_id,
-                    PNG=bool(export_png), CACHE=_cache_dir(u, entry)))
+                    PNG=bool(export_png), CACHE=_cache_dir(u, entry), SELECTION=selection))
         result = _run_ifarm_py(u,code,apptainer=True,timeout=1800,cap=60000000,
                                env={'MPLCONFIGDIR':f'{_workspace(u)}/{CAMPAIGNS_DIR}/.matplotlib'})
         data = _last_json(result)
@@ -3741,7 +3924,7 @@ def campaign_ff_plots(collection_id="", flavors="", q2=100.0, mean_overlay=False
 
     return _background(u, "campaign_ff_plots",
                        {"collection_id": collection_id, "flavors": fl, "q2": q2, "interval": interval,
-                        "configured": configured, "display": display, "png": bool(export_png)}, run)
+                        "configured": configured, "display": display, "png": bool(export_png), "replicas": selection}, run)
 
 
 _THEORY_PLOTTING = r'''
@@ -8917,7 +9100,7 @@ print(json.dumps({'status': 'success', 'computed': missing, 'selected': selected
 _PREDICTIONS_VIEW = _REPLICA_STATE + r'''
 import json, os
 stage = __STAGE__; cache = __CACHE__; want_ds = __DATASETS__; want_exp = __EXPERIMENTS__
-interval = __INTERVAL__; charts = __CHARTS__
+interval = __INTERVAL__; charts = __CHARTS__; selection = __SELECTION__
 records, excluded = fitted_replicas(stage, replica_state)
 if not records:
     print(json.dumps({'status': 'missing_inputs', 'excluded_replicas': excluded,
@@ -8936,15 +9119,23 @@ docs = {k: read_json(file_of(cache, k)) or {} for k in selected}
 stale = [k for k, d in docs.items() if d.get('signature') != sig or d.get('version') != VERSION]
 if stale:
     print(json.dumps({'status': 'need_build', 'stale': stale})); raise SystemExit(0)
-best = min(records, key=lambda s: float(s.get('chi2_total') if s.get('chi2_total') is not None else 'inf'))
+kept, dropped = select_replicas(records, selection)
+if not kept:
+    print(json.dumps({'status': 'error', 'message': 'The replica selection leaves no fitted replica.',
+                      'replica_selection': selection_report(selection, kept, len(records), dropped)}))
+    raise SystemExit(0)
+keep = {s['identity'] for s in kept}
+best = min(kept, key=lambda s: float(s.get('chi2_total') if s.get('chi2_total') is not None else 'inf'))
 rows, plots, unavailable = [], [], []
 for k, d in docs.items():
     if d.get('unavailable'):
         unavailable.append({'dataset': k, 'reason': d['unavailable']}); continue
+    d = subset_doc(d, keep)
     rows.append(table_row(d, best['identity']))
     if charts: plots.append(chart_data(d, interval))
-print(json.dumps({'status': 'success', 'n_replicas': len(records), 'excluded_replicas': excluded,
-                  'replica_ids': [s['identity'] for s in records], 'table': rows, 'charts': plots,
+print(json.dumps({'status': 'success', 'n_replicas': len(kept), 'excluded_replicas': excluded,
+                  'replica_selection': selection_report(selection, kept, len(records), dropped) if selection else None,
+                  'replica_ids': [s['identity'] for s in kept], 'table': rows, 'charts': plots,
                   'best_replica': best['identity'], 'best_msr': best['msr_path'], 'experiments': by_experiment(rows),
                   'unavailable_datasets': unavailable, 'unknown_datasets': unknown,
                   'unmatched_experiments': unmatched}))
@@ -8957,12 +9148,14 @@ _THEORY_PNG = _REPLICA_STATE + ("\nimport base64, zlib\n"
     "exec(zlib.decompress(base64.b64decode(%r)))\n" %
     base64.b64encode(zlib.compress(_THEORY_PLOTTING.encode(), 9)).decode()) + r'''
 import json, os
-stage = __STAGE__; cache = __CACHE__; keys = __KEYS__
+stage = __STAGE__; cache = __CACHE__; keys = __KEYS__; selection = __SELECTION__
 interval = validate_credible_interval(__INTERVAL__)
+keep = {s['identity'] for s in select_replicas(fitted_replicas(stage, replica_state)[0], selection)[0]}
 points = []
 for k in keys:
     d = read_json(file_of(cache, k)) or {}
     if d.get('unavailable') or 'theory' not in d: continue
+    d = subset_doc(d, keep)
     n = d['npts']
     tab = {name: np.asarray(v) if all(isinstance(x, str) for x in v) else np.asarray(v, dtype=float)
            for name, v in d['columns'].items()}
@@ -8999,6 +9192,82 @@ def _cache_dir(u, e):
     return f"{os.path.dirname(os.path.dirname(_stage_root(u, e)))}/analysis/cache"
 
 
+REPLICAS_ARG = {
+    "description": ("Use only some fitted replicas for the statistics, as JAM analyses do (nothing is refit; the "
+                    "cache keeps every replica). Object with any of: best (keep the n lowest total chi2), chi2_max "
+                    "(drop replicas whose total chi2 is above), sigma (drop outliers above median + k*1.4826*MAD of "
+                    "the total chi2), exclude (replica numbers), only (replica numbers); applied in the order only, "
+                    "exclude, chi2_max, sigma, best. A string works too: 'best:50', 'chi2_max:1200', 'sigma:3', "
+                    "'exclude:3,7', 'only:1-20', several joined by ';'. Omit for every fitted replica. The result's "
+                    "replica_selection says which replicas were kept and why the others were left out."),
+    "anyOf": [{"type": "object", "properties": {
+        "best": {"type": "integer", "minimum": 2}, "chi2_max": {"type": "number", "exclusiveMinimum": 0},
+        "sigma": {"type": "number", "exclusiveMinimum": 0},
+        "exclude": {"type": "array", "items": {"type": "integer", "minimum": 1}},
+        "only": {"type": "array", "items": {"type": "integer", "minimum": 1}}}, "additionalProperties": False},
+        {"type": "string"}]}
+
+
+def _numbers(text):
+    """'3,7, 10-12' or [3, 7] -> [3, 7, 10, 11, 12]."""
+    if isinstance(text, (list, tuple)):
+        return [int(x) for x in text]
+    out = []
+    for part in re.split(r"[,\s]+", str(text).strip()):
+        if not part:
+            continue
+        m = re.fullmatch(r"(\d+)-(\d+)", part)
+        if m:
+            a, b = int(m.group(1)), int(m.group(2))
+            if b < a or b - a > 5000:
+                raise ValueError(f"bad replica range {part!r}")
+            out.extend(range(a, b + 1))
+        else:
+            out.append(int(part))
+    return out
+
+
+def _replica_selection(arg):
+    """A replica selection as the tools accept it (object, JSON or 'best:50;
+    sigma:3' text) -> a validated dict, or None for every replica. Raises
+    ValueError with a message for the user."""
+    if arg in (None, "", {}, "all"):
+        return None
+    if isinstance(arg, str):
+        text = arg.strip()
+        if text.startswith("{"):
+            arg = json.loads(text)
+        else:
+            arg = {}
+            for part in filter(None, (x.strip() for x in text.split(";"))):
+                key, _, value = part.partition(":")
+                arg[key.strip().lower().replace("-", "_")] = value.strip()
+    if not isinstance(arg, dict):
+        raise ValueError("replicas: an object or text such as 'best:50' or 'sigma:3'")
+    unknown = set(arg) - set(analysis_cache.SELECTION_KEYS)
+    if unknown:
+        raise ValueError(f"replicas: unknown rule(s) {sorted(unknown)}; use {list(analysis_cache.SELECTION_KEYS)}")
+    out = {}
+    try:
+        if arg.get("only") not in (None, "", []):
+            out["only"] = sorted(set(_numbers(arg["only"])))
+        if arg.get("exclude") not in (None, "", []):
+            out["exclude"] = sorted(set(_numbers(arg["exclude"])))
+        if arg.get("chi2_max") not in (None, ""):
+            out["chi2_max"] = float(arg["chi2_max"])
+            assert math.isfinite(out["chi2_max"]) and out["chi2_max"] > 0
+        if arg.get("sigma") not in (None, ""):
+            out["sigma"] = float(arg["sigma"])
+            assert math.isfinite(out["sigma"]) and out["sigma"] > 0
+        if arg.get("best") not in (None, ""):
+            out["best"] = int(arg["best"])
+            assert out["best"] >= 2
+    except (TypeError, ValueError, AssertionError):
+        raise ValueError("replicas: best is an integer of at least 2; chi2_max and sigma are positive numbers; "
+                         "only and exclude are replica numbers such as 3,7 or 1-20")
+    return out or None
+
+
 def _names(text):
     """'a, b; c' or a list -> ['a', 'b', 'c']."""
     if isinstance(text, (list, tuple)):
@@ -9006,7 +9275,7 @@ def _names(text):
     return [x.strip() for x in re.split(r"[,;]", str(text or "")) if x.strip()]
 
 
-def _theory_results(u, e, datasets, experiments, interval, charts=True, export_png=False):
+def _theory_results(u, e, datasets, experiments, interval, charts=True, export_png=False, selection=None):
     """Data vs theory for the datasets asked for: the per-dataset table, the
     chart data and, on request, the thesis PNGs. Computes into the cache only
     what is missing or stale."""
@@ -9014,7 +9283,7 @@ def _theory_results(u, e, datasets, experiments, interval, charts=True, export_p
     ws = _workspace(u)
     args = dict(STAGE=stage, CACHE=cache, DATASETS=datasets, EXPERIMENTS=experiments)
     view = lambda: _last_json(_run_ifarm_py(u, _analysis_code(_PREDICTIONS_VIEW, INTERVAL=interval, CHARTS=charts,
-                                                               **args), timeout=300, cap=60000000))
+                                                               SELECTION=selection, **args), timeout=300, cap=60000000))
     d, built = view(), None
     if d and d.get("status") == "need_build":
         r = _run_ifarm_py(u, _analysis_code(_PREDICTIONS, **args), apptainer=True, timeout=3600, cap=200000,
@@ -9038,6 +9307,7 @@ def _theory_results(u, e, datasets, experiments, interval, charts=True, export_p
            "chi2_estimator": ("table: mean over the fitted replicas, each against the central data; "
                               "experiments: best fitted replica against the central data (not ensemble-mean chi2)"),
            "replica_ids": d["replica_ids"], "best_replica": d["best_replica"], "best_msr": d["best_msr"],
+           "replica_selection": d.get("replica_selection"),
            "band_drawn": bool(charts and d["n_replicas"] > 1),
            "table": d["table"], "experiments": d["experiments"], "unavailable_datasets": d["unavailable_datasets"],
            "computed_now": (built or {}).get("computed", []), "compute_seconds": (built or {}).get("seconds")}
@@ -9046,6 +9316,10 @@ def _theory_results(u, e, datasets, experiments, interval, charts=True, export_p
             out[k] = d[k]
     notes = ["chi2 terms are means over the fitted replicas, each replica against the central data; "
              "fitted norm is mean(std) over the replicas."]
+    sel = d.get("replica_selection")
+    if sel:
+        notes.append(f"Replica selection {sel['applied']}: {sel['kept']} of {sel['of']} fitted replicas used; "
+                     f"{len(sel['dropped'])} left out (see replica_selection).")
     if d["n_replicas"] < 2:
         notes.append("Only one fitted replica: no credible band.")
     if out.get("unknown_datasets") or out.get("unmatched_experiments"):
@@ -9055,7 +9329,8 @@ def _theory_results(u, e, datasets, experiments, interval, charts=True, export_p
     if export_png:
         keys = [row["dataset"] for row in d["table"]]
         r = _run_ifarm_py(u, inspect.getsource(object_registry) + "\n" +
-                          _analysis_code(_THEORY_PNG, STAGE=stage, CACHE=cache, KEYS=keys, INTERVAL=interval),
+                          _analysis_code(_THEORY_PNG, STAGE=stage, CACHE=cache, KEYS=keys, INTERVAL=interval,
+                                         SELECTION=selection),
                           apptainer=True, timeout=1200, cap=60000000,
                           env={"MPLCONFIGDIR": f"{ws}/{CAMPAIGNS_DIR}/.matplotlib"})
         p = _last_json(r) or {"status": "error", "message": "thesis plotting failed",
@@ -9076,7 +9351,7 @@ def _theory_results(u, e, datasets, experiments, interval, charts=True, export_p
 
 
 def analyze_by_experiment(collection_id="", experiments="", plot=True, username="", credible_interval=95,
-                          datasets="", export_png=False):
+                          datasets="", export_png=False, replicas=None):
     """Per-dataset table (JAM paper columns) and data vs mean fitted theory, for
     the datasets or experiments named (empty: all)."""
     try:
@@ -9090,12 +9365,17 @@ def analyze_by_experiment(collection_id="", experiments="", plot=True, username=
     if not e:
         return {"status": "error", "message": f"No campaign {collection_id!r}."}
     collection_id = e["collection_id"]      # a campaign name resolves to its id
+    try:
+        selection = _replica_selection(replicas)
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc)}
     ds, ex = _names(datasets), _names(experiments)
     return _background(u, "analyze_by_experiment",
                        {"collection_id": e["collection_id"], "datasets": ds, "experiments": ex,
-                        "interval": credible_interval, "plot": bool(plot), "png": bool(export_png)},
+                        "interval": credible_interval, "plot": bool(plot), "png": bool(export_png),
+                        "replicas": selection},
                        lambda: _theory_results(u, e, ds, ex, credible_interval, charts=bool(plot),
-                                               export_png=bool(export_png)))
+                                               export_png=bool(export_png), selection=selection))
 
 
 # Each replica's state and Slurm log (Logs). Replica i's log is
@@ -9147,10 +9427,11 @@ def num(s, key):
     return v if abs(v) < float('inf') else None     # NaN and infinities are not JSON
 
 def job_of(i):
+    # The latest job that ran replica i: a range (first-last) or, for a rerun, a list.
     found = None
     for j in jobs:
         try:
-            if int(j['first']) <= i <= int(j['last']):
+            if (i in j['replicas']) if j.get('replicas') else int(j['first']) <= i <= int(j['last']):
                 found = str(j['job_id'])
         except (KeyError, TypeError, ValueError):
             pass
@@ -9753,10 +10034,13 @@ TOOLS = {
         "desc": "Load Fit Summary: replicas that fitted (completed_replicas), did not fit "
                 "(not_fitted_replicas) and failed, chi2 statistics over the fitted ones, the best "
                 "replica, and chi2/N per dataset (worst first). note says when replicas did not fit "
-                "or the summary is out of date.",
-        "schema": {"type": "object", "properties": {"collection_id": {"type": "string", "description": COLLECTION_ARG}},
+                "or the summary is out of date. With replicas (a selection), the statistics are recomputed "
+                "over the selected fitted replicas (deselected_replicas counts the rest); the stored summary "
+                "is not changed.",
+        "schema": {"type": "object", "properties": {"collection_id": {"type": "string", "description": COLLECTION_ARG},
+                                                    "replicas": REPLICAS_ARG},
                    "required": ["collection_id"]},
-        "fn": lambda a: campaign_summary(a.get("collection_id", ""))},
+        "fn": lambda a: campaign_summary(a.get("collection_id", ""), replicas=a.get("replicas"))},
     "campaign_pdf_plots": {
         "desc": "View PDF Plots: x f(x, Q2) of the fitted replicas at q2 (GeV^2). Proton (object_key pdf) flavors, "
                 "in the requested order: u,d,g,s,ub,db,sb,uv,dv,d/u,db+ub,db-ub,sp,sm,Rs,up,dp; sums are xPDFs, "
@@ -9783,7 +10067,8 @@ TOOLS = {
                                                     "x_max": {"type": "number", "maximum": 1, "default": 1},
                                                     "band_color": {"type": "string", "default": "red"},
                                                     "band_alpha": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.95},
-                                                    "export_png": {"type": "boolean", "default": True}},
+                                                    "export_png": {"type": "boolean", "default": True},
+                                                    "replicas": REPLICAS_ARG},
                    "required": ["collection_id"]},
         "meta": WIDGET_META,
         "fn": lambda a: campaign_pdf_plots(a.get("collection_id", ""), a.get("flavors", ""),
@@ -9792,7 +10077,7 @@ TOOLS = {
                                            credible_interval=a.get("credible_interval", 95),
                                            x_min=a.get("x_min", 0.01), x_max=a.get("x_max", 1),
                                            band_color=a.get("band_color", "red"), band_alpha=a.get("band_alpha", 0.95),
-                                           export_png=a.get("export_png", True))},
+                                           export_png=a.get("export_png", True), replicas=a.get("replicas"))},
     "campaign_ff_plots": {
         "desc": "Native positive-hadron zD bands in three columns. Modes combined/individual may both be selected. "
                 "Hadrons pion,kaon,rhadron(residual),hadron(total) require actual components. "
@@ -9813,14 +10098,14 @@ TOOLS = {
             "z_max":{"type":"number","exclusiveMaximum":1,"default":.9},
             "band_color":{"type":"string","default":"red"},
             "band_alpha":{"type":"number","minimum":0,"maximum":1,"default":.9},
-            "export_png":{"type":"boolean","default":True}},"required":["collection_id"]},
+            "export_png":{"type":"boolean","default":True}, "replicas": REPLICAS_ARG},"required":["collection_id"]},
         "meta": WIDGET_META,
         "fn": lambda a: campaign_ff_plots(a.get("collection_id",""),a.get("flavors",""),a.get("q2",100),
                                           a.get("mean_overlay",False),credible_interval=a.get("credible_interval",95),
                                           configured=a.get("configured",False),modes=a.get("modes","combined"),
                                           hadrons=a.get("hadrons",""),z_min=a.get("z_min",.02),z_max=a.get("z_max",.9),
                                           band_color=a.get("band_color","red"),band_alpha=a.get("band_alpha",.9),
-                                          export_png=a.get("export_png",True))},
+                                          export_png=a.get("export_png",True),replicas=a.get("replicas"))},
     "analyze_by_experiment": {
         "desc": "Data vs theory and the per-dataset table, for the datasets and/or experiments the user "
                 "names, passed as they said them: datasets 'idis:10010, jet 10001' or bare ids; experiments "
@@ -9843,6 +10128,7 @@ TOOLS = {
                                                                     "description": "Comma list of experiment names."},
                                                     "plot": {"type": "boolean", "default": True},
                                                     "export_png": {"type": "boolean", "default": False},
+                                                    "replicas": REPLICAS_ARG,
                                                     "credible_interval": {"type": "number", "default": 95,
                                                                           "exclusiveMinimum": 0, "maximum": 100,
                                                                           "description": "Equal-tailed pointwise credible interval (%)."}},
@@ -9850,7 +10136,8 @@ TOOLS = {
         "meta": WIDGET_META,
         "fn": lambda a: analyze_by_experiment(a.get("collection_id", ""), a.get("experiments", ""),
                                               a.get("plot", True), credible_interval=a.get("credible_interval", 95),
-                                              datasets=a.get("datasets", ""), export_png=a.get("export_png", False))},
+                                              datasets=a.get("datasets", ""), export_png=a.get("export_png", False),
+                                              replicas=a.get("replicas"))},
     "analysis_result": {
         "desc": "Wait for a long analysis that answered status running (analyze_by_experiment, "
                 "campaign_pdf_plots): returns its result when done, or running again after about 40 s. "
@@ -9858,6 +10145,19 @@ TOOLS = {
         "schema": {"type": "object", "properties": {"job_id": {"type": "string"}}, "required": ["job_id"]},
         "meta": WIDGET_META,
         "fn": lambda a: analysis_result(a.get("job_id", ""))},
+    "rerun_replicas": {
+        "desc": "Run replicas of a campaign again under their own numbers: replicas='failed' (default) "
+                "takes every replica that failed, did not fit or left no output; or give numbers such as "
+                "'3,7,12' or '10-12'. Replicas still queued or running are never resubmitted, and earlier "
+                "results move to previous/ (kept, not deleted). Without confirm it returns the plan and a "
+                "confirmation phrase; show the user the plan and submit with confirm=<phrase> only after they "
+                "agree. Afterwards postprocess_campaign updates the summary. (append_replicas adds new "
+                "replica numbers instead.)",
+        "schema": {"type": "object", "properties": {"collection_id": {"type": "string", "description": COLLECTION_ARG},
+                                                    "replicas": {"type": "string", "default": "failed"},
+                                                    "confirm": {"type": "string"}},
+                   "required": ["collection_id"]},
+        "fn": lambda a: rerun_replicas(a.get("collection_id", ""), a.get("replicas", "failed"), a.get("confirm", ""))},
     "campaign_logs": {
         "desc": "Logs of a campaign: each replica's state (fitted, not fitted, failed, running, no "
                 "output) and, for a replica that did not fit, the Python error and the end of its "
@@ -10007,7 +10307,12 @@ INSTRUCTIONS = (
     "theory charts), campaign_logs (each replica's state and log), append_replicas (always "
     "confirmed with its phrase), cancel_campaign (stops its queued and running tasks) and "
     "delete_campaign (only when nothing of it is queued) — both also confirmed with their "
-    "phrase. A replica counts as fitted only when its optimization ran: succeeded counts those, "
+    "phrase. rerun_replicas runs failed or unfitted replicas again under their own numbers (also "
+    "confirmed with its phrase). The analysis tools (campaign_summary, analyze_by_experiment, "
+    "campaign_pdf_plots, campaign_ff_plots) take replicas, a selection of the fitted replicas "
+    "(best N, chi2_max, sigma outlier cut, exclude, only), when the user wants statistics over some "
+    "replicas only; say how many were kept and why the others were left out. "
+    "A replica counts as fitted only when its optimization ran: succeeded counts those, "
     "not_fitted counts replicas whose optimization failed (FitPack then only computed chi2 at "
     "the starting values). When replicas did not fit or failed, call campaign_logs and explain "
     "the error to the user in plain words. The panel's Collections and Analysis tabs show the "
