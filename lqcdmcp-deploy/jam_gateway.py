@@ -60,7 +60,7 @@ import urllib.parse
 import urllib.request
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from jamai import analysis_cache, analysis_catalog, object_registry, ff_registry, ff_plotting, pdf_plotting
+from jamai import analysis_cache, analysis_catalog, analysis_results, object_registry, ff_registry, ff_plotting, pdf_plotting
 from jamai.dataset_catalog import (CONFIGURATION_DATASETS, CONFIGURATION_METADATA,
                                   CONFIGURATION_ONLY_REACTIONS, configuration_dataset_block)
 from jamai.object_registry import OBJECTS, SELECTABLE_OBJECTS
@@ -9487,7 +9487,72 @@ def _catalog_request(operation, arguments):
     return getattr(_analysis_catalog_store(), operation)(**kwargs)
 
 
+def _analysis_results_store():
+    return analysis_results.Results(analysis_results.results_root(HERE))
+
+
+def _results_request(operation, arguments):
+    if not isinstance(arguments, dict):
+        raise ValueError("results arguments must be an object")
+    args = {k: v for k, v in arguments.items() if k != "username"}
+    store = _analysis_results_store()
+    if operation == "list":
+        if set(args) - {"cursor", "limit"}:
+            raise ValueError("Unsupported results discovery arguments")
+        return store.list(**args)
+    analysis_results.validate_request(operation, args)
+    manifest = store.resolve(args["analysis_id"])
+    if _outside_read_roots(manifest["server_directory"]):
+        raise ValueError("Registered results archive is outside the site's authorized read roots")
+    user, error = _resolve_user("")
+    if error:
+        raise ValueError("Authorized JLab connection required for reference results")
+    # Source and JSON travel as data through the existing base64 SSH helper.
+    # No client-controlled paths or commands become shell fragments.
+    request = {"manifest": manifest, "operation": operation, "arguments": args}
+    with open(analysis_results.__file__, encoding="utf-8") as handle:
+        source = handle.read()
+    code = source + "\nprint(encoded(remote_request(json_read(" + repr(analysis_results.encoded(request)) + "))))\n"
+    reply = _run_ifarm_py(user, code, apptainer=False, timeout=60, cap=16000)
+    if reply.get("rc") != 0 or reply.get("timeout"):
+        raise ValueError("JLab reference-results storage is unavailable; reconnect to HPC and retry")
+    try:
+        answer = analysis_results.json_read(reply.get("out") or "")
+    except (ValueError, TypeError):
+        raise ValueError("JLab reference-results reader returned an invalid or truncated response") from None
+    if not answer.get("ok"):
+        raise ValueError(answer.get("error", "Reference results unavailable"))
+    return answer["result"]
+
+
 TOOLS = {
+    "list_analysis_results": {
+        "compact": True,
+        "desc": "Read-only compact discovery of archived numerical reference results. Returns stable analysis_id and revision-pinned results_ref. No arrays or scientific configuration are transmitted. Follow next_cursor.",
+        "schema": {"type": "object", "additionalProperties": False, "properties": {
+            "cursor": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10}}},
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        "fn": lambda a: _results_request("list", a)},
+    "get_analysis_fit_statistics": {
+        "compact": True,
+        "desc": "Read precomputed authoritative numerical fit statistics, without recalculation. Defaults to dataset records; scope=overall or reactions gives aggregates. Filter by reaction and reaction-qualified dataset_id. Reuse results_ref as analysis_id. JLab connection required; follow next_cursor with identical selectors. Missing values remain null with reasons.",
+        "schema": {"type": "object", "additionalProperties": False, "required": ["analysis_id"], "properties": {
+            "analysis_id": {"type": "string"}, "scope": {"type": "string", "enum": ["datasets", "reactions", "overall"], "default": "datasets"},
+            "reaction": {"type": "string"}, "dataset_id": {"type": "string"}, "cursor": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10}}},
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        "fn": lambda a: _results_request("statistics", a)},
+    "get_analysis_theory_predictions": {
+        "compact": True,
+        "desc": "Read saved replica-averaged predictions and aligned experimental points for one reaction-qualified dataset. Summary only by default; detail=points explicitly requests paginated arrays as ordered point records. fields selects at most 12 names from available_fields (including exp.* kinematics/uncertainties). No full replica arrays, theory evaluation, or new credible intervals. Reuse results_ref; JLab connection required.",
+        "schema": {"type": "object", "additionalProperties": False, "required": ["analysis_id", "reaction", "dataset_id"], "properties": {
+            "analysis_id": {"type": "string"}, "reaction": {"type": "string"}, "dataset_id": {"type": "string"},
+            "detail": {"type": "string", "enum": ["summary", "points"], "default": "summary"},
+            "fields": {"type": "array", "maxItems": 12, "items": {"type": "string"}}, "cursor": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10}}},
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        "fn": lambda a: _results_request("predictions", a)},
+
     "list_analysis_catalog": {
         "compact": True,
         "desc": "Compact read-only discovery of published analyses: publication, objects, readiness and reusable catalog_ref. Scientific configuration stays server-side; no HPC connection is needed. Follow next_cursor if present.",

@@ -32,7 +32,7 @@ import urllib.request
 import zlib
 
 import gw_auth
-from jamai import analysis_catalog
+from jamai import analysis_catalog, analysis_results
 
 T = gw_auth.dashboard_token()
 if not T and (sys.argv[1:2] or [""])[0] != "script":
@@ -152,6 +152,7 @@ def _payload():
             files["jamai/" + os.path.relpath(full, JAMAI_SRC).replace(os.sep, "/")] = full
     files.update(plugin_files())
     files.update(analysis_catalog.Catalog(analysis_catalog.catalog_root(HERE)).deployment_files())
+    files.update(analysis_results.Results(analysis_results.results_root(HERE)).deployment_files())
     # zlib first: the job script travels through the dashboard API, and the
     # gateway, panel and package are mostly source text.
     return {k: base64.b64encode(zlib.compress(open(v, "rb").read(), 9)).decode()

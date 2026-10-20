@@ -349,7 +349,7 @@ class CatalogMCPTest(unittest.TestCase):
             stage = app / '.hot_redeploy.stage-test'
             stage.mkdir(parents=True)
             old = {}
-            for component in ('jamai', 'plugins', 'analysis_catalog'):
+            for component in ('jamai', 'plugins', 'analysis_catalog', 'reference_results'):
                 (app / component).mkdir()
                 (app / component / 'old.txt').write_text('old ' + component)
                 old[component + '/old.txt'] = (app / component / 'old.txt').read_bytes()

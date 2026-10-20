@@ -30,7 +30,7 @@ import time
 import urllib.request
 
 import gw_auth
-from jamai import analysis_catalog
+from jamai import analysis_catalog, analysis_results
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 URL = gw_auth.URL
@@ -119,6 +119,7 @@ def deployment_files():
         print(f"note: plugin {name} is left out of the gateway: {why}")
     files.update(shipped)
     files.update(analysis_catalog.Catalog(analysis_catalog.catalog_root(HERE)).deployment_files())
+    files.update(analysis_results.Results(analysis_results.results_root(HERE)).deployment_files())
     return files
 
 
@@ -147,6 +148,11 @@ if catalog_root.resolve() != (stage / 'analysis_catalog').resolve():
     raise RuntimeError('catalog escaped staged application')
 if not gateway.analysis_catalog.Catalog(catalog_root).deployment_files():
     raise RuntimeError('no validated scientific catalog entries were staged')
+results_root = gateway.analysis_results.results_root(stage)
+if results_root.resolve() != (stage / 'reference_results').resolve():
+    raise RuntimeError('results manifests escaped staged application')
+if not gateway.analysis_results.Results(results_root).deployment_files():
+    raise RuntimeError('no validated reference-results manifests were staged')
 for name, module in list(sys.modules.items()):
     if (name == 'jam_gateway' or name == 'jamai' or name.startswith('jamai.')
             or name == 'jam_plugins' or name.startswith('jam_plugin_')):
@@ -169,7 +175,7 @@ backup = app / '.hot_redeploy.previous'
 if backup.exists():
     shutil.rmtree(backup)
 backup.mkdir(mode=0o700)
-components = ('jamai', 'plugins', 'analysis_catalog', 'jam_panel.html', 'jam_gateway.py')
+components = ('jamai', 'plugins', 'analysis_catalog', 'reference_results', 'jam_panel.html', 'jam_gateway.py')
 saved, installed = [], []
 try:
     for name in components:

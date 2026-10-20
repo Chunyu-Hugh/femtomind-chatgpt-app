@@ -1,0 +1,4783 @@
+{
+  "schema": "femtomind.reference_results.1",
+  "analysis_id": "JAM24.final",
+  "catalog_ref": "catalog:JAM24.final@1a32cc3875ac55914f5eb7b419a26114d77dd200706b0a1292c482099e94c650",
+  "archive_id": "97a675d1e7880ece",
+  "replica_count": 791,
+  "datasets": [
+    {
+      "accepted_points": 218,
+      "n_cor": 0,
+      "chi2_data": 189.8597032427821,
+      "chi2_red": 0.8709160699210188,
+      "z_score": -1.378172443906097,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "independent",
+        "value": 0.9844925655120379,
+        "uncertainty": 0.00885035294665882,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.021,
+        "chi2": 0.5453073115610804,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          -0.7384492613315266
+        ],
+        "stored_nres_mean_squared": 0.5453073115610771,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 189.8597032427821,
+        "correlated": 0.0,
+        "normalization": 0.5453073115610804
+      },
+      "chi2_objective_like_at_ensemble_means": 190.4050105543432,
+      "mean_replica_data_chi2_diagnostic": 193.3069876073098,
+      "reaction": "idis",
+      "dataset_id": "10010",
+      "key": "idis:10010",
+      "experiment": "SLAC [39]",
+      "observable": "F_{2}^{p}",
+      "original_points": 661,
+      "xlsx_path": "idis/expdata/10010.xlsx",
+      "point_count_display": "218/661",
+      "publication_row": "Table 4 row 1",
+      "normalization_root_id": 10010,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 348,
+      "n_cor": 5,
+      "chi2_data": 395.2991293875927,
+      "chi2_red": 1.135917038470094,
+      "z_score": 1.7425287241057705,
+      "z_score_missing_reason": null,
+      "chi2_cor": 13.442820142601335,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "independent",
+        "value": 0.9697557454377639,
+        "uncertainty": 0.006454780386227233,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.029999999999999995,
+        "chi2": 1.0163499266948228,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          -1.0081418187412012
+        ],
+        "stored_nres_mean_squared": 1.016349926694817,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 395.2991293875927,
+        "correlated": 13.442820142601335,
+        "normalization": 1.0163499266948228
+      },
+      "chi2_objective_like_at_ensemble_means": 409.75829945688884,
+      "mean_replica_data_chi2_diagnostic": 399.23062147991806,
+      "reaction": "idis",
+      "dataset_id": "10016",
+      "key": "idis:10016",
+      "experiment": "BCDMS [40]",
+      "observable": "F_{2}^{p}",
+      "original_points": 351,
+      "xlsx_path": "idis/expdata/10016.xlsx",
+      "point_count_display": "348/351",
+      "publication_row": "Table 4 row 3",
+      "normalization_root_id": 10016,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 273,
+      "n_cor": 11,
+      "chi2_data": 457.23949385343786,
+      "chi2_red": 1.6748699408550838,
+      "z_score": 6.618376528201847,
+      "z_score_missing_reason": null,
+      "chi2_cor": 8.347589794651508,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "independent",
+        "value": 1.0169100815285574,
+        "uncertainty": 0.009983807877831855,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.02,
+        "chi2": 0.7148771432561489,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          0.845504076427869
+        ],
+        "stored_nres_mean_squared": 0.7148771432561437,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 457.23949385343786,
+        "correlated": 8.347589794651508,
+        "normalization": 0.7148771432561489
+      },
+      "chi2_objective_like_at_ensemble_means": 466.30196079134555,
+      "mean_replica_data_chi2_diagnostic": 462.70816757013654,
+      "reaction": "idis",
+      "dataset_id": "10020",
+      "key": "idis:10020",
+      "experiment": "NMC [41]",
+      "observable": "F_{2}^{p}",
+      "original_points": 292,
+      "xlsx_path": "idis/expdata/10020.xlsx",
+      "point_count_display": "273/292",
+      "publication_row": "Table 4 row 5",
+      "normalization_root_id": 10020,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 402,
+      "n_cor": 169,
+      "chi2_data": 569.7186997419827,
+      "chi2_red": 1.417210695875579,
+      "z_score": 5.27112587577673,
+      "z_score_missing_reason": null,
+      "chi2_cor": 120.6473207488049,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 569.7186997419827,
+        "correlated": 120.6473207488049,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 690.3660204907876,
+      "mean_replica_data_chi2_diagnostic": 589.7419611220228,
+      "reaction": "idis",
+      "dataset_id": "10026",
+      "key": "idis:10026",
+      "experiment": "HERA NC e^{+} (1) [43]",
+      "observable": "\\sigma^{p}_{\\rm red}",
+      "original_points": 485,
+      "xlsx_path": "idis/expdata/10026.xlsx",
+      "point_count_display": "402/485",
+      "publication_row": "Table 4 row 7",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 75,
+      "n_cor": 169,
+      "chi2_data": 77.06825034132015,
+      "chi2_red": 1.027576671217602,
+      "z_score": 0.22168806779551645,
+      "z_score_missing_reason": null,
+      "chi2_cor": 13.76567058323297,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 77.06825034132015,
+        "correlated": 13.76567058323297,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 90.83392092455313,
+      "mean_replica_data_chi2_diagnostic": 79.44558454517795,
+      "reaction": "idis",
+      "dataset_id": "10027",
+      "key": "idis:10027",
+      "experiment": "HERA NC e^{+} (2) [43]",
+      "observable": "\\sigma^{p}_{\\rm red}",
+      "original_points": 112,
+      "xlsx_path": "idis/expdata/10027.xlsx",
+      "point_count_display": "75/112",
+      "publication_row": "Table 4 row 8",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 259,
+      "n_cor": 169,
+      "chi2_data": 231.01414549437078,
+      "chi2_red": 0.8919465077002733,
+      "z_score": -1.2473665915488885,
+      "z_score_missing_reason": null,
+      "chi2_cor": 14.12603026491205,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 231.01414549437078,
+        "correlated": 14.12603026491205,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 245.14017575928284,
+      "mean_replica_data_chi2_diagnostic": 233.43335052715196,
+      "reaction": "idis",
+      "dataset_id": "10028",
+      "key": "idis:10028",
+      "experiment": "HERA NC e^{+} (3) [43]",
+      "observable": "\\sigma^{p}_{\\rm red}",
+      "original_points": 260,
+      "xlsx_path": "idis/expdata/10028.xlsx",
+      "point_count_display": "259/260",
+      "publication_row": "Table 4 row 9",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 209,
+      "n_cor": 169,
+      "chi2_data": 204.41706384857085,
+      "chi2_red": 0.9780720758304825,
+      "z_score": -0.19314332059989947,
+      "z_score_missing_reason": null,
+      "chi2_cor": 15.744270850144549,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 204.41706384857085,
+        "correlated": 15.744270850144549,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 220.1613346987154,
+      "mean_replica_data_chi2_diagnostic": 207.22233229222115,
+      "reaction": "idis",
+      "dataset_id": "10029",
+      "key": "idis:10029",
+      "experiment": "HERA NC e^{+} (4) [43]",
+      "observable": "\\sigma^{p}_{\\rm red}",
+      "original_points": 209,
+      "xlsx_path": "idis/expdata/10029.xlsx",
+      "point_count_display": "209/209",
+      "publication_row": "Table 4 row 10",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 159,
+      "n_cor": 169,
+      "chi2_data": 230.9089721572947,
+      "chi2_red": 1.452257686523866,
+      "z_score": 3.5834053457498145,
+      "z_score_missing_reason": null,
+      "chi2_cor": 25.58199398083829,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 230.9089721572947,
+        "correlated": 25.58199398083829,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 256.490966138133,
+      "mean_replica_data_chi2_diagnostic": 233.01459647271867,
+      "reaction": "idis",
+      "dataset_id": "10030",
+      "key": "idis:10030",
+      "experiment": "HERA NC e^{-} [43]",
+      "observable": "\\sigma^{p}_{\\rm red}",
+      "original_points": 159,
+      "xlsx_path": "idis/expdata/10030.xlsx",
+      "point_count_display": "159/159",
+      "publication_row": "Table 4 row 11",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 39,
+      "n_cor": 169,
+      "chi2_data": 45.79019989289241,
+      "chi2_red": 1.1741076895613438,
+      "z_score": 0.802806834319204,
+      "z_score_missing_reason": null,
+      "chi2_cor": 2.7837586039109583,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 45.79019989289241,
+        "correlated": 2.7837586039109583,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 48.57395849680337,
+      "mean_replica_data_chi2_diagnostic": 46.66173706578789,
+      "reaction": "idis",
+      "dataset_id": "10031",
+      "key": "idis:10031",
+      "experiment": "HERA CC e^{+} [43]",
+      "observable": "\\sigma^{p}_{\\rm red}",
+      "original_points": 39,
+      "xlsx_path": "idis/expdata/10031.xlsx",
+      "point_count_display": "39/39",
+      "publication_row": "Table 4 row 12",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 42,
+      "n_cor": 169,
+      "chi2_data": 42.75835329555066,
+      "chi2_red": 1.0180560308464444,
+      "z_score": 0.15496283324420412,
+      "z_score_missing_reason": null,
+      "chi2_cor": 5.909953746821172,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 42.75835329555066,
+        "correlated": 5.909953746821172,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 48.668307042371836,
+      "mean_replica_data_chi2_diagnostic": 43.05051785703161,
+      "reaction": "idis",
+      "dataset_id": "10032",
+      "key": "idis:10032",
+      "experiment": "HERA CC e^{-} [43]",
+      "observable": "\\sigma^{p}_{\\rm red}",
+      "original_points": 42,
+      "xlsx_path": "idis/expdata/10032.xlsx",
+      "point_count_display": "42/42",
+      "publication_row": "Table 4 row 13",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 228,
+      "n_cor": 0,
+      "chi2_data": 148.3104444892993,
+      "chi2_red": 0.6504844056548215,
+      "z_score": -4.252499437087891,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "independent",
+        "value": 0.9757053494318436,
+        "uncertainty": 0.008989188304707818,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.016999999999999998,
+        "chi2": 2.042318499061666,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          -1.4290970922444937
+        ],
+        "stored_nres_mean_squared": 2.042318499061667,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 148.3104444892993,
+        "correlated": 0.0,
+        "normalization": 2.042318499061666
+      },
+      "chi2_objective_like_at_ensemble_means": 150.35276298836098,
+      "mean_replica_data_chi2_diagnostic": 153.8385711170389,
+      "reaction": "idis",
+      "dataset_id": "10011",
+      "key": "idis:10011",
+      "experiment": "SLAC [39]",
+      "observable": "F_{2}^{d}",
+      "original_points": 692,
+      "xlsx_path": "idis/expdata/10011.xlsx",
+      "point_count_display": "228/692",
+      "publication_row": "Table 4 row 2",
+      "normalization_root_id": 10011,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 254,
+      "n_cor": 5,
+      "chi2_data": 272.68843759472884,
+      "chi2_red": 1.0735765259634993,
+      "z_score": 0.8390670935540396,
+      "z_score_missing_reason": null,
+      "chi2_cor": 7.98602270876606,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "independent",
+        "value": 0.9862329147562974,
+        "uncertainty": 0.007611941247204037,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.03,
+        "chi2": 0.21059181789708287,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          -0.4589028414567514
+        ],
+        "stored_nres_mean_squared": 0.21059181789708034,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 272.68843759472884,
+        "correlated": 7.98602270876606,
+        "normalization": 0.21059181789708287
+      },
+      "chi2_objective_like_at_ensemble_means": 280.885052121392,
+      "mean_replica_data_chi2_diagnostic": 274.99019866289973,
+      "reaction": "idis",
+      "dataset_id": "10017",
+      "key": "idis:10017",
+      "experiment": "BCDMS [40]",
+      "observable": "F_{2}^{d}",
+      "original_points": 254,
+      "xlsx_path": "idis/expdata/10017.xlsx",
+      "point_count_display": "254/254",
+      "publication_row": "Table 4 row 4",
+      "normalization_root_id": 10017,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 174,
+      "n_cor": 5,
+      "chi2_data": 157.05924415946637,
+      "chi2_red": 0.9026393342498068,
+      "z_score": -0.9033420917944177,
+      "z_score_missing_reason": null,
+      "chi2_cor": 3.3562813998275898,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "independent",
+        "value": 0.9971104049144033,
+        "uncertainty": 0.0056392650055026895,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.0104,
+        "chi2": 0.07719822262116043,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          -0.27784568130738185
+        ],
+        "stored_nres_mean_squared": 0.0771982226211632,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 157.05924415946637,
+        "correlated": 3.3562813998275898,
+        "normalization": 0.07719822262116043
+      },
+      "chi2_objective_like_at_ensemble_means": 160.49272378191512,
+      "mean_replica_data_chi2_diagnostic": 162.27459221583325,
+      "reaction": "idis",
+      "dataset_id": "10021",
+      "key": "idis:10021",
+      "experiment": "NMC [42]",
+      "observable": "F_{2}^{d}/F_{2}^{p}",
+      "original_points": 260,
+      "xlsx_path": "idis/expdata/10021.xlsx",
+      "point_count_display": "174/260",
+      "publication_row": "Table 4 row 6",
+      "normalization_root_id": 10021,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 184,
+      "n_cor": 0,
+      "chi2_data": 221.6093283768584,
+      "chi2_red": 1.2043985237872739,
+      "z_score": 1.87511598212809,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "independent",
+        "value": 0.9608800059419417,
+        "uncertainty": 0.028248837947630633,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.06999999999999999,
+        "chi2": 0.3123212112454121,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          -0.5588570579722627
+        ],
+        "stored_nres_mean_squared": 0.312321211245413,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 221.6093283768584,
+        "correlated": 0.0,
+        "normalization": 0.3123212112454121
+      },
+      "chi2_objective_like_at_ensemble_means": 221.9216495881038,
+      "mean_replica_data_chi2_diagnostic": 232.1332941774474,
+      "reaction": "dy",
+      "dataset_id": "10001",
+      "key": "dy:10001",
+      "experiment": "E866 (NuSea) [2]",
+      "observable": "M^{3}\\differential^{2}\\sigma/\\differential M\\,\\differential x_{F}",
+      "original_points": 184,
+      "xlsx_path": "dy/expdata/10001.xlsx",
+      "point_count_display": "184/184",
+      "publication_row": "Table 5 row 1",
+      "normalization_root_id": 10001,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 15,
+      "n_cor": 0,
+      "chi2_data": 14.99036598650314,
+      "chi2_red": 0.9993577324335426,
+      "z_score": 0.12032867930553422,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "independent",
+        "value": 0.990363033834382,
+        "uncertainty": 0.012526245034528647,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.0093,
+        "chi2": 1.073778666635067,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          -1.0362329210341836
+        ],
+        "stored_nres_mean_squared": 1.0737786666350366,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 14.99036598650314,
+        "correlated": 0.0,
+        "normalization": 1.073778666635067
+      },
+      "chi2_objective_like_at_ensemble_means": 16.064144653138207,
+      "mean_replica_data_chi2_diagnostic": 21.582366011503233,
+      "reaction": "dy",
+      "dataset_id": "20001",
+      "key": "dy:20001",
+      "experiment": "E866 (NuSea) [2]",
+      "observable": "\\differential\\sigma^{p/d}/2\\,\\differential\\sigma^{pp}",
+      "original_points": 15,
+      "xlsx_path": "dy/expdata/20001.xlsx",
+      "point_count_display": "15/15",
+      "publication_row": "Table 5 row 2",
+      "normalization_root_id": 20001,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 6,
+      "n_cor": 1,
+      "chi2_data": 3.8766965469658072,
+      "chi2_red": 0.6461160911609679,
+      "z_score": -0.5053923565415351,
+      "z_score_missing_reason": null,
+      "chi2_cor": 0.06718175055815674,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "independent",
+        "value": 1.0119503057493908,
+        "uncertainty": 0.010374606181120518,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.02,
+        "chi2": 0.35702451875980834,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          0.5975152874695447
+        ],
+        "stored_nres_mean_squared": 0.35702451875981267,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 3.8766965469658072,
+        "correlated": 0.06718175055815674,
+        "normalization": 0.35702451875980834
+      },
+      "chi2_objective_like_at_ensemble_means": 4.300902816283772,
+      "mean_replica_data_chi2_diagnostic": 7.361400095540888,
+      "reaction": "dy",
+      "dataset_id": "20002",
+      "key": "dy:20002",
+      "experiment": "E906 (SeaQuest) [3]",
+      "observable": "\\differential\\sigma^{p/d}/2\\,\\differential\\sigma^{pp}",
+      "original_points": 6,
+      "xlsx_path": "dy/expdata/20002.xlsx",
+      "point_count_display": "6/6",
+      "publication_row": "Table 5 row 3",
+      "normalization_root_id": 20002,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 11,
+      "n_cor": 6,
+      "chi2_data": 3.9326198555212373,
+      "chi2_red": 0.3575108959564761,
+      "z_score": -1.9086552296637396,
+      "z_score_missing_reason": null,
+      "chi2_cor": 0.2204311196617289,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 3.9326198555212373,
+        "correlated": 0.2204311196617289,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 4.153050975182966,
+      "mean_replica_data_chi2_diagnostic": 6.140715222669045,
+      "reaction": "wzrv",
+      "dataset_id": "2010",
+      "key": "wzrv:2010",
+      "experiment": "CMS 8~TeV [23]",
+      "observable": "A_{\\mu}",
+      "original_points": 11,
+      "xlsx_path": "wzrv/expdata/2010.xlsx",
+      "point_count_display": "11/11",
+      "publication_row": "Table 6 row 1",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 11,
+      "n_cor": 12,
+      "chi2_data": 15.845870068790104,
+      "chi2_red": 1.4405336426172821,
+      "z_score": 1.0496042814166135,
+      "z_score_missing_reason": null,
+      "chi2_cor": 0.38610907082154716,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 15.845870068790104,
+        "correlated": 0.38610907082154716,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 16.231979139611653,
+      "mean_replica_data_chi2_diagnostic": 17.151539836825094,
+      "reaction": "wzrv",
+      "dataset_id": "2011",
+      "key": "wzrv:2011",
+      "experiment": "CMS 7~TeV [21]",
+      "observable": "A_{\\mu}",
+      "original_points": 11,
+      "xlsx_path": "wzrv/expdata/2011.xlsx",
+      "point_count_display": "11/11",
+      "publication_row": "Table 6 row 2",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 11,
+      "n_cor": 2,
+      "chi2_data": 9.178312958653535,
+      "chi2_red": 0.8343920871503214,
+      "z_score": -0.26744630618592846,
+      "z_score_missing_reason": null,
+      "chi2_cor": 0.3292591128313843,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 9.178312958653535,
+        "correlated": 0.3292591128313843,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 9.507572071484919,
+      "mean_replica_data_chi2_diagnostic": 9.454317773899628,
+      "reaction": "wzrv",
+      "dataset_id": "2012",
+      "key": "wzrv:2012",
+      "experiment": "CMS 7~TeV [20]",
+      "observable": "A_{e}",
+      "original_points": 11,
+      "xlsx_path": "wzrv/expdata/2012.xlsx",
+      "point_count_display": "11/11",
+      "publication_row": "Table 6 row 3",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 6,
+      "n_cor": 2,
+      "chi2_data": 4.761508001787189,
+      "chi2_red": 0.7935846669645316,
+      "z_score": -0.18846791995466186,
+      "z_score_missing_reason": null,
+      "chi2_cor": 0.3601132711370794,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 4.761508001787189,
+        "correlated": 0.3601132711370794,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 5.121621272924268,
+      "mean_replica_data_chi2_diagnostic": 4.855270055452942,
+      "reaction": "wzrv",
+      "dataset_id": "2013",
+      "key": "wzrv:2013",
+      "experiment": "CMS 7~TeV [19]",
+      "observable": "A_{e}",
+      "original_points": 6,
+      "xlsx_path": "wzrv/expdata/2013.xlsx",
+      "point_count_display": "6/6",
+      "publication_row": "Table 6 row 4",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 6,
+      "n_cor": 2,
+      "chi2_data": 0.2816479179123241,
+      "chi2_red": 0.04694131965205401,
+      "z_score": -3.33995534327578,
+      "z_score_missing_reason": null,
+      "chi2_cor": 0.4281012406790362,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 0.2816479179123241,
+        "correlated": 0.4281012406790362,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 0.7097491585913602,
+      "mean_replica_data_chi2_diagnostic": 0.31887109735526853,
+      "reaction": "wzrv",
+      "dataset_id": "2014",
+      "key": "wzrv:2014",
+      "experiment": "CMS 7~TeV [19]",
+      "observable": "A_{\\mu}",
+      "original_points": 6,
+      "xlsx_path": "wzrv/expdata/2014.xlsx",
+      "point_count_display": "6/6",
+      "publication_row": "Table 6 row 5",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 8,
+      "n_cor": 0,
+      "chi2_data": 3.876375574137561,
+      "chi2_red": 0.4845469467671951,
+      "z_score": -1.1174611932832832,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 3.876375574137561,
+        "correlated": 0.0,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 3.876375574137561,
+      "mean_replica_data_chi2_diagnostic": 5.352572586519202,
+      "reaction": "wzrv",
+      "dataset_id": "2016",
+      "key": "wzrv:2016",
+      "experiment": "LHCb 7~TeV [46]",
+      "observable": "A_{\\mu}",
+      "original_points": 8,
+      "xlsx_path": "wzrv/expdata/2016.xlsx",
+      "point_count_display": "8/8",
+      "publication_row": "Table 6 row 6",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 8,
+      "n_cor": 1,
+      "chi2_data": 3.153714306300443,
+      "chi2_red": 0.3942142882875554,
+      "z_score": -1.4349114618969803,
+      "z_score_missing_reason": null,
+      "chi2_cor": 0.02526906847800691,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 3.153714306300443,
+        "correlated": 0.02526906847800691,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 3.17898337477845,
+      "mean_replica_data_chi2_diagnostic": 4.786080052695256,
+      "reaction": "wzrv",
+      "dataset_id": "2017",
+      "key": "wzrv:2017",
+      "experiment": "LHCb 8~TeV [47]",
+      "observable": "A_{\\mu}",
+      "original_points": 8,
+      "xlsx_path": "wzrv/expdata/2017.xlsx",
+      "point_count_display": "8/8",
+      "publication_row": "Table 6 row 7",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 9,
+      "n_cor": 0,
+      "chi2_data": 22.384719146662007,
+      "chi2_red": 2.4871910162957787,
+      "z_score": 2.4211163146259485,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 22.384719146662007,
+        "correlated": 0.0,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 22.384719146662007,
+      "mean_replica_data_chi2_diagnostic": 23.75285732491638,
+      "reaction": "wzrv",
+      "dataset_id": "2020",
+      "key": "wzrv:2020",
+      "experiment": "STAR [50]",
+      "observable": "\\sigma^{W^{+}}/\\sigma^{W^{-}}",
+      "original_points": 9,
+      "xlsx_path": "wzrv/expdata/2020.xlsx",
+      "point_count_display": "9/9",
+      "publication_row": "Table 6 row 8",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 13,
+      "n_cor": 5,
+      "chi2_data": 16.313353737216588,
+      "chi2_red": 1.254873364401276,
+      "z_score": 0.730238693485794,
+      "z_score_missing_reason": null,
+      "chi2_cor": 2.801478283438508,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 16.313353737216588,
+        "correlated": 2.801478283438508,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 19.114832020655097,
+      "mean_replica_data_chi2_diagnostic": 17.525462012397234,
+      "reaction": "wasym",
+      "dataset_id": "1000",
+      "key": "wasym:1000",
+      "experiment": "CDF [49]",
+      "observable": "A_{W}",
+      "original_points": 13,
+      "xlsx_path": "wasym/expdata/1000.xlsx",
+      "point_count_display": "13/13",
+      "publication_row": "Table 7 row 1",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 14,
+      "n_cor": 0,
+      "chi2_data": 10.623341464879799,
+      "chi2_red": 0.7588101046342713,
+      "z_score": -0.5690505769261804,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 10.623341464879799,
+        "correlated": 0.0,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 10.623341464879799,
+      "mean_replica_data_chi2_diagnostic": 18.79385047899566,
+      "reaction": "wasym",
+      "dataset_id": "1001",
+      "key": "wasym:1001",
+      "experiment": "D\u00d8 [48]",
+      "observable": "A_{W}",
+      "original_points": 14,
+      "xlsx_path": "wasym/expdata/1001.xlsx",
+      "point_count_display": "14/14",
+      "publication_row": "Table 7 row 2",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 28,
+      "n_cor": 1,
+      "chi2_data": 37.88994105923601,
+      "chi2_red": 1.3532121806870003,
+      "z_score": 1.2787127925635273,
+      "z_score_missing_reason": null,
+      "chi2_cor": 2.3214881054294128,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "independent",
+        "value": 0.9367980202251347,
+        "uncertainty": 0.011544142510825754,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.06,
+        "chi2": 1.1095806242951343,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          -1.0533663295810878
+        ],
+        "stored_nres_mean_squared": 1.109580624295133,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 37.88994105923601,
+        "correlated": 2.3214881054294128,
+        "normalization": 1.1095806242951343
+      },
+      "chi2_objective_like_at_ensemble_means": 41.32100978896055,
+      "mean_replica_data_chi2_diagnostic": 41.287993171787775,
+      "reaction": "zrap",
+      "dataset_id": "1000",
+      "key": "zrap:1000",
+      "experiment": "CDF [52]",
+      "observable": "\\differential\\sigma/\\differential y",
+      "original_points": 28,
+      "xlsx_path": "zrap/expdata/1000.xlsx",
+      "point_count_display": "28/28",
+      "publication_row": "Table 8 row 1",
+      "normalization_root_id": 1000,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 28,
+      "n_cor": 1,
+      "chi2_data": 31.547199471703824,
+      "chi2_red": 1.1266856954179938,
+      "z_score": 0.5436944070887811,
+      "z_score_missing_reason": null,
+      "chi2_cor": 0.4088214589461478,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 31.547199471703824,
+        "correlated": 0.4088214589461478,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 31.95602093064997,
+      "mean_replica_data_chi2_diagnostic": 32.00906644156542,
+      "reaction": "zrap",
+      "dataset_id": "1001",
+      "key": "zrap:1001",
+      "experiment": "D\u00d8 [51]",
+      "observable": "\\sigma^{-1}\\differential\\sigma/\\,\\differential y",
+      "original_points": 28,
+      "xlsx_path": "zrap/expdata/1001.xlsx",
+      "point_count_display": "28/28",
+      "publication_row": "Table 8 row 2",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 110,
+      "n_cor": 22,
+      "chi2_data": 100.3645520142703,
+      "chi2_red": 0.9124050183115482,
+      "z_score": -0.6243192388099855,
+      "z_score_missing_reason": null,
+      "chi2_cor": 17.71451561051379,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "independent",
+        "value": 1.1372725729494055,
+        "uncertainty": 0.034429054862384165,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.065,
+        "chi2": 4.460061369029554,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          2.111885737683163
+        ],
+        "stored_nres_mean_squared": 4.460061369029558,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 100.3645520142703,
+        "correlated": 17.71451561051379,
+        "normalization": 4.460061369029554
+      },
+      "chi2_objective_like_at_ensemble_means": 122.53912899381365,
+      "mean_replica_data_chi2_diagnostic": 105.49063416925308,
+      "reaction": "jet",
+      "dataset_id": "10001",
+      "key": "jet:10001",
+      "experiment": "D\u00d8 [53]",
+      "observable": "\\differential^{2}\\sigma/\\differential\\eta\\,\\differential p_{T}",
+      "original_points": 110,
+      "xlsx_path": "jet/expdata/10001.xlsx",
+      "point_count_display": "110/110",
+      "publication_row": "Table 9 row 1",
+      "normalization_root_id": 10001,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 76,
+      "n_cor": 20,
+      "chi2_data": 68.9549239039077,
+      "chi2_red": 0.907301630314575,
+      "z_score": -0.535572434002428,
+      "z_score_missing_reason": null,
+      "chi2_cor": 15.370329279719343,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "independent",
+        "value": 1.0559588547425205,
+        "uncertainty": 0.037305901101900636,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.057999999999999996,
+        "chi2": 0.9308541688747052,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          0.9648078403882844
+        ],
+        "stored_nres_mean_squared": 0.9308541688747052,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 68.9549239039077,
+        "correlated": 15.370329279719343,
+        "normalization": 0.9308541688747052
+      },
+      "chi2_objective_like_at_ensemble_means": 85.25610735250174,
+      "mean_replica_data_chi2_diagnostic": 73.64709033083015,
+      "reaction": "jet",
+      "dataset_id": "10002",
+      "key": "jet:10002",
+      "experiment": "CDF [54]",
+      "observable": "\\differential^{2}\\sigma/\\differential\\eta\\,\\differential p_{T}",
+      "original_points": 76,
+      "xlsx_path": "jet/expdata/10002.xlsx",
+      "point_count_display": "76/76",
+      "publication_row": "Table 9 row 2",
+      "normalization_root_id": 10002,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 3,
+      "n_cor": 1,
+      "chi2_data": 0.34288621262639507,
+      "chi2_red": 0.11429540420879836,
+      "z_score": -1.6622717816245074,
+      "z_score_missing_reason": null,
+      "chi2_cor": 0.41628705841649294,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "independent",
+        "value": 1.0132319350773709,
+        "uncertainty": 0.0033965189104288498,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.08,
+        "chi2": 0.02735689154558709,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          0.1653991884671344
+        ],
+        "stored_nres_mean_squared": 0.027356891545586643,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 0.34288621262639507,
+        "correlated": 0.41628705841649294,
+        "normalization": 0.02735689154558709
+      },
+      "chi2_objective_like_at_ensemble_means": 0.7865301625884751,
+      "mean_replica_data_chi2_diagnostic": 0.3498178385435419,
+      "reaction": "jet",
+      "dataset_id": "10003",
+      "key": "jet:10003",
+      "experiment": "STAR [55]",
+      "observable": "\\differential^{2}\\sigma/2\\pi\\,\\differential\\eta\\,\\differential p_{T}",
+      "original_points": 5,
+      "xlsx_path": "jet/expdata/10003.xlsx",
+      "point_count_display": "3/5",
+      "publication_row": "Table 9 row 3",
+      "normalization_root_id": 10003,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 9,
+      "n_cor": 1,
+      "chi2_data": 17.17270540824211,
+      "chi2_red": 1.9080783786935678,
+      "z_score": 1.684121194551854,
+      "z_score_missing_reason": null,
+      "chi2_cor": 0.2296819266427207,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "independent",
+        "value": 1.1013644538642697,
+        "uncertainty": 0.015609770576608322,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.08,
+        "chi2": 1.6054300792502603,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          1.2670556733033742
+        ],
+        "stored_nres_mean_squared": 1.605430079250267,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 17.17270540824211,
+        "correlated": 0.2296819266427207,
+        "normalization": 1.6054300792502603
+      },
+      "chi2_objective_like_at_ensemble_means": 19.00781741413509,
+      "mean_replica_data_chi2_diagnostic": 17.340935320065977,
+      "reaction": "jet",
+      "dataset_id": "10004",
+      "key": "jet:10004",
+      "experiment": "STAR [55]",
+      "observable": "\\differential^{2}\\sigma/2\\pi\\,\\differential\\eta\\,\\differential p_{T}",
+      "original_points": 9,
+      "xlsx_path": "jet/expdata/10004.xlsx",
+      "point_count_display": "9/9",
+      "publication_row": "Table 9 row 4",
+      "normalization_root_id": 10004,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 11,
+      "n_cor": 86,
+      "chi2_data": 7.112478121631268,
+      "chi2_red": 0.646588920148297,
+      "z_score": -0.80608468486263,
+      "z_score_missing_reason": null,
+      "chi2_cor": 6.881832787881183,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "independent",
+        "value": 0.994761582923497,
+        "uncertainty": 0.05486690876683897,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.018000000000000002,
+        "chi2": 0.08469448601048725,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          -0.29102317091683383
+        ],
+        "stored_nres_mean_squared": 0.08469448601048868,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 7.112478121631268,
+        "correlated": 6.881832787881183,
+        "normalization": 0.08469448601048725
+      },
+      "chi2_objective_like_at_ensemble_means": 14.079005395522938,
+      "mean_replica_data_chi2_diagnostic": 7.954571629158655,
+      "reaction": "wc",
+      "dataset_id": "10001",
+      "key": "wc:10001",
+      "experiment": "ATLAS 7 TeV [26]",
+      "observable": "\\differential\\sigma^{W^{-}+c}/\\differential|\\eta|",
+      "original_points": 11,
+      "xlsx_path": "wc/expdata/10001.xlsx",
+      "point_count_display": "11/11",
+      "publication_row": "Table 10 row 1",
+      "normalization_root_id": 10001,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 11,
+      "n_cor": 86,
+      "chi2_data": 2.01357360177525,
+      "chi2_red": 0.18305214561593183,
+      "z_score": -2.957169462863917,
+      "z_score_missing_reason": null,
+      "chi2_cor": 4.315956884961062,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "independent",
+        "value": 0.9943137426719788,
+        "uncertainty": 0.05420871754698412,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.018000000000000002,
+        "chi2": 0.09979482222368742,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          -0.3159031848900599
+        ],
+        "stored_nres_mean_squared": 0.09979482222368338,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 2.01357360177525,
+        "correlated": 4.315956884961062,
+        "normalization": 0.09979482222368742
+      },
+      "chi2_objective_like_at_ensemble_means": 6.429325308959999,
+      "mean_replica_data_chi2_diagnostic": 2.737649307336124,
+      "reaction": "wc",
+      "dataset_id": "10002",
+      "key": "wc:10002",
+      "experiment": "ATLAS 7 TeV [26]",
+      "observable": "\\differential\\sigma^{W^{-}+\\bar{c}}/\\differential|\\eta|",
+      "original_points": 11,
+      "xlsx_path": "wc/expdata/10002.xlsx",
+      "point_count_display": "11/11",
+      "publication_row": "Table 10 row 2",
+      "normalization_root_id": 10002,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 5,
+      "n_cor": 5,
+      "chi2_data": 1.0146991553407407,
+      "chi2_red": 0.20293983106814814,
+      "z_score": -1.7668281391289153,
+      "z_score_missing_reason": null,
+      "chi2_cor": 3.142438569422993,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 1.0146991553407407,
+        "correlated": 3.142438569422993,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 4.157137724763734,
+      "mean_replica_data_chi2_diagnostic": 1.2112793668995143,
+      "reaction": "wc",
+      "dataset_id": "20001",
+      "key": "wc:20001",
+      "experiment": "CMS 7 TeV [25]",
+      "observable": "\\differential\\sigma^{W+c}/\\differential|\\eta|",
+      "original_points": 5,
+      "xlsx_path": "wc/expdata/20001.xlsx",
+      "point_count_display": "5/5",
+      "publication_row": "Table 10 row 3",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 5,
+      "n_cor": 0,
+      "chi2_data": 9.221589981915223,
+      "chi2_red": 1.8443179963830445,
+      "z_score": 1.2784496695572052,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 9.221589981915223,
+        "correlated": 0.0,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 9.221589981915223,
+      "mean_replica_data_chi2_diagnostic": 9.477348812103225,
+      "reaction": "wc",
+      "dataset_id": "20002",
+      "key": "wc:20002",
+      "experiment": "CMS 7 TeV [25]",
+      "observable": "\\sigma^{W^{+}+\\bar{c}}/\\sigma^{W^{-}+c}",
+      "original_points": 5,
+      "xlsx_path": "wc/expdata/20002.xlsx",
+      "point_count_display": "5/5",
+      "publication_row": "Table 10 row 4",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 5,
+      "n_cor": 12,
+      "chi2_data": 2.5704501413708014,
+      "chi2_red": 0.5140900282741603,
+      "z_score": -0.7252470738068741,
+      "z_score_missing_reason": null,
+      "chi2_cor": 0.932768371210307,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "independent",
+        "value": 0.9998050672509291,
+        "uncertainty": 0.05817155007701344,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.025,
+        "chi2": 6.079804265653993e-05,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          -0.007797309962836178
+        ],
+        "stored_nres_mean_squared": 6.0798042656544315e-05,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 2.5704501413708014,
+        "correlated": 0.932768371210307,
+        "normalization": 6.079804265653993e-05
+      },
+      "chi2_objective_like_at_ensemble_means": 3.503279310623765,
+      "mean_replica_data_chi2_diagnostic": 2.7360978134147516,
+      "reaction": "wc",
+      "dataset_id": "20003",
+      "key": "wc:20003",
+      "experiment": "CMS 13 TeV [27]",
+      "observable": "\\differential\\sigma^{W+c}/\\differential|\\eta|",
+      "original_points": 5,
+      "xlsx_path": "wc/expdata/20003.xlsx",
+      "point_count_display": "5/5",
+      "publication_row": "Table 10 row 5",
+      "normalization_root_id": 20003,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 249,
+      "n_cor": 1,
+      "chi2_data": 233.41626724952295,
+      "chi2_red": 0.9374147279097307,
+      "z_score": -0.6834095977734105,
+      "z_score_missing_reason": null,
+      "chi2_cor": 2.4077657325259487,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 233.41626724952295,
+        "correlated": 2.4077657325259487,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 235.8240329820489,
+      "mean_replica_data_chi2_diagnostic": 265.58251290902666,
+      "reaction": "sidis",
+      "dataset_id": "1005",
+      "key": "sidis:1005",
+      "experiment": "COMPASS [44]",
+      "observable": "\\differential M^{\\pi^{+}}/\\differential z_{h}",
+      "original_points": 311,
+      "xlsx_path": "sidis/expdata/1005.xlsx",
+      "point_count_display": "249/311",
+      "publication_row": "Table 11 row 1",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 249,
+      "n_cor": 1,
+      "chi2_data": 211.02688083743055,
+      "chi2_red": 0.8474975134033356,
+      "z_score": -1.7664566282455225,
+      "z_score_missing_reason": null,
+      "chi2_cor": 4.973054581193463,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 211.02688083743055,
+        "correlated": 4.973054581193463,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 215.999935418624,
+      "mean_replica_data_chi2_diagnostic": 238.51963027879293,
+      "reaction": "sidis",
+      "dataset_id": "1006",
+      "key": "sidis:1006",
+      "experiment": "COMPASS [44]",
+      "observable": "\\differential M^{\\pi^{-}}/\\differential z_{h}",
+      "original_points": 311,
+      "xlsx_path": "sidis/expdata/1006.xlsx",
+      "point_count_display": "249/311",
+      "publication_row": "Table 11 row 2",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 247,
+      "n_cor": 1,
+      "chi2_data": 201.32093978122248,
+      "chi2_red": 0.8150645335272165,
+      "z_score": -2.167114663858478,
+      "z_score_missing_reason": null,
+      "chi2_cor": 4.209366144449141,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 201.32093978122248,
+        "correlated": 4.209366144449141,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 205.53030592567163,
+      "mean_replica_data_chi2_diagnostic": 247.29815751703993,
+      "reaction": "sidis",
+      "dataset_id": "2005",
+      "key": "sidis:2005",
+      "experiment": "COMPASS [45]",
+      "observable": "\\differential M^{K^{+}}/\\differential z_{h}",
+      "original_points": 309,
+      "xlsx_path": "sidis/expdata/2005.xlsx",
+      "point_count_display": "247/309",
+      "publication_row": "Table 11 row 3",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 247,
+      "n_cor": 1,
+      "chi2_data": 233.003017603938,
+      "chi2_red": 0.9433320550766721,
+      "z_score": -0.6119143973306405,
+      "z_score_missing_reason": null,
+      "chi2_cor": 6.497615674290555,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 233.003017603938,
+        "correlated": 6.497615674290555,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 239.50063327822855,
+      "mean_replica_data_chi2_diagnostic": 301.57667066659707,
+      "reaction": "sidis",
+      "dataset_id": "2006",
+      "key": "sidis:2006",
+      "experiment": "COMPASS [45]",
+      "observable": "\\differential M^{K^{-}}/\\differential z_{h}",
+      "original_points": 309,
+      "xlsx_path": "sidis/expdata/2006.xlsx",
+      "point_count_display": "247/309",
+      "publication_row": "Table 11 row 4",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 249,
+      "n_cor": 1,
+      "chi2_data": 222.48544934891183,
+      "chi2_red": 0.8935158608390034,
+      "z_score": -1.2029951297851285,
+      "z_score_missing_reason": null,
+      "chi2_cor": 0.7411668007026897,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 222.48544934891183,
+        "correlated": 0.7411668007026897,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 223.22661614961453,
+      "mean_replica_data_chi2_diagnostic": 260.0491872320433,
+      "reaction": "sidis",
+      "dataset_id": "3000",
+      "key": "sidis:3000",
+      "experiment": "COMPASS [44]",
+      "observable": "\\differential M^{h^{+}}/\\differential z_{h}",
+      "original_points": 311,
+      "xlsx_path": "sidis/expdata/3000.xlsx",
+      "point_count_display": "249/311",
+      "publication_row": "Table 11 row 5",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 249,
+      "n_cor": 1,
+      "chi2_data": 207.9829474781938,
+      "chi2_red": 0.8352728814385294,
+      "z_score": -1.9195984391292495,
+      "z_score_missing_reason": null,
+      "chi2_cor": 2.4861748834989412,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 207.9829474781938,
+        "correlated": 2.4861748834989412,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 210.46912236169274,
+      "mean_replica_data_chi2_diagnostic": 251.6622280420841,
+      "reaction": "sidis",
+      "dataset_id": "3001",
+      "key": "sidis:3001",
+      "experiment": "COMPASS [44]",
+      "observable": "\\differential M^{h^{-}}/\\differential z_{h}",
+      "original_points": 311,
+      "xlsx_path": "sidis/expdata/3001.xlsx",
+      "point_count_display": "249/311",
+      "publication_row": "Table 11 row 6",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 1,
+      "n_cor": 0,
+      "chi2_data": 0.15499711028120275,
+      "chi2_red": 0.15499711028120275,
+      "z_score": -0.5066647341062078,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "independent",
+        "value": 2.6664717032353544,
+        "uncertainty": 3.063870712596954,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 1000.0,
+        "chi2": 2.777127937684143e-06,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          0.0016664717032353544
+        ],
+        "stored_nres_mean_squared": 2.777127937684143e-06,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 0.15499711028120275,
+        "correlated": 0.0,
+        "normalization": 2.777127937684143e-06
+      },
+      "chi2_objective_like_at_ensemble_means": 0.15499988740914045,
+      "mean_replica_data_chi2_diagnostic": 0.5413592630906473,
+      "reaction": "sia",
+      "dataset_id": "1001",
+      "key": "sia:1001",
+      "experiment": "TASSO 12 GeV [59]",
+      "observable": "\\differential\\sigma/\\differential z",
+      "original_points": 5,
+      "xlsx_path": "sia/expdata_V1/1001freenorm.xlsx",
+      "point_count_display": "1/5",
+      "publication_row": "Table 12 row 2",
+      "normalization_root_id": 1001,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": true,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 5,
+      "n_cor": 0,
+      "chi2_data": 12.92353289346664,
+      "chi2_red": 2.5847065786933276,
+      "z_score": 1.9754953173515517,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "independent",
+        "value": 0.9560900616991064,
+        "uncertainty": 0.04873311250774301,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 1000.0,
+        "chi2": 1.9280826815882846e-09,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          -4.390993830089365e-05
+        ],
+        "stored_nres_mean_squared": 1.928082681588287e-09,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 12.92353289346664,
+        "correlated": 0.0,
+        "normalization": 1.9280826815882846e-09
+      },
+      "chi2_objective_like_at_ensemble_means": 12.923532895394722,
+      "mean_replica_data_chi2_diagnostic": 13.676825615817746,
+      "reaction": "sia",
+      "dataset_id": "1002",
+      "key": "sia:1002",
+      "experiment": "TASSO 14 GeV [60]",
+      "observable": "\\differential\\sigma/\\differential z",
+      "original_points": 11,
+      "xlsx_path": "sia/expdata_V1/1002freenorm.xlsx",
+      "point_count_display": "5/11",
+      "publication_row": "Table 12 row 3",
+      "normalization_root_id": 1002,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": true,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 5,
+      "n_cor": 0,
+      "chi2_data": 2.859127536459731,
+      "chi2_red": 0.5718255072919461,
+      "z_score": -0.587879295421445,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "independent",
+        "value": 1.0749717233221567,
+        "uncertainty": 0.0722511232125384,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 1000.0000000000001,
+        "chi2": 5.6207592978940186e-09,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          7.497172332215668e-05
+        ],
+        "stored_nres_mean_squared": 5.620759297894013e-09,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 2.859127536459731,
+        "correlated": 0.0,
+        "normalization": 5.6207592978940186e-09
+      },
+      "chi2_objective_like_at_ensemble_means": 2.8591275420804902,
+      "mean_replica_data_chi2_diagnostic": 3.636594986064395,
+      "reaction": "sia",
+      "dataset_id": "1003",
+      "key": "sia:1003",
+      "experiment": "TASSO 22 GeV [60]",
+      "observable": "\\differential\\sigma/\\differential z",
+      "original_points": 13,
+      "xlsx_path": "sia/expdata_V1/1003freenorm.xlsx",
+      "point_count_display": "5/13",
+      "publication_row": "Table 12 row 4",
+      "normalization_root_id": 1003,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": true,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 6,
+      "n_cor": 0,
+      "chi2_data": 9.622482285008036,
+      "chi2_red": 1.6037470475013393,
+      "z_score": 1.0737071765961288,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "independent",
+        "value": 0.9516344567334479,
+        "uncertainty": 0.024276441962609672,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.060000000000000005,
+        "chi2": 0.6497849376302,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          -0.8060923877758681
+        ],
+        "stored_nres_mean_squared": 0.6497849376302005,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 9.622482285008036,
+        "correlated": 0.0,
+        "normalization": 0.6497849376302
+      },
+      "chi2_objective_like_at_ensemble_means": 10.272267222638236,
+      "mean_replica_data_chi2_diagnostic": 10.157724989988623,
+      "reaction": "sia",
+      "dataset_id": "1005",
+      "key": "sia:1005",
+      "experiment": "TASSO 34 GeV [61]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p}",
+      "original_points": 16,
+      "xlsx_path": "sia/expdata_V1/1005.xlsx",
+      "point_count_display": "6/16",
+      "publication_row": "Table 12 row 5",
+      "normalization_root_id": 1005,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 4,
+      "n_cor": 0,
+      "chi2_data": 7.495957353333058,
+      "chi2_red": 1.8739893383332644,
+      "z_score": 1.216550260231101,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "independent",
+        "value": 0.9568648791091446,
+        "uncertainty": 0.027773257344582455,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.06,
+        "chi2": 0.5168440706301963,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          -0.7189186815142578
+        ],
+        "stored_nres_mean_squared": 0.5168440706301988,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 7.495957353333058,
+        "correlated": 0.0,
+        "normalization": 0.5168440706301963
+      },
+      "chi2_objective_like_at_ensemble_means": 8.012801423963253,
+      "mean_replica_data_chi2_diagnostic": 7.762616977949519,
+      "reaction": "sia",
+      "dataset_id": "1006",
+      "key": "sia:1006",
+      "experiment": "TASSO 44 GeV [61]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p}",
+      "original_points": 12,
+      "xlsx_path": "sia/expdata_V1/1006.xlsx",
+      "point_count_display": "4/12",
+      "publication_row": "Table 12 row 6",
+      "normalization_root_id": 1006,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 4,
+      "n_cor": 0,
+      "chi2_data": 2.3724744193228577,
+      "chi2_red": 0.5931186048307144,
+      "z_score": -0.4333154522404097,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 2.3724744193228577,
+        "correlated": 0.0,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 2.3724744193228577,
+      "mean_replica_data_chi2_diagnostic": 2.3796001690064066,
+      "reaction": "sia",
+      "dataset_id": "1010",
+      "key": "sia:1010",
+      "experiment": "TPC(c) [62]",
+      "observable": "(\\sigma\\beta)^{-1}\\,\\differential\\sigma/\\differential z (c)",
+      "original_points": 15,
+      "xlsx_path": "sia/expdata_V1/1010.xlsx",
+      "point_count_display": "4/15",
+      "publication_row": "Table 12 row 7",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 4,
+      "n_cor": 0,
+      "chi2_data": 7.397776576269877,
+      "chi2_red": 1.8494441440674692,
+      "z_score": 1.1936762773538578,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 7.397776576269877,
+        "correlated": 0.0,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 7.397776576269877,
+      "mean_replica_data_chi2_diagnostic": 7.403588155670364,
+      "reaction": "sia",
+      "dataset_id": "1011",
+      "key": "sia:1011",
+      "experiment": "TPC(b) [62]",
+      "observable": "(\\sigma\\beta)^{-1}\\,\\differential\\sigma/\\differential z (b)",
+      "original_points": 15,
+      "xlsx_path": "sia/expdata_V1/1011.xlsx",
+      "point_count_display": "4/15",
+      "publication_row": "Table 12 row 8",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 2,
+      "n_cor": 0,
+      "chi2_data": 1.078928248203456,
+      "chi2_red": 0.539464124101728,
+      "z_score": -0.20972954291042822,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 1.078928248203456,
+        "correlated": 0.0,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 1.078928248203456,
+      "mean_replica_data_chi2_diagnostic": 1.09610962811508,
+      "reaction": "sia",
+      "dataset_id": "1013",
+      "key": "sia:1013",
+      "experiment": "TOPAZ [64]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential\\xi",
+      "original_points": 17,
+      "xlsx_path": "sia/expdata_V1/1013.xlsx",
+      "point_count_display": "2/17",
+      "publication_row": "Table 12 row 9",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 34,
+      "n_cor": 0,
+      "chi2_data": 28.300379183073122,
+      "chi2_red": 0.8323640936197977,
+      "z_score": -0.6519435541161233,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "independent",
+        "value": 1.0025862524206484,
+        "uncertainty": 0.0026003191968806466,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.01,
+        "chi2": 0.06688701583309505,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          0.25862524206482024
+        ],
+        "stored_nres_mean_squared": 0.06688701583308686,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 28.300379183073122,
+        "correlated": 0.0,
+        "normalization": 0.06688701583309505
+      },
+      "chi2_objective_like_at_ensemble_means": 28.36726619890622,
+      "mean_replica_data_chi2_diagnostic": 32.4023579880839,
+      "reaction": "sia",
+      "dataset_id": "1014",
+      "key": "sia:1014",
+      "experiment": "SLD [68]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p}",
+      "original_points": 40,
+      "xlsx_path": "sia/expdata_V1/1014.xlsx",
+      "point_count_display": "34/40",
+      "publication_row": "Table 12 row 10",
+      "normalization_root_id": 1014,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": true,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 34,
+      "n_cor": 0,
+      "chi2_data": 26.23965151892061,
+      "chi2_red": 0.7717544564388414,
+      "z_score": -0.9414431946579509,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "linked",
+        "value": 1.0025862524206484,
+        "uncertainty": 0.0026003191968806466,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.01,
+        "chi2": 0.06688701583309505,
+        "missing_reason": null,
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.25862524206482024
+        ],
+        "stored_nres_mean_squared": 0.06688701583308686,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 26.23965151892061,
+        "correlated": 0.0,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 26.23965151892061,
+      "mean_replica_data_chi2_diagnostic": 32.25998065410998,
+      "reaction": "sia",
+      "dataset_id": "1015",
+      "key": "sia:1015",
+      "experiment": "SLD(uds) [68]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p} (uds)",
+      "original_points": 40,
+      "xlsx_path": "sia/expdata_V1/1015.xlsx",
+      "point_count_display": "34/40",
+      "publication_row": "Table 12 row 11",
+      "normalization_root_id": 1014,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": true,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 34,
+      "n_cor": 0,
+      "chi2_data": 36.319686320935524,
+      "chi2_red": 1.0682260682628095,
+      "z_score": 0.35565819977066954,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "linked",
+        "value": 1.0025862524206484,
+        "uncertainty": 0.0026003191968806466,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.01,
+        "chi2": 0.06688701583309505,
+        "missing_reason": null,
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.25862524206482024
+        ],
+        "stored_nres_mean_squared": 0.06688701583308686,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 36.319686320935524,
+        "correlated": 0.0,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 36.319686320935524,
+      "mean_replica_data_chi2_diagnostic": 39.7800720605405,
+      "reaction": "sia",
+      "dataset_id": "1016",
+      "key": "sia:1016",
+      "experiment": "SLD(c) [68]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p} (c)",
+      "original_points": 40,
+      "xlsx_path": "sia/expdata_V1/1016.xlsx",
+      "point_count_display": "34/40",
+      "publication_row": "Table 12 row 12",
+      "normalization_root_id": 1014,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": true,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 34,
+      "n_cor": 0,
+      "chi2_data": 20.50446250049952,
+      "chi2_red": 0.60307242648528,
+      "z_score": -1.8392349536069272,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "linked",
+        "value": 1.0025862524206484,
+        "uncertainty": 0.0026003191968806466,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.01,
+        "chi2": 0.06688701583309505,
+        "missing_reason": null,
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.25862524206482024
+        ],
+        "stored_nres_mean_squared": 0.06688701583308686,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 20.50446250049952,
+        "correlated": 0.0,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 20.50446250049952,
+      "mean_replica_data_chi2_diagnostic": 25.62054763413416,
+      "reaction": "sia",
+      "dataset_id": "1017",
+      "key": "sia:1017",
+      "experiment": "SLD(b) [68]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p} (b)",
+      "original_points": 40,
+      "xlsx_path": "sia/expdata_V1/1017.xlsx",
+      "point_count_display": "34/40",
+      "publication_row": "Table 12 row 13",
+      "normalization_root_id": 1014,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": true,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 23,
+      "n_cor": 0,
+      "chi2_data": 12.305825569012157,
+      "chi2_red": 0.5350358943048764,
+      "z_score": -1.8181248529520886,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "independent",
+        "value": 0.9901837386245783,
+        "uncertainty": 0.0033435689877156596,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.03,
+        "chi2": 0.10706554154510631,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          -0.3272087125140584
+        ],
+        "stored_nres_mean_squared": 0.10706554154510774,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 12.305825569012157,
+        "correlated": 0.0,
+        "normalization": 0.10706554154510631
+      },
+      "chi2_objective_like_at_ensemble_means": 12.412891110557263,
+      "mean_replica_data_chi2_diagnostic": 14.767646591583532,
+      "reaction": "sia",
+      "dataset_id": "1018",
+      "key": "sia:1018",
+      "experiment": "ALEPH [65]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p}",
+      "original_points": 39,
+      "xlsx_path": "sia/expdata_V1/1018.xlsx",
+      "point_count_display": "23/39",
+      "publication_row": "Table 12 row 14",
+      "normalization_root_id": 1018,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 24,
+      "n_cor": 0,
+      "chi2_data": 41.497607261743696,
+      "chi2_red": 1.7290669692393206,
+      "z_score": 2.1786247358776745,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 41.497607261743696,
+        "correlated": 0.0,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 41.497607261743696,
+      "mean_replica_data_chi2_diagnostic": 42.2820492752891,
+      "reaction": "sia",
+      "dataset_id": "1019",
+      "key": "sia:1019",
+      "experiment": "OPAL [67]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential p",
+      "original_points": 51,
+      "xlsx_path": "sia/expdata_V1/1019.xlsx",
+      "point_count_display": "24/51",
+      "publication_row": "Table 12 row 15",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 21,
+      "n_cor": 0,
+      "chi2_data": 20.79240311081557,
+      "chi2_red": 0.9901144338483605,
+      "z_score": 0.07103894185264077,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 20.79240311081557,
+        "correlated": 0.0,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 20.79240311081557,
+      "mean_replica_data_chi2_diagnostic": 21.373939599111146,
+      "reaction": "sia",
+      "dataset_id": "1025",
+      "key": "sia:1025",
+      "experiment": "DELPHI [66]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p}",
+      "original_points": 23,
+      "xlsx_path": "sia/expdata_V1/1025.xlsx",
+      "point_count_display": "21/23",
+      "publication_row": "Table 12 row 16",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 21,
+      "n_cor": 0,
+      "chi2_data": 18.78535965278273,
+      "chi2_red": 0.8945409358467967,
+      "z_score": -0.2505187393460019,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 18.78535965278273,
+        "correlated": 0.0,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 18.78535965278273,
+      "mean_replica_data_chi2_diagnostic": 19.845629542319266,
+      "reaction": "sia",
+      "dataset_id": "1026",
+      "key": "sia:1026",
+      "experiment": "DELPHI(uds) [66]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p} (uds)",
+      "original_points": 23,
+      "xlsx_path": "sia/expdata_V1/1026.xlsx",
+      "point_count_display": "21/23",
+      "publication_row": "Table 12 row 17",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 21,
+      "n_cor": 0,
+      "chi2_data": 16.146768922483396,
+      "chi2_red": 0.768893758213495,
+      "z_score": -0.7106479243746199,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 16.146768922483396,
+        "correlated": 0.0,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 16.146768922483396,
+      "mean_replica_data_chi2_diagnostic": 17.667886418607125,
+      "reaction": "sia",
+      "dataset_id": "1027",
+      "key": "sia:1027",
+      "experiment": "DELPHI(b) [66]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p} (b)",
+      "original_points": 23,
+      "xlsx_path": "sia/expdata_V1/1027.xlsx",
+      "point_count_display": "21/23",
+      "publication_row": "Table 12 row 18",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 31,
+      "n_cor": 31,
+      "chi2_data": 10.422290381465025,
+      "chi2_red": 0.33620291553112985,
+      "z_score": -3.5442098104038537,
+      "z_score_missing_reason": null,
+      "chi2_cor": 50.71036988412333,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "independent",
+        "value": 0.9379162583497916,
+        "uncertainty": 0.005351928586644364,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.009800000000000001,
+        "chi2": 40.13318385349661,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          -6.335075678592686
+        ],
+        "stored_nres_mean_squared": 40.133183853496575,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 10.422290381465025,
+        "correlated": 50.71036988412333,
+        "normalization": 40.13318385349661
+      },
+      "chi2_objective_like_at_ensemble_means": 101.26584411908496,
+      "mean_replica_data_chi2_diagnostic": 11.109909593986737,
+      "reaction": "sia",
+      "dataset_id": "1028",
+      "key": "sia:1028",
+      "experiment": "BaBar (prompt) [57]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential p",
+      "original_points": 45,
+      "xlsx_path": "sia/expdata_V1/1028corrmat.xlsx",
+      "point_count_display": "31/45",
+      "publication_row": "Table 12 row 19",
+      "normalization_root_id": 1028,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": true
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native covariance eigenvector identities/signs are not asserted."
+    },
+    {
+      "accepted_points": 70,
+      "n_cor": 0,
+      "chi2_data": 13.119819172754875,
+      "chi2_red": 0.1874259881822125,
+      "z_score": -7.705195911956678,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "independent",
+        "value": 0.6235271799996632,
+        "uncertainty": 0.009009268602935758,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 1000.0,
+        "chi2": 1.4173178419900597e-07,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          -0.00037647282000033677
+        ],
+        "stored_nres_mean_squared": 1.4173178419900597e-07,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 13.119819172754875,
+        "correlated": 0.0,
+        "normalization": 1.4173178419900597e-07
+      },
+      "chi2_objective_like_at_ensemble_means": 13.119819314486659,
+      "mean_replica_data_chi2_diagnostic": 17.808849566289993,
+      "reaction": "sia",
+      "dataset_id": "1029",
+      "key": "sia:1029",
+      "experiment": "Belle [58]",
+      "observable": "\\differential\\sigma/\\differential z",
+      "original_points": 78,
+      "xlsx_path": "sia/expdata_V1/1029freenorm.xlsx",
+      "point_count_display": "70/78",
+      "publication_row": "Table 12 row 1",
+      "normalization_root_id": 1029,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": true,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 25,
+      "n_cor": 0,
+      "chi2_data": 42.902906263624786,
+      "chi2_red": 1.7161162505449914,
+      "z_score": 2.1877494010856746,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "independent",
+        "value": 0.9389617120363803,
+        "uncertainty": 0.010337812524233634,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.018,
+        "chi2": 11.49898949854863,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          -3.39101599797887
+        ],
+        "stored_nres_mean_squared": 11.498989498548632,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 42.902906263624786,
+        "correlated": 0.0,
+        "normalization": 11.49898949854863
+      },
+      "chi2_objective_like_at_ensemble_means": 54.40189576217342,
+      "mean_replica_data_chi2_diagnostic": 43.467867976339,
+      "reaction": "sia",
+      "dataset_id": "1030",
+      "key": "sia:1030",
+      "experiment": "ARGUS [56]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential p",
+      "original_points": 52,
+      "xlsx_path": "sia/expdata_V1/1030.xlsx",
+      "point_count_display": "25/52",
+      "publication_row": "Table 12 row 20",
+      "normalization_root_id": 1030,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 1,
+      "n_cor": 0,
+      "chi2_data": 0.26225311223564035,
+      "chi2_red": 0.26225311223564035,
+      "z_score": -0.2756106744815778,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "independent",
+        "value": 0.7627511429004675,
+        "uncertainty": 2.564152933059477,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 1000.0000000000001,
+        "chi2": 5.628702019503437e-08,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          -0.00023724885709953226
+        ],
+        "stored_nres_mean_squared": 5.628702019503428e-08,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 0.26225311223564035,
+        "correlated": 0.0,
+        "normalization": 5.628702019503437e-08
+      },
+      "chi2_objective_like_at_ensemble_means": 0.26225316852266056,
+      "mean_replica_data_chi2_diagnostic": 0.7930963645243382,
+      "reaction": "sia",
+      "dataset_id": "2001",
+      "key": "sia:2001",
+      "experiment": "TASSO 12 GeV [59]",
+      "observable": "\\differential\\sigma/\\differential z",
+      "original_points": 3,
+      "xlsx_path": "sia/expdata_V1/2001freenorm.xlsx",
+      "point_count_display": "1/3",
+      "publication_row": "Table 13 row 2",
+      "normalization_root_id": 2001,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": true,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 3,
+      "n_cor": 0,
+      "chi2_data": 3.0073631611218796,
+      "chi2_red": 1.0024543870406266,
+      "z_score": 0.2780387295444423,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "independent",
+        "value": 0.8595631406539531,
+        "uncertainty": 0.13110236470837103,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 1000.0,
+        "chi2": 1.9722511462981354e-08,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          -0.00014043685934604685
+        ],
+        "stored_nres_mean_squared": 1.9722511462981344e-08,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 3.0073631611218796,
+        "correlated": 0.0,
+        "normalization": 1.9722511462981354e-08
+      },
+      "chi2_objective_like_at_ensemble_means": 3.0073631808443912,
+      "mean_replica_data_chi2_diagnostic": 3.620082720006085,
+      "reaction": "sia",
+      "dataset_id": "2002",
+      "key": "sia:2002",
+      "experiment": "TASSO 14 GeV [60]",
+      "observable": "\\differential\\sigma/\\differential z",
+      "original_points": 9,
+      "xlsx_path": "sia/expdata_V1/2002freenorm.xlsx",
+      "point_count_display": "3/9",
+      "publication_row": "Table 13 row 3",
+      "normalization_root_id": 2002,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": true,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 3,
+      "n_cor": 0,
+      "chi2_data": 0.3701302594701058,
+      "chi2_red": 0.12337675315670193,
+      "z_score": -1.6103691486505474,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "independent",
+        "value": 1.1801066277978784,
+        "uncertainty": 0.2272033081051459,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 1000.0,
+        "chi2": 3.243839737672353e-08,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          0.00018010662779787843
+        ],
+        "stored_nres_mean_squared": 3.2438397376723515e-08,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 0.3701302594701058,
+        "correlated": 0.0,
+        "normalization": 3.243839737672353e-08
+      },
+      "chi2_objective_like_at_ensemble_means": 0.37013029190850316,
+      "mean_replica_data_chi2_diagnostic": 0.9671274656728984,
+      "reaction": "sia",
+      "dataset_id": "2003",
+      "key": "sia:2003",
+      "experiment": "TASSO 22 GeV [60]",
+      "observable": "\\differential\\sigma/\\differential z",
+      "original_points": 10,
+      "xlsx_path": "sia/expdata_V1/2003freenorm.xlsx",
+      "point_count_display": "3/10",
+      "publication_row": "Table 13 row 4",
+      "normalization_root_id": 2003,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": true,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 3,
+      "n_cor": 0,
+      "chi2_data": 1.0080807042766684,
+      "chi2_red": 0.33602690142555613,
+      "z_score": -0.8391116614937668,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "independent",
+        "value": 0.9751992869714169,
+        "uncertainty": 0.02194844352618155,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.060000000000000005,
+        "chi2": 0.17085426853503663,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          -0.4133452171430497
+        ],
+        "stored_nres_mean_squared": 0.17085426853503494,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 1.0080807042766684,
+        "correlated": 0.0,
+        "normalization": 0.17085426853503663
+      },
+      "chi2_objective_like_at_ensemble_means": 1.1789349728117051,
+      "mean_replica_data_chi2_diagnostic": 1.056316544602543,
+      "reaction": "sia",
+      "dataset_id": "2005",
+      "key": "sia:2005",
+      "experiment": "TASSO 34 GeV [61]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p}",
+      "original_points": 11,
+      "xlsx_path": "sia/expdata_V1/2005.xlsx",
+      "point_count_display": "3/11",
+      "publication_row": "Table 13 row 5",
+      "normalization_root_id": 2005,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 7,
+      "n_cor": 0,
+      "chi2_data": 15.0502385618269,
+      "chi2_red": 2.1500340802609856,
+      "z_score": 1.8072611500805817,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 15.0502385618269,
+        "correlated": 0.0,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 15.0502385618269,
+      "mean_replica_data_chi2_diagnostic": 15.407009811751083,
+      "reaction": "sia",
+      "dataset_id": "2008",
+      "key": "sia:2008",
+      "experiment": "TPC [63]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p}",
+      "original_points": 21,
+      "xlsx_path": "sia/expdata_V1/2008.xlsx",
+      "point_count_display": "7/21",
+      "publication_row": "Table 13 row 6",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 2,
+      "n_cor": 0,
+      "chi2_data": 0.2349541289658582,
+      "chi2_red": 0.1174770644829291,
+      "z_score": -1.2220778453789474,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 0.2349541289658582,
+        "correlated": 0.0,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 0.2349541289658582,
+      "mean_replica_data_chi2_diagnostic": 0.24939668316762056,
+      "reaction": "sia",
+      "dataset_id": "2013",
+      "key": "sia:2013",
+      "experiment": "TOPAZ [64]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential\\xi",
+      "original_points": 12,
+      "xlsx_path": "sia/expdata_V1/2013.xlsx",
+      "point_count_display": "2/12",
+      "publication_row": "Table 13 row 7",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 35,
+      "n_cor": 0,
+      "chi2_data": 15.5947058508031,
+      "chi2_red": 0.44556302430866,
+      "z_score": -2.8971978924882205,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "independent",
+        "value": 0.9945063610499306,
+        "uncertainty": 0.006246205750365868,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.01,
+        "chi2": 0.30180068913719393,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          -0.5493638950069345
+        ],
+        "stored_nres_mean_squared": 0.30180068913719016,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 15.5947058508031,
+        "correlated": 0.0,
+        "normalization": 0.30180068913719393
+      },
+      "chi2_objective_like_at_ensemble_means": 15.896506539940294,
+      "mean_replica_data_chi2_diagnostic": 18.596304351039844,
+      "reaction": "sia",
+      "dataset_id": "2014",
+      "key": "sia:2014",
+      "experiment": "SLD [68]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p}",
+      "original_points": 36,
+      "xlsx_path": "sia/expdata_V1/2014.xlsx",
+      "point_count_display": "35/36",
+      "publication_row": "Table 13 row 8",
+      "normalization_root_id": 2014,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": true,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 35,
+      "n_cor": 0,
+      "chi2_data": 63.083004420443956,
+      "chi2_red": 1.8023715548698274,
+      "z_score": 2.8075733664398492,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "linked",
+        "value": 0.9945063610499306,
+        "uncertainty": 0.006246205750365868,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.01,
+        "chi2": 0.30180068913719393,
+        "missing_reason": null,
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          -0.5493638950069345
+        ],
+        "stored_nres_mean_squared": 0.30180068913719016,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 63.083004420443956,
+        "correlated": 0.0,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 63.083004420443956,
+      "mean_replica_data_chi2_diagnostic": 73.58168846671477,
+      "reaction": "sia",
+      "dataset_id": "2015",
+      "key": "sia:2015",
+      "experiment": "SLD(uds) [68]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p} (uds)",
+      "original_points": 36,
+      "xlsx_path": "sia/expdata_V1/2015.xlsx",
+      "point_count_display": "35/36",
+      "publication_row": "Table 13 row 9",
+      "normalization_root_id": 2014,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": true,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 35,
+      "n_cor": 0,
+      "chi2_data": 50.17293966154852,
+      "chi2_red": 1.4335125617585291,
+      "z_score": 1.679893812930606,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "linked",
+        "value": 0.9945063610499306,
+        "uncertainty": 0.006246205750365868,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.01,
+        "chi2": 0.30180068913719393,
+        "missing_reason": null,
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          -0.5493638950069345
+        ],
+        "stored_nres_mean_squared": 0.30180068913719016,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 50.17293966154852,
+        "correlated": 0.0,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 50.17293966154852,
+      "mean_replica_data_chi2_diagnostic": 54.27948004503786,
+      "reaction": "sia",
+      "dataset_id": "2016",
+      "key": "sia:2016",
+      "experiment": "SLD(c) [68]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p} (c)",
+      "original_points": 36,
+      "xlsx_path": "sia/expdata_V1/2016.xlsx",
+      "point_count_display": "35/36",
+      "publication_row": "Table 13 row 10",
+      "normalization_root_id": 2014,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": true,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 35,
+      "n_cor": 0,
+      "chi2_data": 40.270473235999226,
+      "chi2_red": 1.1505849495999778,
+      "z_score": 0.6796768203463928,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "linked",
+        "value": 0.9945063610499306,
+        "uncertainty": 0.006246205750365868,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.01,
+        "chi2": 0.30180068913719393,
+        "missing_reason": null,
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          -0.5493638950069345
+        ],
+        "stored_nres_mean_squared": 0.30180068913719016,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 40.270473235999226,
+        "correlated": 0.0,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 40.270473235999226,
+      "mean_replica_data_chi2_diagnostic": 47.01119941806834,
+      "reaction": "sia",
+      "dataset_id": "2017",
+      "key": "sia:2017",
+      "experiment": "SLD(b) [68]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p} (b)",
+      "original_points": 36,
+      "xlsx_path": "sia/expdata_V1/2017.xlsx",
+      "point_count_display": "35/36",
+      "publication_row": "Table 13 row 11",
+      "normalization_root_id": 2014,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": true,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 19,
+      "n_cor": 0,
+      "chi2_data": 17.57163763583391,
+      "chi2_red": 0.9248230334649425,
+      "z_score": -0.1286932508173829,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "independent",
+        "value": 1.021497001890312,
+        "uncertainty": 0.012147134074610674,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.03,
+        "chi2": 0.5134678780800866,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          0.7165667296770684
+        ],
+        "stored_nres_mean_squared": 0.5134678780800888,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 17.57163763583391,
+        "correlated": 0.0,
+        "normalization": 0.5134678780800866
+      },
+      "chi2_objective_like_at_ensemble_means": 18.085105513913994,
+      "mean_replica_data_chi2_diagnostic": 19.074862422694054,
+      "reaction": "sia",
+      "dataset_id": "2018",
+      "key": "sia:2018",
+      "experiment": "ALEPH [65]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p}",
+      "original_points": 29,
+      "xlsx_path": "sia/expdata_V1/2018.xlsx",
+      "point_count_display": "19/29",
+      "publication_row": "Table 13 row 12",
+      "normalization_root_id": 2018,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 10,
+      "n_cor": 0,
+      "chi2_data": 3.513723380952566,
+      "chi2_red": 0.3513723380952566,
+      "z_score": -1.8334256890978324,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 3.513723380952566,
+        "correlated": 0.0,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 3.513723380952566,
+      "mean_replica_data_chi2_diagnostic": 3.9002223442677146,
+      "reaction": "sia",
+      "dataset_id": "2019",
+      "key": "sia:2019",
+      "experiment": "OPAL [67]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential p",
+      "original_points": 33,
+      "xlsx_path": "sia/expdata_V1/2019.xlsx",
+      "point_count_display": "10/33",
+      "publication_row": "Table 13 row 13",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 22,
+      "n_cor": 0,
+      "chi2_data": 21.722208471635664,
+      "chi2_red": 0.9873731123470756,
+      "z_score": 0.05876294829277847,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 21.722208471635664,
+        "correlated": 0.0,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 21.722208471635664,
+      "mean_replica_data_chi2_diagnostic": 22.117630559685075,
+      "reaction": "sia",
+      "dataset_id": "2025",
+      "key": "sia:2025",
+      "experiment": "DELPHI [66]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p}",
+      "original_points": 23,
+      "xlsx_path": "sia/expdata_V1/2025.xlsx",
+      "point_count_display": "22/23",
+      "publication_row": "Table 13 row 14",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 22,
+      "n_cor": 0,
+      "chi2_data": 25.37931759764151,
+      "chi2_red": 1.1536053453473414,
+      "z_score": 0.5849772100518088,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 25.37931759764151,
+        "correlated": 0.0,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 25.37931759764151,
+      "mean_replica_data_chi2_diagnostic": 26.14736127711653,
+      "reaction": "sia",
+      "dataset_id": "2026",
+      "key": "sia:2026",
+      "experiment": "DELPHI(uds) [66]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p} (uds)",
+      "original_points": 23,
+      "xlsx_path": "sia/expdata_V1/2026.xlsx",
+      "point_count_display": "22/23",
+      "publication_row": "Table 13 row 15",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 22,
+      "n_cor": 0,
+      "chi2_data": 13.424024619951608,
+      "chi2_red": 0.6101829372705276,
+      "z_score": -1.4095031245766352,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 13.424024619951608,
+        "correlated": 0.0,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 13.424024619951608,
+      "mean_replica_data_chi2_diagnostic": 14.627821817108549,
+      "reaction": "sia",
+      "dataset_id": "2027",
+      "key": "sia:2027",
+      "experiment": "DELPHI(b) [66]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p} (b)",
+      "original_points": 23,
+      "xlsx_path": "sia/expdata_V1/2027.xlsx",
+      "point_count_display": "22/23",
+      "publication_row": "Table 13 row 16",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 28,
+      "n_cor": 28,
+      "chi2_data": 3.442577401519918,
+      "chi2_red": 0.12294919291142566,
+      "z_score": -5.74339987843018,
+      "z_score_missing_reason": null,
+      "chi2_cor": 53.77327043366083,
+      "chi2_cor_missing_reason": null,
+      "normalization": {
+        "status": "independent",
+        "value": 0.9483166549108868,
+        "uncertainty": 0.0037417827863262866,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.009800000000000001,
+        "chi2": 27.81307954602626,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          -5.273810723378896
+        ],
+        "stored_nres_mean_squared": 27.81307954602623,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 3.442577401519918,
+        "correlated": 53.77327043366083,
+        "normalization": 27.81307954602626
+      },
+      "chi2_objective_like_at_ensemble_means": 85.02892738120701,
+      "mean_replica_data_chi2_diagnostic": 4.255643198047458,
+      "reaction": "sia",
+      "dataset_id": "2028",
+      "key": "sia:2028",
+      "experiment": "BaBar (prompt) [57]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential p",
+      "original_points": 45,
+      "xlsx_path": "sia/expdata_V1/2028corrmat.xlsx",
+      "point_count_display": "28/45",
+      "publication_row": "Table 13 row 17",
+      "normalization_root_id": 2028,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": true
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native covariance eigenvector identities/signs are not asserted."
+    },
+    {
+      "accepted_points": 70,
+      "n_cor": 0,
+      "chi2_data": 3.9826598132453768,
+      "chi2_red": 0.05689514018921967,
+      "z_score": -11.540401560995988,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "independent",
+        "value": 0.8521694093828496,
+        "uncertainty": 0.010152307635193506,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 1000.0,
+        "chi2": 2.1853883522215523e-08,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          -0.00014783059061715048
+        ],
+        "stored_nres_mean_squared": 2.185388352221554e-08,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 3.9826598132453768,
+        "correlated": 0.0,
+        "normalization": 2.1853883522215523e-08
+      },
+      "chi2_objective_like_at_ensemble_means": 3.9826598350992604,
+      "mean_replica_data_chi2_diagnostic": 10.127822885515132,
+      "reaction": "sia",
+      "dataset_id": "2029",
+      "key": "sia:2029",
+      "experiment": "Belle [58]",
+      "observable": "\\differential\\sigma/\\differential z",
+      "original_points": 78,
+      "xlsx_path": "sia/expdata_V1/2029freenorm.xlsx",
+      "point_count_display": "70/78",
+      "publication_row": "Table 13 row 1",
+      "normalization_root_id": 2029,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": true,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 25,
+      "n_cor": 0,
+      "chi2_data": 20.892077397940998,
+      "chi2_red": 0.8356830959176399,
+      "z_score": -0.5204120825934361,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "independent",
+        "value": 0.9811170337362783,
+        "uncertainty": 0.007074346281575588,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.018,
+        "chi2": 1.100513626286575,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          -1.0490536813178744
+        ],
+        "stored_nres_mean_squared": 1.1005136262865842,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 20.892077397940998,
+        "correlated": 0.0,
+        "normalization": 1.100513626286575
+      },
+      "chi2_objective_like_at_ensemble_means": 21.992591024227572,
+      "mean_replica_data_chi2_diagnostic": 21.066794040963288,
+      "reaction": "sia",
+      "dataset_id": "2030",
+      "key": "sia:2030",
+      "experiment": "ARGUS [56]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential p",
+      "original_points": 42,
+      "xlsx_path": "sia/expdata_V1/2030.xlsx",
+      "point_count_display": "25/42",
+      "publication_row": "Table 13 row 18",
+      "normalization_root_id": 2030,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 37,
+      "n_cor": 0,
+      "chi2_data": 16.219256541590248,
+      "chi2_red": 0.43835828490784456,
+      "z_score": -3.0378599928390346,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "independent",
+        "value": 1.0141836520837606,
+        "uncertainty": 0.002642486129650919,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.01,
+        "chi2": 2.011759864331664,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          1.418365208376064
+        ],
+        "stored_nres_mean_squared": 2.0117598643316756,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 16.219256541590248,
+        "correlated": 0.0,
+        "normalization": 2.011759864331664
+      },
+      "chi2_objective_like_at_ensemble_means": 18.231016405921913,
+      "mean_replica_data_chi2_diagnostic": 31.119377075054594,
+      "reaction": "sia",
+      "dataset_id": "4000",
+      "key": "sia:4000",
+      "experiment": "ALEPH [71]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p}",
+      "original_points": 46,
+      "xlsx_path": "sia/expdata_V1/4000.xlsx",
+      "point_count_display": "37/46",
+      "publication_row": "Table 14 row 11",
+      "normalization_root_id": 4000,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 21,
+      "n_cor": 0,
+      "chi2_data": 5.812018141696552,
+      "chi2_red": 0.2767627686522168,
+      "z_score": -3.322141318487377,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 5.812018141696552,
+        "correlated": 0.0,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 5.812018141696552,
+      "mean_replica_data_chi2_diagnostic": 6.8546759022559325,
+      "reaction": "sia",
+      "dataset_id": "4001",
+      "key": "sia:4001",
+      "experiment": "DELPHI [66]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p}",
+      "original_points": 27,
+      "xlsx_path": "sia/expdata_V1/4001.xlsx",
+      "point_count_display": "21/27",
+      "publication_row": "Table 14 row 13",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 34,
+      "n_cor": 0,
+      "chi2_data": 23.228229548582856,
+      "chi2_red": 0.6831832220171429,
+      "z_score": -1.3938285505869614,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "independent",
+        "value": 1.011150962336028,
+        "uncertainty": 0.0023441196883526405,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.01,
+        "chi2": 1.2434396101951435,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          1.1150962336028016
+        ],
+        "stored_nres_mean_squared": 1.243439610195154,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 23.228229548582856,
+        "correlated": 0.0,
+        "normalization": 1.2434396101951435
+      },
+      "chi2_objective_like_at_ensemble_means": 24.471669158778,
+      "mean_replica_data_chi2_diagnostic": 30.57375606110464,
+      "reaction": "sia",
+      "dataset_id": "4002",
+      "key": "sia:4002",
+      "experiment": "SLD [68]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p}",
+      "original_points": 40,
+      "xlsx_path": "sia/expdata_V1/4002.xlsx",
+      "point_count_display": "34/40",
+      "publication_row": "Table 14 row 7",
+      "normalization_root_id": 4002,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": true,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 5,
+      "n_cor": 0,
+      "chi2_data": 4.0433239951327,
+      "chi2_red": 0.80866479902654,
+      "z_score": -0.10848719269586093,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "independent",
+        "value": 0.9253685795364555,
+        "uncertainty": 0.021766028440091206,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.045,
+        "chi2": 2.750542676743889,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          -1.6584760103009921
+        ],
+        "stored_nres_mean_squared": 2.7505426767438967,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 4.0433239951327,
+        "correlated": 0.0,
+        "normalization": 2.750542676743889
+      },
+      "chi2_objective_like_at_ensemble_means": 6.793866671876589,
+      "mean_replica_data_chi2_diagnostic": 4.418194034305071,
+      "reaction": "sia",
+      "dataset_id": "4003",
+      "key": "sia:4003",
+      "experiment": "TASSO 12 GeV [59]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p}",
+      "original_points": 7,
+      "xlsx_path": "sia/expdata_V1/4003.xlsx",
+      "point_count_display": "5/7",
+      "publication_row": "Table 14 row 1",
+      "normalization_root_id": 4003,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 12,
+      "n_cor": 0,
+      "chi2_data": 19.81630482585546,
+      "chi2_red": 1.651358735487955,
+      "z_score": 1.4710290557580248,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 19.81630482585546,
+        "correlated": 0.0,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 19.81630482585546,
+      "mean_replica_data_chi2_diagnostic": 21.6255423557052,
+      "reaction": "sia",
+      "dataset_id": "4004",
+      "key": "sia:4004",
+      "experiment": "TPC [63]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p}",
+      "original_points": 34,
+      "xlsx_path": "sia/expdata_V1/4004.xlsx",
+      "point_count_display": "12/34",
+      "publication_row": "Table 14 row 6",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 19,
+      "n_cor": 0,
+      "chi2_data": 13.839492018336966,
+      "chi2_red": 0.7283943167545771,
+      "z_score": -0.8167570119838137,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 13.839492018336966,
+        "correlated": 0.0,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 13.839492018336966,
+      "mean_replica_data_chi2_diagnostic": 15.817926660310995,
+      "reaction": "sia",
+      "dataset_id": "4007",
+      "key": "sia:4007",
+      "experiment": "OPAL [72]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z",
+      "original_points": 22,
+      "xlsx_path": "sia/expdata_V1/4007.xlsx",
+      "point_count_display": "19/22",
+      "publication_row": "Table 14 row 12",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 11,
+      "n_cor": 0,
+      "chi2_data": 10.105431743565672,
+      "chi2_red": 0.9186756130514248,
+      "z_score": -0.052485812137722236,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "independent",
+        "value": 0.9235994531784438,
+        "uncertainty": 0.01728192038835046,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.045,
+        "chi2": 2.88249064426311,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          -1.6977899293679155
+        ],
+        "stored_nres_mean_squared": 2.8824906442631115,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 10.105431743565672,
+        "correlated": 0.0,
+        "normalization": 2.88249064426311
+      },
+      "chi2_objective_like_at_ensemble_means": 12.987922387828782,
+      "mean_replica_data_chi2_diagnostic": 10.922258037741003,
+      "reaction": "sia",
+      "dataset_id": "4008",
+      "key": "sia:4008",
+      "experiment": "TASSO 14 GeV [69]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p}",
+      "original_points": 20,
+      "xlsx_path": "sia/expdata_V1/4008.xlsx",
+      "point_count_display": "11/20",
+      "publication_row": "Table 14 row 2",
+      "normalization_root_id": 4008,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 11,
+      "n_cor": 0,
+      "chi2_data": 15.483009409107362,
+      "chi2_red": 1.4075463099188512,
+      "z_score": 0.988578372096783,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "independent",
+        "value": 0.9309192348730693,
+        "uncertainty": 0.017441161216510803,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.045,
+        "chi2": 2.356618326183787,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          -1.5351281139317947
+        ],
+        "stored_nres_mean_squared": 2.3566183261837894,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 15.483009409107362,
+        "correlated": 0.0,
+        "normalization": 2.356618326183787
+      },
+      "chi2_objective_like_at_ensemble_means": 17.83962773529115,
+      "mean_replica_data_chi2_diagnostic": 16.234642599608062,
+      "reaction": "sia",
+      "dataset_id": "4009",
+      "key": "sia:4009",
+      "experiment": "TASSO 22 GeV [69]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p}",
+      "original_points": 20,
+      "xlsx_path": "sia/expdata_V1/4009.xlsx",
+      "point_count_display": "11/20",
+      "publication_row": "Table 14 row 3",
+      "normalization_root_id": 4009,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 5,
+      "n_cor": 0,
+      "chi2_data": 9.27523440357876,
+      "chi2_red": 1.855046880715752,
+      "z_score": 1.2897030790537756,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "independent",
+        "value": 1.0098613163402375,
+        "uncertainty": 0.01822207665641447,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.045000000000000005,
+        "chi2": 0.048022498746782355,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          0.21914036311638904
+        ],
+        "stored_nres_mean_squared": 0.04802249874678284,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 9.27523440357876,
+        "correlated": 0.0,
+        "normalization": 0.048022498746782355
+      },
+      "chi2_objective_like_at_ensemble_means": 9.323256902325543,
+      "mean_replica_data_chi2_diagnostic": 9.927831704598047,
+      "reaction": "sia",
+      "dataset_id": "4010",
+      "key": "sia:4010",
+      "experiment": "TASSO 30 GeV [70]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p}",
+      "original_points": 7,
+      "xlsx_path": "sia/expdata_V1/4010.xlsx",
+      "point_count_display": "5/7",
+      "publication_row": "Table 14 row 4",
+      "normalization_root_id": 4010,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 11,
+      "n_cor": 0,
+      "chi2_data": 17.45497173158794,
+      "chi2_red": 1.5868156119625398,
+      "z_score": 1.3098723278156839,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "independent",
+        "value": 0.9315185949519121,
+        "uncertainty": 0.014972140289657203,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.045000000000000005,
+        "chi2": 2.315902635733468,
+        "missing_reason": null,
+        "objective_penalty_counted": true,
+        "stored_nres_mean": [
+          -1.521809001068622
+        ],
+        "stored_nres_mean_squared": 2.3159026357334773,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 17.45497173158794,
+        "correlated": 0.0,
+        "normalization": 2.315902635733468
+      },
+      "chi2_objective_like_at_ensemble_means": 19.770874367321408,
+      "mean_replica_data_chi2_diagnostic": 18.645606909188736,
+      "reaction": "sia",
+      "dataset_id": "4012",
+      "key": "sia:4012",
+      "experiment": "TASSO 44 GeV [61]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p}",
+      "original_points": 20,
+      "xlsx_path": "sia/expdata_V1/4012.xlsx",
+      "point_count_display": "11/20",
+      "publication_row": "Table 14 row 5",
+      "normalization_root_id": 4012,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 21,
+      "n_cor": 0,
+      "chi2_data": 8.744431799956004,
+      "chi2_red": 0.41640151428361927,
+      "z_score": -2.3691765584647686,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 8.744431799956004,
+        "correlated": 0.0,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 8.744431799956004,
+      "mean_replica_data_chi2_diagnostic": 11.341216124890103,
+      "reaction": "sia",
+      "dataset_id": "4013",
+      "key": "sia:4013",
+      "experiment": "DELPHI(b) [66]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p}",
+      "original_points": 27,
+      "xlsx_path": "sia/expdata_V1/4013.xlsx",
+      "point_count_display": "21/27",
+      "publication_row": "Table 14 row 15",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 34,
+      "n_cor": 0,
+      "chi2_data": 29.366550920703315,
+      "chi2_red": 0.8637220859030387,
+      "z_score": -0.5077469762964748,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "linked",
+        "value": 1.011150962336028,
+        "uncertainty": 0.0023441196883526405,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.01,
+        "chi2": 1.2434396101951435,
+        "missing_reason": null,
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          1.1150962336028016
+        ],
+        "stored_nres_mean_squared": 1.243439610195154,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 29.366550920703315,
+        "correlated": 0.0,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 29.366550920703315,
+      "mean_replica_data_chi2_diagnostic": 35.63455955335085,
+      "reaction": "sia",
+      "dataset_id": "4014",
+      "key": "sia:4014",
+      "experiment": "SLD(c) [68]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p} (c)",
+      "original_points": 40,
+      "xlsx_path": "sia/expdata_V1/4014.xlsx",
+      "point_count_display": "34/40",
+      "publication_row": "Table 14 row 9",
+      "normalization_root_id": 4002,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": true,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 34,
+      "n_cor": 0,
+      "chi2_data": 22.787678414725654,
+      "chi2_red": 0.6702258357272252,
+      "z_score": -1.4633294376976553,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "linked",
+        "value": 1.011150962336028,
+        "uncertainty": 0.0023441196883526405,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.01,
+        "chi2": 1.2434396101951435,
+        "missing_reason": null,
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          1.1150962336028016
+        ],
+        "stored_nres_mean_squared": 1.243439610195154,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 22.787678414725654,
+        "correlated": 0.0,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 22.787678414725654,
+      "mean_replica_data_chi2_diagnostic": 30.240192196838148,
+      "reaction": "sia",
+      "dataset_id": "4015",
+      "key": "sia:4015",
+      "experiment": "SLD(b) [68]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p} (b)",
+      "original_points": 40,
+      "xlsx_path": "sia/expdata_V1/4015.xlsx",
+      "point_count_display": "34/40",
+      "publication_row": "Table 14 row 10",
+      "normalization_root_id": 4002,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": true,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 34,
+      "n_cor": 0,
+      "chi2_data": 22.95631290311828,
+      "chi2_red": 0.6751856736211259,
+      "z_score": -1.436617408812161,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "linked",
+        "value": 1.011150962336028,
+        "uncertainty": 0.0023441196883526405,
+        "uncertainty_definition": "Replica population standard deviation (ddof=0), as in the original table notebook; not the prior width.",
+        "experimental_relative_uncertainty": 0.01,
+        "chi2": 1.2434396101951435,
+        "missing_reason": null,
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          1.1150962336028016
+        ],
+        "stored_nres_mean_squared": 1.243439610195154,
+        "original_nres_max_abs_difference": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 22.95631290311828,
+        "correlated": 0.0,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 22.95631290311828,
+      "mean_replica_data_chi2_diagnostic": 31.389267522437784,
+      "reaction": "sia",
+      "dataset_id": "4016",
+      "key": "sia:4016",
+      "experiment": "SLD(uds) [68]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential z_{p} (uds)",
+      "original_points": 40,
+      "xlsx_path": "sia/expdata_V1/4016.xlsx",
+      "point_count_display": "34/40",
+      "publication_row": "Table 14 row 8",
+      "normalization_root_id": 4002,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": true,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    },
+    {
+      "accepted_points": 21,
+      "n_cor": 0,
+      "chi2_data": 7.233402579983174,
+      "chi2_red": 0.34444774190396066,
+      "z_score": -2.824943734276887,
+      "z_score_missing_reason": null,
+      "chi2_cor": null,
+      "chi2_cor_missing_reason": "No explicit correlated-systematic nuisance residuals.",
+      "normalization": {
+        "status": "absent",
+        "value": null,
+        "uncertainty": null,
+        "uncertainty_definition": null,
+        "experimental_relative_uncertainty": null,
+        "chi2": null,
+        "missing_reason": "No fitted dataset normalization parameter in the original configuration.",
+        "objective_penalty_counted": false,
+        "stored_nres_mean": [
+          0.0
+        ],
+        "stored_nres_mean_squared": 0.0
+      },
+      "chi2_objective_components": {
+        "data": 7.233402579983174,
+        "correlated": 0.0,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 7.233402579983174,
+      "mean_replica_data_chi2_diagnostic": 9.2594322632281,
+      "reaction": "sia",
+      "dataset_id": "4017",
+      "key": "sia:4017",
+      "experiment": "DELPHI(uds) [66]",
+      "observable": "\\sigma^{-1}\\,\\differential\\sigma/\\differential p",
+      "original_points": 27,
+      "xlsx_path": "sia/expdata_V1/4017.xlsx",
+      "point_count_display": "21/27",
+      "publication_row": "Table 14 row 14",
+      "normalization_root_id": null,
+      "published_symbols": {
+        "paper_unpenalized_asterisk": false,
+        "paper_shared_dagger": false,
+        "paper_covariance_star": false
+      },
+      "nuisance_coordinate_provenance": "Original rres coordinate order retained; current native correlated-column count verified against it."
+    }
+  ],
+  "reactions": {
+    "idis": {
+      "datasets": 13,
+      "accepted_points": 2680,
+      "original_points": 3816,
+      "n_cor": 1209,
+      "chi2_data": 3022.132137499289,
+      "chi2_red": 1.1276612453355557,
+      "z_score": 4.496931221643298,
+      "chi2_cor": 231.6917128245114,
+      "chi2_norm_unique": 4.606642921091962,
+      "chi2_norm_display_row_sum": 4.606642921091962,
+      "chi2_objective_components": {
+        "data": 3022.132137499289,
+        "correlated": 231.6917128245114,
+        "normalization": 4.606642921091962
+      },
+      "chi2_objective_like_at_ensemble_means": 3258.430493244892
+    },
+    "dy": {
+      "datasets": 3,
+      "accepted_points": 205,
+      "original_points": 205,
+      "n_cor": 1,
+      "chi2_data": 240.47639091032735,
+      "chi2_red": 1.173055565416231,
+      "z_score": 1.6925848265167711,
+      "chi2_cor": 0.06718175055815674,
+      "chi2_norm_unique": 1.7431243966402876,
+      "chi2_norm_display_row_sum": 1.7431243966402876,
+      "chi2_objective_components": {
+        "data": 240.47639091032735,
+        "correlated": 0.06718175055815674,
+        "normalization": 1.7431243966402876
+      },
+      "chi2_objective_like_at_ensemble_means": 242.2866970575258
+    },
+    "wzrv": {
+      "datasets": 8,
+      "accepted_points": 70,
+      "original_points": 70,
+      "n_cor": 25,
+      "chi2_data": 63.4147678297644,
+      "chi2_red": 0.90592525471092,
+      "z_score": -0.5181959369519926,
+      "chi2_cor": 1.7492828836087828,
+      "chi2_norm_unique": 0.0,
+      "chi2_norm_display_row_sum": 0.0,
+      "chi2_objective_components": {
+        "data": 63.4147678297644,
+        "correlated": 1.7492828836087828,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 65.16405071337319
+    },
+    "wasym": {
+      "datasets": 2,
+      "accepted_points": 27,
+      "original_points": 27,
+      "n_cor": 5,
+      "chi2_data": 26.936695202096388,
+      "chi2_red": 0.9976553778554218,
+      "z_score": 0.08227402907863873,
+      "chi2_cor": 2.801478283438508,
+      "chi2_norm_unique": 0.0,
+      "chi2_norm_display_row_sum": 0.0,
+      "chi2_objective_components": {
+        "data": 26.936695202096388,
+        "correlated": 2.801478283438508,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 29.738173485534897
+    },
+    "zrap": {
+      "datasets": 2,
+      "accepted_points": 56,
+      "original_points": 56,
+      "n_cor": 2,
+      "chi2_data": 69.43714053093983,
+      "chi2_red": 1.2399489380524968,
+      "z_score": 1.2422197805649233,
+      "chi2_cor": 2.7303095643755606,
+      "chi2_norm_unique": 1.1095806242951343,
+      "chi2_norm_display_row_sum": 1.1095806242951343,
+      "chi2_objective_components": {
+        "data": 69.43714053093983,
+        "correlated": 2.7303095643755606,
+        "normalization": 1.1095806242951343
+      },
+      "chi2_objective_like_at_ensemble_means": 73.27703071961052
+    },
+    "jet": {
+      "datasets": 4,
+      "accepted_points": 198,
+      "original_points": 200,
+      "n_cor": 44,
+      "chi2_data": 186.8350675390465,
+      "chi2_red": 0.9436114522174065,
+      "z_score": -0.5382963858241236,
+      "chi2_cor": 33.73081387529234,
+      "chi2_norm_unique": 7.023702508700106,
+      "chi2_norm_display_row_sum": 7.023702508700106,
+      "chi2_objective_components": {
+        "data": 186.8350675390465,
+        "correlated": 33.73081387529234,
+        "normalization": 7.023702508700106
+      },
+      "chi2_objective_like_at_ensemble_means": 227.58958392303893
+    },
+    "wc": {
+      "datasets": 5,
+      "accepted_points": 37,
+      "original_points": 37,
+      "n_cor": 189,
+      "chi2_data": 21.932791002033287,
+      "chi2_red": 0.5927781351900888,
+      "z_score": -1.9885367083058285,
+      "chi2_cor": 15.272996613475543,
+      "chi2_norm_unique": 0.18455010627683122,
+      "chi2_norm_display_row_sum": 0.18455010627683122,
+      "chi2_objective_components": {
+        "data": 21.932791002033287,
+        "correlated": 15.272996613475543,
+        "normalization": 0.18455010627683122
+      },
+      "chi2_objective_like_at_ensemble_means": 37.39033772178566
+    },
+    "sidis": {
+      "datasets": 6,
+      "accepted_points": 1490,
+      "original_points": 1862,
+      "n_cor": 6,
+      "chi2_data": 1309.2355022992197,
+      "chi2_red": 0.8786815451672615,
+      "z_score": -3.4432750784053328,
+      "chi2_cor": 21.315143816660736,
+      "chi2_norm_unique": 0.0,
+      "chi2_norm_display_row_sum": 0.0,
+      "chi2_objective_components": {
+        "data": 1309.2355022992197,
+        "correlated": 21.315143816660736,
+        "normalization": 0.0
+      },
+      "chi2_objective_like_at_ensemble_means": 1330.5506461158805
+    },
+    "sia": {
+      "datasets": 53,
+      "accepted_points": 1090,
+      "original_points": 1521,
+      "n_cor": 59,
+      "chi2_data": 856.59045467339,
+      "chi2_red": 0.7858628024526514,
+      "z_score": -5.393874393377636,
+      "chi2_cor": 104.48364031778416,
+      "chi2_norm_unique": 96.48125023865722,
+      "chi2_norm_display_row_sum": 101.31763218415351,
+      "chi2_objective_components": {
+        "data": 856.59045467339,
+        "correlated": 104.48364031778416,
+        "normalization": 96.48125023865722
+      },
+      "chi2_objective_like_at_ensemble_means": 1057.5553452298313
+    }
+  },
+  "overall": {
+    "datasets": 96,
+    "accepted_points": 5853,
+    "original_points": 7794,
+    "n_cor": 1540,
+    "chi2_data": 5796.990947486108,
+    "chi2_red": 0.9904307103171208,
+    "z_score": -0.5131649474787391,
+    "chi2_cor": 413.8425599297052,
+    "chi2_norm_unique": 111.14885079566153,
+    "chi2_norm_display_row_sum": 115.98523274115782,
+    "chi2_objective_components": {
+      "data": 5796.990947486108,
+      "correlated": 413.8425599297052,
+      "normalization": 111.14885079566153
+    },
+    "chi2_objective_like_at_ensemble_means": 6321.982358211475
+  },
+  "configured_zero_retained_datasets": [
+    {
+      "reaction": "sia",
+      "dataset_id": "1012",
+      "reason": "Configured file retains zero points; absent from original thy_cut/all_exp, not a silently dropped dataset."
+    },
+    {
+      "reaction": "sia",
+      "dataset_id": "2006",
+      "reason": "Configured file retains zero points; absent from original thy_cut/all_exp, not a silently dropped dataset."
+    }
+  ],
+  "definitions": {
+    "chi2_red": "sum(((mean(fitted_prediction)-original_value)/alpha)**2)/N_accepted; correlated and normalization penalties are separate.",
+    "fitted_prediction": "Original thy_cut thy is FitPack prediction = raw theory / normalization + systematic shift. Do not divide by normalization or add shifts again.",
+    "chi2_cor": "sum(mean(rres,axis=0)**2), not mean(sum(rres**2)).",
+    "chi2_norm": "(mean(fitted_norm)-1)**2/dN**2; linked-row values retained for display, but their objective contribution is counted at the independent root only.",
+    "objective_like_at_ensemble_means": "Data chi2 of mean fitted predictions + squared mean nuisance residuals + unique normalization penalties. This is not a refit at mean parameters or mean replica objective.",
+    "z_score": {
+      "path": "/w/ceph24/JAM/treyand/pdf_plotting/strange_analysis/combined4/2-0/chi2_zscore_plot_paper.ipynb",
+      "sha256": "cd725e44a47e2c2938239e300d2cc956b49ff7070463e116b2652245edadbf27",
+      "cell_index_zero_based": 15,
+      "function": "def get_zscore(chi2_,dof):\n    p_val = stats.chi2.cdf(chi2_,dof)\n    z = stats.norm.ppf(p_val)\n    return z",
+      "function_sha256": "ba1581ffddf98a63d0723c0491213646c942fa91e7880a55f9e878339a7d9c44"
+    },
+    "normalization_uncertainty": "np.std(original fitted normalization replicas,ddof=0); exact source notebook convention.",
+    "missing": "Null plus reason means unavailable/not applicable; it does not mean zero."
+  }
+}

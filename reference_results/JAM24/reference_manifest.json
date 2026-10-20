@@ -1,0 +1,140 @@
+{
+  "schema": "femtomind.reference_results.index.1",
+  "analysis_id": "JAM24.final",
+  "catalog_ref": "catalog:JAM24.final@1a32cc3875ac55914f5eb7b419a26114d77dd200706b0a1292c482099e94c650",
+  "application_base_commit": "25a5af4837f161b0428fa4899314ec1406b19abc",
+  "archive_id": "97a675d1e7880ece",
+  "server_directory": "/w/ceph24/JAM/treyand/femtomind-chatgpt-app/reference_results/JAM24/data/97a675d1e7880ece",
+  "relative_directory": "data/97a675d1e7880ece",
+  "archive_manifest_sha256": "d5f4f6b6ecc5e0229dbe0202df24c1c4ea531f64d03ee3e4afa5140e0cf9a895",
+  "original_source_directory": "/w/ceph24/JAM/treyand/pdf_plotting/strange_analysis/combined4/2-0",
+  "original_files": {
+    "replicas_cut.npy": {
+      "sha256": "c80db2bbd1ef553e7bef73a3289591d64fcfb521da90310f8f546bc57baede31",
+      "bytes": 1669572
+    },
+    "thy_cut.npy": {
+      "sha256": "366191722adce3701cf775728a4af70fb8959898287c460a184cbefaea9f0e94",
+      "bytes": 121496195
+    },
+    "all_exp.npy": {
+      "sha256": "974beca8497739c8d21e0d19505f824600eede3b513285f3428cc38a188c047e",
+      "bytes": 105527
+    },
+    "avg_thy.npy": {
+      "sha256": "ded783394faa0ba16f0d23d9baaaa81bd766af7d3cf2a4144ca34f7e6bed6953",
+      "bytes": 299125
+    }
+  },
+  "replica_count": 791,
+  "independent_model_columns": 215,
+  "independent_normalization_columns": 43,
+  "parameter_definitions": 369,
+  "ff_links": 150,
+  "datasets": 96,
+  "configured_zero_retained_datasets": [
+    {
+      "reaction": "sia",
+      "dataset_id": "1012",
+      "reason": "Configured file retains zero points; absent from original thy_cut/all_exp, not a silently dropped dataset."
+    },
+    {
+      "reaction": "sia",
+      "dataset_id": "2006",
+      "reason": "Configured file retains zero points; absent from original thy_cut/all_exp, not a silently dropped dataset."
+    }
+  ],
+  "accepted_points": 5853,
+  "original_points": 7794,
+  "numerical_file_policy": "All large numerical files are server-side, under the nested Git-ignored data directory. No numerical archive is staged for Git.",
+  "storage": {
+    "files": 297,
+    "total_bytes": 109517099,
+    "groups": {
+      "datasets": 3685502,
+      "means": 543459,
+      "replicas": 101318048
+    }
+  },
+  "compact_statistics": {
+    "path": "fit_statistics.json",
+    "sha256": "23aa31b4d8c594c8931b9b99a08212f3d0b4190a44d6bae1102878dfb03fabf0"
+  },
+  "preview": {
+    "path": "appendix_preview.md",
+    "sha256": "c220c4d70e728849edd5bd57b4dfec0c6b8b59098cb62d0d3f00b5277aee3d76"
+  },
+  "validation": {
+    "status": "PASS_VALIDATED_ORIGINAL_NUMERICAL_RESULTS",
+    "checksums_and_original_replica_arrays": "PASS",
+    "exact_original_metric_arrays": 480,
+    "exact_mean_arrays": 96,
+    "mean_prediction_max_abs_difference": 0.0,
+    "native_values_and_uncertainties_exact": true,
+    "normalization_original_nres_max_abs_difference": 0.0,
+    "published_metric_check_counts": {
+      "match": 396,
+      "not_comparable": 120,
+      "disagreement": 3
+    },
+    "source_files_unchanged": true,
+    "physics_evaluations": 0,
+    "fits": 0,
+    "slurm_submissions": 0,
+    "historical_publication_comparison": {
+      "status": "Historical audit only; not an active issue or blocker.",
+      "publication_disagreements": [
+        {
+          "key": "wzrv:2012",
+          "metric": "chi2_cor",
+          "status": "disagreement",
+          "calculated": 0.3292591128313843,
+          "rounded": "0.33",
+          "printed": "0.32"
+        },
+        {
+          "key": "wc:10002",
+          "metric": "chi2_cor",
+          "status": "disagreement",
+          "calculated": 4.315956884961062,
+          "rounded": "4.32",
+          "printed": "4.21"
+        },
+        {
+          "key": "sia:1028",
+          "metric": "chi2_norm",
+          "status": "disagreement",
+          "calculated": 40.13318385349661,
+          "rounded": "40.13",
+          "printed": "40.10"
+        }
+      ]
+    }
+  },
+  "overall": {
+    "datasets": 96,
+    "accepted_points": 5853,
+    "original_points": 7794,
+    "n_cor": 1540,
+    "chi2_data": 5796.990947486108,
+    "chi2_red": 0.9904307103171208,
+    "z_score": -0.5131649474787391,
+    "chi2_cor": 413.8425599297052,
+    "chi2_norm_unique": 111.14885079566153,
+    "chi2_norm_display_row_sum": 115.98523274115782,
+    "chi2_objective_components": {
+      "data": 5796.990947486108,
+      "correlated": 413.8425599297052,
+      "normalization": 111.14885079566153
+    },
+    "chi2_objective_like_at_ensemble_means": 6321.982358211475
+  },
+  "limitations": [
+    "Replica ordinals and exact pre-cut row mappings are available; original fit-job IDs/convergence history are not asserted.",
+    "Native covariance eigenbasis names/signs are not asserted to be those of the original rres coordinates.",
+    "Current native reader metadata include some absent units cells; original values/errors and all stored predictions remain finite.",
+    "The original experimental NPY bundle has no historical kinematic labels; current native kinematics match its ordered values/errors and the approved workbook hashes. Historical reader revision is not asserted."
+  ],
+  "numerical_authority": "Original saved JAM24 numerical files and derived archive statistics; publication tables do not override numerical results.",
+  "retrieval": "Read-only results MCP tools resolve this index and access selective shards through the authorized JLab SSH connection. Gateway deployment contains this index, not the numerical archive."
+}
