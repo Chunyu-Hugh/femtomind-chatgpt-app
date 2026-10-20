@@ -10073,10 +10073,12 @@ class H(BaseHTTPRequestHandler):
         accept = self.headers.get("Accept") or ""
         if "text/html" in accept:
             # ?app=<plugin> is that plugin's page; every other page request gets the JAM panel.
-            app = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("app", [""])[0]
-            page = PLUGIN_PAGES.get(app)
+            query = {k: v[0] for k, v in urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).items()}
+            page = PLUGIN_PAGES.get(query.get("app", ""))
             try:
-                body = (page() if page else _panel_html()).encode()
+                # A page(query) sees the URL's query (?app=<name>&view=...); page() does not.
+                takes_query = page is not None and len(inspect.signature(page).parameters) > 0
+                body = (page(query) if takes_query else page() if page else _panel_html()).encode()
             except Exception:
                 body = _panel_html().encode()
             self.send_response(200)

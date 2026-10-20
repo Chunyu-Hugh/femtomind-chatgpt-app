@@ -18,7 +18,8 @@ and optionally:
   configure(page_url)  called before load(); page_url(**query) is the browser
                 URL of this plugin's page on this gateway (?app=<NAME>&...)
   page()        the HTML of that page, which a browser GET of
-                <gateway URL>?app=<NAME> receives instead of the JAM panel
+                <gateway URL>?app=<NAME> receives instead of the JAM panel;
+                page(query) receives the URL's query as a dict as well
 
 The gateway (JAM) itself is not a plugin and is unchanged by them. A plugin
 that fails to load is left out as a whole and the gateway runs without it.

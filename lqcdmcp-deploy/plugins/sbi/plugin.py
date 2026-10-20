@@ -13,7 +13,7 @@ import os
 import sys
 
 NAME = "sbi"
-SHIP = ("plugin.py", "upstream/backend.py", "upstream/server.py",
+SHIP = ("plugin.py", "dashboard.html", "upstream/backend.py", "upstream/server.py",
         "upstream/static/panel.html", "upstream/data/*.json")
 UPSTREAM = os.path.join(os.path.dirname(os.path.abspath(__file__)), "upstream")
 
@@ -61,10 +61,11 @@ DESCRIPTIONS = {
 }
 
 PANEL_DESCRIPTION = (
-    "NESAP SBI only. The browser link of the SBI page on this gateway, like the JAM panel's link: "
-    "the interactive likelihood plot with both confidence sets, the generating truth on request, "
-    "the other benchmarks and the result JSON. With a benchmark_id the page opens on that "
-    "benchmark and draws it. Give the link when the user wants a web page, or when this client "
+    "NESAP SBI only. The browser link of the SBI dashboard on this gateway, like the JAM panel's link: "
+    "every benchmark's likelihood profile overlaid (hover values, zoom, 2ΔlnL / likelihood-ratio / "
+    "confidence-level axes), best fits with both confidence sets, the generating truths and pulls on "
+    "request, the archived validation as charts, sortable tables and CSV/JSON export. With a "
+    "benchmark_id the dashboard opens focused on that benchmark. Give the link when the user wants a web page, or when this client "
     "cannot show the SBI panel itself (for example a terminal client). The page asks once for the "
     "user's LQCDMCP dashboard token. No HPC sign-in, workspace or Slurm.")
 
@@ -200,7 +201,25 @@ def _panel_link(args):
                            "The user picks a benchmark there and presses Run inference.")}
 
 
-def page():
+# The dashboard (dashboard.html, this plugin's own file) draws every benchmark,
+# the validation and their comparisons from the same tools, interactively; it
+# is the browser page and the chat widget. Upstream's panel stays reachable as
+# the classic view (?app=sbi&view=classic). WIDGET = "classic" puts it back in chat.
+WIDGET = "dashboard"
+
+
+def _dashboard():
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html"), encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _widget():
+    return _dashboard() if WIDGET == "dashboard" else _panel()
+
+
+def page(query=None):
+    if (query or {}).get("view") != "classic":
+        return _dashboard()
     html = _panel()
     head = '<meta charset="utf-8">'
     if head not in html:
@@ -217,8 +236,8 @@ def resources():
     if not PANEL:
         return {}
     meta = {"ui": {"prefersBorder": True}, "openai/widgetPrefersBorder": True}
-    return {UI_URI: {"name": "sbi-panel", "mimeType": _server.UI_MIME, "text": _panel, "meta": meta,
+    return {UI_URI: {"name": "sbi-panel", "mimeType": _server.UI_MIME, "text": _widget, "meta": meta,
                      "description": "NESAP SBI likelihood panel"},
             UI_URI_SKYBRIDGE: {"name": "sbi-panel-chatgpt", "mimeType": "text/html+skybridge",
-                               "text": _panel, "meta": meta,
+                               "text": _widget, "meta": meta,
                                "description": "NESAP SBI likelihood panel (ChatGPT widget)"}}

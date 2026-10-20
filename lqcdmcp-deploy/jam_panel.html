@@ -1863,9 +1863,10 @@
   const SVGNS = "http://www.w3.org/2000/svg";
   const PALETTE = ["#2560c9","#d9480f","#2b8a3e","#ae3ec9","#c92a2a","#0b7285","#e67700","#5f3dc4","#868e96","#a61e4d"];
   const isNum = v=>typeof v === "number" && isFinite(v);
+  // A CSS variable is not resolved in an SVG presentation attribute: those go in style.
   function svgEl(tag, attrs, parent){
     const n = document.createElementNS(SVGNS, tag);
-    for (const k in attrs || {}) n.setAttribute(k, attrs[k]);
+    for (const k in attrs || {}){ const v = attrs[k]; if (typeof v === "string" && v.indexOf("var(") >= 0) n.style.setProperty(k, v); else n.setAttribute(k, v); }
     if (parent) parent.appendChild(n);
     return n;
   }

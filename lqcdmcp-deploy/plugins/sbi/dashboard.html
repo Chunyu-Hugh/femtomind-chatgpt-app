@@ -1,0 +1,552 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NESAP SBI dashboard</title>
+<!-- The SBI plugin's interactive dashboard. Every number comes from the
+     plugin's tools (upstream backend, unmodified): sbi_options, sbi_infer,
+     sbi_validation. The page only draws and links them. It runs as the
+     gateway's browser page (?app=sbi, with the dashboard token) and as the
+     chat widget (ChatGPT or any MCP Apps host). Felix's original panel stays
+     at ?app=sbi&view=classic. -->
+<style>
+  :root{
+    --bg:#f5f7fb; --surface:#fff; --surface-2:#eef2f8; --fg:#121722; --muted:#5a6474; --line:#d6dce7;
+    --accent:#2560c9; --accent-wash:#e7f0fd; --warn:#b0560a; --warn-wash:#fbeee1; --ok:#1c7a52; --ok-wash:#e3f4ec;
+    --truth:#c2410c;
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme:dark){ :root:not([data-theme="light"]){
+    --bg:#0c0f15; --surface:#141b25; --surface-2:#1a2230; --fg:#e7ebf3; --muted:#93a0b4; --line:#26303f;
+    --accent:#74a0ff; --accent-wash:#15233c; --warn:#dca24a; --warn-wash:#2b2413; --ok:#4dc08c; --ok-wash:#12251c; --truth:#fb923c;
+  }}
+  :root[data-theme="dark"]{
+    --bg:#0c0f15; --surface:#141b25; --surface-2:#1a2230; --fg:#e7ebf3; --muted:#93a0b4; --line:#26303f;
+    --accent:#74a0ff; --accent-wash:#15233c; --warn:#dca24a; --warn-wash:#2b2413; --ok:#4dc08c; --ok-wash:#12251c; --truth:#fb923c;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 var(--font);}
+  main{max-width:1180px;margin:0 auto;padding:18px 16px 40px;}
+  header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px;}
+  h1{font-size:19px;margin:0;font-weight:650;} h1 small{font-weight:400;color:var(--muted);font-size:12.5px;margin-left:6px;font-family:var(--mono);}
+  h2{font-size:14.5px;margin:0 0 4px;font-weight:620;}
+  .sub{color:var(--muted);font-size:12.5px;margin:0 0 10px;}
+  .sp{flex:1}
+  .pill{font:11px var(--mono);padding:4px 10px;border-radius:999px;border:1px solid var(--line);background:var(--surface);color:var(--muted);}
+  .pill.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 40%,var(--line));} .pill.err{color:var(--warn);}
+  a{color:var(--accent);}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:12px;min-width:0;}
+  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(440px,100%),1fr));gap:12px;} .grid2 > .card{margin-bottom:0;}
+  .stack{display:flex;flex-direction:column;gap:12px;margin-bottom:12px;}
+  .slicers{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end;}
+  .sl{display:flex;flex-direction:column;gap:6px;} .sl > span{font-size:11.5px;color:var(--muted);font-weight:560;}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;}
+  .chip{font:12px var(--mono);padding:5px 10px;border-radius:8px;border:1px solid var(--line);background:var(--surface-2);color:var(--muted);cursor:pointer;display:inline-flex;align-items:center;gap:6px;}
+  .chip i{width:10px;height:10px;border-radius:3px;display:inline-block;}
+  .chip.on{color:var(--fg);background:var(--surface);border-color:var(--fg);} .chip.focus{box-shadow:0 0 0 2px var(--accent);}
+  select,button.btn,input[type=password]{font:inherit;font-size:13px;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--fg);}
+  button.btn{cursor:pointer;} button.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;}
+  label.tg{display:inline-flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;user-select:none;}
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px;}
+  .kpi{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 14px;min-width:0;}
+  .kpi .k{font-size:11.5px;color:var(--muted);font-weight:560;}
+  .kpi .v{font:600 19px var(--mono);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .kpi .d{font-size:11.5px;color:var(--muted);margin-top:2px;}
+  .kpi.truth .v{color:var(--truth);} .kpi.good .v{color:var(--ok);} .kpi.bad .v{color:var(--warn);}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;}
+  th{text-align:left;font:600 11px var(--mono);color:var(--muted);padding:7px 8px;border-bottom:1px solid var(--line);cursor:pointer;white-space:nowrap;}
+  td{padding:7px 8px;border-bottom:1px solid var(--line);font-family:var(--mono);white-space:nowrap;}
+  tbody tr{cursor:pointer;} tbody tr:hover{background:var(--surface-2);} tbody tr.focus{background:var(--accent-wash);}
+  .tblscroll{overflow-x:auto;}
+  .yes{color:var(--ok);} .no{color:var(--warn);}
+  .note{font-size:12.5px;color:var(--muted);background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:9px 12px;margin-top:10px;}
+  .note.warn{color:var(--warn);background:var(--warn-wash);}
+  .muted{color:var(--muted);} ul.lim{margin:6px 0 0;padding-left:18px;color:var(--muted);font-size:12.5px;}
+  pre{font:11px var(--mono);background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:10px;max-height:260px;overflow:auto;white-space:pre-wrap;}
+  .placeholder{color:var(--muted);font-size:13px;text-align:center;padding:40px 10px;border:1px dashed var(--line);border-radius:10px;margin-top:10px;}
+  /* charts (the JAM panel's chart, kept in step with jam_panel.html) */
+  .chart{position:relative;border:1px solid var(--line);border-radius:10px;padding:6px 8px 8px;background:var(--surface);margin-top:8px;}
+  .chart-bar{display:flex;gap:4px;justify-content:flex-end;flex-wrap:wrap;margin-bottom:2px;}
+  .cb{font:11px var(--mono);border:1px solid var(--line);background:var(--surface-2);color:var(--muted);border-radius:6px;padding:2px 8px;cursor:pointer;}
+  .cb:hover{color:var(--fg);} .cb.on{background:var(--accent-wash);color:var(--accent);border-color:var(--accent);}
+  .chart-plot{width:100%;min-width:0;} .chart-svg{display:block;max-width:100%;height:auto;touch-action:none;user-select:none;}
+  .ct-axis text{font-size:11px;font-family:var(--font);fill:var(--muted);} .ct-label{font-size:12px;font-family:var(--font);fill:var(--fg);}
+  .ct-grid{stroke:var(--line);stroke-width:1;opacity:.7;} .ct-frame{fill:none;stroke:var(--line);}
+  .ct-ref{stroke:var(--muted);stroke-dasharray:4 3;} .ct-reftext{font-size:10.5px;font-family:var(--mono);fill:var(--muted);}
+  .ct-ov{fill:transparent;cursor:crosshair;} .ct-ov.pick{cursor:pointer;}
+  .ct-sel{fill:var(--accent);fill-opacity:.12;stroke:var(--accent);} .ct-ring{fill:none;stroke-width:2;pointer-events:none;}
+  .chart-legend{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;margin-top:4px;padding:0 4px;}
+  .lg{display:inline-flex;align-items:center;gap:6px;cursor:pointer;user-select:none;} .lg.off{opacity:.35;text-decoration:line-through;}
+  .lg i{width:11px;height:11px;border-radius:3px;display:inline-block;}
+  .chart-tip{position:absolute;pointer-events:none;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:6px 9px;
+             font:11.5px/1.45 var(--mono);box-shadow:0 4px 14px rgba(0,0,0,.14);max-width:340px;z-index:5;white-space:nowrap;}
+  form#gate{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>α<sub>s</sub> from simulation-based inference <small>NESAP SBI</small></h1>
+    <span class="sp"></span>
+    <span class="pill" id="state">loading…</span>
+    <a id="classic" href="#" style="font-size:12.5px">original panel</a>
+  </header>
+
+  <div class="card" id="gateCard" hidden>
+    <h2>LQCDMCP dashboard token</h2>
+    <p class="sub">The same token the JAM panel asks for. It stays in this browser tab.</p>
+    <form id="gate"><input type="password" id="token" placeholder="paste the token" autocomplete="off" style="flex:1;min-width:220px">
+      <button class="btn primary" type="submit">Connect</button></form>
+    <div class="note warn" id="gateErr" hidden></div>
+  </div>
+
+  <div class="card">
+    <div class="slicers">
+      <div class="sl"><span>Benchmarks (click: show or hide · double-click: focus)</span><div class="chips" id="bms"></div></div>
+      <div class="sl"><span>Likelihood axis</span>
+        <select id="yMode"><option value="q">2 Δ ln L</option><option value="lr">L / L_max (likelihood ratio)</option><option value="cl">confidence level</option></select></div>
+      <div class="sl"><span>Generating truth</span><label class="tg"><input type="checkbox" id="reveal"> reveal the simulator truths</label></div>
+    </div>
+    <p class="sub" id="modelLine" style="margin:10px 0 0"></p>
+  </div>
+
+  <div class="kpis" id="kpis"></div>
+
+  <div class="card">
+    <h2>Likelihood profiles</h2>
+    <p class="sub">Each curve is computed live from the archived classifier-score counts. Dashed lines: 68% and 95% likelihood-ratio thresholds; thin vertical lines: best fits. Hover for values, drag to zoom, double-click to zoom out, click a curve to focus its benchmark.</p>
+    <div id="cProfile"></div>
+  </div>
+
+  <div class="grid2" style="margin-bottom:12px">
+    <div class="card">
+      <h2>Best fits and confidence sets</h2>
+      <p class="sub">Thick bars: 68%; thin bars: 95%. With the truths revealed, open diamonds mark them.</p>
+      <div id="cFits"></div>
+    </div>
+    <div class="card">
+      <h2>Pull: (best fit − truth) / σ<sub>68</sub></h2>
+      <p class="sub">σ<sub>68</sub> is the half-width of the 68% set. For a well-calibrated method about one benchmark in three lies beyond ±1.</p>
+      <div id="cPull"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><h2 style="margin:0">Benchmarks</h2><span class="sp"></span>
+      <button class="btn" id="dlJson" type="button">Focused result (JSON)</button><button class="btn" id="dlCsv" type="button">Table (CSV)</button></div>
+    <div class="tblscroll"><table id="tbl"></table></div>
+  </div>
+
+  <div class="card">
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><h2 style="margin:0">Archived validation</h2><span class="sp"></span>
+      <select id="vMetric">
+        <option value="coverage68">68% coverage</option><option value="coverage95">95% coverage</option>
+        <option value="bias">bias</option><option value="ratio">bias / σ68</option><option value="halfwidth">median σ68</option>
+      </select></div>
+    <p class="sub" id="vCaption"></p>
+    <div id="cVal"></div>
+    <div class="tblscroll"><table id="vtbl"></table></div>
+  </div>
+
+  <div class="card">
+    <h2>What runs here, and its limits</h2>
+    <ul class="lim" id="limits"></ul>
+    <details style="margin-top:10px"><summary class="muted" style="cursor:pointer">Provenance of the focused result</summary><pre id="prov"></pre></details>
+  </div>
+</main>
+
+<script>
+(function(){
+"use strict";
+const $ = id=>document.getElementById(id);
+const esc = s=>String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+
+/* ---------- host: browser page (token) or chat widget ---------- */
+const KEY = "jam_gateway_token";
+const params = new URLSearchParams(location.search);
+let host = null, token = "", sid = "";
+try{ token = sessionStorage.getItem(KEY) || ""; }catch(e){}
+function unwrap(r){
+  for (let i = 0; i < 4 && r && typeof r === "object"; i++){
+    if (r.isError){ const t = (r.content || []).find(c=>c && c.type === "text"); throw new Error(t ? t.text.replace(/^error:\s*/, "") : "The tool failed."); }
+    if (r.structuredContent){ r = r.structuredContent; continue; }
+    if (r.result && !r.schema && !r.benchmarks && !r.rows){ r = r.result; continue; }
+    const t = Array.isArray(r.content) ? r.content.find(c=>c && c.type === "text") : null;
+    if (t && !r.schema && !r.benchmarks && !r.rows){ try{ r = JSON.parse(t.text); continue; }catch(e){} }
+    break;
+  }
+  return r;
+}
+if (window.openai && typeof window.openai.callTool === "function"){
+  host = (name, args)=>window.openai.callTool(name, args || {});
+} else if (window.parent && window.parent !== window){
+  let next = 1; const pending = new Map();
+  window.addEventListener("message", e=>{
+    if (e.source !== window.parent || !e.data || e.data.jsonrpc !== "2.0") return;
+    const m = e.data;
+    if (!("method" in m) && pending.has(m.id)){ const p = pending.get(m.id); pending.delete(m.id); clearTimeout(p.timer);
+      m.error ? p.reject(new Error(m.error.message || "Host request failed.")) : p.resolve(m.result); return; }
+    if (m.method === "ui/notifications/tool-result") fromChat(m.params);
+  });
+  const request = (method, p)=>new Promise((resolve, reject)=>{ const id = next++;
+    const timer = setTimeout(()=>{ pending.delete(id); reject(new Error("The host did not respond.")); }, 30000);
+    pending.set(id, {resolve, reject, timer}); window.parent.postMessage({jsonrpc: "2.0", id, method, params: p}, "*"); });
+  const init = request("ui/initialize", {protocolVersion: "2026-01-26", appInfo: {name: "nesap-sbi-dashboard", version: "1"}, appCapabilities: {}})
+    .then(()=>window.parent.postMessage({jsonrpc: "2.0", method: "ui/notifications/initialized", params: {}}, "*"));
+  host = (name, args)=>init.then(()=>request("tools/call", {name, arguments: args || {}}));
+  if (window.ResizeObserver) new ResizeObserver(()=>window.parent.postMessage({jsonrpc: "2.0", method: "ui/notifications/size-changed",
+    params: {height: document.documentElement.scrollHeight, width: document.documentElement.scrollWidth}}, "*")).observe(document.documentElement);
+}
+async function call(name, args){
+  if (host) return unwrap(await host(name, args));
+  if (!token){ const e = new Error("token"); e.auth = true; throw e; }
+  const headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream", "Authorization": "Bearer " + token};
+  if (sid) headers["Mcp-Session-Id"] = sid;
+  const r = await fetch(location.pathname, {method: "POST", headers,
+    body: JSON.stringify({jsonrpc: "2.0", id: Date.now() % 1e9, method: "tools/call", params: {name, arguments: args || {}}})});
+  const s = r.headers.get("Mcp-Session-Id"); if (s) sid = s;
+  const d = await r.json();
+  if (d.error) throw new Error(d.error.message || "The gateway refused the request.");
+  const res = d.result || {};
+  if (res.structuredContent && res.structuredContent.status === "unauthorized"){
+    try{ sessionStorage.removeItem(KEY); }catch(e){} token = ""; const e = new Error("The gateway did not accept this token."); e.auth = true; throw e;
+  }
+  return unwrap(res);
+}
+
+/* ---------- chart (the JAM panel's, plus reference lines, ticks and picking) ---------- */
+const SVGNS = "http://www.w3.org/2000/svg";
+const isNum = v=>typeof v === "number" && isFinite(v);
+// A CSS variable is not resolved in an SVG presentation attribute: those go in style.
+function svgEl(tag, attrs, parent){ const n = document.createElementNS(SVGNS, tag);
+  for (const k in attrs || {}){ const v = attrs[k]; if (typeof v === "string" && v.indexOf("var(") >= 0) n.style.setProperty(k, v); else n.setAttribute(k, v); }
+  if (parent) parent.appendChild(n); return n; }
+function fmtVal(v, d){ if (!isNum(v)) return "—"; if (d != null) return v.toFixed(d); const a = Math.abs(v);
+  return a !== 0 && (a >= 1e5 || a < 1e-3) ? v.toExponential(3) : String(+v.toPrecision(5)); }
+function fmtTick(v){ const a = Math.abs(v); return a !== 0 && (a >= 1e4 || a < 1e-3) ? v.toExponential(0).replace("e+", "e") : String(+v.toPrecision(4)); }
+function minMax(a){ let lo = Infinity, hi = -Infinity; for (const v of a){ if (v < lo) lo = v; if (v > hi) hi = v; } return [lo, hi]; }
+function linTicks(lo, hi, n){ const span = hi - lo; if (!(span > 0)) return [lo];
+  const raw = span / n, mag = Math.pow(10, Math.floor(Math.log10(raw))), r = raw / mag, step = (r > 5 ? 10 : r > 2 ? 5 : r > 1 ? 2 : 1) * mag, out = [];
+  for (let t = Math.ceil(lo / step) * step; t <= hi + step * 1e-9; t += step) out.push(+t.toPrecision(12)); return out; }
+function download(text, type, name){ try{ const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([text], {type})); a.download = name;
+  document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 1000); }catch(e){} }
+function runs(points, ok){ const out = []; let cur = []; for (const p of points){ if (!ok(p) || p.breakBefore){ if (cur.length) out.push(cur); cur = []; } if (ok(p)) cur.push(p); } if (cur.length) out.push(cur); return out; }
+// series: {key, name, color, points:[{x,y,lo,hi,lo2,hi2,info,tag}], line, width, opacity, dash, markers, hollow, shape, legend, legendName, hover}
+// opts: xlabel, ylabel, height, hlines:[{y,label}], vlines:[{x,color,dash,width,label}], xticks:[{v,label}], xpad, onPick(point, series)
+function makeChart(box, opts){
+  const st = {series: [], hidden: new Set(), view: null, opts: Object.assign({height: 320, name: "chart", hlines: [], vlines: []}, opts)};
+  box.className = "chart";
+  box.innerHTML = '<div class="chart-bar"></div><div class="chart-plot"></div><div class="chart-legend"></div><div class="chart-tip" hidden></div>';
+  const bar = box.querySelector(".chart-bar"), plot = box.querySelector(".chart-plot"), legend = box.querySelector(".chart-legend"), tip = box.querySelector(".chart-tip");
+  const button = (label, title, fn)=>{ const b = document.createElement("button"); b.type = "button"; b.className = "cb"; b.textContent = label; b.title = title; b.onclick = fn; bar.appendChild(b); return b; };
+  button("reset zoom", "Show everything again (or double-click the plot)", ()=>{ st.view = null; draw(); });
+  button("CSV", "Download the plotted values", ()=>download(csv(), "text/csv", st.opts.name + ".csv"));
+  button("SVG", "Download the chart as an SVG image", ()=>download(svgText(), "image/svg+xml", st.opts.name + ".svg"));
+  let svg = null, marks = [];
+  const shown = ()=>st.series.filter(s=>!st.hidden.has(s.key));
+  function extent(){
+    const xs = [], ys = [];
+    for (const s of shown()) for (const p of s.points || []){ xs.push(p.x); for (const v of [p.y, p.lo, p.hi, p.lo2, p.hi2]) if (isNum(v)) ys.push(v); }
+    for (const l of st.opts.vlines) if (isNum(l.x)) xs.push(l.x);
+    for (const l of st.opts.hlines) if (isNum(l.y) && l.fit !== false) ys.push(l.y);
+    const fx = xs.filter(isNum), fy = ys.filter(isNum); if (!fx.length || !fy.length) return null;
+    let [x0, x1] = minMax(fx), [y0, y1] = minMax(fy);
+    if (st.opts.ymin != null) y0 = Math.min(y0, st.opts.ymin); if (st.opts.ymax != null) y1 = st.opts.ymax;
+    const px = (x1 - x0) || Math.abs(x0) || 1, py = (y1 - y0) || Math.abs(y0) || 1, xp = st.opts.xpad == null ? 0.03 : st.opts.xpad;
+    return [x0 - px * xp, x1 + px * xp, y0 - py * 0.05, y1 + py * 0.06];
+  }
+  function draw(){
+    const W = Math.max(260, Math.round(plot.clientWidth || box.clientWidth || 600)), H = st.opts.height;
+    const m = {l: 64, r: 14, t: 12, b: 44}, iw = W - m.l - m.r, ih = H - m.t - m.b;
+    plot.innerHTML = ""; marks = [];
+    svg = svgEl("svg", {width: W, height: H, viewBox: "0 0 " + W + " " + H, class: "chart-svg"}, plot);
+    const dom = st.view || extent();
+    if (!dom){ svgEl("text", {x: W / 2, y: H / 2, "text-anchor": "middle", class: "ct-label"}, svg).textContent = "Nothing to draw: every series is off."; paintLegend(); return; }
+    const [x0, x1, y0, y1] = dom, X = v=>m.l + (v - x0) / (x1 - x0) * iw, Y = v=>m.t + ih - (v - y0) / (y1 - y0) * ih;
+    const clip = "clip" + Math.random().toString(36).slice(2);
+    svgEl("rect", {x: m.l, y: m.t, width: iw, height: ih}, svgEl("clipPath", {id: clip}, svgEl("defs", {}, svg)));
+    const axis = svgEl("g", {class: "ct-axis"}, svg);
+    const xt = st.opts.xticks ? st.opts.xticks.filter(t=>t.v >= x0 && t.v <= x1) : linTicks(x0, x1, Math.max(3, Math.floor(iw / 90))).map(v=>({v, label: fmtTick(v)}));
+    for (const t of xt){ const x = X(t.v); svgEl("line", {x1: x, x2: x, y1: m.t, y2: m.t + ih, class: "ct-grid"}, axis);
+      svgEl("text", {x, y: m.t + ih + 15, "text-anchor": "middle"}, axis).textContent = t.label; }
+    for (const v of linTicks(y0, y1, Math.max(3, Math.floor(ih / 55)))){ const y = Y(v); svgEl("line", {x1: m.l, x2: m.l + iw, y1: y, y2: y, class: "ct-grid"}, axis);
+      svgEl("text", {x: m.l - 6, y: y + 4, "text-anchor": "end"}, axis).textContent = fmtTick(v); }
+    svgEl("rect", {x: m.l, y: m.t, width: iw, height: ih, class: "ct-frame"}, axis);
+    svgEl("text", {x: m.l + iw / 2, y: H - 8, "text-anchor": "middle", class: "ct-label"}, svg).textContent = st.opts.xlabel || "";
+    svgEl("text", {x: 14, y: m.t + ih / 2, "text-anchor": "middle", class: "ct-label", transform: "rotate(-90 14 " + (m.t + ih / 2) + ")"}, svg).textContent = st.opts.ylabel || "";
+    const body = svgEl("g", {"clip-path": "url(#" + clip + ")"}, svg);
+    for (const l of st.opts.hlines){ if (!isNum(l.y) || l.y < y0 || l.y > y1) continue; const y = Y(l.y);
+      svgEl("line", {x1: m.l, x2: m.l + iw, y1: y, y2: y, class: "ct-ref"}, body);
+      if (l.label) svgEl("text", {x: m.l + iw - 4, y: y - 4, "text-anchor": "end", class: "ct-reftext"}, body).textContent = l.label; }
+    for (const l of st.opts.vlines){ if (!isNum(l.x) || l.x < x0 || l.x > x1) continue; const x = X(l.x);
+      svgEl("line", {x1: x, x2: x, y1: m.t, y2: m.t + ih, stroke: l.color || "var(--muted)", "stroke-width": l.width || 1.2, "stroke-dasharray": l.dash || "none", opacity: l.opacity == null ? 0.9 : l.opacity}, body); }
+    const ok = p=>isNum(p.x) && isNum(p.y);
+    for (const s of shown()){
+      const c = s.color, pts = (s.points || []).filter(ok);
+      if (s.line) for (const run of runs(s.points || [], ok)) if (run.length > 1)
+        svgEl("path", {d: "M" + run.map(p=>X(p.x).toFixed(1) + "," + Y(p.y).toFixed(1)).join("L"), fill: "none", stroke: c,
+          "stroke-width": s.width || 1.8, "stroke-opacity": s.opacity == null ? 1 : s.opacity, "stroke-dasharray": s.dash || "none"}, body);
+      if (s.markers) for (const p of pts){
+        const x = X(p.x), y = Y(p.y);
+        if (isNum(p.lo2) && isNum(p.hi2)) svgEl("line", {x1: x, x2: x, y1: Y(p.lo2), y2: Y(p.hi2), stroke: c, "stroke-width": 1.2, opacity: 0.8}, body);
+        if (isNum(p.lo) && isNum(p.hi)) svgEl("line", {x1: x, x2: x, y1: Y(p.lo), y2: Y(p.hi), stroke: c, "stroke-width": s.errWidth || 1.2}, body);
+        if (s.shape === "diamond") svgEl("path", {d: "M" + x + "," + (y - 5) + "L" + (x + 5) + "," + y + "L" + x + "," + (y + 5) + "L" + (x - 5) + "," + y + "Z",
+          fill: s.hollow ? "var(--surface)" : c, stroke: c, "stroke-width": 1.6}, body);
+        else svgEl("circle", {cx: x, cy: y, r: s.r || 3.4, fill: s.hollow ? "var(--surface)" : c, stroke: c, "stroke-width": s.hollow ? 1.5 : 0}, body);
+      }
+      if (s.hover !== false) for (const p of pts) marks.push({x: X(p.x), y: Y(p.y), s, p});
+    }
+    const ov = svgEl("rect", {x: m.l, y: m.t, width: iw, height: ih, class: "ct-ov" + (st.opts.onPick ? " pick" : "")}, svg);
+    const ring = svgEl("circle", {r: 5.5, class: "ct-ring", visibility: "hidden"}, svg), sel = svgEl("rect", {class: "ct-sel", visibility: "hidden"}, svg);
+    const at = ev=>{ const b = svg.getBoundingClientRect(); return [(ev.clientX - b.left) * W / b.width, (ev.clientY - b.top) * H / b.height]; };
+    const nearest = (px, py)=>{ let best = null, bd = 900; for (const k of marks){ const d = (k.x - px) ** 2 + (k.y - py) ** 2; if (d < bd){ bd = d; best = k; } } return best; };
+    let start = null;
+    ov.addEventListener("pointerdown", ev=>{ start = at(ev); try{ ov.setPointerCapture(ev.pointerId); }catch(e){} });
+    ov.addEventListener("pointermove", ev=>{
+      const [px, py] = at(ev);
+      if (start){ const [sx, sy] = start; sel.setAttribute("x", Math.min(sx, px)); sel.setAttribute("y", Math.min(sy, py));
+        sel.setAttribute("width", Math.abs(px - sx)); sel.setAttribute("height", Math.abs(py - sy)); sel.setAttribute("visibility", "visible");
+        tip.hidden = true; ring.setAttribute("visibility", "hidden"); return; }
+      const best = nearest(px, py);
+      if (!best){ tip.hidden = true; ring.setAttribute("visibility", "hidden"); return; }
+      ring.setAttribute("cx", best.x); ring.setAttribute("cy", best.y); ring.style.stroke = best.s.color; ring.setAttribute("visibility", "visible");
+      const p = best.p, lines = [best.s.name].concat(p.info || [(st.opts.xlabel || "x") + " = " + fmtVal(p.x), (st.opts.ylabel || "y") + " = " + fmtVal(p.y)]);
+      tip.innerHTML = lines.map((t, i)=>i ? esc(t) : "<b>" + esc(t) + "</b>").join("<br>"); tip.hidden = false;
+      const b = svg.getBoundingClientRect(), hb = box.getBoundingClientRect();
+      const left = b.left - hb.left + best.x * b.width / W, top = b.top - hb.top + best.y * b.height / H;
+      tip.style.left = Math.max(4, Math.min(left + 12, hb.width - tip.offsetWidth - 4)) + "px"; tip.style.top = Math.max(4, top - tip.offsetHeight - 10) + "px";
+    });
+    ov.addEventListener("pointerup", ev=>{
+      if (!start) return; const [sx, sy] = start, [px, py] = at(ev); start = null; sel.setAttribute("visibility", "hidden");
+      if (Math.abs(px - sx) < 8 && Math.abs(py - sy) < 8){ const best = nearest(px, py); if (best && st.opts.onPick) st.opts.onPick(best.p, best.s); return; }
+      if (Math.abs(px - sx) < 8 || Math.abs(py - sy) < 8) return;
+      const ix = v=>x0 + (v - m.l) / iw * (x1 - x0), iy = v=>y0 + (m.t + ih - v) / ih * (y1 - y0);
+      st.view = [ix(Math.min(sx, px)), ix(Math.max(sx, px)), iy(Math.max(sy, py)), iy(Math.min(sy, py))]; draw();
+    });
+    ov.addEventListener("pointercancel", ()=>{ start = null; sel.setAttribute("visibility", "hidden"); });
+    ov.addEventListener("pointerleave", ()=>{ if (!start){ tip.hidden = true; ring.setAttribute("visibility", "hidden"); } });
+    ov.addEventListener("dblclick", ()=>{ st.view = null; draw(); });
+    paintLegend();
+  }
+  function paintLegend(){
+    const seen = new Map(); for (const s of st.series) if (s.legend !== false && !seen.has(s.key)) seen.set(s.key, s);
+    legend.innerHTML = "";
+    for (const [key, s] of seen){ const item = document.createElement("span"); item.className = "lg" + (st.hidden.has(key) ? " off" : "");
+      item.innerHTML = '<i style="background:' + esc(s.color) + '"></i>' + esc(s.legendName || key);
+      item.onclick = ()=>{ if (st.hidden.has(key)) st.hidden.delete(key); else st.hidden.add(key); draw(); }; legend.appendChild(item); }
+  }
+  function csv(){ const q = v=>'"' + String(v == null ? "" : v).replace(/"/g, '""') + '"';
+    const rows = [["series", st.opts.xlabel || "x", st.opts.ylabel || "y", "lower", "upper"].map(q).join(",")];
+    for (const s of shown()) for (const p of s.points || []) rows.push([s.name, p.x, p.y, p.lo, p.hi].map(q).join(",")); return rows.join("\n"); }
+  function svgText(){ if (!svg) return ""; const clone = svg.cloneNode(true), cs = getComputedStyle(document.documentElement), v = n=>cs.getPropertyValue(n).trim();
+    const style = svgEl("style", {}); style.textContent = ".ct-axis text,.ct-reftext{font:11px sans-serif;fill:" + v("--muted") + "}.ct-label{font:12px sans-serif;fill:" + v("--fg") + "}"
+      + ".ct-grid{stroke:" + v("--line") + "}.ct-frame{fill:none;stroke:" + v("--line") + "}.ct-ref{stroke:" + v("--muted") + ";stroke-dasharray:4 3}.ct-ov,.ct-sel,.ct-ring{display:none}";
+    clone.insertBefore(svgEl("rect", {width: "100%", height: "100%", fill: v("--surface")}), clone.firstChild); clone.insertBefore(style, clone.firstChild);
+    clone.setAttribute("xmlns", SVGNS); return new XMLSerializer().serializeToString(clone).replace(/var\(--surface\)/g, v("--surface")).replace(/var\(--muted\)/g, v("--muted")); }
+  let frame = 0;
+  if (window.ResizeObserver) new ResizeObserver(()=>{ cancelAnimationFrame(frame); frame = requestAnimationFrame(()=>{ if (box.isConnected) draw(); }); }).observe(plot);
+  return { set(series, o){ st.series = series; Object.assign(st.opts, o || {}); draw(); }, resetZoom(){ st.view = null; } };
+}
+
+/* ---------- statistics shown on the page (display only) ---------- */
+// The confidence level of a 2ΔlnL value with one parameter: P(χ²₁ ≤ q) = erf(√(q/2)).
+function erf(x){ const s = Math.sign(x), a = Math.abs(x), t = 1 / (1 + 0.3275911 * a);
+  return s * (1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-a * a)); }
+const cl = q=>erf(Math.sqrt(Math.max(q, 0) / 2));
+const Q68 = 1, Q95 = 3.841458820694124;
+const Y_MODES = {
+  q: {label: "2 Δ ln L", f: q=>q, lines: [{y: Q68, label: "68%"}, {y: Q95, label: "95%"}], ymax: 6},
+  lr: {label: "L / L_max", f: q=>Math.exp(-q / 2), lines: [{y: Math.exp(-Q68 / 2), label: "68%"}, {y: Math.exp(-Q95 / 2), label: "95%"}], ymax: 1},
+  cl: {label: "confidence level", f: cl, lines: [{y: 0.6827, label: "68%"}, {y: 0.95, label: "95%"}], ymax: 1},
+};
+const PALETTE = ["#2560c9", "#d9480f", "#2b8a3e", "#ae3ec9", "#0b7285", "#e67700", "#c92a2a", "#5f3dc4"];
+
+/* ---------- state ---------- */
+let options = null, validation = null, focus = "", reveal = false;
+const results = {}, visible = new Set();
+const colorOf = id=>PALETTE[Math.max(0, (options ? options.benchmarks.findIndex(b=>b.id === id) : 0)) % PALETTE.length];
+const labelOf = id=>{ const b = options && options.benchmarks.find(b=>b.id === id); return b ? b.label : id; };
+const idx = id=>options ? options.benchmarks.findIndex(b=>b.id === id) + 1 : 0;
+const sets = r=>({c68: r.intervals["68"].components, c95: r.intervals["95"].components});
+const span = comps=>comps.length ? [comps[0][0], comps[comps.length - 1][1]] : [NaN, NaN];
+const sigma68 = r=>{ const [lo, hi] = span(sets(r).c68); return (hi - lo) / 2; };
+const pull = r=>(r.best_fit - r.truth) / sigma68(r);
+const inSet = (comps, v)=>comps.some(c=>c[0] <= v && v <= c[1]);
+const ivText = comps=>comps.length ? comps.map(c=>"[" + c[0].toFixed(5) + ", " + c[1].toFixed(5) + "]").join(" ∪ ") : "empty";
+
+let cProfile, cFits, cPull, cVal;
+function charts(){
+  cProfile = makeChart($("cProfile"), {height: 360, name: "sbi_likelihood", xlabel: "α_s", onPick: p=>setFocus(p.tag)});
+  cFits = makeChart($("cFits"), {height: 280, name: "sbi_best_fits", xlabel: "benchmark", ylabel: "α_s", xpad: 0.12, onPick: p=>setFocus(p.tag)});
+  cPull = makeChart($("cPull"), {height: 280, name: "sbi_pulls", xlabel: "benchmark", ylabel: "pull", xpad: 0.12, onPick: p=>setFocus(p.tag)});
+  cVal = makeChart($("cVal"), {height: 280, name: "sbi_validation", xlabel: "truth α_s", xpad: 0.08});
+}
+
+function setFocus(id){ if (!id || !results[id]) return; focus = id; visible.add(id); paint(); }
+
+function paintChips(){
+  $("bms").innerHTML = options.benchmarks.map(b=>'<span class="chip' + (visible.has(b.id) ? " on" : "") + (b.id === focus ? " focus" : "") + '" data-id="' + esc(b.id) + '"'
+    + ' title="' + esc(b.label + " · " + b.observed_events + " events") + '"><i style="background:' + colorOf(b.id) + '"></i>' + esc(b.label) + '</span>').join("");
+  $("bms").querySelectorAll(".chip").forEach(n=>{
+    let t = 0;
+    n.onclick = ()=>{ clearTimeout(t); t = setTimeout(()=>{ const id = n.dataset.id; if (visible.has(id) && visible.size > 1) visible.delete(id); else visible.add(id);
+      if (!visible.has(focus)) focus = [...visible][0]; paint(); }, 220); };
+    n.ondblclick = ()=>{ clearTimeout(t); setFocus(n.dataset.id); };
+  });
+}
+
+function paintKpis(){
+  const r = results[focus]; if (!r){ $("kpis").innerHTML = ""; return; }
+  const {c68, c95} = sets(r), s = sigma68(r);
+  const tiles = [
+    ["Focused", labelOf(focus), (r.observed_events || "") + " events"],
+    ["Best fit α_s", r.best_fit.toFixed(5), r.peak_on_boundary ? "on the domain boundary" : "interior peak"],
+    ["68% set", "± " + s.toFixed(5), ivText(c68)],
+    ["95% set", "± " + ((span(c95)[1] - span(c95)[0]) / 2).toFixed(5), ivText(c95)],
+    ["Checks", r.numerical_checks && r.numerical_checks.passed ? "passed" : "not passed", "normalization " + fmtVal(r.numerical_checks && r.numerical_checks.normalization_error), r.numerical_checks && r.numerical_checks.passed ? "good" : "bad"],
+  ];
+  if (reveal && isNum(r.truth)){
+    const p = pull(r);
+    tiles.push(["Truth", r.truth.toFixed(4), "simulator setting", "truth"]);
+    tiles.push(["Pull", (p >= 0 ? "+" : "−") + Math.abs(p).toFixed(2) + " σ", inSet(c68, r.truth) ? "inside 68%" : inSet(c95, r.truth) ? "outside 68%, inside 95%" : "outside 95%",
+                Math.abs(p) <= 1 ? "good" : Math.abs(p) <= 2 ? "" : "bad"]);
+  }
+  $("kpis").innerHTML = tiles.map(t=>'<div class="kpi ' + (t[3] || "") + '"><div class="k">' + esc(t[0]) + '</div><div class="v">' + esc(t[1]) + '</div><div class="d" title="' + esc(t[2]) + '">' + esc(t[2]) + '</div></div>').join("");
+}
+
+function paintProfile(){
+  const mode = Y_MODES[$("yMode").value], series = [], vlines = [];
+  for (const b of options.benchmarks){
+    const r = results[b.id]; if (!r || !visible.has(b.id)) continue;
+    const c = colorOf(b.id), focused = b.id === focus, a = r.curve.alpha, q = r.curve.twice_delta_log_likelihood;
+    series.push({key: b.label, name: b.label, color: c, line: true, width: focused ? 3 : 1.6, opacity: focused ? 1 : 0.7,
+      points: a.map((x, i)=>({x, y: mode.f(q[i]), tag: b.id, info: ["α_s = " + x.toFixed(5), "2ΔlnL = " + q[i].toFixed(3),
+        "L/L_max = " + Math.exp(-q[i] / 2).toFixed(4), "confidence level = " + (100 * cl(q[i])).toFixed(1) + "%"]}))});
+    vlines.push({x: r.best_fit, color: c, dash: "2 3", width: focused ? 1.6 : 1, opacity: 0.8});
+    if (reveal && isNum(r.truth)) vlines.push({x: r.truth, color: "var(--truth)", dash: "6 3", width: focused ? 2 : 1.2, opacity: focused ? 1 : 0.6});
+  }
+  cProfile.set(series, {ylabel: mode.label, hlines: mode.lines, vlines, ymin: 0, ymax: mode.ymax});
+}
+
+function paintFits(){
+  const list = options.benchmarks.filter(b=>results[b.id] && visible.has(b.id)), xticks = options.benchmarks.map((b, i)=>({v: i + 1, label: "B" + (i + 1)}));
+  const series = list.map(b=>{ const r = results[b.id], {c68, c95} = sets(r), [l68, h68] = span(c68), [l95, h95] = span(c95);
+    return {key: b.label, name: b.label, color: colorOf(b.id), markers: true, errWidth: 3.2, r: b.id === focus ? 5 : 3.6,
+      points: [{x: idx(b.id), y: r.best_fit, lo: l68, hi: h68, lo2: l95, hi2: h95, tag: b.id,
+        info: ["best fit " + r.best_fit.toFixed(5), "68% " + ivText(c68), "95% " + ivText(c95)].concat(reveal ? ["truth " + r.truth.toFixed(4)] : [])}]}; });
+  if (reveal) series.push({key: "truth", legendName: "truth", name: "truth", color: "var(--truth)", markers: true, hollow: true, shape: "diamond",
+    points: list.map(b=>({x: idx(b.id) + 0.18, y: results[b.id].truth, tag: b.id, info: [labelOf(b.id) + " truth", "α_s = " + results[b.id].truth.toFixed(4)]}))});
+  cFits.set(series, {xticks});
+}
+
+function paintPull(){
+  const box = $("cPull");
+  if (!reveal){ box.dataset.placeholder = "1"; box.className = ""; box.innerHTML = '<div class="placeholder">Reveal the simulator truths to compare the fits with them.</div>'; cPull = null; return; }
+  if (!cPull || box.dataset.placeholder){ delete box.dataset.placeholder; cPull = makeChart(box, {height: 280, name: "sbi_pulls", xlabel: "benchmark", ylabel: "pull", xpad: 0.12, onPick: p=>setFocus(p.tag)}); }
+  const list = options.benchmarks.filter(b=>results[b.id] && visible.has(b.id));
+  cPull.set(list.map(b=>{ const r = results[b.id], p = pull(r);
+    return {key: b.label, name: b.label, color: colorOf(b.id), markers: true, errWidth: 2, r: b.id === focus ? 5 : 3.6,
+      points: [{x: idx(b.id), y: p, lo: p - 1, hi: p + 1, tag: b.id, info: ["pull " + p.toFixed(2) + " σ", "best fit − truth = " + (r.best_fit - r.truth).toExponential(2), "σ68 = " + sigma68(r).toExponential(2)]}]}; }),
+    {xticks: options.benchmarks.map((b, i)=>({v: i + 1, label: "B" + (i + 1)})), hlines: [{y: 0, label: "0", fit: true}, {y: 1, label: "+1σ"}, {y: -1, label: "−1σ"}, {y: 2, label: "+2σ"}, {y: -2, label: "−2σ"}], ymin: -2.5, ymax: 2.5});
+}
+
+let sortKey = null, sortDir = 1;
+function paintTable(){
+  const cols = [["benchmark", "Benchmark", r=>labelOf(r.benchmark_id), r=>idx(r.benchmark_id)], ["best", "Best fit", r=>r.best_fit.toFixed(5), r=>r.best_fit],
+    ["c68", "68% set", r=>ivText(sets(r).c68), r=>sigma68(r)], ["c95", "95% set", r=>ivText(sets(r).c95), r=>span(sets(r).c95)[0]],
+    ["checks", "Checks", r=>r.numerical_checks && r.numerical_checks.passed ? '<span class="yes">passed</span>' : '<span class="no">failed</span>', r=>r.numerical_checks && r.numerical_checks.passed ? 1 : 0, true]];
+  if (reveal) cols.push(["truth", "Truth", r=>r.truth.toFixed(4), r=>r.truth], ["pull", "Pull (σ)", r=>(pull(r) >= 0 ? "+" : "−") + Math.abs(pull(r)).toFixed(2), r=>Math.abs(pull(r))],
+    ["in", "Truth in 68 / 95", r=>(inSet(sets(r).c68, r.truth) ? '<span class="yes">yes</span>' : '<span class="no">no</span>') + " / " + (inSet(sets(r).c95, r.truth) ? '<span class="yes">yes</span>' : '<span class="no">no</span>'),
+      r=>(inSet(sets(r).c68, r.truth) ? 2 : 0) + (inSet(sets(r).c95, r.truth) ? 1 : 0), true]);
+  let rows = options.benchmarks.map(b=>results[b.id]).filter(Boolean);
+  if (sortKey){ const c = cols.find(c=>c[0] === sortKey); if (c) rows = rows.slice().sort((a, b)=>(c[3](a) > c[3](b) ? 1 : c[3](a) < c[3](b) ? -1 : 0) * sortDir); }
+  $("tbl").innerHTML = "<thead><tr>" + cols.map(c=>'<th data-k="' + c[0] + '">' + esc(c[1]) + (sortKey === c[0] ? (sortDir > 0 ? " ▲" : " ▼") : "") + "</th>").join("") + "</tr></thead><tbody>"
+    + rows.map(r=>'<tr data-id="' + esc(r.benchmark_id) + '"' + (r.benchmark_id === focus ? ' class="focus"' : "") + ">" + cols.map(c=>"<td>" + (c[4] ? c[2](r) : esc(c[2](r))) + "</td>").join("") + "</tr>").join("") + "</tbody>";
+  $("tbl").querySelectorAll("th").forEach(th=>th.onclick = ()=>{ if (sortKey === th.dataset.k){ if (sortDir < 0){ sortKey = null; sortDir = 1; } else sortDir = -1; } else { sortKey = th.dataset.k; sortDir = 1; } paintTable(); });
+  $("tbl").querySelectorAll("tbody tr").forEach(tr=>tr.onclick = ()=>setFocus(tr.dataset.id));
+}
+
+function paintValidation(){
+  if (!validation){ return; }
+  const v = validation, metric = $("vMetric").value, rows = v.rows || [];
+  $("vCaption").textContent = (v.label || "Archived validation") + ": " + v.profile_count + " pseudo-experiments (" + v.sources_per_truth + " sources × "
+    + v.trials_per_source + " trials per truth, " + v.observed_events_per_trial + " events each). Computed earlier, separately from the benchmarks above."
+    + (v.passed ? " All acceptance checks passed." : " Not every acceptance check passed.");
+  const M = {
+    coverage68: {label: "68% coverage", y: r=>r.coverage68, lo: r=>r.coverage68_source_interval[0], hi: r=>r.coverage68_source_interval[1], line: {y: 0.6827, label: "nominal 68.3%"}},
+    coverage95: {label: "95% coverage", y: r=>r.coverage95, lo: r=>r.coverage95_source_interval[0], hi: r=>r.coverage95_source_interval[1], line: {y: 0.95, label: "nominal 95%"}},
+    bias: {label: "bias (best fit − truth)", y: r=>r.bias, line: {y: 0, label: "0"}},
+    ratio: {label: "bias / σ68", y: r=>r.bias / r.median_halfwidth68, line: {y: 0, label: "0"}},
+    halfwidth: {label: "median σ68", y: r=>r.median_halfwidth68},
+  }[metric];
+  const vlines = [];
+  if (reveal && results[focus]) vlines.push({x: results[focus].truth, color: "var(--truth)", dash: "6 3", width: 1.5, opacity: 0.8});
+  cVal.set([{key: M.label, name: M.label, color: "var(--accent)", markers: true, line: true, width: 1, opacity: 0.4, errWidth: 2,
+    points: rows.map(r=>({x: r.truth, y: M.y(r), lo: M.lo ? M.lo(r) : null, hi: M.hi ? M.hi(r) : null,
+      info: ["truth " + r.truth.toFixed(4), M.label + " = " + fmtVal(M.y(r))].concat(M.lo ? ["source interval [" + M.lo(r).toFixed(3) + ", " + M.hi(r).toFixed(3) + "]"] : [])
+        .concat(["bias " + r.bias.toExponential(2), "median σ68 " + r.median_halfwidth68.toExponential(2), r.passed ? "passed" : "not passed"])}))}],
+    {ylabel: M.label, hlines: M.line ? [M.line] : [], vlines, ymin: metric === "halfwidth" ? 0 : undefined});
+  $("vtbl").innerHTML = "<thead><tr><th>Truth</th><th>Bias</th><th>Median σ68</th><th>Bias / σ68</th><th>68% coverage</th><th>95% coverage</th><th>Result</th></tr></thead><tbody>"
+    + rows.map(r=>"<tr><td>" + r.truth.toFixed(4) + "</td><td>" + r.bias.toExponential(2) + "</td><td>" + r.median_halfwidth68.toExponential(2) + "</td><td>"
+      + (100 * r.bias / r.median_halfwidth68).toFixed(1) + "%</td><td>" + (100 * r.coverage68).toFixed(1) + "% [" + (100 * r.coverage68_source_interval[0]).toFixed(1) + ", " + (100 * r.coverage68_source_interval[1]).toFixed(1) + "]</td><td>"
+      + (100 * r.coverage95).toFixed(1) + "% [" + (100 * r.coverage95_source_interval[0]).toFixed(1) + ", " + (100 * r.coverage95_source_interval[1]).toFixed(1) + "]</td><td>"
+      + (r.passed ? '<span class="yes">passed</span>' : '<span class="no">not passed</span>') + "</td></tr>").join("") + "</tbody>";
+}
+
+function paint(){
+  if (!options) return;
+  paintChips(); paintKpis(); paintProfile(); paintFits(); paintPull(); paintTable(); paintValidation();
+  $("prov").textContent = results[focus] ? JSON.stringify(results[focus].provenance, null, 2) : "";
+}
+
+function state(t, cls){ $("state").textContent = t; $("state").className = "pill " + (cls || ""); }
+
+/* ---------- loading ---------- */
+async function load(){
+  state("loading…");
+  try{
+    options = await call("sbi_options");
+    const ids = options.benchmarks.map(b=>b.id);
+    if (!focus || !ids.includes(focus)) focus = ids.includes(params.get("benchmark")) ? params.get("benchmark") : (options.default_benchmark_id || ids[0]);
+    ids.forEach(id=>visible.add(id));
+    $("modelLine").textContent = "Model: " + options.model.label + " · parameter " + options.parameter.name + " in [" + options.parameter.domain.join(", ") + "] · " + options.mode + ".";
+    $("limits").innerHTML = (options.limitations || []).map(t=>"<li>" + esc(t) + "</li>").join("");
+    paintChips();
+    // Every benchmark is computed live (well under a second each); all five feed the comparison charts.
+    await Promise.all(ids.map(async id=>{ if (!results[id]) results[id] = await call("sbi_infer", {benchmark_id: id}); }));
+    validation = await call("sbi_validation");
+    $("gateCard").hidden = true;
+    state("live · " + ids.length + " benchmarks", "ok");
+    paint();
+  }catch(e){
+    if (e.auth){ $("gateCard").hidden = false; state("token needed", "err"); if (e.message !== "token"){ $("gateErr").hidden = false; $("gateErr").textContent = e.message; } return; }
+    state("error", "err"); $("kpis").innerHTML = '<div class="note warn" style="grid-column:1/-1">' + esc(e.message || e) + "</div>";
+  }
+}
+// A result from the conversation (ChatGPT toolOutput or an MCP Apps tool-result) focuses its benchmark.
+function fromChat(raw){
+  let r; try{ r = unwrap(raw); }catch(e){ return; }
+  if (r && r.schema === "nesap-sbi-result-v1" && r.benchmark_id){ results[r.benchmark_id] = r; focus = r.benchmark_id; if (options) paint(); }
+}
+if (window.openai){ if (window.openai.toolOutput) fromChat(window.openai.toolOutput);
+  window.addEventListener("openai:set_globals", e=>{ const o = e.detail && e.detail.globals && e.detail.globals.toolOutput; if (o) fromChat(o); }); }
+
+$("gate").addEventListener("submit", e=>{ e.preventDefault(); token = $("token").value.trim().replace(/^bearer\s+/i, ""); $("token").value = "";
+  try{ sessionStorage.setItem(KEY, token); }catch(e2){} $("gateErr").hidden = true; load(); });
+$("yMode").onchange = ()=>{ cProfile.resetZoom(); paintProfile(); };
+$("reveal").onchange = ()=>{ reveal = $("reveal").checked; paint(); };
+$("vMetric").onchange = ()=>{ cVal.resetZoom(); paintValidation(); };
+$("dlJson").onclick = ()=>{ if (results[focus]) download(JSON.stringify(results[focus], null, 2) + "\n", "application/json", "nesap-sbi-" + focus + ".json"); };
+$("dlCsv").onclick = ()=>{ const q = v=>'"' + String(v == null ? "" : v).replace(/"/g, '""') + '"';
+  const head = ["benchmark", "best_fit", "c68_low", "c68_high", "c95_low", "c95_high", "checks_passed"].concat(reveal ? ["truth", "pull"] : []);
+  const rows = options.benchmarks.map(b=>results[b.id]).filter(Boolean).map(r=>{ const [a, b] = span(sets(r).c68), [c, d] = span(sets(r).c95);
+    return [r.benchmark_id, r.best_fit, a, b, c, d, !!(r.numerical_checks && r.numerical_checks.passed)].concat(reveal ? [r.truth, pull(r)] : []).map(q).join(","); });
+  download([head.join(",")].concat(rows).join("\n"), "text/csv", "nesap-sbi-benchmarks.csv"); };
+{ const u = new URL(location.href); u.searchParams.set("view", "classic"); $("classic").href = u.toString(); if (host) $("classic").hidden = true; }
+charts();
+load();
+})();
+</script>
+</body>
+</html>
