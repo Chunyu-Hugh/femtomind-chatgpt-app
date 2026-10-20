@@ -327,9 +327,9 @@ def build(source, fitpack, app):
         raise ValueError('Source and application archive must be separate directories')
     sys.path.insert(0, str(app / 'lqcdmcp-deploy'))
     from jamai.analysis_catalog import Catalog
-    catalog = Catalog(app / 'analysis_catalog')
+    catalog = Catalog(app / 'analyses')
     catalog_page = catalog.get('JAM24.final')
-    config = json.loads((app / 'analysis_catalog/JAM24/analysis_config.json').read_bytes())
+    config = json.loads((app / 'analyses/JAM24/catalog/analysis_config.json').read_bytes())
     source_hashes = {name: sha(source / name) for name in SOURCE_FILES}
     loaded = {name: np.load(source / name, allow_pickle=True, encoding='latin1').item() for name in SOURCE_FILES}
     replicas, theory, experimental, old_mean = (loaded[name] for name in SOURCE_FILES)
@@ -347,7 +347,7 @@ def build(source, fitpack, app):
     native, workbook_metadata, reader_warnings = native_experiments(replicas, theory, experimental, fitpack)
     digest = hashlib.sha256(json.dumps({'sources': source_hashes, 'catalog': catalog_page['catalog_ref'],
         'builder': os.environ.get('JAM24_ARCHIVE_BUILDER_SHA256')}, sort_keys=True).encode()).hexdigest()
-    data_root = app / 'reference_results/JAM24/data'
+    data_root = app / 'analyses/JAM24/results/data'
     data_root.mkdir(parents=True, exist_ok=True)
     ignore = data_root / '.gitignore'
     expected_ignore = '*\n!.gitignore\n'

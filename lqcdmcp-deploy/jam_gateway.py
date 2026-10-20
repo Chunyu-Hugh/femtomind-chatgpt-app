@@ -9783,7 +9783,7 @@ def _results_request(operation, arguments):
         return store.list(**args)
     analysis_results.validate_request(operation, args)
     manifest = store.resolve(args["analysis_id"])
-    if _outside_read_roots(manifest["server_directory"]):
+    if any(_outside_read_roots(path) for path in analysis_results.archive_directories(manifest)):
         raise ValueError("Registered results archive is outside the site's authorized read roots")
     user, error = _resolve_user("")
     if error:

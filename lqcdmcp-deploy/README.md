@@ -382,7 +382,7 @@ any token (see Access).
 
 ## Published scientific analysis catalog (read-only MCP)
 
-The repository's `analysis_catalog/<analysis>/` entries are available through
+The repository's `analyses/<analysis>/catalog/` entries are available through
 `list_analysis_catalog`, `get_analysis_catalog` and `get_analysis_requirements`.
 These tools use the existing gateway authentication. They do not need an HPC
 connection, read original scientific files, create campaigns, generate inputs,
@@ -475,5 +475,5 @@ This implementation does not itself deploy or modify a running gateway.
 Local transport and package checks (stdlib; no production credentials):
 
 ```text
-python -B -m unittest discover -s tests -p test_analysis_catalog_mcp.py -v
+FEMTOMIND_APP_ROOT=/path/to/femtomind-chatgpt-app python -B -m unittest discover -s ../femtomind-tests/tests -p test_analysis_catalog_mcp.py -v
 ```

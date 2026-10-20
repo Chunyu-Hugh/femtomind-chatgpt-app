@@ -9,8 +9,11 @@ not a declaration that the historical fit can yet be reproduced completely.
 
 ## Storage and provenance
 
-All numerical arrays remain on Ceph under this repository's
-`reference_results/JAM24/data/<archive-id>/`. The nested `.gitignore` excludes
+All numerical arrays currently remain on Ceph under this repository's legacy
+`reference_results/JAM24/data/<archive-id>/`. The prepared destination is
+`analyses/JAM24/results/data/<archive-id>/`; it is not populated by this
+reorganization. The stable manifest explicitly registers both locations.
+The nested `.gitignore` and transitional root ignore rules exclude
 every numerical archive; only its ignore policy is eligible for version control.
 No large array is copied into Git or the gateway deployment snapshot.
 
@@ -98,14 +101,21 @@ overwriting one. It imports only native readers, AUX kinematics and statistical
 preparation routines: no RESMAN, PDF/FF evaluation, fitting, or Slurm operations.
 `verify_archive.py` independently reopens the archived arrays and original files
 and verifies checksums, replica order, all per-replica metrics, and mean predictions.
-Focused tests live in `tests/test_jam24_reference_results.py` and run in the
-existing NumPy/SciPy environment.
+Focused tests live outside the application in the sibling
+`femtomind-tests/tests/test_jam24_reference_results.py`. Set
+`FEMTOMIND_APP_ROOT` explicitly; the archive tests use the existing NumPy/SciPy
+environment. `run_remote_validation.py tests --tests-root <external-suite>`
+sends only test source over SSH stdin and writes reports outside the application.
+It does not create remote archive directories. New archive creation requires an
+explicit `build --allow-new-archive --expected-remote-head <commit>` opt-in;
+never rebuild an existing archive to migrate its directory.
 
 The read-only MCP tools `list_analysis_results`, `get_analysis_fit_statistics`,
 and `get_analysis_theory_predictions` resolve `JAM24.final` through the stable
 manifest. Only manifests and retrieval code are packaged for the gateway;
 numerical shards remain on Ceph and are read through the authorized HPC chain.
-See `docs/analysis_results_mcp.md` for retrieval and deployment details.
+See the repository's `docs/analysis_results_mcp.md` and
+`docs/analyses_migration.md` for retrieval, migration and deployment details.
 
 ## Limits of the historical record
 

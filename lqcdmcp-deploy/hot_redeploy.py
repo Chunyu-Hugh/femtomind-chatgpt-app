@@ -144,12 +144,12 @@ for rel, expected in args['hashes'].items():
         compile(path.read_bytes(), str(path), 'exec')
 gateway = importlib.import_module('jam_gateway')
 catalog_root = gateway.analysis_catalog.catalog_root(stage)
-if catalog_root.resolve() != (stage / 'analysis_catalog').resolve():
+if catalog_root.resolve() != (stage / 'analyses').resolve():
     raise RuntimeError('catalog escaped staged application')
 if not gateway.analysis_catalog.Catalog(catalog_root).deployment_files():
     raise RuntimeError('no validated scientific catalog entries were staged')
 results_root = gateway.analysis_results.results_root(stage)
-if results_root.resolve() != (stage / 'reference_results').resolve():
+if results_root.resolve() != (stage / 'analyses').resolve():
     raise RuntimeError('results manifests escaped staged application')
 if not gateway.analysis_results.Results(results_root).deployment_files():
     raise RuntimeError('no validated reference-results manifests were staged')
@@ -175,7 +175,7 @@ backup = app / '.hot_redeploy.previous'
 if backup.exists():
     shutil.rmtree(backup)
 backup.mkdir(mode=0o700)
-components = ('jamai', 'plugins', 'analysis_catalog', 'reference_results', 'jam_panel.html', 'jam_gateway.py')
+components = ('jamai', 'plugins', 'analyses', 'jam_panel.html', 'jam_gateway.py')
 saved, installed = [], []
 try:
     for name in components:

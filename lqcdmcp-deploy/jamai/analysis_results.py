@@ -50,10 +50,42 @@ def regular(path, root):
 
 
 def results_root(app_dir):
-    for root in (Path(app_dir) / "reference_results", Path(app_dir).parent / "reference_results"):
+    for root in (Path(app_dir) / "analyses", Path(app_dir).parent / "analyses"):
         if root.exists() or root.is_symlink():
             return root
     raise ValueError("Reference results manifests are unavailable")
+
+
+def archive_location(value, archive_id, folder=None):
+    """Recognize only the two registered storage layouts, never arbitrary paths."""
+    if not isinstance(value, str):
+        raise ValueError("Invalid registered archive path")
+    path = PurePosixPath(value)
+    if not path.is_absolute() or str(path) != value or ".." in path.parts:
+        raise ValueError("Invalid registered archive path")
+    parts = path.parts
+    if len(parts) >= 6 and parts[-5] == "analyses" and parts[-3:-1] == ("results", "data"):
+        identity, project, layout = parts[-4], path.parents[4], "analyses"
+    elif len(parts) >= 5 and parts[-4] == "reference_results" and parts[-2] == "data":
+        identity, project, layout = parts[-3], path.parents[3], "legacy"
+    else:
+        raise ValueError("Invalid registered archive layout")
+    if not ID.fullmatch(identity) or (folder is not None and identity != folder) or parts[-1] != archive_id:
+        raise ValueError("Archive path does not match its registered analysis and revision")
+    return identity, project, layout
+
+
+def archive_directories(m):
+    """Server-owned locations only; the alternate is optional and tightly paired."""
+    folder, project, layout = archive_location(m["server_directory"], m["archive_id"])
+    paths = [m["server_directory"]]
+    if "alternate_server_directory" in m:
+        alternate = m["alternate_server_directory"]
+        _, other_project, other_layout = archive_location(alternate, m["archive_id"], folder)
+        if project != other_project or layout == other_layout:
+            raise ValueError("Archive alternate must be the paired layout in the same project")
+        paths.append(alternate)
+    return paths
 
 
 def validate_manifest(m, folder):
@@ -69,10 +101,9 @@ def validate_manifest(m, folder):
         raise ValueError("Scientific catalog belongs to another analysis")
     if any(type(m.get(k)) is not int or m[k] <= 0 for k in ("replica_count", "datasets", "accepted_points")):
         raise ValueError("Invalid registered result counts")
-    path = PurePosixPath(m.get("server_directory", ""))
-    suffix = ("reference_results", folder, "data", m["archive_id"])
-    if (not path.is_absolute() or str(path) != m["server_directory"] or ".." in path.parts
-            or tuple(path.parts[-4:]) != suffix or m.get("relative_directory") != "data/" + m["archive_id"]):
+    archive_location(m.get("server_directory", ""), m["archive_id"], folder)
+    archive_directories(m)
+    if m.get("relative_directory") != "data/" + m["archive_id"]:
         raise ValueError("Invalid registered archive path")
     return m
 
@@ -84,7 +115,10 @@ class Results:
         for folder in sorted(self.root.iterdir()):
             if not folder.is_dir() or folder.name.startswith("."):
                 continue
-            path = folder / "reference_manifest.json"
+            results = folder / "results"
+            if not results.exists() and not results.is_symlink():
+                continue  # An analysis may have a catalog before numerical results exist.
+            path = results / "reference_manifest.json"
             regular(path, self.root)
             if path.stat().st_size > 64 * 1024:
                 raise ValueError("Oversized results index")
@@ -92,7 +126,7 @@ class Results:
             if m["analysis_id"] in self.entries:
                 raise ValueError("Duplicate results analysis ID")
             self.entries[m["analysis_id"]] = m
-            self.files["reference_results/" + folder.name + "/reference_manifest.json"] = path
+            self.files["analyses/" + folder.name + "/results/reference_manifest.json"] = path
 
     def deployment_files(self):
         if not self.files:
@@ -196,7 +230,26 @@ class Archive:
     """HPC-side checksum-verified selective reader; no pickle/replica evaluation."""
     def __init__(self, manifest):
         self.m = manifest
-        self.root = Path(manifest["server_directory"])
+        folder, _, _ = archive_location(manifest["server_directory"], manifest["archive_id"])
+        validate_manifest(manifest, folder)
+        candidates = [Path(value) for value in archive_directories(manifest)]
+        # Fallback only when a location is absent. Corrupt/inaccessible files,
+        # symlinks, and checksum failures are never hidden by another copy.
+        self.root = candidates[0]
+        for candidate in candidates:
+            for part in [candidate] + list(candidate.parents):
+                try:
+                    info = part.lstat()
+                except FileNotFoundError:
+                    continue
+                if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+                    raise ValueError("Results links and junctions are forbidden")
+            try:
+                candidate.lstat()
+            except FileNotFoundError:
+                continue
+            self.root = candidate
+            break
         path = regular(self.root / "manifest.json", self.root)
         if path.stat().st_size > 256 * 1024:
             raise ValueError("Oversized archive manifest")
@@ -312,7 +365,8 @@ def remote_request(request):
     """Entry point in the authorized HPC Python process."""
     try:
         manifest = request["manifest"]
-        validate_manifest(manifest, PurePosixPath(manifest["server_directory"]).parts[-3])
+        folder, _, _ = archive_location(manifest["server_directory"], manifest["archive_id"])
+        validate_manifest(manifest, folder)
         result = Archive(manifest).retrieve(request["operation"], request["arguments"])
         return {"ok": True, "result": result}
     except Exception as exc:

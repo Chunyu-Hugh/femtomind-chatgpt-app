@@ -136,5 +136,6 @@
     "The original experimental NPY bundle has no historical kinematic labels; current native kinematics match its ordered values/errors and the approved workbook hashes. Historical reader revision is not asserted."
   ],
   "numerical_authority": "Original saved JAM24 numerical files and derived archive statistics; publication tables do not override numerical results.",
-  "retrieval": "Read-only results MCP tools resolve this index and access selective shards through the authorized JLab SSH connection. Gateway deployment contains this index, not the numerical archive."
+  "retrieval": "Read-only results MCP tools resolve this index and access selective shards through the authorized JLab SSH connection. Gateway deployment contains this index, not the numerical archive.",
+  "alternate_server_directory": "/w/ceph24/JAM/treyand/femtomind-chatgpt-app/analyses/JAM24/results/data/97a675d1e7880ece"
 }

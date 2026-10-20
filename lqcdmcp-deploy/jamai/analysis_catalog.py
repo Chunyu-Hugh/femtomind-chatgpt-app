@@ -38,9 +38,9 @@ _MAX_CACHED_VIEWS = 8
 
 
 def catalog_root(app_dir):
-    """Locate only the deployed-adjacent or repository catalog (internal API)."""
+    """Locate the deployed-adjacent or repository analyses collection."""
     app_dir = Path(app_dir)
-    for candidate in (app_dir / "analysis_catalog", app_dir.parent / "analysis_catalog"):
+    for candidate in (app_dir / "analyses", app_dir.parent / "analyses"):
         if candidate.exists() or candidate.is_symlink():
             return candidate
     raise ValueError("Analysis catalog is unavailable on this server.")
@@ -110,14 +110,16 @@ class Catalog:
                 _safe(directory, self.root, directory=True)
                 if not _ID.fullmatch(directory.name):
                     raise ValueError("Invalid catalog directory identifier.")
+                catalog = directory / "catalog"
+                _safe(catalog, self.root, directory=True)
                 documents = {}
                 for key, filename in DOCUMENTS.items():
-                    path = directory / filename
+                    path = catalog / filename
                     _safe(path, self.root)
                     raw = path.read_bytes()
                     text = raw.decode("utf-8")
                     documents[key] = {"text": text, "sha256": _digest(raw), "bytes": len(raw)}
-                    self.files["analysis_catalog/" + directory.name + "/" + filename] = path
+                    self.files["analyses/" + directory.name + "/catalog/" + filename] = path
                 config = json.loads(documents["analysis_config"]["text"],
                                     parse_constant=_reject_constant)
                 self._validate(config)

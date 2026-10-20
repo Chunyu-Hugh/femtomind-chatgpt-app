@@ -6,3 +6,12 @@ __pycache__/
 
 # Written by `redeploy_jam.py script` for the dashboard page; regenerate it, never commit it.
 lqcdmcp-deploy/jam-gateway-*.slurm
+
+# Regression suites live in the sibling femtomind-tests checkout.
+/tests/
+/test/
+
+# Both numerical-storage layouts remain ignored during the Ceph transition.
+/reference_results/*/data/**
+/analyses/*/results/data/**
+!/analyses/*/results/data/.gitignore

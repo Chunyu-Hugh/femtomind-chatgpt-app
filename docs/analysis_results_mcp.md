@@ -10,7 +10,7 @@ active issues, retrieval requirements, or blockers.
 
 1. `list_analysis_results {}` returns compact discovery and a revision-pinned
    `results_ref`. `JAM24.final` resolves through
-   `reference_results/JAM24/reference_manifest.json`; callers never need the
+   `analyses/JAM24/results/reference_manifest.json`; callers never need the
    archive's hashed directory name.
 2. `get_analysis_fit_statistics {"analysis_id":"JAM24.final","reaction":"wc"}`
    returns only the five W+charm records. `scope` can be `overall`, `reactions`,
@@ -62,16 +62,37 @@ never become shell commands or filenames: dataset filenames come from checked
 archive records. Existing gateway authentication is unchanged.
 
 Register future analyses by adding a validated `reference_manifest.json` under
-their own folder with schema `femtomind.reference_results.index.1` and the same
+`analyses/<analysis>/results/`, with catalog documents in the sibling `catalog/`.
+Keep schema `femtomind.reference_results.index.1` and the same
 summary/shard schema. No JAM24-specific retrieval logic is required. Keep large
 numerical files in persistent HPC storage, outside Git. Indexes pin both the
 archive manifest checksum and the scientific `catalog_ref`.
 
 ## Tests
 
-`python -B -m unittest discover -s tests -p test_analysis_results_mcp.py -v`
+`FEMTOMIND_APP_ROOT=/path/to/femtomind-chatgpt-app python -B -m unittest discover -s ../femtomind-tests/tests -p test_analysis_results_mcp.py -v`
 uses disposable fixtures and a real loopback HTTP MCP dispatcher. Optionally set
 `JAM_RESULTS_REAL_SSH=1` to exercise the actual archived JAM24 results through the
 existing local SSH tunnel (read-only). Set `RESULTS_MCP_TEST_REPORT` to an output
 path outside the checkout to retain measured response sizes and sample records.
 No live gateway calls, deployment, campaigns or jobs are involved.
+
+The regression suite is maintained outside the application checkout, in the
+sibling `femtomind-tests/` directory. `FEMTOMIND_APP_ROOT` is mandatory. Its
+`provenance.json` retains original test commit/blob identifiers; previous test
+history remains accessible in application Git history. No test tree is deployed.
+
+## Transitional numerical storage
+
+JAM24's primary `server_directory` deliberately remains at the existing Ceph
+location under `reference_results/JAM24/data/`. The optional
+`alternate_server_directory` registers the eventual
+`analyses/JAM24/results/data/` location. Both must name the same analysis and
+archive revision within the same project root, and both must satisfy the site's
+authorized read roots. No path is accepted from MCP callers.
+
+The reader tries the primary location first and uses the alternate only when
+the primary directory is absent. Permission errors, symlinks, missing files in
+an existing directory, and checksum failures fail closed; they never trigger a
+fallback to another copy. Read `docs/analyses_migration.md` before relocating any
+live archive. The current change does not move or rebuild it.
