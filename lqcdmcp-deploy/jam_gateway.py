@@ -3858,8 +3858,9 @@ if export_png:
                           'png_b64':base64.b64encode(open(path,'rb').read()).decode()})
     except (ValueError, RuntimeError, OSError) as exc:
         plt.close('all')
-        metadata['figure_error'] = str(exc)
-        metadata['note'] += ' FF figures not rendered: ' + str(exc)
+        reason = str(exc).replace('Proton PDF plots require', 'The FF figures require')
+        metadata['figure_error'] = reason
+        metadata['note'] += ' FF figures not rendered: ' + reason
 if limitations:
     metadata['note'] += ' Log-axis limitation: intervals crossing zero extend below the display frame; intervals entirely nonpositive are not drawable. Numerical values are unchanged; see log_limitations.'
 metadata['log_limitations']=limitations
@@ -9968,7 +9969,8 @@ TOOLS = {
     "campaign_datasets": {
         "desc": "The datasets of one available reaction from campaign_options, grouped by experiment, with labels "
                 "(experiment, observable, target). Optional search text. Nothing is preselected. "
-                "SIDIS and SIA are selectable for dataset configuration only; FF fitting is unavailable.",
+                + ("SIDIS (PDFs + FFs) and SIA (FFs) are fittable reactions." if FF_EXECUTION_ENABLED else
+                   "SIDIS and SIA are selectable for dataset configuration only; FF fitting is unavailable."),
         "schema": {"type": "object", "properties": {"reaction": {"type": "string", "enum": sorted(CATALOG_REACTIONS)},
                                                     "search": {"type": "string"}},
                    "required": ["reaction"]},
@@ -9979,8 +9981,10 @@ TOOLS = {
         "schema": {"type": "object", "properties": {}},
         "fn": lambda a: use_ai_branch()},
     "validate_campaign": {
-        "desc": "SIDIS/SIA selections return a dataset-only input fragment with configuration_valid and "
-                "fit_ready=false, never a runnable fit or submission confirmation. "
+        "desc": ("SIDIS needs the proton PDF plus the FFs of its hadrons; SIA needs FFs only. "
+                 if FF_EXECUTION_ENABLED else
+                 "SIDIS/SIA selections return a dataset-only input fragment with configuration_valid and "
+                 "fit_ready=false, never a runnable fit or submission confirmation. ") +
                 "Create Input Card: validate the composer card and return the summary (free/fixed "
                 "parameters per object. Additive card.objects=[{type:'pdf',parameters:{}},"
                 "{type:'pdf-pion',parameters:{}}] selects one or both; card.companions={'p->pi,n':"
@@ -10000,7 +10004,7 @@ TOOLS = {
         "fn": lambda a: validate_campaign(a.get("card"))},
     "submit_campaign": {
         "desc": "Submit Jobs: materialize the card and submit one Slurm array task per replica. "
-                "Rejects SIDIS/SIA configuration-only cards before uploads or job creation. "
+                + ("" if FF_EXECUTION_ENABLED else "Rejects SIDIS/SIA configuration-only cards before uploads or job creation. ") +
                 "Needs confirm = the phrase from validate_campaign, after the user has seen the "
                 "summary and the Slurm script and agreed.",
         "schema": {"type": "object", "properties": {"card": {"type": "object"}, "confirm": {"type": "string"}},
@@ -10271,7 +10275,10 @@ INSTRUCTIONS = (
     "FitPack ai branch: offer use_ai_branch or a new workspace. A missing item without a fix (for "
     "example a workspace folder that no longer exists, or an ai-branch checkout without "
     "examples/input02.py): give the user its action; use_ai_branch does not help there.\n"
-    "3. Non-perturbative objects and parameters: Unpolarized PDF, Pion PDF, or both. "
+    + ("3. Non-perturbative objects and parameters: Unpolarized PDF, Pion PDF and the fragmentation functions "
+       "(pion, kaon, total hadron), alone or combined, as campaign_options lists them. "
+       if FF_EXECUTION_ENABLED else
+       "3. Non-perturbative objects and parameters: Unpolarized PDF, Pion PDF, or both. ") +
     "campaign_options returns each object's library: FREE/FIXED/tied, value, min, max. "
     "Pion follows its final-fit reference with strictly one shape; never add second-shape pion "
     "parameters. Fitted pion temporarily selects DIS 0, including combined campaigns; otherwise 1. "
@@ -10295,9 +10302,11 @@ INSTRUCTIONS = (
     "memory, cpus, partition or auto), using slurm_partitions to explain the choice.\n"
     "Every setting shows its library value; the user keeps or changes it. Reactions and "
     "datasets are never preselected; never pick a value for the user.\n"
-    "8. Review: SIDIS/SIA datasets are configuration-only: validate_campaign returns an input "
-    "fragment, configuration_valid and fit_ready=false. Do not attempt submission or claim FF fits "
-    "are implemented. SIDIS needs PDFs plus FFs; SIA needs FFs only. For supported fits, "
+    + ("8. Review: SIDIS (PDFs plus FFs) and SIA (FFs only) campaigns are fitted like the others. For every fit, "
+       if FF_EXECUTION_ENABLED else
+       "8. Review: SIDIS/SIA datasets are configuration-only: validate_campaign returns an input "
+       "fragment, configuration_valid and fit_ready=false. Do not attempt submission or claim FF fits "
+       "are implemented. SIDIS needs PDFs plus FFs; SIA needs FFs only. For supported fits, ") +
     "validate_campaign; show the summary, its warnings (they never block "
     "submission) and the Slurm array script exactly as returned (not shortened); submit with "
     "submit_campaign(card, confirm=<phrase>) only after the user agrees.\n"
