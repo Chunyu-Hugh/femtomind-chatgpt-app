@@ -83,12 +83,17 @@ def _validate_text(value, name, maximum=128):
         raise ValueError(name + " must be a bounded string.")
 
 
+def tool_result(page):
+    """Use one formatter for catalog page sizing and successful MCP replies."""
+    result = {"content": [{"type": "text", "text": _json(page)}], "isError": False}
+    if page.get("response_format", "legacy") != "json_text":
+        result["structuredContent"] = page
+    return result
+
+
 def _fits(page):
-    # Catalog tools emit structuredContent and compact JSON text. Include
-    # both, their outer JSON escaping, and transport/JSON-RPC envelope headroom.
-    wrapper = {"content": [{"type": "text", "text": json.dumps(page, separators=(",", ":"))}],
-               "structuredContent": page, "isError": False}
-    return len(json.dumps(wrapper, ensure_ascii=True).encode("utf-8")) + 384 <= MAX_RESPONSE_BYTES
+    # Include the selected representation, outer escaping and JSON-RPC headroom.
+    return len(json.dumps(tool_result(page), ensure_ascii=True).encode("utf-8")) + 384 <= MAX_RESPONSE_BYTES
 
 
 class Catalog:
@@ -281,7 +286,7 @@ class Catalog:
                 raise ValueError()
             return value["offset"]
         except (ValueError, TypeError, UnicodeError, KeyError):
-            raise ValueError("Invalid or stale cursor for this catalog, section and filter.") from None
+            raise ValueError("Invalid or stale cursor for this catalog, section, filter and response format.") from None
 
     def _page(self, base, records, cursor, limit):
         _validate_limit(limit)
@@ -353,9 +358,13 @@ class Catalog:
         return self._page(base, [self._summary(e) for e in self.entries.values()], cursor, limit)
 
     def get(self, analysis_id, section="overview", object_key="", cursor="", limit=10,
-            detail="summary", group="", status="", dataset_id="", setting_id=""):
+            detail="summary", group="", status="", dataset_id="", setting_id="",
+            response_format="legacy"):
         _validate_text(section, "section")
         _validate_text(object_key, "object_key")
+        _validate_text(response_format, "response_format")
+        if response_format not in ("legacy", "json_text"):
+            raise ValueError("response_format must be legacy or json_text.")
         for key, value in (("detail", detail), ("group", group), ("status", status),
                            ("dataset_id", dataset_id), ("setting_id", setting_id)):
             _validate_text(value, key)
@@ -377,6 +386,15 @@ class Catalog:
         base = self._base(entry, section, object_key)
         base.update(detail=detail, filters={k: v for k, v in
                     (("group", group), ("status", status), ("dataset_id", dataset_id), ("setting_id", setting_id)) if v})
+        # Leave legacy page/cursor contexts unchanged. Opt-in pages bind their
+        # format into both the continuation context and expanded-view cache key.
+        if response_format != "legacy":
+            base["response_format"] = response_format
+        if section == "documents" and not object_key:
+            records = [{"document": key, "section": key, "document_sha256": d["sha256"],
+                        "document_bytes": d["bytes"], "document_total_chars": len(d["text"]),
+                        "encoding": "utf-8"} for key, d in entry["documents"].items()]
+            return self._page(base, records, cursor, limit)
         if section in DOCUMENTS or section == "documents":
             document = object_key if section == "documents" else section
             if document not in DOCUMENTS or (section != "documents" and object_key):
@@ -410,7 +428,7 @@ class Catalog:
                       "dataset_reactions": list(sv.get("datasets", {})),
                       "parameter_counts": sv.get("parameter_counts", {}),
                       "blocking_item_ids": c["catalog_validation"].get("blocking_unresolved_items", []),
-                      "retrieval": "Use targeted filters; detail=full requests definitions. Reuse catalog_ref instead of retransmitting configuration."}, "retrieval_guide")
+                      "retrieval": "Use targeted filters; detail=full requests definitions. Reuse catalog_ref. limit is 1-50 (default 10), subject to 10 KiB. Pass next_cursor as cursor until complete; keep catalog_ref, section, selectors, detail and response_format unchanged. response_format=json_text sends one JSON text payload. section=documents lists document sections."}, "retrieval_guide")
         elif section == "parameters":
             mapping = sv.get("parameter_definitions", {})
             statuses = {"fixed", "fixed_true"} if status == "fixed" else {status}

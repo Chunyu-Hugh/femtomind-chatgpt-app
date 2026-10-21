@@ -395,8 +395,14 @@ Parameter requests default to object/group counts, not hundreds of definitions;
 dataset requests default to reaction IDs/counts, not experimental arrays.
 `detail:"full"` explicitly requests full records. Exact document sections are
 explicit lossless exports, not a required step in normal orchestration.
-Catalog text responses use compact JSON while retaining MCP structured content;
-other tools keep their existing response formatting.
+Catalog text responses use compact JSON while retaining MCP structured content
+by default. `get_analysis_catalog` alone accepts `response_format:"json_text"`
+to return the full page **once**, as JSON in `content[0].text`, without
+`structuredContent`. Parse that JSON to read the same scientific records.
+Omit the option (or use `"legacy"`) for existing clients. Discovery,
+requirements and other tools keep their existing response formatting.
+Check MCP `isError` before parsing: authentication and validation errors keep
+their existing error responses, rather than becoming catalog pages.
 
 Examples of `tools/call` arguments:
 
@@ -408,6 +414,8 @@ Examples of `tools/call` arguments:
 {"name":"get_analysis_catalog","arguments":{"analysis_id":"JAM24","section":"datasets"}}
 {"name":"get_analysis_catalog","arguments":{"analysis_id":"JAM24","section":"qcd"}}
 {"name":"get_analysis_catalog","arguments":{"analysis_id":"JAM24","section":"statistics"}}
+{"name":"get_analysis_catalog","arguments":{"analysis_id":"JAM24","section":"documents"}}
+{"name":"get_analysis_catalog","arguments":{"analysis_id":"JAM24","section":"parameters","detail":"full","response_format":"json_text","limit":50}}
 {"name":"get_analysis_requirements","arguments":{"analysis_id":"JAM24"}}
 ```
 
@@ -436,13 +444,23 @@ cache; each request still validates and hashes the approved documents. It writes
 no campaign cache, numerical dataset, or artifact.
 
 Other sections are `provenance`, `analysis_config`, `paper_findings` and
-`unresolved_settings`. Dataset `object_key` filters by reaction. Each page
+`unresolved_settings`. `section:"documents"` without `object_key` returns a
+compact index of the three registered documents with their named sections,
+byte/character counts and SHA256 hashes. Fetch a document through its named
+section, or keep using `section:"documents", object_key:"analysis_config"`
+(and the equivalent Markdown document names). No document text is in the index.
+Dataset `object_key` filters by reaction. Each page
 reports its catalog hash, section/filter, `items`, `complete` and `next_cursor`.
-Keep the same analysis/section/filter and pass `next_cursor` as `cursor` until
-`complete` is true. `limit` is an item ceiling (1–50), not a promise of that many
-items: the entire MCP result, including its duplicate text/structured views,
-is bounded to 10 KiB. Defaults use at most 10 items. A changed catalog invalidates
-old cursors; restart retrieval. Keep `detail` and all selectors unchanged as well.
+Use the returned revision-pinned `catalog_ref` as `analysis_id`. Keep that
+reference, section, selectors, `detail` and `response_format` unchanged and pass
+each `next_cursor` as `cursor` until `complete` is true. Do not increment offsets
+or decode/edit cursors. **The maximum `limit` is 50; the default is 10.** This is
+an item ceiling, not a promise of that many items: the entire MCP result is
+bounded to 10 KiB, counting both payload copies in legacy mode and the single
+copy in `json_text` mode. Changed documents invalidate references/cursors;
+changing format or selectors invalidates cursors too. Restart retrieval rather
+than combining pages from different revisions or formats. The expanded-view
+cache is bound to the same revision, selection and representation.
 
 Structured records retain original values, evidence labels and source references,
 with a JSON pointer back into `analysis_config`. An oversized record is returned

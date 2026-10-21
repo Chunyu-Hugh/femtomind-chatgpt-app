@@ -9758,7 +9758,7 @@ def _catalog_request(operation, arguments):
     if not isinstance(arguments, dict):
         raise ValueError("catalog arguments must be an object")
     allowed = {"list": {"cursor", "limit"},
-               "get": {"analysis_id", "section", "object_key", "cursor", "limit", "detail", "group", "status", "dataset_id", "setting_id"},
+               "get": {"analysis_id", "section", "object_key", "cursor", "limit", "detail", "group", "status", "dataset_id", "setting_id", "response_format"},
                "requirements": {"analysis_id", "cursor", "limit", "detail", "requirement_id"}}[operation]
     # Shared-gateway identity is already checked by the existing MCP dispatcher.
     kwargs = {k: v for k, v in arguments.items() if k != "username"}
@@ -9844,16 +9844,18 @@ TOOLS = {
         "fn": lambda a: _catalog_request("list", a)},
     "get_analysis_catalog": {
         "compact": True,
-        "desc": "Read-only catalog inspection. Defaults to compact summaries; detail=full explicitly requests definitions/evidence. Filter parameters by object_key/group/status, datasets by reaction object_key/dataset_id, or qcd/statistics by setting_id. Reuse catalog_ref as analysis_id; do not download/retransmit full configuration for orchestration. Explicit document sections provide lossless exports. Follow next_cursor with identical selectors. No campaign creation or fitting.",
+        "format_result": analysis_catalog.tool_result,
+        "desc": "Read-only catalog inspection. Defaults to compact summaries; detail=full explicitly requests definitions/evidence. Filter parameters by object_key/group/status, datasets by reaction object_key/dataset_id, or qcd/statistics by setting_id. Reuse catalog_ref as analysis_id. section=documents lists documents; named document sections provide lossless exports. limit is 1-50 (default 10), bounded by 10 KiB. Pass next_cursor as cursor until complete with identical catalog_ref, selectors, detail and response_format. Opt in to response_format=json_text for one JSON text payload without duplicate structuredContent; legacy is the default. No campaign creation or fitting.",
         "schema": {"type": "object", "additionalProperties": False, "required": ["analysis_id"], "properties": {
             "analysis_id": {"type": "string", "description": "Stable analysis ID, alias or revision-pinned catalog_ref from discovery."}, "section": {"type": "string", "enum": ["overview", "parametrization", "parameters", "datasets", "qcd", "statistics", "provenance", "analysis_config", "paper_findings", "unresolved_settings", "documents"], "default": "overview"},
-            "object_key": {"type": "string", "default": ""}, "cursor": {"type": "string"},
+            "object_key": {"type": "string", "default": "", "description": "Parameter object or dataset reaction; for section=documents optionally name one document instead of listing the index."}, "cursor": {"type": "string"},
             "detail": {"type": "string", "enum": ["summary", "full"], "default": "summary"},
+            "response_format": {"type": "string", "enum": ["legacy", "json_text"], "default": "legacy", "description": "legacy returns JSON text and structuredContent. json_text returns the full page once in content[0].text; parse that JSON. Keep unchanged across continuation requests."},
             "group": {"type": "string", "description": "Exact parameter shape prefix, e.g. g1 or u1."},
             "status": {"type": "string", "enum": ["free", "fixed", "linked"]},
             "dataset_id": {"type": "string", "description": "Exact ID, qualified by reaction object_key."},
             "setting_id": {"type": "string", "description": "Exact setting key or scientific ID, e.g. positivity, Q20 or theory.order."},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10}}},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10, "description": "Item ceiling 1-50, not a page-size guarantee. Replies also fit the 10 KiB budget."}}},
         "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
         "fn": lambda a: _catalog_request("get", a)},
     "get_analysis_requirements": {
@@ -10612,7 +10614,9 @@ class H(BaseHTTPRequestHandler):
                         result = _tool_result("unknown tool", is_error=True)
                     else:
                         try:
-                            result = _tool_result(spec["fn"](args), compact=spec.get("compact", False))
+                            out = spec["fn"](args)
+                            formatter = spec.get("format_result")
+                            result = formatter(out) if formatter else _tool_result(out, compact=spec.get("compact", False))
                         except Exception as e:
                             result = _tool_result(f"error: {e}", is_error=True)
         else:
