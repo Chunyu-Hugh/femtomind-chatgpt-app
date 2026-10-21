@@ -9835,6 +9835,16 @@ def _catalog_request(operation, arguments):
     return getattr(_analysis_catalog_store(), operation)(**kwargs)
 
 
+def _preview_analysis_configuration(arguments):
+    from jamai import configuration_compiler
+    if not isinstance(arguments, dict):
+        raise ValueError("Compiler arguments must be an object")
+    args = {key: value for key, value in arguments.items() if key != "username"}
+    if set(args) - {"configuration_ref", "options", "cursor", "limit"} or "configuration_ref" not in args:
+        raise ValueError("Preview requires configuration_ref; optional arguments are options, cursor and limit")
+    return configuration_compiler.preview(_analysis_catalog_store(), **args)
+
+
 def _analysis_results_store():
     return analysis_results.Results(analysis_results.results_root(HERE))
 
@@ -9874,6 +9884,21 @@ def _results_request(operation, arguments):
 
 
 TOOLS = {
+    "preview_analysis_configuration": {
+        "compact": True,
+        "format_result": analysis_catalog.tool_result,
+        "desc": "Read-only server-side scientific configuration compiler and exact parity preview. Pass configuration_ref from the configuration manifest; do not resend parameter records. Returns compiled_ref, counts, normalization bounds/penalty evidence, differences and blockers; the complete IR stays server-side. No readers, inputs, campaigns or jobs are created. Catalog point counts do not verify reader selections. Options never change scientific declarations; normalization_probes assert that values fit authoritative bounds, without replacing starts. Follow next_cursor with identical reference/options; limit 1-50, default 10, 10 KiB budget. Materialization remains unavailable.",
+        "schema": {"type": "object", "additionalProperties": False, "required": ["configuration_ref"], "properties": {
+            "configuration_ref": {"type": "string", "description": "Exact revision-pinned configuration:ID@SHA256 from get_analysis_catalog(section=configuration)."},
+            "options": {"type": "object", "additionalProperties": False, "properties": {
+                "reproduction_policy": {"type": "string", "enum": ["catalog_author_confirmed"], "default": "catalog_author_confirmed"},
+                "label": {"type": "string", "maxLength": 80, "description": "Diagnostic label only; not a campaign name or path."},
+                "normalization_probes": {"type": "array", "maxItems": 8, "items": {"type": "object", "additionalProperties": False,
+                    "required": ["reaction", "dataset_id", "value"], "properties": {
+                        "reaction": {"type": "string"}, "dataset_id": {"type": "string"}, "value": {"type": "number"}}}}}},
+            "cursor": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10}}},
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        "fn": _preview_analysis_configuration},
     "list_analysis_results": {
         "compact": True,
         "desc": "Read-only compact discovery of archived numerical reference results. Returns stable analysis_id and revision-pinned results_ref. No arrays or scientific configuration are transmitted. Follow next_cursor.",

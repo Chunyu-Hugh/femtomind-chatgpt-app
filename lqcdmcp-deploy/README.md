@@ -575,6 +575,87 @@ constructed for the requested format. Every request still reads, validates and
 hashes source documents before cache lookup. No numerical/prediction caches or
 scientific source files are modified.
 
+#### Read-only configuration compiler and parity preview
+
+`preview_analysis_configuration` accepts the `configuration_ref` returned by the
+configuration manifest. It compiles a complete **server-side intermediate
+representation (IR)** directly from that validated snapshot. It does not use
+campaign-card defaults, object/dataset registries, a FitPack template, readers,
+scientific archives, or the input materializer. No input, directory, campaign,
+job, fitted value or scientific prediction is created.
+
+```json
+{"name":"preview_analysis_configuration","arguments":{"configuration_ref":"configuration:Example.final@<sha256>","options":{"reproduction_policy":"catalog_author_confirmed","label":"parity review","normalization_probes":[{"reaction":"sia","dataset_id":"1001","value":2.7}]}}}
+```
+
+Options are strict and optional:
+
+- `reproduction_policy`: currently only `catalog_author_confirmed` (the default).
+  No automatic application defaults or arbitrary scientific overrides are accepted.
+- `label`: at most 80 characters, for diagnostics only; not a campaign name/path.
+- `normalization_probes`: at most eight `{reaction,dataset_id,value}` assertions
+  that the authoritative bounds permit a finite value. They do **not** replace
+  declared starting values or assert a fitted result. An absent declaration or
+  out-of-bounds probe is a hard blocker, not a warning.
+
+The compact report appears once as JSON in `content[0].text`. It returns counts,
+exact-parity checks, authorized author overlays, normalization-bound groups,
+independent penalty evidence, unresolved historical IDs and a `compiled_ref`.
+Scientific errors, missing requirements and unsupported settings are paginated
+in `items`; follow `next_cursor` with identical configuration/options. Limit is
+1–50 (default 10), subject to the existing 10 KiB envelope budget. No hundreds of
+parameter records are returned through MCP. Any mismatching scientific field is
+an error with `blocks_materialization:true`; unsupported fields are preserved
+in the IR rather than discarded or guessed.
+For unusually large future metadata, oversized summary fields return their
+canonical hash/size and `retained_server_side:true`; issue records still paginate
+losslessly and the full scientific IR remains intact. Catalog evidence tools can
+retrieve original supporting records independently.
+
+The IR schema is `femtomind.scientific_configuration_ir.v1`:
+
+- `literal_catalog`: the complete original catalog JSON, including provenance,
+  original declarations, publication evidence and historical restrictions.
+- `reproduction.parameter_definitions`: all original parameter rows and literal
+  fixed/link declarations. The only generated parameter metadata is the explicit
+  author-approved lowercase `gaussian`, coefficient-specific `mean`/`std` on
+  `fixed is False` entries. Starting values/bounds/links are never substituted.
+- `reproduction.datasets`: complete original reaction containers/ordered records,
+  identifiers, XLSX paths, normalization declarations, literal filter strings,
+  field-presence markers, zero-accepted-point datasets and catalog reader evidence.
+- `reproduction.native_settings`: original flags plus recorded author overlays
+  such as Q20, positivity and `flat par=True`. The original `flat par=False`
+  remains untouched in `literal_catalog`. No Gaussian objective term is added.
+- `reproduction.normalization_evidence`: the original normalization audit and
+  workbook hashes/uncertainties/covariance and penalty-convention descriptions.
+  Bounds are independent of experimental deltaN. Finite deltaN around 1000 is
+  kept exactly, including floating-point distinctions; it is never converted to
+  zero penalty. Bounds are not tightened to an ordinary campaign-card maximum.
+- `reproduction.policies` and `overlays`: original author policies and explicit
+  before/after setting records; operational options remain separate.
+
+The compiler recognizes transport for original boolean/numeric QCD flags,
+evolution/order/grid settings and parametrization/positivity declarations. Unknown
+native/reproduction/initialization settings and unclassified catalog branches
+block consumption pending review. Links must terminate within their own object
+or reaction; no effective linked value is calculated. Missing Gaussian means/stds
+are errors. No random values are drawn and no normalization prior is evaluated.
+
+The compiled identifier hashes the full IR with the established canonical JSON
+contract, including compiler schema, encoding, exact source/configuration
+revision, provenance and options. A bounded four-entry process-local cache keeps
+the full IR. `configuration_compiler.resolve_compiled(store, compiled_ref)` is
+an **internal proposed adapter boundary**, returning a defensive copy only after
+fresh revision checks, checksum verification and scientific parity validation.
+Evicted references require another preview. This is not a public materialization
+operation, and the existing input materializer is intentionally unchanged.
+
+`parity.passed:true` means catalog-to-IR integrity only. Reports always state
+`reader_selection_verified:false` and `materialization_allowed:false` in this
+stage. Catalog point-count equality is not proof of selected-point identity.
+Historical reproduction readiness and unresolved requirements are reported
+separately, without solving them or granting campaign-generation permission.
+
 For a complete lossless export, request `section:"analysis_config"` and concatenate
 document `text` chunks by `char_offset` across pages, after reassembling any record
 fragments. UTF-8 encoding of the joined text must match `document_sha256` and
