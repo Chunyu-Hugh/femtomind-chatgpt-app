@@ -695,6 +695,73 @@ reported explicitly. Current-reader parity does not resolve historical blockers
 or establish historical ensemble reproduction. Campaign execution remains
 disabled, and normal campaign-card behavior is unchanged.
 
+#### Read-only compiled-input MCP preview
+
+`preview_compiled_input` accepts a revision-pinned `configuration_ref` from
+`get_analysis_catalog(section="configuration")`. The server resolves the entire
+scientific configuration, calls the validated compiler and existing in-memory
+materializer, then checks the rendered text with the existing independent parity
+checker. Clients never retransmit parameters, datasets or normalization records.
+Only the manifest's `configuration_ref` is needed; downloading its configuration
+continuation stream is unnecessary for this preview.
+
+```json
+{"name":"preview_compiled_input","arguments":{"configuration_ref":"configuration:Example.final@<sha256>","section":"summary"}}
+```
+
+The default summary returns analysis/configuration/compiled identities, the full
+UTF-8 input SHA256 and `input_ref`, scientific counts, reaction-qualified dataset
+identities, normalization bound groups, Gaussian policy, QCD/positivity settings,
+original-versus-reproduction overlays and blockers. It does **not** return source
+text. The input reference is an identity, not a filename or a materialization
+capability. With identical pinned source and options its hash is deterministic.
+Diagnostic options are the same strict compiler options (`reproduction_policy`,
+`label`, `normalization_probes`). These do not override scientific declarations.
+They bind the compiled reference, which is embedded in the input header, so even
+a metadata-only option change changes the complete input hash while preserving
+the scientific definitions. Normalization probes assert admissibility; they do
+not replace literal starts or calculate effective linked values.
+
+Targeted sections avoid large default responses:
+
+| `section` | Records |
+| --- | --- |
+| `summary` | Compact report; errors in `items` when blocked |
+| `datasets` | Every configured ID/path, literal cuts/presence and prior point count, including zero-point records |
+| `normalizations` | Every original value/bound/fixed-or-link declaration; null reproduction override; prior finite deltaN evidence and unchanged penalty policy |
+| `settings` | Original and reproduction native settings, Gaussian policy, named constants, full reaction filter maps, options and prior reader metadata |
+| `overlays` | Explicit author-confirmed before/after settings and complete Gaussian policy |
+| `issues` | Scientific mismatches, missing requirements and unsupported settings |
+
+Every successful MCP result contains one JSON page in `content[0].text`, without
+duplicated `structuredContent`. `limit` is 1–50 (default 10), subject to the same
+10 KiB serialized-response budget. Follow `next_cursor` with identical reference,
+options and section until `complete:true`. Large records use the existing
+lossless JSON-fragment protocol. Large future summary fields become hash/size
+references naming a valid targeted section; the complete records stay available.
+Cursors and page caches bind the exact configuration/compiled/input identities,
+preview/compiler/materializer schema versions and complete projected-record hash.
+
+Valid requests with scientific errors return `status:"blocked"`, `parity.passed:
+false`, explicit hard issues and no usable input identity. Blocked detail views
+return issue records (`record_section:"issues"`), never repaired declarations.
+Malformed or stale requests are MCP errors. Existing catalog tools and response
+formats are unchanged.
+
+`reader_validation.executed_this_request` and `verified_this_request` are always
+false: no reader or workbook is accessed. Expected point counts and the separate
+`prior_reader_evidence` are copied from pinned catalog evidence and are **not** a
+new verification of selections or the historical ensemble. Current checks cover
+compiler-to-IR and IR-to-rendered-input structural integrity only.
+
+The preview writes no input files, manifests, artifacts or campaign directories,
+uses no SSH/HPC connection, and runs no readers, random sampling, theory,
+optimization or jobs. Only bounded existing in-memory catalog/compiler caches are
+used. Normal gateway HTTP logging is unchanged. `materialization_allowed` and
+`campaign_execution_allowed` remain false; historical reproduction blockers remain
+separate and unchanged. Both existing deployment packagers include the new Python
+module automatically, without adding scientific archives to deployment snapshots.
+
 For a complete lossless export, request `section:"analysis_config"` and concatenate
 document `text` chunks by `char_offset` across pages, after reassembling any record
 fragments. UTF-8 encoding of the joined text must match `document_sha256` and

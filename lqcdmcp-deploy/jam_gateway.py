@@ -9845,6 +9845,16 @@ def _preview_analysis_configuration(arguments):
     return configuration_compiler.preview(_analysis_catalog_store(), **args)
 
 
+def _preview_compiled_input(arguments):
+    from jamai import compiled_input_preview
+    if not isinstance(arguments, dict):
+        raise ValueError("Compiled-input preview arguments must be an object")
+    args = {key: value for key, value in arguments.items() if key != "username"}
+    if set(args) - {"configuration_ref", "options", "section", "cursor", "limit"} or "configuration_ref" not in args:
+        raise ValueError("Preview requires configuration_ref; optional arguments are options, section, cursor and limit")
+    return compiled_input_preview.preview(_analysis_catalog_store(), **args)
+
+
 def _analysis_results_store():
     return analysis_results.Results(analysis_results.results_root(HERE))
 
@@ -9884,6 +9894,23 @@ def _results_request(operation, arguments):
 
 
 TOOLS = {
+    "preview_compiled_input": {
+        "compact": True,
+        "format_result": analysis_catalog.tool_result,
+        "desc": "Read-only, in-memory FitPack input preview using the validated scientific compiler and materializer. First get configuration_ref from get_analysis_catalog(section=configuration); pass that pinned reference, never parameter/dataset records. Default summary returns input SHA256, counts, dataset identities, normalization bounds, initialization, QCD/positivity, overlays and hard parity blockers. Target sections datasets, normalizations (exact values/bounds/links/prior deltaN), settings, overlays or issues for details. JSON appears once in content[0].text. limit 1-50 (default 10), 10 KiB; follow next_cursor with identical reference/options/section. Original declarations stay separate from reproduction overlays. No files, artifacts, campaigns, readers, replicas, optimizers or jobs are created/run; prior catalog reader evidence is not newly verified. Scientific mismatches block materialization. Campaign execution remains disabled.",
+        "schema": {"type": "object", "additionalProperties": False, "required": ["configuration_ref"], "properties": {
+            "configuration_ref": {"type": "string", "description": "Exact revision-pinned configuration:ID@SHA256 from the configuration manifest; aliases are rejected."},
+            "section": {"type": "string", "enum": ["summary", "datasets", "normalizations", "settings", "overlays", "issues"], "default": "summary"},
+            "options": {"type": "object", "additionalProperties": False, "properties": {
+                "reproduction_policy": {"type": "string", "enum": ["catalog_author_confirmed"], "default": "catalog_author_confirmed"},
+                "label": {"type": "string", "maxLength": 80, "description": "Diagnostic metadata only; changes compiled reference/header and therefore the full input hash."},
+                "normalization_probes": {"type": "array", "maxItems": 8, "description": "Admissibility assertions only; do not replace declared starting values.", "items": {
+                    "type": "object", "additionalProperties": False, "required": ["reaction", "dataset_id", "value"], "properties": {
+                        "reaction": {"type": "string", "minLength": 1, "maxLength": 128},
+                        "dataset_id": {"type": "string", "minLength": 1, "maxLength": 128}, "value": {"type": "number"}}}}}},
+            "cursor": {"type": "string", "maxLength": 1024}, "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10}}},
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        "fn": _preview_compiled_input},
     "preview_analysis_configuration": {
         "compact": True,
         "format_result": analysis_catalog.tool_result,
