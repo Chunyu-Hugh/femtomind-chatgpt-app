@@ -107,6 +107,8 @@ SITE_IFARM = {
     "compute_secret": "account password",
     # The user's own area: workspaces and the workspace marker.
     "area": "/w/ceph24/JAM/{user}",
+    # Slurm stdout/stderr are temporary logs and must stay on this filesystem.
+    "slurm_log_root": "/farm_out",
     # fs_list / fs_read may look anywhere under these.
     "read_roots": ["/w/ceph24"],
     "container": {"image": "/u/scigroup/scicomp/jupyterhub/theory/theory-notebook.sif",
@@ -594,8 +596,10 @@ def node_diag(cmd="id; hostname"):
     return {"rc": r["rc"], "out": r["out"], "err": r["err"]}
 
 
-def _outside_read_roots(p):
-    roots = SITE["read_roots"]
+def _outside_read_roots(p, user=""):
+    roots = list(SITE["read_roots"])
+    if user:
+        roots.append(f"{SITE.get('slurm_log_root', '/farm_out').rstrip('/')}/{user}")
     if any(p == r or p.startswith(r.rstrip("/") + "/") for r in roots):
         return None
     return {"status": "error", "message": "path must be under " + " or ".join(roots)}
@@ -606,7 +610,7 @@ def fs_list(path="", username=""):
     if err:
         return err
     p = os.path.normpath(path.strip() or _area(u))
-    bad = _outside_read_roots(p)
+    bad = _outside_read_roots(p, u)
     if bad:
         return bad
     out = _remote(u, f"ls -la {_shq(p)} 2>&1 | head -60", timeout=60)
@@ -618,7 +622,7 @@ def fs_read(path="", max_lines=200, username=""):
     if err:
         return err
     p = os.path.normpath(path.strip())
-    bad = _outside_read_roots(p)
+    bad = _outside_read_roots(p, u)
     if bad:
         return bad
     ml = max(1, min(int(max_lines), 500))
@@ -2176,6 +2180,24 @@ def _array_ranges(numbers):
     return ",".join(out)
 
 
+def _slurm_log_dir(user):
+    return f"{SITE.get('slurm_log_root', '/farm_out').rstrip('/')}/{user}"
+
+
+def _campaign_log_prefix(user, folder):
+    return f"{_slurm_log_dir(user)}/jam_{folder[:40]}"
+
+
+def _campaign_log_patterns(user, entry):
+    for job in reversed(entry.get("jobs") or []):
+        prefix = job.get("log_prefix")
+        if prefix:
+            return {"stdout": f"{prefix}_<job_id>_<replica>.out",
+                    "stderr": f"{prefix}_<job_id>_<replica>.err"}
+    legacy = f"{_stage_root(user, entry)}/logs/stage_<job_id>_<replica>.out"
+    return {"stdout": legacy, "stderr": None}
+
+
 def _array_script(ws, folder, norm, first, last, indices=None):
     """The Slurm job array: one replica per task, inside the site's image
     (replicas first-last, or exactly the replica numbers in indices)."""
@@ -2185,6 +2207,8 @@ def _array_script(ws, folder, norm, first, last, indices=None):
     lhapdf = ":".join(SITE.get("lhapdf_extra") or [])
     lhapdf_env = f"--env LHAPDF_DATA_PATH={lhapdf} " if lhapdf else ""
     qs, pypath = _shq(stage), _shq(f"{ws}:{ws}/{JAMAI_REMOTE}")
+    log_name = f"jam_{folder[:40]}"
+    log_root = SITE.get("slurm_log_root", "/farm_out").rstrip("/")
     return f"""#!/bin/bash
 #SBATCH --job-name=jam_{folder[:40]}
 #SBATCH --partition={sl["partition_effective"]}
@@ -2192,7 +2216,8 @@ def _array_script(ws, folder, norm, first, last, indices=None):
 #SBATCH --mem={sl["mem"]}
 #SBATCH --cpus-per-task={sl["cpus"]}
 #SBATCH --array={_array_ranges(indices) if indices else f"{first}-{last}"}
-#SBATCH --output={stage}/logs/stage_%A_%a.out
+#SBATCH --output={log_root}/%u/{log_name}_%A_%a.out
+#SBATCH --error={log_root}/%u/{log_name}_%A_%a.err
 set -euo pipefail
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 # fitlib.maxlike clears the screen at every status print; without a terminal
@@ -2706,6 +2731,7 @@ def submit_campaign(card=None, confirm="", username=""):
     croot = f"{ws}/{CAMPAIGNS_DIR}/{folder}"
     stage = f"{croot}/stages/{STAGE}"
     n = norm["job"]["replicas"]
+    log_dir = _shq(_slurm_log_dir(u))
     _upload_jamai(u, ws)
     yaml_b64 = base64.b64encode(_campaign_yaml(ws, folder, norm, n).encode()).decode()
     script_b64 = base64.b64encode(_array_script(ws, folder, norm, 1, n).encode()).decode()
@@ -2714,7 +2740,7 @@ def submit_campaign(card=None, confirm="", username=""):
            f"cd {_shq(ws)} && {_container_exec(ws, f'{ws}/{JAMAI_REMOTE}')} -m modules.jam.jamai.campaign_manifest "
            f"{qc}/campaign.request.json --materialize > {qc}/materialize.json 2>&1 && "
            f"{_container_exec(ws)} -m py_compile {qs}/input.py && "
-           f"mkdir -p {qs}/logs {qs}/current {qs}/slurm && "
+           f"mkdir -p {qs}/current {qs}/slurm {log_dir} && "
            f"echo {script_b64} | base64 -d > {qs}/slurm/array_1_{n}.sh && "
            f"sbatch {qs}/slurm/array_1_{n}.sh")
     r = _remote(u, mat, timeout=600)
@@ -2724,16 +2750,19 @@ def submit_campaign(card=None, confirm="", username=""):
         tail = _remote(u, f"tail -c 1500 {qc}/materialize.json 2>/dev/null", timeout=30).get("out")
         return {"status": "error", "message": "The campaign was not submitted.",
                 "detail": out[-600:], "materialize_log": (tail or "")[-1500:]}
+    log_prefix = _campaign_log_prefix(u, folder)
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     entry = {"collection_id": folder, "campaign_name": norm["job"]["campaignName"],
              "campaign_folder": folder, "created_at": now, "updated_at": now,
              "workspace_path": ws, "replicas": n,
-             "jobs": [{"job_id": m.group(1), "first": 1, "last": n, "submitted_at": now}],
+             "jobs": [{"job_id": m.group(1), "first": 1, "last": n, "submitted_at": now,
+                       "log_prefix": log_prefix}],
              "slurm_job_id": m.group(1), "status": "submitted", "input_card": norm}
     _registry(u, {"kind": "upsert", "entry": entry})
     return {"status": "submitted", "collection_id": folder, "job_id": m.group(1), "replicas": n,
             "partition": norm["slurm"]["partition_effective"], "campaign_folder": croot,
-            "log_path": f"{stage}/logs/stage_{m.group(1)}_<replica>.out", "summary": v["summary"]}
+            "log_path": f"{log_prefix}_{m.group(1)}_<replica>.out",
+            "error_log_path": f"{log_prefix}_{m.group(1)}_<replica>.err", "summary": v["summary"]}
 
 
 def append_replicas(collection_id="", count=0, confirm="", username=""):
@@ -2765,13 +2794,16 @@ def append_replicas(collection_id="", count=0, confirm="", username=""):
     stage = f"{ws}/{CAMPAIGNS_DIR}/{e['campaign_folder']}/stages/{STAGE}"
     sb = base64.b64encode(_array_script(ws, e["campaign_folder"], e["input_card"], first, last).encode()).decode()
     qs = _shq(stage)
-    r = _remote(u, f"echo {sb} | base64 -d > {qs}/slurm/array_{first}_{last}.sh && "
+    log_dir = _shq(_slurm_log_dir(u))
+    r = _remote(u, f"mkdir -p {qs}/slurm {log_dir} && "
+                   f"echo {sb} | base64 -d > {qs}/slurm/array_{first}_{last}.sh && "
                    f"sbatch {qs}/slurm/array_{first}_{last}.sh", timeout=60)
     m = re.search(r"Submitted batch job (\d+)", (r.get("out") or "") + (r.get("err") or ""))
     if not m:
         return {"status": "error", "message": "sbatch refused the job.", "detail": (r.get("err") or r.get("out"))[-400:]}
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    e["jobs"] = list(e.get("jobs") or []) + [{"job_id": m.group(1), "first": first, "last": last, "submitted_at": now}]
+    e["jobs"] = list(e.get("jobs") or []) + [{"job_id": m.group(1), "first": first, "last": last,
+                                                "submitted_at": now, "log_prefix": _campaign_log_prefix(u, e["campaign_folder"])}]
     e.update(replicas=last, updated_at=now, slurm_job_id=m.group(1), status="submitted")
     _registry(u, {"kind": "upsert", "entry": e})
     return {"status": "submitted", "job_id": m.group(1), **plan}
@@ -2867,14 +2899,16 @@ def rerun_replicas(collection_id="", replicas="failed", confirm="", username="")
                        for i in wanted)
     back = " ; ".join(f"if [ -e {qs}/previous/replica_{i}_{stamp} ]; then mv {qs}/previous/replica_{i}_{stamp} {qs}/current/replica_{i}; fi"
                       for i in wanted)
-    r = _remote(u, f"mkdir -p {qs}/previous {qs}/slurm && echo {sb} | base64 -d > {qs}/slurm/{name}.sh && "
+    log_dir = _shq(_slurm_log_dir(u))
+    r = _remote(u, f"mkdir -p {qs}/previous {qs}/slurm {log_dir} && echo {sb} | base64 -d > {qs}/slurm/{name}.sh && "
                    f"{{ {moves} ; }} && {{ sbatch {qs}/slurm/{name}.sh || {{ {back} ; false; }} ; }}", timeout=90)
     m = re.search(r"Submitted batch job (\d+)", (r.get("out") or "") + (r.get("err") or ""))
     if not m:
         return {"status": "error", "message": "sbatch refused the job.", "detail": (r.get("err") or r.get("out"))[-400:]}
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     e["jobs"] = list(e.get("jobs") or []) + [{"job_id": m.group(1), "first": min(wanted), "last": max(wanted),
-                                              "replicas": wanted, "rerun": True, "submitted_at": now}]
+                                              "replicas": wanted, "rerun": True, "submitted_at": now,
+                                              "log_prefix": _campaign_log_prefix(u, e["campaign_folder"])}]
     e.update(updated_at=now, slurm_job_id=m.group(1), status="submitted")
     _registry(u, {"kind": "upsert", "entry": e})
     return {"status": "submitted", "job_id": m.group(1), **plan,
@@ -3032,11 +3066,12 @@ def campaign_status(collection_id="", username=""):
         return {"status": "error", "message": f"No campaign {collection_id!r}."}
     collection_id = e["collection_id"]      # a campaign name resolves to its id
     prog = _campaign_progress(u, e)
+    log_patterns = _campaign_log_patterns(u, e)
     # A replica's log is under the job whose first-last range holds the replica.
     out = {"status": "ok", "collection_id": collection_id, "replicas": e["replicas"],
            "jobs": e.get("jobs"), **prog,
            "campaign_folder": f"{_workspace(u)}/{CAMPAIGNS_DIR}/{e['campaign_folder']}",
-           "log_pattern": f"{_stage_root(u, e)}/logs/stage_<job_id>_<replica>.out",
+           "log_pattern": log_patterns["stdout"], "error_log_pattern": log_patterns["stderr"],
            "summary": _card_summary(e["input_card"])}
     if prog.get("queue") is None:
         out["note"] = QUEUE_UNKNOWN
@@ -9433,10 +9468,20 @@ def job_of(i):
     for j in jobs:
         try:
             if (i in j['replicas']) if j.get('replicas') else int(j['first']) <= i <= int(j['last']):
-                found = str(j['job_id'])
+                found = j
         except (KeyError, TypeError, ValueError):
             pass
     return found
+
+def log_paths(i, job_record):
+    if not job_record:
+        return []
+    job = str(job_record['job_id'])
+    prefix = job_record.get('log_prefix')
+    if prefix:
+        stem = '%s_%s_%d' % (prefix, job, i)
+        return [('stdout', stem + '.out'), ('stderr', stem + '.err')]
+    return [('stdout and stderr', os.path.join(stage, 'logs', 'stage_%s_%d.out' % (job, i)))]
 
 def has_traceback(path):
     mark, prev = MARK.encode(), b''
@@ -9508,26 +9553,34 @@ def row_of(i, scan):
             state = 'running' if queue[i] in ('RUNNING', 'COMPLETING') else 'queued'
         else:
             state = 'no_output' if queue_read else 'unknown'
-    job = job_of(i)
-    log = os.path.join(stage, 'logs', 'stage_%s_%d.out' % (job, i)) if job else None
+    job_record = job_of(i)
+    job = str(job_record['job_id']) if job_record else None
+    logs = log_paths(i, job_record)
+    log = next((path for stream, path in logs if stream == 'stdout'), logs[0][1] if logs else None)
+    error_log = next((path for stream, path in logs if stream == 'stderr'), None)
+    existing_logs = [(stream, path) for stream, path in logs if os.path.isfile(path)]
     row = {'replica': i, 'state': state, 'chi2_total': num(s, 'chi2_total'),
            'central_value_chi2_per_point': num(s, 'central_value_chi2_per_point'),
-           'job_id': job, 'log': log, 'log_exists': bool(log and os.path.isfile(log)), 'has_traceback': False}
+           'job_id': job, 'log': log, 'error_log': error_log,
+           'log_exists': bool(existing_logs), 'has_traceback': False}
     if state in ('running', 'queued'):
         row['slurm_state'] = queue[i]
     if row['log_exists']:
         row['has_traceback'] = None
         if scan and time.time() < deadline:
-            try:
-                if state in PROBLEMS:
-                    excs = tracebacks(log)[1]
-                    row['has_traceback'] = bool(excs)
-                    if excs:
-                        row['error'] = excs[-1]
-                else:
-                    row['has_traceback'] = has_traceback(log)
-            except OSError:
-                pass
+            exceptions = []
+            for stream, path in existing_logs:
+                try:
+                    if state in PROBLEMS:
+                        exceptions.extend(tracebacks(path)[1])
+                    elif has_traceback(path):
+                        row['has_traceback'] = True
+                except OSError:
+                    pass
+            if state in PROBLEMS:
+                row['has_traceback'] = bool(exceptions)
+            if exceptions:
+                row['error'] = exceptions[-1]
     return row, s
 
 def detail_of(i):
@@ -9538,18 +9591,27 @@ def detail_of(i):
         'central_value_chi2_per_point': num(s, 'central_value_chi2_per_point')}
     row.update(traceback='', exceptions=[], tail='', tail_lines=0)
     if row['log_exists']:
-        try:
-            last, excs = tracebacks(row['log'])
-            lines = tail(row['log'], nlines)
-        except OSError as e:
-            row['log_error'] = str(e)
-        else:
-            if len(last) > 60:
-                last = last[:15] + ['    ... (%d lines omitted) ...' % (len(last) - 59)] + last[-44:]
-            row.update(has_traceback=bool(excs), traceback='\n'.join(last), exceptions=excs[-10:],
-                       tail='\n'.join(lines), tail_lines=len(lines))
-            if excs:
-                row['error'] = excs[-1]
+        blocks, exceptions, tails = [], [], []
+        log_errors = []
+        for stream, path in [(name, p) for name, p in log_paths(i, job_of(i)) if os.path.isfile(p)]:
+            try:
+                last, excs = tracebacks(path)
+                lines = tail(path, nlines)
+            except OSError as e:
+                log_errors.append(str(e))
+                continue
+            if last:
+                blocks.append('[' + stream + ']\n' + '\n'.join(last))
+            exceptions.extend(excs)
+            if lines:
+                tails.append('[' + stream + ']\n' + '\n'.join(lines))
+        if log_errors:
+            row['log_error'] = '; '.join(log_errors)
+        row.update(has_traceback=bool(exceptions), traceback='\n\n'.join(blocks),
+                   exceptions=exceptions[-10:], tail='\n\n'.join(tails),
+                   tail_lines=sum(len(part.splitlines()) - 1 for part in tails))
+        if exceptions:
+            row['error'] = exceptions[-1]
     return row
 
 if want:
@@ -9697,15 +9759,18 @@ def draft_slurm_job(name="", command="", time_limit="01:00:00", cpus=1, mem="4G"
         binds = " ".join(f"--bind {b}" for b in c.get("binds", []))
         body = (f"apptainer exec {binds} --env PYTHONPATH={_shq(ws)} --env FITPACK={_shq(ws)} {c['image']} "
                 f"bash -lc {_shq(body)}")
+    log_root = SITE.get("slurm_log_root", "/farm_out").rstrip("/")
+    log_stem = f"{log_root}/%u/{name}_%A{'_%a' if array else ''}"
     script = "\n".join([
         "#!/bin/bash", f"#SBATCH --job-name={name}", f"#SBATCH --partition={part}",
         f"#SBATCH --time={time_limit}", f"#SBATCH --cpus-per-task={cpus}", f"#SBATCH --mem={mem}",
         *([f"#SBATCH --array={array}"] if array else []),
-        f"#SBATCH --output={sdir}/{name}_%A{'_%a' if array else ''}.out",
+        f"#SBATCH --output={log_stem}.out", f"#SBATCH --error={log_stem}.err",
         "set -euo pipefail", f"cd {_shq(wd)}", body, ""])
     b64 = base64.b64encode(script.encode()).decode()
     qd = _shq(sdir)
-    r = _remote(u, f"mkdir -p {qd} && echo {b64} | base64 -d > {qd}/{name}.sh && "
+    log_dir = _shq(_slurm_log_dir(u))
+    r = _remote(u, f"mkdir -p {qd} {log_dir} && echo {b64} | base64 -d > {qd}/{name}.sh && "
                    f"sbatch --test-only {qd}/{name}.sh 2>&1", timeout=60)
     # The login shell on the compute host prints an unrelated profile warning.
     test = "\n".join(l for l in ((r.get("out") or "") + (r.get("err") or "")).splitlines()
@@ -9732,7 +9797,8 @@ def submit_slurm_job(name="", confirm="", username=""):
     phrase = _confirm_phrase("SLURM", {"name": name, "script": script})
     if (confirm or "").strip() != phrase:
         return {"status": "needs_confirmation", "confirmation_phrase": phrase, "script": script}
-    s = _remote(u, f"sbatch {_shq(path)}", timeout=60)
+    log_dir = _shq(_slurm_log_dir(u))
+    s = _remote(u, f"mkdir -p {log_dir} && sbatch {_shq(path)}", timeout=60)
     m = re.search(r"Submitted batch job (\d+)", (s.get("out") or "") + (s.get("err") or ""))
     if not m:
         return {"status": "error", "message": "sbatch refused the job", "detail": (s.get("err") or s.get("out"))[-400:]}
@@ -9901,8 +9967,9 @@ TOOLS = {
                 "schema": {"type": "object", "properties": {"path": {"type": "string"}}},
                 "fn": lambda a: fs_list(a.get("path", ""))},
     "fs_read": {"desc": "Read a text file on the cluster, e.g. a campaign's artifacts: a replica's "
-                       "log <campaign>/stages/pdf_stage/logs/stage_<job>_<replica>.out (campaign_status "
-                       "gives the full path as log_pattern), fit_summary.json, input.py. Path must be under "
+                       "stdout/error log under " + SITE.get("slurm_log_root", "/farm_out").rstrip("/")
+                       + "/<you>/ (campaign_status gives log_pattern and error_log_pattern), or a campaign's "
+                       "fit_summary.json and input.py. Reads are limited to your own farm_out folder and "
                        + " or ".join(SITE["read_roots"]) + ".",
                 "schema": {"type": "object",
                            "properties": {"path": {"type": "string"},
@@ -10026,7 +10093,8 @@ TOOLS = {
         "desc": "One campaign's Slurm state and replica progress: finished, succeeded (really fitted), "
                 "not_fitted (the optimization failed, so only chi2 at the starting values was computed) "
                 "and failed (queue is null when squeue cannot be read), its folder, and log_pattern: the "
-                "path of a replica's log. campaign_logs shows why replicas did not fit or failed.",
+                "stdout path and error_log_pattern: the separate stderr path. campaign_logs reads both "
+                "streams and shows why replicas did not fit or failed.",
         "schema": {"type": "object", "properties": {"collection_id": {"type": "string", "description": COLLECTION_ARG}},
                    "required": ["collection_id"]},
         "fn": lambda a: campaign_status(a.get("collection_id", ""))},
@@ -10167,9 +10235,10 @@ TOOLS = {
         "fn": lambda a: rerun_replicas(a.get("collection_id", ""), a.get("replicas", "failed"), a.get("confirm", ""))},
     "campaign_logs": {
         "desc": "Logs of a campaign: each replica's state (fitted, not fitted, failed, running, no "
-                "output) and, for a replica that did not fit, the Python error and the end of its "
-                "Slurm log. Use it whenever replicas fail or did not fit, and explain the error to the "
-                "user.",
+                "output) and, for a replica that did not fit, the Python error and ends of its Slurm "
+                "stdout and stderr logs. Logs are in /farm_out/<you>; older campaigns keep using their "
+                "workspace log. Use it whenever replicas fail or did not fit, and explain the error to "
+                "the user.",
         "schema": {"type": "object", "properties": {
             "collection_id": {"type": "string", "description": COLLECTION_ARG},
             "replica": {"type": "integer",

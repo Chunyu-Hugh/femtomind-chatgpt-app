@@ -12,6 +12,7 @@
     --bg:#f5f7fb; --surface:#ffffff; --surface-2:#eef2f8; --fg:#121722; --muted:#5a6474;
     --line:#d6dce7; --accent:#2560c9; --accent-wash:#e7f0fd; --rep:rgba(37,96,201,.26);
     --mean:#0b3aa3; --green:#1c7a52; --green-wash:#e3f4ec; --warn:#b0560a; --warn-wash:#fbeee1;
+    --metric-good:#187a4f; --metric-caution:#a36b00; --metric-bad:#c62828;
     --chip:#eef2f8; --chip-on:#d8efde;
     --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
     --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
@@ -20,12 +21,14 @@
     --bg:#0c0f15; --surface:#141b25; --surface-2:#1a2230; --fg:#e7ebf3; --muted:#93a0b4;
     --line:#26303f; --accent:#74a0ff; --accent-wash:#15233c; --rep:rgba(116,160,255,.30);
     --mean:#a9c4ff; --green:#4dc08c; --green-wash:#12251c; --warn:#dca24a; --warn-wash:#2b2413;
+    --metric-good:#59d99b; --metric-caution:#f2c14e; --metric-bad:#ff6b6b;
     --chip:#1f2836; --chip-on:#16351f;
   }}
   :root[data-theme="dark"]{
     --bg:#0c0f15; --surface:#141b25; --surface-2:#1a2230; --fg:#e7ebf3; --muted:#93a0b4;
     --line:#26303f; --accent:#74a0ff; --accent-wash:#15233c; --rep:rgba(116,160,255,.30);
     --mean:#a9c4ff; --green:#4dc08c; --green-wash:#12251c; --warn:#dca24a; --warn-wash:#2b2413;
+    --metric-good:#59d99b; --metric-caution:#f2c14e; --metric-bad:#ff6b6b;
     --chip:#1f2836; --chip-on:#16351f;
   }
   *{box-sizing:border-box;}
@@ -181,6 +184,11 @@
   .chart-tip{position:absolute;pointer-events:none;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:6px 9px;
              font:11.5px/1.45 var(--mono);box-shadow:0 4px 14px rgba(0,0,0,.14);max-width:340px;z-index:5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .tv-head{display:flex;align-items:center;gap:6px;margin:12px 0 6px;} .tv-head .sp{flex:1;}
+  .metric-value.good,.metric-key.good{color:var(--metric-good);font-weight:600;}
+  .metric-value.caution,.metric-key.caution{color:var(--metric-caution);font-weight:600;}
+  .metric-value.bad,.metric-value.critical,.metric-key.bad,.metric-key.critical{color:var(--metric-bad);font-weight:600;}
+  .metric-legend{display:flex;flex-wrap:wrap;gap:3px 14px;color:var(--muted);font:10.5px/1.5 var(--mono);margin:0 0 5px;}
+  .metric-legend b{color:var(--fg);font-weight:600;}
   .tv-ctl{margin:14px 0 4px;}
   .tv-exp{margin-top:10px;font-size:13px;} .tv-exp summary{cursor:pointer;color:var(--muted);padding:4px 0;}
   .dtbl th.sortable{cursor:pointer;white-space:nowrap;text-transform:none;} .dtbl th sub,.dtbl td sub{font-size:.8em;}
@@ -1960,14 +1968,36 @@
   }
   const f2 = v=>isNum(v) ? v.toFixed(2) : "—";
   const zTxt = v=>isNum(v) ? (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(2) : "—";
+  function metricTone(value, thresholds, absolute){
+    if (!isNum(value)) return "";
+    const v = absolute ? Math.abs(value) : value;
+    const band = thresholds.findIndex(edge=>v < edge);
+    return ["good", "neutral", "caution", "bad", "critical"][band < 0 ? thresholds.length : band];
+  }
+  function metricValue(value, formatted, label, thresholds, absolute){
+    if (!isNum(value)) return '<span class="metric-value">'+formatted+'</span>';
+    const tone = metricTone(value, thresholds, absolute);
+    const bands = absolute
+      ? ["|"+label+"| < 1", "1 ≤ |"+label+"| < 2", "2 ≤ |"+label+"| < 3", "3 ≤ |"+label+"| < 5", "|"+label+"| ≥ 5"]
+      : label === "χ²norm"
+        ? ["χ²norm < 1", "1 ≤ χ²norm < 4", "4 ≤ χ²norm < 9", "9 ≤ χ²norm < 25", "χ²norm ≥ 25"]
+        : ["χ²red < 1", "1 ≤ χ²red < 2", "2 ≤ χ²red < 3", "3 ≤ χ²red < 5", "χ²red ≥ 5"];
+    const band = thresholds.findIndex(edge=>(absolute ? Math.abs(value) : value) < edge);
+    return '<span class="metric-value '+tone+'" title="'+esc(bands[band < 0 ? thresholds.length : band])+'">'+formatted+'</span>';
+  }
+  const metricLegend = '<div class="metric-legend" aria-label="Metric color guide">'
+    + '<span><b>χ²red:</b> <span class="metric-key good">&lt;1</span> · 1–&lt;2 · <span class="metric-key caution">2–&lt;3</span> · <span class="metric-key bad">3–&lt;5</span> · <span class="metric-key critical">≥5</span></span>'
+    + '<span><b>|Z|:</b> <span class="metric-key good">&lt;1</span> · 1–&lt;2 · <span class="metric-key caution">2–&lt;3</span> · <span class="metric-key bad">3–&lt;5</span> · <span class="metric-key critical">≥5</span></span>'
+    + '<span><b>χ²norm:</b> <span class="metric-key good">&lt;1</span> · 1–&lt;4 · <span class="metric-key caution">4–&lt;9</span> · <span class="metric-key bad">9–&lt;25</span> · <span class="metric-key critical">≥25</span></span>'
+    + '</div>';
   const TABLE_COLS = [
     ["dataset", "Dataset", r=>(r.experiment || "?")+' <span class="muted mono">'+esc(r.dataset)+'</span>', r=>(r.experiment || "")+r.dataset],
     ["observable", "Observable", r=>esc(r.observable || "")+(r.target ? ' <span class="muted">('+esc(r.target)+')</span>' : ""), r=>r.observable || ""],
     ["npts", "N<sub>dat</sub>", r=>esc(r.npts)+"/"+esc(r.npts_raw == null ? "?" : r.npts_raw), r=>r.npts],
     ["ncor", "N<sub>cor</sub>", r=>esc(r.ncor), r=>r.ncor],
-    ["chi2_red", "χ²<sub>red</sub> (Z)", r=>f2(r.chi2_red)+' <span class="muted">('+zTxt(r.z_score)+')</span>', r=>r.chi2_red],
+    ["chi2_red", "χ²<sub>red</sub> (Z)", r=>metricValue(r.chi2_red, f2(r.chi2_red), "χ²red", [1,2,3,5], false)+' <span class="muted">(</span>'+metricValue(r.z_score, zTxt(r.z_score), "Z", [1,2,3,5], true)+'<span class="muted">)</span>', r=>r.chi2_red],
     ["chi2_cor", "χ²<sub>cor</sub>", r=>f2(r.chi2_cor), r=>r.chi2_cor],
-    ["chi2_norm", "χ²<sub>norm</sub>", r=>f2(r.chi2_norm), r=>r.chi2_norm],
+    ["chi2_norm", "χ²<sub>norm</sub>", r=>metricValue(r.chi2_norm, f2(r.chi2_norm), "χ²norm", [1,4,9,25], false), r=>r.chi2_norm],
     ["norm", "fitted norm", r=>meanStd(r.norm, r.norm_std), r=>r.norm == null ? -Infinity : r.norm]];
   function tableLatex(rows){
     const out = ["\\begin{tabular}{llrrlrrr}", "\\hline",
@@ -2000,6 +2030,7 @@
       + '<div class="tv-head"><div class="label" style="margin:0">Datasets · '+esc(r.n_replicas)+' fitted replicas'
       + (r.compute_seconds != null ? ' · computed now in '+esc(r.compute_seconds)+' s' : ' · from the cache')+'</div>'
       + '<span class="sp"></span><button class="cb" id="tvLatex" type="button">Copy LaTeX</button><button class="cb" id="tvCsv" type="button">CSV</button></div>'
+      + metricLegend
       + '<div class="tblscroll"><table class="tbl dtbl" id="tvTable"></table></div>'
       + ((r.experiments || []).length ? '<details class="tv-exp"><summary>χ²/N by experiment · best replica'+(r.best_replica ? ' ('+esc(r.best_replica)+')' : '')
         + ' against the central data</summary><div class="tblscroll"><table class="tbl"><thead><tr><th>Experiment</th><th>Datasets</th><th>Points</th><th style="text-transform:none">χ²/N</th></tr></thead><tbody>'
@@ -2106,16 +2137,22 @@
     chartReady = true;
     const XPREF = ["X","x","pT","pt","PT","xF","Y","y","eta","z","Q2","qT","M","W2"];
     const GPREF = ["Q2","eta","Y","y","rs","M","Q","z","x","X"];
+    function axisValues(c, key){
+      if (!key) return [...Array(c.npts).keys()];
+      if (c.columns[key]) return c.columns[key];
+      return isNum(c.constants && c.constants[key]) ? Array(c.npts).fill(c.constants[key]) : [];
+    }
     function pickDataset(){
       const c = byKey.get($("tvDs").value); current = c.dataset; paintTable();
-      const numeric = Object.keys(c.columns).filter(k=>typeof c.columns[k].find(v=>v != null) === "number");
+      const numeric = Object.keys(c.columns).filter(k=>typeof c.columns[k].find(v=>v != null) === "number")
+        .concat(c.npts === 1 ? Object.keys(c.constants || {}).filter(k=>isNum(c.constants[k])) : []);
       const xDefault = XPREF.find(k=>numeric.includes(k)) || numeric[0] || "";
       $("tvX").innerHTML = (numeric.length ? "" : '<option value="">point index</option>') + numeric.map(k=>'<option'+(k === xDefault ? " selected" : "")+'>'+esc(k)+'</option>').join("");
       const all = Object.keys(c.columns);
       const gDefault = GPREF.find(k=>all.includes(k) && k !== xDefault) || "";
       $("tvG").innerHTML = '<option value="">none</option>' + all.map(k=>'<option'+(k === gDefault ? " selected" : "")+'>'+esc(k)+'</option>').join("");
       chart.reset(); chart.opts.ylog = false; chart.opts.xlog = false;
-      if (xDefault === "X" || xDefault === "x"){ const xs = c.columns[xDefault].filter(isNum); chart.opts.xlog = xs.length && Math.min(...xs.slice(0, 2000)) > 0 && Math.max(...xs.slice(0, 2000)) / Math.min(...xs.slice(0, 2000)) > 30; }
+      if (xDefault === "X" || xDefault === "x"){ const xs = axisValues(c, xDefault).filter(isNum); chart.opts.xlog = xs.length && Math.min(...xs.slice(0, 2000)) > 0 && Math.max(...xs.slice(0, 2000)) / Math.min(...xs.slice(0, 2000)) > 30; }
       paintChart();
     }
     function groupsOf(c, key){
@@ -2145,7 +2182,7 @@
       const c = byKey.get($("tvDs").value), xKey = $("tvX").value, gKey = $("tvG").value, mode = $("tvMode").value;
       const band = c.bands[$("tvCi").value] || null, stack = $("tvStack").checked && mode === "values";
       $("tvStack").disabled = mode !== "values";
-      const xs = xKey ? c.columns[xKey] : [...Array(c.npts).keys()];
+      const xs = axisValues(c, xKey);
       const series = [];
       groupsOf(c, gKey).forEach((g, gi)=>{
         const color = PALETTE[gi % PALETTE.length], f = stack ? Math.pow(2, gi) : 1;
@@ -2503,8 +2540,9 @@
       + (x.state ? replicaTag(x.state) : '')+(x.chi2 == null ? '' : '<span>χ² <b>'+esc(chi2Txt(x.chi2))+'</b></span>')+'</div>'
       + (x.meaning ? '<div class="hint">'+esc(x.meaning)+'</div>' : '')
       + (x.log ? '<div class="hint mono" style="word-break:break-all">'+esc(x.log)+'</div>' : '')
-      + '<div class="label sm" style="margin:10px 0 0">Python error</div>'+pre(x.traceback, "No Python error in this log.")
-      + '<div class="label sm" style="margin:10px 0 0">End of the Slurm log</div>'
+      + (x.error_log ? '<div class="hint mono" style="word-break:break-all">stderr: '+esc(x.error_log)+'</div>' : '')
+      + '<div class="label sm" style="margin:10px 0 0">Python error</div>'+pre(x.traceback, "No Python error in stdout or stderr.")
+      + '<div class="label sm" style="margin:10px 0 0">Ends of the Slurm logs</div>'
       + pre(x.tail, x.log_error ? "Could not read the log: "+x.log_error : "The log is empty or not written yet.");
   }
   async function loadLogs(){
@@ -2528,7 +2566,7 @@
           + (x.error || x.has_traceback ? '<div class="wn" style="font-size:11px;max-width:260px;overflow-wrap:anywhere">'
              + esc(x.error ? clip(String(x.error), 90) : "Python error")+'</div>' : '')+'</td>'
           + '<td class="mono">'+esc(chi2Txt(x.chi2))+'</td>'
-          + '<td class="mono nowrap lgcol" style="font-size:11px">'+esc(x.log ? file(x.log) : "—")+'</td>'
+          + '<td class="mono nowrap lgcol" style="font-size:11px">'+esc(x.log ? file(x.log)+(x.error_log ? " + .err" : "") : "—")+'</td>'
           + '<td><button class="btn sm" data-r="'+esc(x.replica)+'" aria-label="View the log of replica '+esc(x.replica)+'">View</button></td></tr>').join("")
         + '</tbody></table></div>'
         : '<div class="empty">This campaign has no replicas.</div>')
