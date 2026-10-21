@@ -656,6 +656,45 @@ stage. Catalog point-count equality is not proof of selected-point identity.
 Historical reproduction readiness and unresolved requirements are reported
 separately, without solving them or granting campaign-generation permission.
 
+#### Isolated compiled-input validation (not a campaign)
+
+`jamai.compiled_input.render_compiled_input(store, compiled_ref)` consumes
+`configuration_compiler.resolve_compiled` and returns a FitPack-compatible input
+as text. It uses no campaign card, example input, ordinary materializer, dataset
+default or FF registry. Literal original settings/parameters/datasets are emitted
+first, followed by an explicit author-confirmed reproduction overlay section.
+All original declarations and normalization evidence remain in the full IR.
+Canonical decimal catalog dataset/filter IDs become native integer keys; other
+string IDs remain strings and ambiguous leading-zero IDs are rejected.
+
+`check_generated_input(ir, text)` independently parses literal assignments without
+executing the source. It compares both the original and reproduction phases,
+including types, map-key types, missing fields, nulls, exact numbers and order.
+Unsupported dataset fields, conflicting filter evidence, altered bounds or other
+scientific differences are hard errors. Workbook normalization uncertainties are
+not invented as input priors: the original FitPack workbook/preprocessing and
+finite penalty conventions remain authoritative.
+
+`write_isolated(store, compiled_ref, scratch_root)` is an internal development
+API, **not an MCP tool**. It accepts only an owned, non-symlink top-level
+`/w/ceph24/JAM/<account>` directory. It creates a unique private
+`femtomind-materialization-*` scratch directory containing `input.py`, the complete
+`configuration-ir.json` and a checksum/parity report. Existing files are never
+overwritten. It cannot target an application checkout or FitPack directory.
+
+The external `femtomind-tests` suite renders/parses inputs in memory locally.
+Its reader verification runs from stdin in an existing scientific container,
+with Ceph mounted read-only except for the one scratch directory. It compares
+the actual original input's data-only declarations with generated declarations,
+then runs existing native experimental readers against both and compares retained
+row identities and experimental arrays. Only native percentage-to-absolute and
+normalization-uncertainty preparation are used; no parameter manager, random
+sampling, theory evaluation, residual objective, campaign or optimizer is run.
+Swallowed native filter exceptions and catalog/native rounding distinctions are
+reported explicitly. Current-reader parity does not resolve historical blockers
+or establish historical ensemble reproduction. Campaign execution remains
+disabled, and normal campaign-card behavior is unchanged.
+
 For a complete lossless export, request `section:"analysis_config"` and concatenate
 document `text` chunks by `char_offset` across pages, after reassembling any record
 fragments. UTF-8 encoding of the joined text must match `document_sha256` and
