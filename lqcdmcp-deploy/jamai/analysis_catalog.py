@@ -26,6 +26,7 @@ SECTIONS = (
     "overview", "parametrization", "parameters", "datasets", "qcd",
     "statistics", "provenance", "analysis_config", "paper_findings",
     "unresolved_settings", "documents",
+    "configuration", "configuration_evidence",
 )
 MAX_RESPONSE_BYTES = 10 * 1024
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
@@ -359,7 +360,7 @@ class Catalog:
 
     def get(self, analysis_id, section="overview", object_key="", cursor="", limit=10,
             detail="summary", group="", status="", dataset_id="", setting_id="",
-            response_format="legacy"):
+            response_format="legacy", record_ref=""):
         _validate_text(section, "section")
         _validate_text(object_key, "object_key")
         _validate_text(response_format, "response_format")
@@ -380,6 +381,24 @@ class Catalog:
             raise ValueError("setting_id filters qcd, statistics or parametrization.")
         if section not in SECTIONS:
             raise ValueError("Unsupported catalog section; supported sections: " + ", ".join(SECTIONS))
+        if section in ("configuration", "configuration_evidence"):
+            from . import configuration_snapshot
+            if object_key or group or status or dataset_id or setting_id:
+                raise ValueError("Configuration streams do not accept legacy record selectors; use configuration_evidence for targeted originals.")
+            _validate_text(analysis_id, "analysis_id", 256)
+            pinned = analysis_id.startswith("configuration:")
+            identity, separator, revision = analysis_id[14:].partition("@") if pinned else (analysis_id, "", "")
+            if pinned and (not separator or not re.fullmatch(r"[0-9a-f]{64}", revision)):
+                raise ValueError("Invalid configuration reference.")
+            entry = self._entry(identity)
+            snap = configuration_snapshot.snapshot(self.root, entry, self._reference(entry))
+            if pinned and revision != snap.hash:
+                raise ValueError("Stale configuration reference; discover the current configuration again.")
+            if section == "configuration_evidence" and not pinned:
+                raise ValueError("configuration_evidence requires configuration_ref as analysis_id.")
+            return configuration_snapshot.page(self, snap, section, record_ref, cursor, limit, detail, response_format)
+        if record_ref:
+            raise ValueError("record_ref is supported only for configuration_evidence.")
         entry = self._entry(analysis_id)
         c, records = entry["config"], []
         sv = c.get("source_verification", {})

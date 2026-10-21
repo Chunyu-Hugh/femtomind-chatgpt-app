@@ -9758,7 +9758,7 @@ def _catalog_request(operation, arguments):
     if not isinstance(arguments, dict):
         raise ValueError("catalog arguments must be an object")
     allowed = {"list": {"cursor", "limit"},
-               "get": {"analysis_id", "section", "object_key", "cursor", "limit", "detail", "group", "status", "dataset_id", "setting_id", "response_format"},
+               "get": {"analysis_id", "section", "object_key", "cursor", "limit", "detail", "group", "status", "dataset_id", "setting_id", "response_format", "record_ref"},
                "requirements": {"analysis_id", "cursor", "limit", "detail", "requirement_id"}}[operation]
     # Shared-gateway identity is already checked by the existing MCP dispatcher.
     kwargs = {k: v for k, v in arguments.items() if k != "username"}
@@ -9845,12 +9845,13 @@ TOOLS = {
     "get_analysis_catalog": {
         "compact": True,
         "format_result": analysis_catalog.tool_result,
-        "desc": "Read-only catalog inspection. Defaults to compact summaries; detail=full explicitly requests definitions/evidence. Filter parameters by object_key/group/status, datasets by reaction object_key/dataset_id, or qcd/statistics by setting_id. Reuse catalog_ref as analysis_id. section=documents lists documents; named document sections provide lossless exports. limit is 1-50 (default 10), bounded by 10 KiB. Pass next_cursor as cursor until complete with identical catalog_ref, selectors, detail and response_format. Opt in to response_format=json_text for one JSON text payload without duplicate structuredContent; legacy is the default. No campaign creation or fitting.",
+        "desc": "Read-only catalog inspection. Defaults to compact summaries; detail=full explicitly requests definitions/evidence. Filter parameters by object_key/group/status, datasets by reaction object_key/dataset_id, or qcd/statistics by setting_id. Reuse catalog_ref as analysis_id. section=documents lists documents; named document sections provide lossless exports. limit is 1-50 (default 10), bounded by 10 KiB. Pass next_cursor as cursor until complete with identical catalog_ref, selectors, detail and response_format. Opt in to response_format=json_text for one JSON text payload without duplicate structuredContent; legacy is the default. For complete reconstruction use section=configuration, detail=full, response_format=json_text, limit=50: read the manifest then follow next_cursor with configuration_ref as analysis_id, keeping detail/format unchanged. Multiple named parts share a page. section=configuration_evidence with that configuration_ref and revision-bound record_ref retrieves exact original records on demand. No campaign creation or fitting.",
         "schema": {"type": "object", "additionalProperties": False, "required": ["analysis_id"], "properties": {
-            "analysis_id": {"type": "string", "description": "Stable analysis ID, alias or revision-pinned catalog_ref from discovery."}, "section": {"type": "string", "enum": ["overview", "parametrization", "parameters", "datasets", "qcd", "statistics", "provenance", "analysis_config", "paper_findings", "unresolved_settings", "documents"], "default": "overview"},
+            "analysis_id": {"type": "string", "description": "Stable analysis ID, alias, catalog_ref, or configuration_ref (configuration views only)."}, "section": {"type": "string", "enum": ["overview", "parametrization", "parameters", "datasets", "qcd", "statistics", "provenance", "analysis_config", "paper_findings", "unresolved_settings", "documents", "configuration", "configuration_evidence"], "default": "overview"},
             "object_key": {"type": "string", "default": "", "description": "Parameter object or dataset reaction; for section=documents optionally name one document instead of listing the index."}, "cursor": {"type": "string"},
             "detail": {"type": "string", "enum": ["summary", "full"], "default": "summary"},
             "response_format": {"type": "string", "enum": ["legacy", "json_text"], "default": "legacy", "description": "legacy returns JSON text and structuredContent. json_text returns the full page once in content[0].text; parse that JSON. Keep unchanged across continuation requests."},
+            "record_ref": {"type": "string", "description": "configuration_evidence only: evidence:<configuration_sha256>:<registered source JSON pointer>, as described in the configuration manifest. Requires configuration_ref as analysis_id."},
             "group": {"type": "string", "description": "Exact parameter shape prefix, e.g. g1 or u1."},
             "status": {"type": "string", "enum": ["free", "fixed", "linked"]},
             "dataset_id": {"type": "string", "description": "Exact ID, qualified by reaction object_key."},

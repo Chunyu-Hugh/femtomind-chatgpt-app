@@ -467,6 +467,114 @@ with a JSON pointer back into `analysis_config`. An oversized record is returned
 as numbered JSON-text fragments: concatenate `text` by `fragment_offset`, check
 `fragment_sha256`, then decode the full JSON record. No tail is dropped.
 
+#### Opt-in complete configuration and targeted evidence
+
+For complete scientific reconstruction, use the existing tool with
+`section:"configuration", detail:"full", response_format:"json_text", limit:50`.
+An ID or existing `catalog_ref` selects the first page. It supplies a manifest
+and a `configuration_ref` pinned to both the source revision and projection
+schema. Reuse that `configuration_ref` as `analysis_id`, with each `next_cursor`
+as `cursor`, until `complete:true`. Keep section, detail and response format
+unchanged. **Do not restart retrieval for each model or reaction.**
+`detail:"summary"` returns only the manifest; full retrieval includes it without
+an extra overview call. Existing sections and legacy/default envelopes remain
+available and unchanged. These views are read-only, not campaign generators.
+Manifest continuation arguments match the current detail, response format and
+limit, including legacy-format requests. Summary manifests also advertise a
+separate `full_configuration_request`; start that request without a summary
+cursor to retrieve the full configuration.
+
+Data pages pack multiple compact named parts together:
+
+```json
+{"configuration_ref":"configuration:Example.final@<sha256>","section":"configuration","response_format":"json_text","offset":0,"items":[{"part":"parameters/model","records":[{"key":"u N","value":{"definition":{"value":0.2,"min":0,"max":1,"fixed":false},"status":"free"}}]},{"part":"reactions/reaction","records":[{"kind":"configuration","value":{"filters":{"global":["Q2 > 0"]}}},{"key":1001,"value":{"xlsx_path":"reaction/expdata/1001.xlsx","normalization":null}}]}],"next_cursor":"<opaque cursor>","complete":false}
+```
+
+Concatenate records **in order within each part**. Initialize empty parts from
+manifest `parts` entries with zero records. Model/reaction names use JSON Pointer
+segment escaping (`~` to `~0`, `/` to `~1`); keys retain their literal JSON types.
+Reaction headers use `kind:"configuration"` rather than a dataset key, so even
+a dataset named `configuration` cannot collide. Original flags, publication
+settings, implementation findings, reproduction overrides, initialization and
+current unresolved requirements are separate named parts, not flattened into
+one potentially misleading effective configuration. Literal linked declarations
+remain literal: no target substitution or sum-rule calculation occurs.
+If a future source row lacks its identity field, its compact wrapper has
+`source_index` instead of `key`; this preserves absence rather than inventing
+an identity or replacing a missing identity with null.
+
+Only identical, explicitly present interpretation fields are factored into
+`common_semantics`; a missing field is never made equivalent to explicit null.
+The common parameter interpretation applies to every parameter row; the common
+normalization interpretation applies to every non-null normalization object.
+The schema adapter removes repeated record provenance from the compact stream
+and routes historical/audit branches to on-demand evidence. Unknown top-level
+or source-verification branches are included losslessly in `unclassified`, with
+`configuration_records_complete:false` and their source pointers. This flag does
+not assert historical reproducibility; original `reproduction_ready`, blockers
+and campaign restrictions remain authoritative.
+
+Request original records, including removed provenance/explanations, using
+`section:"configuration_evidence"`, `analysis_id:<configuration_ref>`, and
+`record_ref:"evidence:<configuration_sha256>:<registered source JSON pointer>"`.
+The manifest explains row pointers and lists source/source-verification branches.
+For example, `/source_verification/parameter_definitions/model/0` selects the
+first original parameter row; `/reproduction_configuration` selects the exact
+original reproduction policy. Only registered branches/rows are accepted; pointers
+are dictionary lookups, never filesystem paths. The reply includes the original
+record, canonical source-record SHA256, pointer and both revision references.
+Existing exact document exports remain the route to original UTF-8 source text.
+
+The 10 KiB MCP response budget includes the selected envelope and escaping, with
+384 bytes reserved for JSON-RPC overhead. The item limit remains **1–50**, default
+10. In these streams it counts wire records/fragments across all named parts,
+not the number of parts. Offsets also count wire records. A small manifest is a
+standalone first page with offset zero and a continuation at offset zero; it
+does not consume a data-record offset. Oversized manifests and records are
+losslessly serialized into `part:"fragment"` records with `record_fragment`
+fields `offset`, `total_characters`, `sha256`, `text`. Join contiguous fragments
+by offset, verify the SHA256 of the UTF-8 concatenation, then decode the JSON
+`{"part":...,"record":...}` wrapper and insert its record into that part.
+`part:"manifest"` reassembles the manifest itself. Never parse an incomplete
+fragment or infer that one wire record equals one scientific record.
+
+##### Canonical hashing and revision contract
+
+`femtomind.configuration_snapshot.v1` uses `python-json-canonical-v1`:
+
+- Parse with the existing catalog JSON reader: integer-form tokens remain
+  arbitrary-precision integers; decimal/exponent tokens use Python binary64 floats. Nonfinite values
+  are rejected. There is no scientific rounding or float quantization.
+- Serialize using Python `json.dumps(sort_keys=True, ensure_ascii=True,
+  separators=(",",":"), allow_nan=False)`. Keys sort by Unicode code point;
+  arrays retain their order. No Unicode normalization occurs. Non-ASCII characters
+  use lowercase JSON escapes; non-BMP characters use surrogate-pair escapes.
+- Hash those UTF-8 bytes without BOM or trailing newline using SHA256. Numeric
+  JSON types remain distinct: `1`, `1.0`, `false`, and `null` have distinct bytes;
+  `-0.0` remains distinct from `0.0`. Float spelling follows Python's shortest
+  round-trip formatter, including its exponent formatting. This is **not RFC
+  8785/JCS**; other-language clients must reproduce this contract or verify via
+  a compatible Python implementation. Source-document hashes still refer to
+  original bytes, including their original number spelling and Unicode encoding.
+
+Each part hashes its complete ordered records. The configuration hash covers
+`{"schema":<schema>,"canonical_encoding":<encoding>,"source_catalog_ref":<ref>,"common":<common_semantics>,
+"groups":<all named parts and records>}`. Compare each part's count/hash, then
+the complete configuration hash. A change in any source document invalidates the
+configuration reference even if numerical values are unchanged. Projection or
+canonicalization changes require a schema version change after release.
+
+Cursors bind the configuration reference, section, evidence selector, detail,
+response format and packing version. Replay with identical arguments is
+idempotent; stale/cross-view/cross-format cursors are rejected. Cursors are opaque
+continuation positions, not authorization credentials. Evidence references also
+embed the exact configuration hash. A bounded four-entry in-memory projection
+cache is keyed by fixed catalog root, freshly validated source revision, schema
+and canonicalization version. It is format-independent; pages and size checks are
+constructed for the requested format. Every request still reads, validates and
+hashes source documents before cache lookup. No numerical/prediction caches or
+scientific source files are modified.
+
 For a complete lossless export, request `section:"analysis_config"` and concatenate
 document `text` chunks by `char_offset` across pages, after reassembling any record
 fragments. UTF-8 encoding of the joined text must match `document_sha256` and
