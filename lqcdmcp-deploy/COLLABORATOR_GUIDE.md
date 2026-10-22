@@ -572,7 +572,7 @@ platform does not offer. Use Codex (4.2) with your ChatGPT account instead.
 | Delete is refused: "This campaign still has … task(s) in the Slurm queue" | Press **Stop** first, then **Delete**. |
 | "Could not read the Slurm queue" | Slurm did not answer. Press **Refresh** in a minute; Stop and Delete work again once the queue can be read. |
 | Collections shows `<n> did not fit` or `<n> failed`, or the status `not fitted` | Did not fit: the optimization failed, so FitPack only computed χ² at the starting values. Failed: the replica ended without success. Open Analysis → **Logs** to see the Python error, or ask the assistant *"Why did my replicas not fit?"* |
-| Create Input Card: "Dataset … has no points left after the cuts …, so it adds nothing to the fit." | The cuts remove every point of that dataset. If that is not what you want, change the cuts or the datasets and press **Create Input Card** again. The warning does not block **Submit Jobs**. |
+| Create Input Card: "Dataset … has no points left after the cuts …, so it adds nothing to the fit." | The cuts remove every point of that dataset. If that is not what you want, change the cuts or the datasets and press **Create Input Card** again. The warning does not block **Submit Jobs**, unless no selected dataset keeps any point: then the card is refused. |
 | The assistant says "not connected" or "no live chain" | Sign in on the panel's Connect tab (2.2), then ask again. |
 | Claude Code: `Missing environment variables: LQCDMCP_TOKEN` | Export the token (1.5) and restart `claude`. |
 | Codex: `Environment variable LQCDMCP_TOKEN for MCP server 'jam-gateway' is not set` | Export the token (1.5) and restart `codex`. |

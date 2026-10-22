@@ -197,19 +197,26 @@ first free port from 8080 and registers with the proxy as
   (`{"idis:10005": 33}`) and `warnings`, which never block: no points left
   after the cuts, a cut that cannot be evaluated, a missing column that the
   status report reads. If the check fails, validation still succeeds, with
-  one warning saying so.
+  one warning saying so. Only a card whose selected datasets all keep no
+  point is refused, by `validate_campaign` and `submit_campaign` alike: FitPack
+  would run it and report success with the starting values and no χ²
+  (`test_OCT_13`, JLab Hall C 10001 and 10004 under `W2>10`, 2026-10-13).
 - **Replica states.** When the optimization fails, `fitlib/ai.py` computes
   χ² at the starting values instead and still writes `"status": "success"`,
   with `"mode": "validation_only"` and no `.msr` file. So a replica is
   fitted only with status `success` and mode `fit` (a summary without
   `mode`: when its `msr_path` exists), not fitted with any other `success`,
-  and failed otherwise or when its summary cannot be read.
+  and failed otherwise or when its summary cannot be read. A `success`
+  without `chi2_total` is failed as well: no data point entered the fit, and
+  `campaign_logs` says so instead of "fitted".
   `_REPLICA_STATE` decides this for the status, postprocess, plot and log
   snippets alike: `list_campaigns` and `campaign_status` count `succeeded`
   (fitted), `not_fitted` and `failed` (state `not fitted` when nothing is
   queued and every finished replica did not fit), and postprocessing builds
   the statistics from fitted replicas only (`not_fitted_replicas` apart,
-  `good_fraction` = fitted / total).
+  `good_fraction` = fitted / total). Data vs theory takes a dataset's
+  experiment name from its data file's `col` column, else from
+  `DATASET_EXPERIMENTS` (idis 10005 has no `col`), so "HERMES" finds it.
 - **Plots.** `campaign_pdf_plots` evaluates every fitted replica's
   distribution (`object_key` pdf or pdf-pion; pion flavors valence = ub − u,
   sea = u, in the π⁻ convention) at Q² and draws the curves, the mean and

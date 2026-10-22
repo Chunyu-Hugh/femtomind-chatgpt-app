@@ -1519,6 +1519,7 @@
       ["Slurm (per replica)", s.slurm.partition_effective+" · "+s.slurm.time+" · "+s.slurm.mem+" · "+s.slurm.cpus+" cpu"]];
     // Warnings from reading the data files (a dataset the cuts leave empty, a column
     // FitPack's report lacks) never block the submission: they sit above the summary.
+    // A card that keeps no point at all comes back not valid, with its message.
     const warns = Array.isArray(validated.warnings) && validated.warnings.length
       ? '<div class="note warn" style="margin-bottom:8px"><ul class="notes">'+validated.warnings.map(x=>'<li>'+esc(x)+'</li>').join("")+'</ul></div>' : "";
     $("reviewBox").innerHTML = warns + '<div>'+rows.map(r=>'<div class="row"><span class="k">'+esc(r[0])+'</span><span class="v">'+esc(r[1])+(r[2] || "")+'</span></div>').join("")+'</div>';

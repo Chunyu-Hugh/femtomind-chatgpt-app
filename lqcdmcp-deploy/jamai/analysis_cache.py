@@ -172,6 +172,16 @@ def _dataset_words(text):
     return (m.group(1) or '', m.group(2)) if m else None
 
 
+def fill_experiments(info, known):
+    """info with each empty experiment name (a data file without a 'col'
+    column, such as idis 10005) taken from known ({reaction: {id: name}}, the
+    gateway's experiment headings), so that experiment names still find it."""
+    for item in info.values():
+        if not item.get('experiment'):
+            item['experiment'] = known.get(item['reaction'], {}).get(str(item['dataset_id']), '')
+    return info
+
+
 def select(info, datasets=(), experiments=()):
     """The dataset keys of info (key -> {reaction, dataset_id, experiment})
     that the request names, in campaign order, with the names that matched

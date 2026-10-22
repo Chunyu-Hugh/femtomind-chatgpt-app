@@ -2521,9 +2521,10 @@ _COLUMN_NAMES = {"col": "experiment name", "obs": "observable", "target": "targe
 
 
 def _data_warnings(u, norm):
-    """Warnings about the data a card selects, which never block submission,
-    and the points each dataset keeps after the cuts ({"idis:10005": 33});
-    one container call for all datasets."""
+    """Warnings about the data a card selects, which never block submission
+    (_no_data_refusal does, when no dataset keeps a point), and the points
+    each dataset keeps after the cuts ({"idis:10005": 33}); one container call
+    for all datasets."""
     if "_data_warnings" in norm and "_data_points" in norm:
         return norm["_data_warnings"], norm["_data_points"]
     cuts = {r: (cs if r == "sia" else object_registry.cut_filters(cs)) for r, cs in norm["cuts"].items()}
@@ -2565,6 +2566,18 @@ def _data_warnings(u, norm):
                             "gateway works around FitPack's status report), but its "
                             f"{_COLUMN_NAMES.get(c, c)} is unknown in reports.")
     return warnings, points
+
+
+def _no_data_refusal(norm, points):
+    """The refusal of a card whose selected datasets all keep no point after
+    the cuts (every one counted, all zero): FitPack would report success with
+    the starting values and no chi2. None when any point is left, or when the
+    check could not count every dataset."""
+    if not points or len(points) < sum(len(ids) for ids in norm["datasets"].values()) or any(points.values()):
+        return None
+    return {"status": "error", "valid": False, "points_after_cuts": points,
+            "message": "No selected dataset keeps a data point after the cuts, so the fit would have nothing "
+                       "to fit. Change the cuts or the datasets and validate again."}
 
 
 def _card_reactions(card):
@@ -2701,6 +2714,9 @@ def validate_campaign(card=None, username=""):
     if err:
         return err
     warnings, points = _data_warnings(u, norm)
+    refused = _no_data_refusal(norm, points)
+    if refused:
+        return dict(refused, warnings=warnings)
     out = {"status": "ok", "valid": True, "warnings": warnings}
     out.update(_validated(u, norm))
     out["summary"]["points_after_cuts"] = points
@@ -2720,6 +2736,9 @@ def submit_campaign(card=None, confirm="", username=""):
     norm, err = _checked_card(u, card)
     if err:
         return err
+    refused = _no_data_refusal(norm, _data_warnings(u, norm)[1])
+    if refused:
+        return refused
     v = _validated(u, norm)
     if (confirm or "").strip() != v["confirmation_phrase"]:
         return {"status": "needs_confirmation", "confirmation_phrase": v["confirmation_phrase"],
@@ -2928,11 +2947,16 @@ QUEUE_UNKNOWN_REFUSED = "Could not read the Slurm queue, so nothing was changed.
 # values instead and still writes status 'success', with mode
 # 'validation_only' and no .msr file. So a replica is 'fitted' only with
 # status 'success' and mode 'fit' (a summary from before 'mode' was written:
-# when its .msr file exists); any other 'success' is 'not_fitted'; any other
-# status, or a summary that cannot be read, is 'failed'. The status,
-# postprocess and log snippets all start with it, so they always agree.
+# when its .msr file exists); any other 'success' is 'not_fitted'. A
+# 'success' without chi2_total is 'failed': no data point entered the fit (the
+# cuts left none), so the optimizer returned the starting values unchanged.
+# Any other status, or a summary that cannot be read, is 'failed' too. The
+# status, postprocess and log snippets all start with it, so they always agree.
 _REPLICA_STATE = r'''
 import json, os
+def no_data(s):
+    # FitPack's 'success' for a fit over zero points: no chi2 at all.
+    return s.get('status') == 'success' and s.get('chi2_total') is None
 def replica_state(path):
     # (state, summary); state None while the replica has no fit_summary.json.
     if not os.path.isfile(path):
@@ -2943,7 +2967,7 @@ def replica_state(path):
         return 'failed', None
     if not isinstance(s, dict):
         return 'failed', None
-    if s.get('status') != 'success':
+    if s.get('status') != 'success' or no_data(s):
         return 'failed', s
     if s.get('mode'):
         return ('fitted' if s['mode'] == 'fit' else 'not_fitted'), s
@@ -3365,12 +3389,14 @@ def campaign_summary(collection_id="", username="", replicas=None):
         notes.append("This summary was made before the gateway told replicas that fitted from replicas "
                      "that did not fit, so it may count both as completed: run postprocess_campaign to "
                      "redo it.")
-    elif ((prog.get("succeeded") or 0) > (agg.get("completed_replicas") or 0) + (agg.get("deselected_replicas") or 0)
-          or (finished or 0) > counted or total != agg.get("total_replicas")):
+    elif (finished or 0) > counted or total != agg.get("total_replicas"):
         notes.append(f"This summary covers {counted} finished replicas, but "
                      + (f"{finished} of {total} have finished now" if finished is not None
                         else f"the campaign has {total} replicas now")
                      + ": run postprocess_campaign to include them.")
+    elif (prog.get("succeeded") or 0) > (agg.get("completed_replicas") or 0) + (agg.get("deselected_replicas") or 0):
+        notes.append(f"This summary counts {agg.get('completed_replicas') or 0} replicas as fitted, but "
+                     f"{prog['succeeded']} have fitted now: run postprocess_campaign to include them.")
     if notes:
         out["stale"] = True
     # How many did not fit now (the summary's own count may be older).
@@ -8989,6 +9015,7 @@ _PREDICTIONS = _REPLICA_STATE + r'''
 import json, os, time
 import numpy as np
 stage = __STAGE__; cache = __CACHE__; want_ds = __DATASETS__; want_exp = __EXPERIMENTS__
+known = __KNOWN__
 started = time.time()
 records, excluded = fitted_replicas(stage, replica_state)
 if not records:
@@ -9019,6 +9046,7 @@ if not info or set(info) != set(ids):
         info[k] = item
     info = {k: info[k] for k in ids}
     write_json(os.path.join(cache, 'meta.json'), {'version': VERSION, 'info': info})
+info = fill_experiments(info, known)
 selected, unknown, unmatched = select(info, want_ds, want_exp)
 if not selected:
     print(json.dumps({'status': 'no_match', 'unknown_datasets': unknown, 'unmatched_experiments': unmatched,
@@ -9136,6 +9164,7 @@ print(json.dumps({'status': 'success', 'computed': missing, 'selected': selected
 _PREDICTIONS_VIEW = _REPLICA_STATE + r'''
 import json, os
 stage = __STAGE__; cache = __CACHE__; want_ds = __DATASETS__; want_exp = __EXPERIMENTS__
+known = __KNOWN__
 interval = __INTERVAL__; charts = __CHARTS__; selection = __SELECTION__
 records, excluded = fitted_replicas(stage, replica_state)
 if not records:
@@ -9146,12 +9175,15 @@ sig = signature(records)
 meta = read_json(os.path.join(cache, 'meta.json')) or {}
 if meta.get('version') != VERSION:
     print(json.dumps({'status': 'need_build'})); raise SystemExit(0)
-selected, unknown, unmatched = select(meta['info'], want_ds, want_exp)
+info = fill_experiments(meta['info'], known)
+selected, unknown, unmatched = select(info, want_ds, want_exp)
 if not selected:
     print(json.dumps({'status': 'no_match', 'unknown_datasets': unknown, 'unmatched_experiments': unmatched,
-                      'available': catalog(meta['info'])}))
+                      'available': catalog(info)}))
     raise SystemExit(0)
 docs = {k: read_json(file_of(cache, k)) or {} for k in selected}
+for k, d in docs.items():
+    d['experiment'] = d.get('experiment') or info[k]['experiment']
 stale = [k for k, d in docs.items() if d.get('signature') != sig or d.get('version') != VERSION]
 if stale:
     print(json.dumps({'status': 'need_build', 'stale': stale})); raise SystemExit(0)
@@ -9317,7 +9349,7 @@ def _theory_results(u, e, datasets, experiments, interval, charts=True, export_p
     what is missing or stale."""
     stage, cache = _stage_root(u, e), _cache_dir(u, e)
     ws = _workspace(u)
-    args = dict(STAGE=stage, CACHE=cache, DATASETS=datasets, EXPERIMENTS=experiments)
+    args = dict(STAGE=stage, CACHE=cache, DATASETS=datasets, EXPERIMENTS=experiments, KNOWN=DATASET_EXPERIMENTS)
     view = lambda: _last_json(_run_ifarm_py(u, _analysis_code(_PREDICTIONS_VIEW, INTERVAL=interval, CHARTS=charts,
                                                                SELECTION=selection, **args), timeout=300, cap=60000000))
     d, built = view(), None
@@ -9434,6 +9466,9 @@ MARK = 'Traceback (most recent call last):'
 CHAINED = ('During handling of the above exception, another exception occurred:',
            'The above exception was the direct cause of the following exception:')
 PROBLEMS = ('not_fitted', 'failed', 'no_output')
+NO_DATA = ('No data point entered the fit (chi2 over 0 points): the cuts leave nothing of the selected '
+           'datasets, so the parameters stayed at their starting values. Rerunning does not help: change '
+           'the cuts or the datasets.')
 WIDTH = 1000                    # the longest line returned
 deadline = time.time() + 60
 ended = {'COMPLETED', 'CANCELLED', 'FAILED', 'TIMEOUT', 'PREEMPTED', 'BOOT_FAIL', 'NODE_FAIL',
@@ -9581,6 +9616,8 @@ def row_of(i, scan):
                 row['has_traceback'] = bool(exceptions)
             if exceptions:
                 row['error'] = exceptions[-1]
+    if s and no_data(s):
+        row['error'] = NO_DATA
     return row, s
 
 def detail_of(i):
@@ -9612,6 +9649,8 @@ def detail_of(i):
                    tail_lines=sum(len(part.splitlines()) - 1 for part in tails))
         if exceptions:
             row['error'] = exceptions[-1]
+    if s and no_data(s):
+        row['error'] = NO_DATA
     return row
 
 if want:
@@ -9627,7 +9666,8 @@ _LOG_MEANING = {
     "fitted": "The optimization ran and this replica was fitted.",
     "not_fitted": "The optimization failed, so FitPack only computed chi2 at the starting values: this "
                   "replica has no fitted parameters.",
-    "failed": "The replica ended without success: its fit_summary.json reports a failure or cannot be read.",
+    "failed": "The replica ended without success: its fit_summary.json reports a failure, has no chi2 (no "
+              "data point entered the fit) or cannot be read.",
     "running": "The replica is running.",
     "queued": "The replica is waiting in the Slurm queue.",
     "no_output": "The replica wrote no fit_summary.json and nothing of it is queued: it stopped before "
@@ -10121,7 +10161,8 @@ TOOLS = {
                 "parameters (including optional equal_to links between PDF parameters), the ones changed from the library, datasets, cuts, QCD, job, and "
                 "points_after_cuts per dataset), the Slurm array script, the confirmation phrase and "
                 "warnings (a dataset with no points left after the cuts, a data file without a column "
-                "FitPack's status report reads); warnings never block submission. " + 'card = {"object": {"type": "pdf", "parameters": {"g1 a": {"value", "min", "max", "fixed": true|false, "equal_to": "uv1 a"}, ...}}, "reactions": ["idis", "dy"], "datasets": {"idis": ["10010", ...]}, "normalizations": {"idis": {"10010": {"value", "min", "max", "fixed": true|false|"<id of another selected dataset whose normalization this one equals>"}}} (only for datasets campaign_datasets lists with a normalization), "cuts": {"idis": [{"variable": "Q2", "op": ">", "value": 1.69, "enabled": true}]}, "qcd": {"order", "Q20", "tmc": "off"|"AOT", "higherTwist", "dglapMode", "asMode", "pdfPositivity": true|false, "ffpionPositivity": true|false, "ffkaonPositivity": true|false, "ffhadronPositivity": true|false}, "parameters": {"initialization": "default"|"random_within_bounds", "randomSeed", "perReplicaSeed"}, "job": {"campaignName", "replicas", "maxIterations", "tolerance", "optimizer", "bootstrap"}, "slurm": {"partition" ("" = auto), "time" (per replica, HH:MM:SS), "mem", "cpus"}}. Only parameters the user changed need to be listed; the rest keep the library values, and only changed rows are written into the card. A parameter switched to FREE needs a min and a max.',
+                "FitPack's status report reads); warnings never block submission, but a card whose "
+                "datasets keep no point at all after the cuts is refused. " + 'card = {"object": {"type": "pdf", "parameters": {"g1 a": {"value", "min", "max", "fixed": true|false, "equal_to": "uv1 a"}, ...}}, "reactions": ["idis", "dy"], "datasets": {"idis": ["10010", ...]}, "normalizations": {"idis": {"10010": {"value", "min", "max", "fixed": true|false|"<id of another selected dataset whose normalization this one equals>"}}} (only for datasets campaign_datasets lists with a normalization), "cuts": {"idis": [{"variable": "Q2", "op": ">", "value": 1.69, "enabled": true}]}, "qcd": {"order", "Q20", "tmc": "off"|"AOT", "higherTwist", "dglapMode", "asMode", "pdfPositivity": true|false, "ffpionPositivity": true|false, "ffkaonPositivity": true|false, "ffhadronPositivity": true|false}, "parameters": {"initialization": "default"|"random_within_bounds", "randomSeed", "perReplicaSeed"}, "job": {"campaignName", "replicas", "maxIterations", "tolerance", "optimizer", "bootstrap"}, "slurm": {"partition" ("" = auto), "time" (per replica, HH:MM:SS), "mem", "cpus"}}. Only parameters the user changed need to be listed; the rest keep the library values, and only changed rows are written into the card. A parameter switched to FREE needs a min and a max.',
         "schema": {"type": "object", "properties": {"card": {"type": "object"}}, "required": ["card"]},
         "fn": lambda a: validate_campaign(a.get("card"))},
     "submit_campaign": {
@@ -10432,7 +10473,8 @@ INSTRUCTIONS = (
        "fragment, configuration_valid and fit_ready=false. Do not attempt submission or claim FF fits "
        "are implemented. SIDIS needs PDFs plus FFs; SIA needs FFs only. For supported fits, ") +
     "validate_campaign; show the summary, its warnings (they never block "
-    "submission) and the Slurm array script exactly as returned (not shortened); submit with "
+    "submission; a card that keeps no data point at all is refused: then change the cuts or "
+    "datasets with the user) and the Slurm array script exactly as returned (not shortened); submit with "
     "submit_campaign(card, confirm=<phrase>) only after the user agrees.\n"
     "9. Collections and analysis: list_campaigns (it also returns the user's Slurm queue), "
     "campaign_status, postprocess_campaign, campaign_summary (fit summary), campaign_pdf_plots "
