@@ -366,6 +366,78 @@ The intended collaboration boundary is:
 - **Workflow/UI developer:** connect that confirmed configuration to the
   gateway, materializer, UI, validation, and campaign execution.
 
+## Conversation PNG delivery
+
+`get_thesis_plot` is the image-only MCP entry point for natural-language requests
+to show thesis-style figures. It reuses the existing experimental data/theory,
+PDF and FF backends and always enables PNG export. Scientific calculations,
+replica selection, credible intervals and styling are unchanged. There is no UI
+resource/template metadata on this tool; the standalone panel and existing
+interactive plotting tools remain available when the user explicitly wants them.
+
+Request one plot family, with an existing campaign name/collection ID and the
+same scientific options exposed by its backend:
+
+```json
+{"plot_type":"experimental","collection_id":"my_campaign","options":{"datasets":"wc:10001,wc:20001","credible_interval":95}}
+```
+
+```json
+{"plot_type":"pdf","collection_id":"my_campaign","options":{"object_key":"pdf","flavors":"g,db+ub,sp,Rs","q2":10}}
+```
+
+```json
+{"plot_type":"ff","collection_id":"my_campaign","options":{"modes":"combined,individual","hadrons":"pion"}}
+```
+
+`plot_type` is `experimental`, `pdf` or `ff`. `options` is optional and follows
+that family's discovery schema/defaults. PNG export cannot be disabled here;
+interactive-only/configured-value previews are not accepted as fitted figures.
+Unknown options are rejected. There is no arbitrary path/URL argument.
+
+If a call returns `status:running`, use **the same tool** with only
+`{"job_id":"<returned ID>"}` until done. Do not switch to `analysis_result` or
+`open_panel`. The existing owner-scoped asynchronous backend job is reused;
+polling neither restarts the analysis nor changes the shared interactive result.
+Jobs expire after the existing retention window and do not survive restart.
+
+Completion returns native MCP `image/png` content, one independent block per
+figure, plus concise existing scientific metadata and ordered `plots` entries
+with zero-based `image_index`, byte size and SHA-256. PNG bytes are not resized,
+re-encoded or recomputed by the delivery adapter. Widget charts/data URLs are
+excluded. Missing PNGs produce an explicit error with the backend's rendering
+reason; there is no automatic app or alternate-style fallback. Metrics tools
+remain unchanged (`analyze_by_experiment`, `campaign_summary`).
+
+Plotting may evaluate existing fitted replicas and write its existing caches and
+PNG outputs, so the tool is not advertised as read-only/idempotent. It never
+initializes replicas, fits, submits jobs or modifies fitted results. Client
+presentation of native MCP images still needs a fresh-client test after approved
+deployment: protocol image delivery alone cannot guarantee a particular Codex
+version's inline/persistent display behavior.
+
+On-demand verification uses the actual backends, not an existing-PNG lookup:
+PDF/FF requests always render a new figure; missing numerical curves invoke the
+existing fitted-replica evaluator. Experimental requests build missing/stale
+per-dataset predictions, then run the existing thesis renderer. Only numerical
+predictions are reused; interval, selection, ordering and display options are
+applied again for each render. Experimental outputs use a unique request
+directory so concurrent requests cannot overwrite one another's PNGs.
+
+Cache identities include exact binary64 Q2/range keys, exact grid coordinates,
+curve shapes/version, SHA-256 of each fitted `.msr`, summary metadata and stage
+input content. Old timestamp-only/rounded-key caches are invalidated naturally;
+no cache files are deleted or migrated. Curve JSON retains full float precision,
+so a repeat does not round a previously computed band. A first request after
+upgrade can therefore require reevaluation and write larger caches. These are
+cache/output-isolation changes, not changes to FitPack science or figure style.
+
+Known rendering limitation: some two-flavor FF requests (observed for `up,g`)
+have no clear in-panel space for annotations at the approved font sizes. The
+existing renderer reports this explicitly and returns no image. The delivery
+tool does not silently choose a different layout, substitute a saved figure or
+change styling. A separately requested six-flavor layout passed validation.
+
 ## Verified
 
 | Date | Where | What | Result |

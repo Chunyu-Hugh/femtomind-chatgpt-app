@@ -3455,12 +3455,15 @@ import numpy as np
 xs = np.logspace(-3, np.log10(0.9), 120)
 # Replica curves per flavor are cached (analysis/cache/pdf): a new Q2 or flavor
 # is evaluated once, every later redraw only reads them.
-sig = [[s['identity'], int(os.path.getmtime(s['msr_path']))] for s in records]
-cache_file = lambda f: os.path.join(cache, 'pdf', '%s_q2_%s_%s.json' % (object_key, ('%g' % q2).replace('.', 'p'), f))
+sig = signature(records, stage)
+cache_file = lambda f: os.path.join(cache, 'pdf', '%s_q2_%s_%s.json' % (object_key, float(q2).hex().replace('.', 'p'), f))
 curves, todo = {}, []
 for f in flavors:
     doc = read_json(cache_file(f)) or {}
-    if doc.get('signature') == sig and len(doc.get('curves') or []) == len(records):
+    if (doc.get('version') == VERSION and doc.get('signature') == sig
+            and doc.get('q2') == q2 and doc.get('flavor') == f and doc.get('x') == xs.tolist()
+            and len(doc.get('curves') or []) == len(records)
+            and all(len(row) == len(xs) for row in doc['curves'])):
         curves[f] = np.asarray(doc['curves'], dtype=float)
     else:
         todo.append(f)
@@ -3497,7 +3500,7 @@ if todo:
         curves[f] = np.asarray(fresh[f], dtype=float)
         write_json(cache_file(f), {'version': VERSION, 'object': object_key, 'q2': q2, 'flavor': f,
                                    'signature': sig, 'x': xs.tolist(),
-                                   'curves': [[float('%.8g' % v) for v in c] for c in curves[f]]})
+                                   'curves': [[float(v) for v in c] for c in curves[f]]})
 # A replica selection keeps a subset of the (cached, complete) replica curves.
 selection = __SELECTION__
 kept, dropped = select_replicas(records, selection)
@@ -3587,14 +3590,17 @@ if len(records) < 2:
 xs = proton_x_grid(options['x_min'], options['x_max'])
 # Replica curves (and the d/u display breaks) are cached per flavor, Q2 and x
 # range (analysis/cache/pdf): only flavors not seen before run FitPack.
-sig = [[s['identity'], int(os.path.getmtime(s['msr_path']))] for s in records]
-tag = lambda v: ('%g' % v).replace('.', 'p')
+sig = signature(records, stage)
+tag = lambda v: float(v).hex().replace('.', 'p')
 cache_file = lambda f: os.path.join(cache, 'pdf', 'proton_q2_%s_x_%s_%s_%s.json'
                                     % (tag(q2), tag(options['x_min']), tag(options['x_max']), f.replace('/', 'over')))
 curves, display_breaks, todo = {}, {}, []
 for f in flavors:
     doc = read_json(cache_file(f)) or {}
-    if doc.get('signature') == sig and len(doc.get('curves') or []) == len(records) and len(doc.get('x') or []) == len(xs):
+    if (doc.get('version') == VERSION and doc.get('signature') == sig
+            and doc.get('q2') == q2 and doc.get('flavor') == f and doc.get('x') == xs.tolist()
+            and len(doc.get('curves') or []) == len(records)
+            and all(len(row) == len(xs) for row in doc['curves'])):
         curves[f] = [np.asarray([np.nan if v is None else v for v in row], dtype=float) for row in doc['curves']]
         if doc.get('breaks') is not None: display_breaks[f] = np.asarray(doc['breaks'], dtype=bool)
     else:
@@ -3633,7 +3639,7 @@ if todo:
         if f in fresh_breaks: display_breaks[f] = fresh_breaks[f]
         write_json(cache_file(f), {'version': VERSION, 'object': 'pdf', 'q2': q2, 'flavor': f, 'signature': sig,
                                    'x': [float(x) for x in xs],
-                                   'curves': [[None if not np.isfinite(v) else float('%.8g' % v) for v in c] for c in fresh[f]],
+                                   'curves': [[None if not np.isfinite(v) else float(v) for v in c] for c in fresh[f]],
                                    'breaks': fresh_breaks[f].tolist() if f in fresh_breaks else None})
 selection = __SELECTION__
 kept, dropped = select_replicas(records, selection)
@@ -3816,10 +3822,10 @@ zs = np.linspace(options['z_min'], options['z_max'], 181)
 # (analysis/cache/ff): a redraw, another interval or other hadrons only read
 # them; a new flavor, Q2 or z range runs FitPack for what is missing.
 if configured:
-    sig = [['configured', int(os.path.getmtime(os.path.join(stage, 'input.py')))]]
+    sig = [['configured', file_fingerprint(os.path.join(stage, 'input.py'))]]
 else:
-    sig = [[s['identity'], int(os.path.getmtime(s['msr_path']))] for s in records]
-tag = lambda v: ('%g' % v).replace('.', 'p')
+    sig = signature(records, stage)
+tag = lambda v: float(v).hex().replace('.', 'p')
 cache_file = lambda f: os.path.join(cache, 'ff', '%s_q2_%s_z_%s_%s_%s.json' % (
     'configured' if configured else 'replicas', tag(q2), tag(options['z_min']), tag(options['z_max']), f))
 nrows = 1 if configured else len(records)
@@ -3827,7 +3833,9 @@ curves, todo = {}, []
 for f in flavors:
     doc = read_json(cache_file(f)) or {}
     if (doc.get('version') == VERSION and doc.get('signature') == sig and doc.get('curves')
-            and all(len(rows) == nrows for rows in doc['curves'].values())):
+            and doc.get('q2') == q2 and doc.get('flavor') == f and doc.get('z') == zs.tolist()
+            and all(len(rows) == nrows and all(len(row) == len(zs) for row in rows)
+                    for rows in doc['curves'].values())):
         for key, rows in doc['curves'].items(): curves.setdefault(key, {})[f] = rows
     else:
         todo.append(f)
@@ -3859,7 +3867,7 @@ if todo:
         for key, values in rows.items(): curves.setdefault(key, {})[f] = values
         write_json(cache_file(f), {'version': VERSION, 'q2': q2, 'flavor': f, 'configured': configured,
                                    'signature': sig, 'z': [float(z) for z in zs],
-                                   'curves': {key: [[float('%.8g' % v) for v in row] for row in values]
+                                   'curves': {key: [[float(v) for v in row] for row in values]
                                               for key, values in rows.items()}})
 selection = None if configured else __SELECTION__
 kept, dropped = select_replicas(records, selection)
@@ -9022,7 +9030,7 @@ if not records:
     print(json.dumps({'status': 'missing_inputs', 'excluded_replicas': excluded,
                       'message': 'No fitted replicas with .msr files; nothing to compare with the data.'}))
     raise SystemExit(0)
-sig = signature(records)
+sig = signature(records, stage)
 from tools.config import conf, load_config
 conf.clear(); load_config(os.path.join(stage, 'input.py')); conf['bootstrap'] = False
 ids = {key_of(r, i): (r, i) for r, spec in conf['datasets'].items() for i in (spec.get('xlsx') or {})}
@@ -9171,7 +9179,7 @@ if not records:
     print(json.dumps({'status': 'missing_inputs', 'excluded_replicas': excluded,
                       'message': 'No fitted replicas with .msr files; nothing to compare with the data.'}))
     raise SystemExit(0)
-sig = signature(records)
+sig = signature(records, stage)
 meta = read_json(os.path.join(cache, 'meta.json')) or {}
 if meta.get('version') != VERSION:
     print(json.dumps({'status': 'need_build'})); raise SystemExit(0)
@@ -9212,7 +9220,7 @@ print(json.dumps({'status': 'success', 'n_replicas': len(kept), 'excluded_replic
 # The thesis-style PNGs, from the cache: the original plotting functions are
 # fed the cached points, so FitPack is not run again. LaTeX makes them slow:
 # only on request (export_png).
-_THEORY_PNG = _REPLICA_STATE + ("\nimport base64, zlib\n"
+_THEORY_PNG = _REPLICA_STATE + ("\nimport base64, zlib, uuid\n"
     "exec(zlib.decompress(base64.b64decode(%r)))\n" %
     base64.b64encode(zlib.compress(_THEORY_PLOTTING.encode(), 9)).decode()) + r'''
 import json, os
@@ -9236,7 +9244,7 @@ for k in keys:
 metadata = {'n_replicas': len(points[0]['theory']) if points else 0, 'note': ''}
 try:
     images = render_theory_plots(points, interval, os.path.join(os.path.dirname(os.path.dirname(stage)),
-                                 'analysis', 'by_experiment'), metadata)
+                                 'analysis', 'by_experiment', 'request_' + uuid.uuid4().hex), metadata)
 except (OSError, KeyError, TypeError, ValueError, ArithmeticError) as exc:
     print(json.dumps({'status': 'error', 'message': 'Theory plotting failed: ' + str(exc)})); raise SystemExit(0)
 print(json.dumps({'status': 'success', 'images': images, 'rendering_errors': metadata.get('rendering_errors', []),
@@ -10403,6 +10411,30 @@ TOOLS = {
 }
 
 
+# Separate descriptor: static images must never acquire the interactive tools'
+# UI template, including when the same backend job is polled asynchronously.
+from jamai import thesis_delivery
+
+TOOLS["get_thesis_plot"] = {
+    "desc": "Display thesis-style PNG plots directly in the conversation, without opening FEMTOMIND. "
+            "Prefer this for natural-language requests to show plots, figures, PNGs or thesis-style images. "
+            "plot_type experimental reuses data vs theory (datasets/experiments); pdf reuses fitted PDF "
+            "figures (e.g. flavors g,db+ub,sp,Rs and q2=10); ff reuses Combined/Individual fitted FF figures. "
+            "Pass campaign name or collection_id and backend options. Always exports actual native "
+            "image/png content, one image block per figure, with unchanged scientific calculations/style. "
+            "May read/evaluate existing fitted replicas and write plotting caches/PNGs; never fits or "
+            "submits jobs. If status running, call THIS tool with only job_id until complete; never "
+            "analysis_result or open_panel. Display all returned images independently. Explicit requests "
+            "for the interactive app should instead use open_panel and the existing interactive tools. "
+            "Metrics remain available through analyze_by_experiment/campaign_summary.",
+    "schema": thesis_delivery.schema(TOOLS),
+    "compact": True,
+    "annotations": {"readOnlyHint": False, "destructiveHint": False,
+                    "idempotentHint": False, "openWorldHint": False},
+    "fn": lambda a: thesis_delivery.get_plot(sys.modules[__name__], a),
+}
+
+
 # ── http layer ──────────────────────────────────────────────────────────────
 
 def _hlog(msg):
@@ -10495,10 +10527,14 @@ INSTRUCTIONS = (
     "Results and plots: when the user names a campaign, datasets or experiments, call the analysis "
     "tool directly with those names as said (collection_id takes the campaign name; datasets and "
     "experiments take the user's words) — do not look them up first with list_campaigns or "
-    "campaign_summary. A result with status running carries a job_id: call analysis_result(job_id) "
-    "until it is done; never start the same analysis again. status no_match lists what the campaign "
-    "has: pick from it. Charts are interactive in the panel and the chat widget; ask for PNGs "
-    "(export_png) only when the user wants files or the client shows no widget.\n"
+    "campaign_summary. Existing interactive analysis tools with status running return a job_id: "
+    "call analysis_result(job_id) until done; never restart the analysis. get_thesis_plot instead "
+    "always polls through get_thesis_plot itself. status no_match lists what the campaign "
+    "has: pick from it. For natural-language plot/figure requests, prefer get_thesis_plot: native PNGs "
+    "displayed independently in the conversation, without opening the app. Select experimental, pdf "
+    "or ff and reuse the user's scientific settings. If running, poll get_thesis_plot with only job_id; "
+    "do not switch to analysis_result or open_panel. For explicit interactive-app requests, preserve "
+    "the existing open_panel, campaign_pdf_plots, campaign_ff_plots and analyze_by_experiment workflow.\n"
     "10. Any other cluster job: draft_slurm_job with the resources agreed with the user (it "
     "runs sbatch --test-only), show the returned script exactly as written, ask the user, "
     "then submit_slurm_job with the phrase.")

@@ -11,8 +11,9 @@ it is done once per campaign and kept on the cluster, next to the campaign:
                                                    shift, and its chi2 terms
 
 A dataset file is valid while the campaign's fitted replicas are the ones it was
-made from (signature: replica folder and .msr modification time); appended or
-refitted replicas make it stale and only that dataset is computed again.
+made from (signature: replica identity, .msr content and summary metadata, plus
+the stage input content); appended or changed replicas make it stale and only
+that dataset is computed again. Timestamps are not scientific cache identities.
 
 Everything here is stdlib only: the gateway ships this module's source to the
 cluster in front of its scripts (the plain python3 reader and the container
@@ -20,6 +21,7 @@ builder) and the tests import it directly.
 """
 
 import json
+import hashlib
 import math
 import os
 import re
@@ -79,8 +81,23 @@ def fitted_replicas(stage, replica_state):
     return records, excluded
 
 
-def signature(records):
-    return [[s['identity'], int(os.path.getmtime(s['msr_path']))] for s in records]
+def file_fingerprint(path):
+    """Content identity: replacements within one timestamp tick must invalidate."""
+    digest = hashlib.sha256()
+    with open(path, 'rb') as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def signature(records, stage=None):
+    rows = [[s['identity'], file_fingerprint(s['msr_path']),
+             # Selection/table metadata may change without changing the .msr.
+             hashlib.sha256(json.dumps(s, sort_keys=True, separators=(',', ':'),
+                                       allow_nan=False).encode()).hexdigest()] for s in records]
+    if stage is not None:
+        rows.insert(0, ['input.py', file_fingerprint(os.path.join(stage, 'input.py'))])
+    return rows
 
 
 # ---- replica selection ------------------------------------------------------
