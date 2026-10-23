@@ -1,0 +1,98 @@
+{
+  "schema": "femtomind.campaign_defaults.v1",
+  "analysis_id": "JAM24.current",
+  "historical_analysis_id": "JAM24.final",
+  "description": "Updated JAM24 campaign defaults: current COMPASS SIDIS workbooks; not a byte-identical historical publication reproduction.",
+  "dataset_substitutions": {
+    "sidis": {
+      "1005": "1105",
+      "1006": "1106",
+      "2005": "2105",
+      "2006": "2106",
+      "3000": "3100",
+      "3001": "3101"
+    }
+  },
+  "reaction_filters": {
+    "sidis": [
+      "Q2>1.690000",
+      "W2>10.000000",
+      "Z>=0.2 and Z<=0.8"
+    ],
+    "jet": [
+      "pT>8.000000"
+    ]
+  },
+  "ignored_native_settings": [
+    "sea_type",
+    "strange off",
+    "s_veto",
+    "grid-8 path"
+  ],
+  "native_settings": {
+    "beta version": 1,
+    "sia version": 1
+  },
+  "reader_evidence": {
+    "sidis": {
+      "1105": {
+        "raw_count": 306,
+        "retained_count": 255,
+        "sha256": "3283cfa879baed093d0acc0f6fe362f3b26e376886f005ef123dcc585052bd52",
+        "metadata": {},
+        "normalization_columns": [],
+        "relative_dN_first_retained": null
+      },
+      "1106": {
+        "raw_count": 306,
+        "retained_count": 255,
+        "sha256": "9ff0f3bdc3a9822c35e4636b0b563b5c9fca1f20a4642b978d33907ccc78035b",
+        "metadata": {},
+        "normalization_columns": [],
+        "relative_dN_first_retained": null
+      },
+      "2105": {
+        "raw_count": 305,
+        "retained_count": 254,
+        "sha256": "4b5c6ef14571df2f59eb64d1ad78a761a66904545154dcc85edd6a96f27f79b7",
+        "metadata": {},
+        "normalization_columns": [],
+        "relative_dN_first_retained": null
+      },
+      "2106": {
+        "raw_count": 305,
+        "retained_count": 254,
+        "sha256": "de7fb77930357e1c519be3fe206fb8af8e6bbdd929ec73766cd2b3b9a3498e36",
+        "metadata": {},
+        "normalization_columns": [],
+        "relative_dN_first_retained": null
+      },
+      "3100": {
+        "raw_count": 306,
+        "retained_count": 255,
+        "sha256": "39897172a0b7caf15002b8e2651592a580cae4ce611d0d658e96dbdce3469ebc",
+        "metadata": {},
+        "normalization_columns": [],
+        "relative_dN_first_retained": null
+      },
+      "3101": {
+        "raw_count": 306,
+        "retained_count": 255,
+        "sha256": "752c03dfbb5c1b95ad25c0b588ffe58a9baaf344121af9daf1b3df70086eccd5",
+        "metadata": {},
+        "normalization_columns": [],
+        "relative_dN_first_retained": null
+      }
+    }
+  },
+  "expected_accepted_points": {
+    "sidis": 1528,
+    "total": 5891,
+    "configured_datasets": 98,
+    "nonempty_datasets": 96
+  },
+  "boundary_notice": "Inclusive 0.2<=Z<=0.8 retains all 102 previously excluded points at Z=0.8, without changing DIS Q2/W2 thresholds.",
+  "initialization_notice": "FF Gaussian metadata and existing sampler are preserved. PDF Gaussian initialization is optional in the ordinary campaign workflow.",
+  "parity_scope": "Updated campaign defaults. Original analysis_config.json, publication evidence, JAM24.final configuration and numerical archive remain historical and unchanged.",
+  "reader_validation_sha256": "65cd9165e2a8500031992453d70c8d624b65654a1bbfda4ccaa36ba1ac58b1e9"
+}

@@ -62,7 +62,7 @@ import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from jamai import analysis_cache, analysis_catalog, analysis_results, object_registry, ff_registry, ff_plotting, pdf_plotting
 from jamai.dataset_catalog import (CONFIGURATION_DATASETS, CONFIGURATION_METADATA,
-                                  CONFIGURATION_ONLY_REACTIONS, configuration_dataset_block)
+                                  CONFIGURATION_ONLY_REACTIONS, configuration_dataset_block, sidis_dis_cut_values)
 from jamai.object_registry import OBJECTS, SELECTABLE_OBJECTS
 from jamai.reaction_registry import get_required_objects, resolve_object_roles
 
@@ -960,7 +960,7 @@ CAMPAIGN_REACTIONS = [
      "cut_note": "Only pT > 8.0 GeV is applied."},
     {"key": "sidis", "label": "SIDIS — PDFs + FFs", "enabled": False,
      "configuration_only": True, "fit_ready": False, "cut_policy": "configuration",
-     "cut_note": "Only Q2 > Q2cut, using the DIS Q² cutoff configured in this card. No W2SIDIS or Z cuts.",
+     "cut_note": "Uses the configured DIS Q2 and W2 cutoffs plus 0.2 <= Z <= 0.8, applied once by the native SIDIS reader. W2cut_SIDIS is ignored.",
      "requirements": "Requires PDFs and FFs; FF fitting is not implemented."},
     {"key": "sia", "label": "SIA — FFs only", "enabled": False,
      "configuration_only": True, "fit_ready": False, "cut_policy": "configuration",
@@ -1355,7 +1355,7 @@ CAMPAIGN_DEFAULTS = {
              **{reaction: object_registry.library_cuts(spec.get("filters", []))
                 for reaction, spec in object_registry.PROTON_REACTION_DATASETS.items()}},
     "qcd": {"order": "NLO", "Q20": 1.6129, "tmc": "AOT", "higherTwist": False,
-            "dglapMode": "truncated", "asMode": "backward",
+            "dglapMode": "truncated", "asMode": "backward", "betaVersion": 1, "siaVersion": 1,
             **dict.fromkeys(POSITIVITY_OPTIONS, True)},
     "parameters": {"initialization": "default", "randomSeed": None, "perReplicaSeed": True},
     "job": {"replicas": 10, "maxIterations": 500, "tolerance": "1e-6", "optimizer": "trf",
@@ -1366,6 +1366,7 @@ CAMPAIGN_CHOICES = {
     "order": ["LO", "NLO", "NNLO"], "tmc": ["off", "AOT"], "dglapMode": ["truncated", "iterated"],
     "asMode": ["backward", "forward"], "optimizer": ["trf", "dogbox"],
     "initialization": ["default", "random_within_bounds"],
+    "betaVersion": [0, 1], "siaVersion": [0, 1],
 }
 
 
@@ -1895,13 +1896,10 @@ def _normalize_card(card, library):
         if r in CONFIGURATION_ONLY_REACTIONS:
             try:
                 qrows = cuts_in.get("idis", CAMPAIGN_DEFAULTS["cuts"]["idis"])
-                qcuts = [row for row in qrows if row.get("enabled", True)
-                         and row.get("variable") == "Q2" and row.get("op", ">") == ">"]
-                if r == "sidis" and len(qcuts) != 1:
-                    raise ValueError("SIDIS requires exactly one configured DIS Q2 > cutoff")
-                cutoff = float(qcuts[0]["value"]) if r == "sidis" else None
-                block = configuration_dataset_block(r, ids, q2cut=cutoff)
+                cutoff, w2cut = sidis_dis_cut_values(qrows) if r == "sidis" else (None, 10.0)
                 supplied_cuts = cuts_in.get(r)
+                block = configuration_dataset_block(r, ids, q2cut=cutoff, w2cut=w2cut,
+                    normalizations=normalization_in.get(r), filters=supplied_cuts if r == "sia" else None)
                 expected_cuts = block.get("filters", [])
                 if supplied_cuts:
                     supplied = (object_registry.cut_filters(supplied_cuts)
@@ -1910,10 +1908,6 @@ def _normalize_card(card, library):
                                 if r == "sidis" else {str(idx): value for idx, value in expected_cuts.items()})
                     if supplied != expected:
                         raise ValueError(f"{r}: preserve the authoritative dataset filters")
-                supplied_norms = normalization_in.get(r) or {}
-                for idx, entry in supplied_norms.items():
-                    if json.dumps(entry, sort_keys=True) != json.dumps(block["norm"].get(int(idx)), sort_keys=True):
-                        raise ValueError(f"{r}:{idx}: preserve the authoritative normalization definition")
                 normalizations[r] = {str(idx): dict(entry) for idx, entry in block["norm"].items()}
                 # Keep complex SIA expressions verbatim rather than parsing/reformatting.
                 cuts[r] = (object_registry.library_cuts(expected_cuts) if r == "sidis" else
@@ -1997,6 +1991,8 @@ def _normalize_card(card, library):
     # QCD
     profile_defaults = library.get("pdf-pion", {}).get("defaults", {}) if "pdf-pion" in selected else {}
     q = {**CAMPAIGN_DEFAULTS["qcd"], **profile_defaults.get("qcd", {}), **(card.get("qcd") or {})}
+    for obsolete in ('sea_type', 'strange off', 's_veto', 'grid-8 path'):
+        q.pop(obsolete, None)
     try:
         q["Q20"] = float(q["Q20"])
         if q["Q20"] <= 0:
@@ -2012,6 +2008,9 @@ def _normalize_card(card, library):
     for key in POSITIVITY_OPTIONS:
         if type(q[key]) is not bool:
             errors.append(f"QCD {key} must be true or false.")
+    for key in ('betaVersion', 'siaVersion'):
+        if type(q[key]) is not int or q[key] not in (0, 1):
+            errors.append(f"QCD {key} must be integer 0 or 1.")
     # parameter initialization
     pi = {**CAMPAIGN_DEFAULTS["parameters"], **(card.get("parameters") or {})}
     if pi["initialization"] not in CAMPAIGN_CHOICES["initialization"]:
@@ -2120,7 +2119,8 @@ def _campaign_yaml(ws, folder, norm, nreplicas):
     qcd = {"order": q["order"], "Q20": q["Q20"], "ftol": float(norm["job"]["tolerance"]),
            "grid_path": SITE.get("grid_root"), "tmc": "AOT" if q["tmc"] == "AOT" else False,
            "higherTwist": q["higherTwist"], "dglapMode": q["dglapMode"], "asMode": q["asMode"],
-           **{key: q.get(key, True) for key in POSITIVITY_OPTIONS}}
+           **{key: q.get(key, True) for key in POSITIVITY_OPTIONS},
+           **{key: q.get(key, 1) for key in ('betaVersion', 'siaVersion')}}
     pi = norm["parameters"]
     init = "random_within_bounds" if pi["initialization"] == "random_within_bounds" else "default_prior"
     seed = pi["randomSeed"] if pi["randomSeed"] is not None else 120000
@@ -2436,7 +2436,7 @@ _DATA_CHECK = r'''
 import json, os
 import numpy as np
 import pandas as pd
-ws = __WS__; datasets = __DATASETS__; cuts = __CUTS__; report = __REPORT__; dis_version = __DIS_VERSION__
+ws = __WS__; datasets = __DATASETS__; cuts = __CUTS__; report = __REPORT__; dis_version = __DIS_VERSION__; sia_version = __SIA_VERSION__
 paths = __PATHS__
 M = 0.93891897                      # the nucleon mass of qcdlib/aux.py
 M2 = M * M
@@ -2492,7 +2492,7 @@ for r, ids in datasets.items():
                 conf['datasets'] = {r: {'filters': []}}
                 module = {'dy-pion': 'obslib.dypion.reader', 'ln': 'obslib.LeadingBaryon.reader',
                           'idis': 'obslib.idis_V0.reader', 'sidis': 'obslib.sidis.reader',
-                          'sia': 'obslib.sia.reader'}[r]
+                          'sia': 'obslib.sia_V0.reader' if sia_version == 0 else 'obslib.sia.reader'}[r]
                 reader = import_module(module).READER()
                 reader.reaction, reader.cut_by_dataset = r, int(x)
                 t = reader.modify_table(t)
@@ -2530,6 +2530,7 @@ def _data_warnings(u, norm):
     cuts = {r: (cs if r == "sia" else object_registry.cut_filters(cs)) for r, cs in norm["cuts"].items()}
     code = _fill(_DATA_CHECK, WS=_workspace(u), DATASETS=norm["datasets"], CUTS=cuts,
                  REPORT=_REPORT_COLUMNS, DIS_VERSION=object_registry.dis_version_for(norm["fit_objects"]),
+                 SIA_VERSION=norm['qcd'].get('siaVersion', 1),
                  PATHS={r: {str(idx): path for idx, path in block["xlsx"].items()}
                         for r, block in CONFIGURATION_DATASETS.items()})
     r = {}
@@ -2607,17 +2608,11 @@ def _configuration_preview(u, card):
     reactions = _card_reactions(card)
     errors, warnings, blocks = [], [], {}
     selections = card.get("datasets") or {}
-    cutoff = None
+    cutoff, w2cut = None, 10.0
     if "sidis" in reactions:
         rows = (card.get("cuts") or {}).get("idis", CAMPAIGN_DEFAULTS["cuts"]["idis"])
         try:
-            qcuts = [row for row in rows if row.get("enabled", True)
-                     and row.get("variable") == "Q2" and row.get("op", ">") == ">"]
-            if len(qcuts) != 1:
-                raise ValueError("configure exactly one enabled DIS Q2 > cutoff")
-            cutoff = float(qcuts[0]["value"])
-            if not math.isfinite(cutoff) or cutoff <= 0:
-                raise ValueError("the DIS Q² cutoff must be positive and finite")
+            cutoff, w2cut = sidis_dis_cut_values(rows)
         except (TypeError, KeyError, AttributeError, ValueError) as exc:
             errors.append("SIDIS uses the configured DIS Q² cutoff: " + str(exc))
     for reaction in reactions:
@@ -2631,10 +2626,12 @@ def _configuration_preview(u, card):
         try:
             if not isinstance(ids, list) or not ids:
                 raise ValueError(f"{reaction}: select at least one dataset")
-            block = configuration_dataset_block(reaction, ids, q2cut=cutoff)
             custom_cuts = (card.get("cuts") or {}).get(reaction)
             if isinstance(entry, dict) and "cuts" in entry:
                 custom_cuts = entry["cuts"]
+            block = configuration_dataset_block(reaction, ids, q2cut=cutoff, w2cut=w2cut,
+                normalizations=(card.get("normalizations") or {}).get(reaction),
+                filters=custom_cuts if reaction == 'sia' else None)
             if custom_cuts:
                 if reaction == "sidis" and isinstance(custom_cuts, list):
                     same = (object_registry.cut_filters(custom_cuts)
@@ -2643,12 +2640,6 @@ def _configuration_preview(u, card):
                     same = custom_cuts == {str(idx): cuts for idx, cuts in block["filters"].items()}
                 if not same:
                     raise ValueError(f"{reaction}: preserve the authoritative dataset filters")
-            custom_norms = (card.get("normalizations") or {}).get(reaction) or {}
-            for idx, norm in custom_norms.items():
-                # JSON booleans must not compare equal to integer tied references.
-                canonical = block["norm"].get(int(idx))
-                if canonical is None or json.dumps(norm, sort_keys=True) != json.dumps(canonical, sort_keys=True):
-                    raise ValueError(f"{reaction}:{idx}: preserve the authoritative normalization definition")
             blocks[reaction] = block
             if reaction == "sia":
                 missing = sorted(int(idx) for idx in ids if int(idx) not in block["filters"])
@@ -10003,7 +9994,7 @@ TOOLS = {
 
     "list_analysis_catalog": {
         "compact": True,
-        "desc": "Compact read-only discovery of published analyses: publication, objects, readiness and reusable catalog_ref. Scientific configuration stays server-side; no HPC connection is needed. Follow next_cursor if present.",
+        "desc": "Compact read-only discovery of published analyses: publication, objects, readiness and reusable catalog_ref. Prefer recommended_for_new_campaigns entries for new work; the short analysis alias selects updated defaults, while explicit historical IDs retain original declarations. Scientific configuration stays server-side; no HPC connection is needed. Follow next_cursor if present.",
         "schema": {"type": "object", "additionalProperties": False, "properties": {
             "cursor": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10}}},
         "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
@@ -10165,7 +10156,7 @@ TOOLS = {
                 "use their approved cut policies: jet has only pT>8; wzrv, wasym, zrap and wc "
                 "have no additional filters. The qcd card accepts four independent boolean options: "
                 "pdfPositivity, ffpionPositivity, ffkaonPositivity, ffhadronPositivity "
-                "(default true; false is preserved). Summary reports "
+                "(default true; false is preserved). betaVersion and siaVersion accept integer 0 or 1 (default 1). SIA normalization overrides may use larger bounds such as 100; workbook uncertainties/penalties are unchanged. SIA cuts accept explicit per-dataset expression lists. Summary reports "
                 "parameters (including optional equal_to links between PDF parameters), the ones changed from the library, datasets, cuts, QCD, job, and "
                 "points_after_cuts per dataset), the Slurm array script, the confirmation phrase and "
                 "warnings (a dataset with no points left after the cuts, a data file without a column "

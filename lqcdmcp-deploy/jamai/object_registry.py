@@ -154,6 +154,9 @@ def library_cuts(filters):
     ops = {ast.Gt: '>', ast.GtE: '>=', ast.Lt: '<', ast.LtE: '<='}
     for expression in filters:
         node = ast.parse(expression, mode='eval').body
+        if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And):
+            cuts.extend(library_cuts([ast.unparse(part) for part in node.values]))
+            continue
         if (not isinstance(node, ast.Compare) or not isinstance(node.left, ast.Name)
                 or len(node.ops) != 1 or type(node.ops[0]) not in ops):
             raise ValueError(f'Unsupported library cut: {expression}')

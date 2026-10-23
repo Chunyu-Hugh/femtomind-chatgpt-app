@@ -869,3 +869,60 @@ Local transport and package checks (stdlib; no production credentials):
 ```text
 FEMTOMIND_APP_ROOT=/path/to/femtomind-chatgpt-app python -B -m unittest discover -s ../femtomind-tests/tests -p test_analysis_catalog_mcp.py -v
 ```
+
+### Updated JAM24 settings in the ordinary campaign workflow
+
+New campaigns use the existing `campaign_options`, `campaign_datasets`,
+`validate_campaign(card)`, materializer and `submit_campaign(card, confirm)`
+workflow. There is no analysis-specific runner, scheduler or submission path.
+
+`JAM24` now resolves to **`JAM24.current`**, the recommended updated configuration.
+Explicit **`JAM24.final`** and its existing pinned references continue to describe
+the untouched historical published reference and archived results. The optional
+`analyses/JAM24/catalog/campaign_defaults.json` describes the current overlay;
+the original three catalog documents and their historical hashes are unchanged.
+Discovery marks the recommended entry, and configuration/cursor revisions bind
+the complete derived configuration and overlay. Both deployment packagers include
+the overlay and its projection module through their existing catalog/package
+collection mechanisms. Numerical archives are not packaged.
+
+The updated defaults replace SIDIS 1005/1006/2005/2006/3000/3001 with
+1105/1106/2105/2106/3100/3101 and their matching workbook paths. Existing native
+readers apply the configured DIS Q2 and W2 thresholds plus `Z>=0.2 and Z<=0.8` once.
+The SIDIS reader derives W2 but does not inherit IDIS filters automatically, so
+the application supplies that reader filter from the existing DIS control.
+`W2cut_SIDIS` has no effect and no W2SIDIS filter is introduced. Jet uses only
+`pT>8`; its obsolete `x<1` filter is absent from the effective generated settings.
+
+Bounded non-fitting validation with current workbooks retained **1,528 SIDIS
+points and 5,891 total points**, across 98 configured and 96 nonempty datasets.
+All other reaction row identities match the unchanged selection. The six new
+workbooks each contain 17 Q2/W2-accepted points exactly at Z=0.8. The inclusive
+upper bound retains all 102 boundary points, as required by the updated analysis. Historical 5,853-point parity is
+not a validation target for this updated configuration. As a separate control,
+the historical six SIDIS workbooks retain the same 1,490 points and identical
+row identities with and without the z filters.
+
+SIA normalization overrides accept finite ordered bounds above 2, including 100;
+defaults remain unchanged (1.5 or 2 as cataloged). Starting values and links are
+validated against the supplied bounds, so `sia:1001` can take N=2.7 with max=100.
+No uncertainty override is accepted here: experimental normalization uncertainties
+and their finite penalties remain controlled by existing workbooks/FitPack. The
+eight effectively unpenalized entries retain finite deltaN near 1000. Explicit
+SIA dataset filter maps can preserve the selected analysis's original cuts
+instead of silently inheriting a different application filter.
+
+The MCP QCD card exposes `betaVersion` and `siaVersion`, integer 0 or 1, default 1.
+These become `conf['beta version']` and `conf['sia version']` in every new input.
+`sea_type`, `strange off`, `s_veto` and `grid-8 path` are ignored/removed from
+effective newly generated configuration. FF Gaussian metadata and the existing
+FitPack initialization mode are preserved; PDF Gaussian metadata remains optional
+and is not required by the ordinary card path. The ordinary workflow explicitly
+sets `flat par` from the initialization mode without changing the sampler.
+
+The LLM can retrieve `JAM24.current` and populate the ordinary card with the
+explicit model definitions, normalizations and cuts, then call `validate_campaign`.
+There is currently no reference-only import argument on that existing campaign
+tool, so the resolved records must still be supplied in the card. No jobs were
+submitted during this implementation; known historical reconstruction limitations
+remain separate from readiness to configure this updated campaign.

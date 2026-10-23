@@ -34,10 +34,19 @@ if HAVE_PYDANTIC:
         higherTwist: bool = False
         dglapMode: str = 'truncated'
         asMode: str = 'backward'
+        betaVersion: int = 1
+        siaVersion: int = 1
         pdfPositivity: StrictBool = True
         ffpionPositivity: StrictBool = True
         ffkaonPositivity: StrictBool = True
         ffhadronPositivity: StrictBool = True
+
+        @field_validator('betaVersion', 'siaVersion', mode='before')
+        @classmethod
+        def validate_versions(cls, value):
+            if type(value) is not int or value not in (0, 1):
+                raise ValueError('betaVersion and siaVersion must be integer 0 or 1')
+            return value
 
 
     class SeedPolicy(BaseModel):
@@ -201,6 +210,8 @@ else:
             higherTwist=False,
             dglapMode='truncated',
             asMode='backward',
+            betaVersion=1,
+            siaVersion=1,
             pdfPositivity=True,
             ffpionPositivity=True,
             ffkaonPositivity=True,
@@ -210,6 +221,8 @@ else:
                               ffkaonPositivity=ffkaonPositivity, ffhadronPositivity=ffhadronPositivity)
             if any(type(value) is not bool for value in positivity.values()):
                 raise ValueError('Positivity settings must be true or false')
+            if any(type(v) is not int or v not in (0, 1) for v in (betaVersion, siaVersion)):
+                raise ValueError('betaVersion and siaVersion must be integer 0 or 1')
             super().__init__(
                 order=order,
                 Q20=float(Q20),
@@ -219,6 +232,7 @@ else:
                 higherTwist=bool(higherTwist),
                 dglapMode=dglapMode,
                 asMode=asMode,
+                betaVersion=betaVersion, siaVersion=siaVersion,
                 **positivity,
             )
 
@@ -234,6 +248,7 @@ else:
                 higherTwist=payload.get('higherTwist', False),
                 dglapMode=payload.get('dglapMode', 'truncated'),
                 asMode=payload.get('asMode', 'backward'),
+                betaVersion=payload.get('betaVersion', 1), siaVersion=payload.get('siaVersion', 1),
                 **{f'{obj}Positivity': payload.get(f'{obj}Positivity', True)
                    for obj in ('pdf', 'ffpion', 'ffkaon', 'ffhadron')},
             )

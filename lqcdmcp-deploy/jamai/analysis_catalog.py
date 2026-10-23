@@ -140,6 +140,29 @@ class Catalog:
                     if alias in self.aliases and self.aliases[alias] != analysis_id:
                         raise ValueError("Ambiguous catalog analysis identifier.")
                     self.aliases[alias] = analysis_id
+                defaults = catalog / 'campaign_defaults.json'
+                if defaults.exists():
+                    _safe(defaults, self.root)
+                    raw = defaults.read_bytes()
+                    profile = json.loads(raw.decode('utf-8'), parse_constant=_reject_constant)
+                    from .campaign_profiles import project
+                    current = project(config, profile)
+                    self._validate(current)
+                    current_id = current['analysis_id']
+                    if current_id in self.entries or not _ID.fullmatch(current_id):
+                        raise ValueError('Invalid or duplicate current campaign identifier')
+                    derived = deepcopy(documents)
+                    text = json.dumps(current, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False) + '\n'
+                    derived['analysis_config'] = {'text': text, 'sha256': _digest(text.encode()), 'bytes': len(text.encode())}
+                    self.files['analyses/' + directory.name + '/catalog/campaign_defaults.json'] = defaults
+                    self.entries[analysis_id].update(aliases=[], recommended_for_new_campaigns=False)
+                    self.entries[current_id] = {'config': current, 'documents': derived, 'folder': directory.name,
+                        'aliases': [directory.name], 'recommended_for_new_campaigns': True,
+                        'hash': _digest(_json({'historical_catalog_hash': self.entries[analysis_id]['hash'],
+                                             'projected_analysis_config_sha256': derived['analysis_config']['sha256'],
+                                             'campaign_defaults_sha256': _digest(raw)}).encode())}
+                    self.aliases[directory.name] = current_id
+                    self.aliases[current_id] = current_id
         except ValueError:
             raise
         except (OSError, UnicodeError, TypeError, AttributeError, KeyError):
@@ -344,7 +367,8 @@ class Catalog:
         c = entry["config"]
         targets = next((s.get("value", {}).get("simultaneous_fit", []) for s in c.get("scientific_settings", [])
                         if s.get("id") == "target.final" and isinstance(s.get("value"), dict)), [])
-        return {"analysis_id": c["analysis_id"], "aliases": [entry["folder"]],
+        return {"analysis_id": c["analysis_id"], "aliases": entry.get('aliases', [entry["folder"]]),
+                **({'recommended_for_new_campaigns': entry['recommended_for_new_campaigns']} if 'recommended_for_new_campaigns' in entry else {}),
                 "catalog_ref": Catalog._reference(entry),
                 "publication": {k: c["publication"][k] for k in ("title", "arxiv_id", "version", "doi", "reference", "url") if k in c["publication"]},
                 "description": c["scope"].get("target", c["publication"]["title"]),
@@ -356,7 +380,8 @@ class Catalog:
     def list(self, cursor="", limit=10):
         base = {"section": "list", "catalog_hash": self.hash, "schema_version": "catalog-discovery-2",
                 "source_context": "Each item describes validated approved catalog documents."}
-        return self._page(base, [self._summary(e) for e in self.entries.values()], cursor, limit)
+        entries = sorted(self.entries.values(), key=lambda e: not e.get('recommended_for_new_campaigns', False))
+        return self._page(base, [self._summary(e) for e in entries], cursor, limit)
 
     def get(self, analysis_id, section="overview", object_key="", cursor="", limit=10,
             detail="summary", group="", status="", dataset_id="", setting_id="",

@@ -338,7 +338,23 @@ CONFIGURATION_METADATA = {'sia': {1001: {'experiment': 'TASSO (12 GeV)', 'label'
 SIA_DATASETS_WITHOUT_FILTERS = (1012, 2012)
 
 
-def configuration_dataset_block(reaction: str, dataset_ids, q2cut=None) -> dict:
+def sidis_dis_cut_values(cuts):
+    """Resolve the two existing DIS cut controls, never W2cut_SIDIS."""
+    values = []
+    for variable in ('Q2', 'W2'):
+        matches = [row['value'] for row in cuts if row.get('enabled', True)
+                   and row.get('variable') == variable and row.get('op', '>') == '>']
+        if len(matches) != 1 or isinstance(matches[0], bool):
+            raise ValueError(f'SIDIS requires exactly one enabled DIS {variable} > cutoff')
+        number = float(matches[0])
+        if not math.isfinite(number) or number <= 0:
+            raise ValueError(f'SIDIS DIS {variable} cutoff must be positive and finite')
+        values.append(number)
+    return tuple(values)
+
+
+def configuration_dataset_block(reaction: str, dataset_ids, q2cut=None, w2cut=10.0,
+                                normalizations=None, filters=None) -> dict:
     """Select exact dataset configuration without enabling FF execution.
 
     A linked normalization requires its reference dataset to be selected too.
@@ -368,7 +384,52 @@ def configuration_dataset_block(reaction: str, dataset_ids, q2cut=None) -> dict:
             raise ValueError('sidis: provide the configured Q2 cutoff') from None
         if not math.isfinite(cutoff) or cutoff <= 0:
             raise ValueError('sidis: the configured Q2 cutoff must be a positive finite number')
-        block['filters'] = ['Q2>%f' % cutoff]
+        if isinstance(w2cut, bool) or not math.isfinite(float(w2cut)) or float(w2cut) <= 0:
+            raise ValueError('sidis: provide a positive finite DIS W2 cutoff')
+        # FitPack derives W2/Z, then applies these reader filters once. Its
+        # SIDIS reader does not inherit the IDIS filter list automatically.
+        block['filters'] = ['Q2>%f' % cutoff, 'W2>%f' % float(w2cut), 'Z>=0.2 and Z<=0.8']
+    if filters is not None:
+        if reaction != 'sia' or not isinstance(filters, dict):
+            raise ValueError('Only SIA accepts explicit dataset filter mappings')
+        replacement = {}
+        for key, expressions in filters.items():
+            if not str(key).isdigit() or int(key) not in selected or not isinstance(expressions, list):
+                raise ValueError('SIA filters must address selected dataset IDs with expression lists')
+            if any(not isinstance(expression, str) or not expression.strip() for expression in expressions):
+                raise ValueError('SIA filter expressions must be nonempty strings')
+            replacement[int(key)] = list(expressions)
+        block['filters'] = replacement
+    if normalizations is not None and not isinstance(normalizations, dict):
+        raise ValueError('Normalization overrides must be a dataset-ID mapping')
+    if normalizations:
+        if reaction != 'sia' or not isinstance(normalizations, dict):
+            raise ValueError('SIDIS has no normalization parameters')
+        for key, definition in normalizations.items():
+            if not str(key).isdigit() or int(key) not in block['norm'] or not isinstance(definition, dict):
+                raise ValueError(f'{reaction}:{key}: no selected normalization parameter')
+            entry = copy.deepcopy(block['norm'][int(key)])
+            if set(definition) - {'value', 'min', 'max', 'fixed'}:
+                raise ValueError('Normalization overrides accept value/min/max/fixed only; uncertainties stay in the workbook')
+            entry.update(definition)
+            fixed = entry['fixed']
+            if isinstance(fixed, str) and fixed.isdigit():
+                fixed = entry['fixed'] = int(fixed)
+            if type(fixed) not in (bool, int):
+                raise ValueError('Normalization fixed must be boolean or a linked dataset ID')
+            if any(type(entry[f]) not in (int, float) or not math.isfinite(entry[f]) for f in ('value', 'min', 'max')):
+                raise ValueError('Normalization value and bounds must be finite')
+            if entry['min'] >= entry['max'] or fixed is False and not entry['min'] <= entry['value'] <= entry['max']:
+                raise ValueError('Normalization needs ordered bounds containing a free starting value')
+            if type(fixed) is int and (fixed not in selected or fixed not in block['norm'] or fixed == int(key)):
+                raise ValueError('Normalization link must name another selected normalization parameter')
+            block['norm'][int(key)] = entry
+        for start in block['norm']:
+            visited, current = set(), start
+            while type(block['norm'][current]['fixed']) is int:
+                if current in visited:
+                    raise ValueError('Normalization links contain a cycle')
+                visited.add(current);current = block['norm'][current]['fixed']
     for idx, norm in block['norm'].items():
         reference = norm.get('fixed')
         if type(reference) is int and reference not in selected:

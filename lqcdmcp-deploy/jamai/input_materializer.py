@@ -4,7 +4,7 @@ import hashlib
 import shutil
 from pathlib import Path
 
-from .dataset_catalog import CONFIGURATION_DATASETS, CONFIGURATION_ONLY_REACTIONS, configuration_dataset_block
+from .dataset_catalog import CONFIGURATION_DATASETS, CONFIGURATION_ONLY_REACTIONS, configuration_dataset_block, sidis_dis_cut_values
 from .object_registry import (
     DY_DATASET_DEFAULTS, PROTON_REACTION_DATASETS, cut_filters, dis_version_for, library_cuts, load_object_libraries,
 )
@@ -100,9 +100,9 @@ def _render_stage_override_block(stage: ResolvedStage) -> str:
                         selected = stage.datasets.get(reaction, []) if reaction in stage.reactions else []
                         expected = CONFIGURATION_DATASETS[reaction]['norm'].get(int(dataset_id))
                         supplied = {field: parameter.get(field) for field in ('value', 'min', 'max', 'fixed')}
-                        if (int(dataset_id) not in selected or expected is None or supplied != expected
-                                or type(supplied['fixed']) is not type(expected['fixed'])):
-                            raise ValueError(f'{reaction}:{dataset_id}: preserve the selected authoritative normalization definition')
+                        if int(dataset_id) not in selected or expected is None:
+                            raise ValueError(f'{reaction}:{dataset_id}: no selected normalization parameter')
+                        configuration_dataset_block(reaction, selected, normalizations={dataset_id: supplied})
                     if reaction in PROTON_REACTION_DATASETS:
                         selected = stage.datasets.get(reaction, []) if reaction in stage.reactions else []
                         allowed = PROTON_REACTION_DATASETS[reaction]['norm']
@@ -175,6 +175,10 @@ def _render_stage_override_block(stage: ResolvedStage) -> str:
         f"conf['ht'] = {bool(stage.qcd.get('higherTwist', False))!r}",
         f"conf['dglap mode'] = {stage.qcd.get('dglapMode', 'truncated')!r}",
         f"conf['alphaSmode'] = {stage.qcd.get('asMode', 'backward')!r}",
+        f"conf['beta version'] = {stage.qcd.get('betaVersion', 1)!r}",
+        f"conf['sia version'] = {stage.qcd.get('siaVersion', 1)!r}",
+        "[conf.pop(_obsolete, None) for _obsolete in ('sea_type', 'strange off', 's_veto', 'grid-8 path')]",
+        f"conf['flat par'] = {(stage.params.get('initializationMode') or stage.params.get('initialization')) == 'random_within_bounds'!r}",
         *([f"conf['grid path'] = {stage.qcd.get('grid_path')!r}"] if stage.qcd.get('grid_path') else []),
         f"conf['bootstrap'] = {bool(stage.job.get('bootstrap', False))!r}",
         "conf['resample version'] = 0",
@@ -194,27 +198,29 @@ def _render_stage_override_block(stage: ResolvedStage) -> str:
 
 def materialize_stage_input(template_path: str | Path, output_path: str | Path, stage: ResolvedStage,
                             fitpack_root: str | Path | None = None) -> str:
+    for key in ('betaVersion', 'siaVersion'):
+        value = stage.qcd.get(key, 1)
+        if type(value) is not int or value not in (0, 1):
+            raise ValueError(f'{key} must be integer 0 or 1')
     ff_blocks = {}
     for reaction in ('sidis', 'sia'):
         if reaction not in stage.reactions:
             continue
         if not stage.datasets.get(reaction):
             raise ValueError(f'{reaction}: select at least one dataset')
-        cutoff = None
+        cutoff, w2cut = None, 10.0
         if reaction == 'sidis':
-            cuts = stage.cuts.get('sidis', stage.cuts.get('idis', []))
-            qcuts = [cut for cut in cuts if cut.get('enabled', True)
-                     and cut.get('variable') == 'Q2' and cut.get('op', '>') == '>']
-            if len(qcuts) != 1 or sum(bool(cut.get('enabled', True)) for cut in cuts) != 1:
-                raise ValueError('SIDIS requires exactly its configured Q2 > cutoff, without other cuts')
-            cutoff = qcuts[0]['value']
-        ff_blocks[reaction] = configuration_dataset_block(reaction, stage.datasets.get(reaction, []), cutoff)
-        if reaction == 'sia' and 'sia' in stage.cuts:
-            supplied = stage.cuts['sia']
-            if isinstance(supplied, dict):
-                supplied = {int(idx): value for idx, value in supplied.items()}
-            if supplied != ff_blocks['sia']['filters']:
-                raise ValueError('SIA cuts must match the selected authoritative dataset definitions')
+            cuts = stage.cuts.get('idis', stage.cuts.get('sidis', []))
+            cutoff, w2cut = sidis_dis_cut_values(cuts)
+        overrides = {}
+        for sector in stage.params.get('sectors', []):
+            if sector.get('key') != 'norm': continue
+            for parameter in sector.get('parameters', []):
+                prefix = 'norm_' + reaction + '_'
+                if str(parameter.get('id', '')).startswith(prefix):
+                    overrides[str(parameter['id'])[len(prefix):]] = {k: parameter[k] for k in ('value', 'min', 'max', 'fixed')}
+        ff_blocks[reaction] = configuration_dataset_block(reaction, stage.datasets.get(reaction, []), cutoff,
+            w2cut=w2cut, normalizations=overrides, filters=stage.cuts.get('sia') if reaction == 'sia' else None)
     ff_objects = [key for key in FF_OBJECTS if key in stage.fit_objects or key in stage.frozen_objects]
     ff_params = {}
     for key in ff_objects:
