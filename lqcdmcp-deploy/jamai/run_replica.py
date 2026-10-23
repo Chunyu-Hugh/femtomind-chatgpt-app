@@ -20,8 +20,10 @@ on. Everything else is ai.py unchanged.
 from __future__ import annotations
 
 import os
+import json
 import runpy
 import sys
+from pathlib import Path
 
 
 def _wrap_least_squares(max_nfev: int | None, method: str | None) -> None:
@@ -69,6 +71,22 @@ def main() -> None:
     method = method if method in ('trf', 'dogbox') else None
     if max_nfev or method:
         _wrap_least_squares(max_nfev, method)
+    import argparse
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument('--manifest')
+    parser.add_argument('--replica', type=int, default=1)
+    prior_args, _ = parser.parse_known_args()
+    if prior_args.manifest:
+        from .campaign_manifest import _load_manifest_payload
+        manifest_path = Path(prior_args.manifest)
+        # The existing materializer emits JSON when optional PyYAML is absent.
+        try:
+            manifest = json.loads(manifest_path.read_text())
+        except json.JSONDecodeError:
+            manifest = _load_manifest_payload(manifest_path)
+        if manifest.get('params', {}).get('prior_replicas'):
+            from .prior_replicas import install
+            install(prior_args.replica)
     sys.argv = ['fitlib/ai.py', '--mode', 'fit'] + sys.argv[1:]
     _guard_status_report()
     runpy.run_module('fitlib.ai', run_name='__main__')

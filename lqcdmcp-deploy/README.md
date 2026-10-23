@@ -926,3 +926,94 @@ There is currently no reference-only import argument on that existing campaign
 tool, so the resolved records must still be supplied in the card. No jobs were
 submitted during this implementation; known historical reconstruction limitations
 remain separate from readiness to configure this updated campaign.
+
+
+### Prior-replica starts (local implementation; partial source-format support)
+
+Use the ordinary campaign card with `parameters.priorSource` and inspect it with
+`preview_prior_replicas(card)` before `validate_campaign` and the existing confirmed
+`submit_campaign`. No alternate executor or objective penalty is introduced.
+
+Example for two explicitly selected published source replicas:
+
+```json
+{"parameters":{"priorSource":{"kind":"archive","analysis_id":"JAM24.final","replica_ids":[0,1]}},"job":{"replicas":2}}
+```
+
+Sources are resolved server-side through existing user/workspace checks. Supported:
+registered numeric published archives; non-pickled structured `.npy` records with
+exact fields `replica, kind, object, parameter, value`; canonical JSON snapshots;
+and completed campaigns containing canonical `fitted_parameters.json` snapshots.
+For external NPY supply `scientific_settings` in the selector: `Q20`,
+`beta version` when fitting PDFs, and the relevant `ffpion parametrization`,
+`ffkaon parametrization`, `ffhadron parametrization` settings when fitting FFs.
+Missing or incompatible scale/parametrization metadata blocks preview/submission.
+Native FitPack `.msr` and order-bearing object-container NPY are supported by a
+data-only opcode reader. It reconstructs only primitive containers and observed
+numeric NumPy array states; it never invokes Python's pickle loader or serialized
+functions/classes. Unknown constructors/opcodes/layouts are explicitly rejected.
+The supplied NPY layout is `{conf, order, params}` with an ensemble matrix; the
+supplied MSR layout is `{order: {step: [...]}, params: {step: vector}, chi2: ...}`.
+Single-step MSR selects its only step. Multi-step files require explicit integer
+`step`; no implicit latest-step choice is made. Each vector is paired with its
+source step's own order, then mapped to target identities independently of position.
+NPY carries source conf metadata. MSR without conf requires explicit scientific
+metadata (or available saved campaign-card metadata), never guessed from its target.
+Completed campaign loading also supports legacy native MSR, with source file hashes
+and IDs. Missing fitted outputs require explicit source selection rather than an
+implicit omission. Existing campaign permissions and read roots are unchanged.
+
+Identity keys are FitPack triples `[1, object, coefficient]` or
+`[2, reaction, dataset_id]`. Values, identities, source hashes, scale and replica
+selection are frozen into the campaign manifest/input, not reread from mutable
+source files by each job. Source Q20 must match the destination Q20. No scale or
+parametrization conversion is implemented; compatible parameter definitions are
+required. Bounds mismatches are hard failures, not clamped values.
+
+Without `replica_ids`, source and job counts must match exactly. With explicit
+IDs, the list must contain exactly one unique source ID per requested job. Its
+order defines the mapping: element 0 -> zero-based job 0 -> Slurm replica 1.
+Repeating, truncating or reshuffling is never implicit. Reruns keep the same
+assignment; append is refused until a new explicit assignment is constructed.
+
+The application runner wraps native `MAXLIKE.get_guess`, lets native random /
+Gaussian sampling run, then overlays only matching free parameters and calls
+native `set_new_params` for links. It covers both the FitPack audit and optimizer
+instances. `prior_initialization.json` records effective starts before optimization.
+Absent parameters retain the native sampled values. Fixed/linked declarations
+are excluded. With no prior selected the wrapper is not installed.
+
+Adding SIDIS proton datasets to JAM24 introduces no new fit parameters: these
+measurements have no normalization parameters. New independent PDF/FF coefficients
+or normalizations in other analyses retain native random/Gaussian initialization.
+Removed or newly linked coefficients are excluded from the target free order;
+old independent source values for those identities are reported unused. The
+surviving independent identity supplies its own prior value, and native FitPack
+link propagation enforces the new dependencies (for example sea2 linked to sea1).
+Source values are never relabeled merely because the new fit has different links.
+
+Read-only checks against the supplied JAM24 NPY reproduce all 791 x 258 archived
+values exactly. Three supplied MSR examples contain step 1 and 205 ordered
+parameters; reordered target mappings were verified. Input hashes are unchanged.
+Remote source filenames use POSIX normalization even when a local MCP test host
+runs Windows. Native NPY/MSR fixtures and the supplied original NPY were checked
+through the actual local MCP handler and existing file-root checks, using the real
+JLab scientific worker. No permissions or permitted roots were changed. Source
+selection does not imply access to arbitrary filesystem locations; use a registered
+archive or an already authorized source. No user-facing replica upload/import tool
+is currently provided; inaccessible files must use an existing authorized file
+placement mechanism, not a new read-root exception.
+
+The isolated non-fitting end-to-end check uses `JAM24.current` plus the six
+registered COMPASS proton SIDIS datasets: 1115 (254 points), 1116 (254),
+2115 (250), 2116 (243), 3110 (254), 3111 (254), after the existing inclusive
+Z and DIS cuts. This adds 1,509 points: 3,037 SIDIS and 7,400 total, with
+104 configured/102 nonempty datasets. No parameters or normalizations are added.
+Published rows 0/1 match all 258 native free starting values for Slurm tasks 1/2,
+including `prior_initialization.json`, native PARMAN values and propagated links.
+Existing retained row identities, settings and all 297 archive file hashes are
+unchanged. The runner dispatch is intercepted before the fit module executes;
+native readers and native initialization are exercised separately, with no
+minimization or submission. Both resolved YAML and the materializer's JSON fallback
+are supported when detecting the prior assignment. A future real fitting run still
+requires ordinary campaign validation and explicit submission confirmation.

@@ -47,6 +47,7 @@ import inspect
 import json
 import math
 import os
+import posixpath
 import re
 import secrets
 import socket
@@ -276,6 +277,10 @@ def _run_ifarm_py(user, code, apptainer=False, timeout=300, cap=4000, extra_path
         # The command line is one SSH argument (at most 128 KiB): a long
         # script travels compressed and the host's python3 unpacks it.
         b64 = base64.b64encode(zlib.compress(code.encode(), 9)).decode()
+        if len(b64) > 60000:
+            # Large pinned ensembles/registry records must not become SSH argv.
+            runner = _container_exec(_workspace(user), extra_path, env) if apptainer else 'python3'
+            return _remote(user, runner + ' -', timeout=timeout, cap=cap, stdin=code)
         unpack = ("base64 -d | python3 -c " +
                   _shq("import sys, zlib; sys.stdout.buffer.write(zlib.decompress(sys.stdin.buffer.read()))"))
     if apptainer:
@@ -1366,6 +1371,7 @@ CAMPAIGN_CHOICES = {
     "order": ["LO", "NLO", "NNLO"], "tmc": ["off", "AOT"], "dglapMode": ["truncated", "iterated"],
     "asMode": ["backward", "forward"], "optimizer": ["trf", "dogbox"],
     "initialization": ["default", "random_within_bounds"],
+    "priorSource": {"kinds": ["archive", "file", "campaign"], "mapping": "exact count or explicit unique replica_ids", "native_msr": "order-bearing supported layouts; select step explicitly when multiple steps exist"},
     "betaVersion": [0, 1], "siaVersion": [0, 1],
 }
 
@@ -2012,6 +2018,8 @@ def _normalize_card(card, library):
         if type(q[key]) is not int or q[key] not in (0, 1):
             errors.append(f"QCD {key} must be integer 0 or 1.")
     # parameter initialization
+    if "priorSnapshot" in (card.get("parameters") or {}):
+        errors.append("priorSnapshot is server-generated; select parameters.priorSource instead")
     pi = {**CAMPAIGN_DEFAULTS["parameters"], **(card.get("parameters") or {})}
     if pi["initialization"] not in CAMPAIGN_CHOICES["initialization"]:
         errors.append(f"Parameter initialization must be one of {CAMPAIGN_CHOICES['initialization']}.")
@@ -2097,6 +2105,7 @@ def _card_summary(norm):
             "fit_objects": norm.get("fit_objects", ["pdf"]),
             "frozen_objects": norm.get("frozen_objects", []),
             "library_sources": norm.get("library_sources", {}),
+            "prior_replicas": norm.get("prior_preview"),
             "dis_version": object_registry.dis_version_for(norm.get("fit_objects", ["pdf"])),
             "dis_compatibility": object_registry.DIS_COMPATIBILITY,
             "free_parameters": len(free), "fixed_parameters": len(fixed),
@@ -2150,7 +2159,7 @@ def _campaign_yaml(ws, folder, norm, nreplicas):
                     "nreplicas": nreplicas, "previous_stage": None, "output_dir": f"stages/{STAGE}",
                     "datasets": {r: [int(x) for x in ids] for r, ids in norm["datasets"].items()},
                     "cuts": norm["cuts"],
-                    "params": {"initializationMode": init, "randomSeed": pi["randomSeed"],
+                    "params": {**({"prior_replicas": pi["priorSnapshot"]} if pi.get("priorSnapshot") else {}), "initializationMode": init, "randomSeed": pi["randomSeed"],
                                "perReplicaSeed": pi["perReplicaSeed"], "baseSeed": seed,
                                "ff_parameters": {key: {p["name"]: {field: value for field, value in p.items()
                                                                         if field not in ("name", "sector")}
@@ -2410,9 +2419,102 @@ def _checked_card(u, card):
                               + " ".join(warnings))
             elif sum(points[key] for key in selected) <= 0:
                 errors.append(f"{reaction}: no data points remain after the authoritative cuts; choose at least one nonempty dataset.")
+    if not errors and norm['parameters'].get('priorSource') is not None:
+        try:
+            snapshot, report = _prepare_prior_replicas(u, norm)
+            norm['parameters']['priorSnapshot'] = snapshot
+            norm['prior_preview'] = report
+        except (ValueError, RuntimeError) as exc:
+            errors.append(str(exc))
     if errors:
         return None, {"status": "invalid", "valid": False, "errors": errors}
     return norm, None
+
+
+def _prepare_prior_replicas(u, norm):
+    from jamai import prior_replicas, replica_formats
+    selector = norm['parameters']['priorSource']
+    if not isinstance(selector,dict) or set(selector)-{'kind','analysis_id','path','collection_id','replica_ids','scientific_settings','step'}:
+        raise ValueError('priorSource must be a supported source descriptor')
+    if not isinstance(selector.get('scientific_settings',{}),dict):
+        raise ValueError('Source scientific_settings must be an object')
+    if selector.get('replica_ids') is not None and not isinstance(selector['replica_ids'],list):
+        raise ValueError('replica_ids must be an explicit list')
+    kind = selector.get('kind')
+    required = {'archive':'analysis_id','file':'path','campaign':'collection_id'}.get(kind)
+    if required is None or not isinstance(selector.get(required),str) or not selector[required].strip():
+        raise ValueError('Select a source kind and its nonempty analysis_id, path, or collection_id')
+    if kind == 'archive':
+        manifest = _analysis_results_store().resolve(selector['analysis_id'])
+        directories = analysis_results.archive_directories(manifest)
+        if any(_outside_read_roots(p, u) for p in directories):
+            raise ValueError('Archive is outside the existing authorized read roots')
+        spec = {'kind': 'archive', 'directory': directories[0], 'manifest_sha256': manifest['archive_manifest_sha256']}
+        source_config = _analysis_catalog_store()._entry(manifest['analysis_id'])['config']
+        source_settings = {x['key']:x['value'] for x in source_config['source_verification']['global_input_settings']}
+        spec['scientific_settings'] = {k:v for k,v in source_settings.items() if k in ('Q20','beta version') or k.endswith(' parametrization')}
+
+    elif kind == 'file':
+        # This names a remote JLab POSIX file, independent of the gateway/test host OS.
+        path = posixpath.normpath(selector['path'])
+        if _outside_read_roots(path, u): raise ValueError('Prior source is outside existing authorized read roots')
+        spec = {'kind': 'file', 'path': path, 'scientific_settings':selector.get('scientific_settings',{}), 'step':selector.get('step')}
+    elif kind == 'campaign':
+        entry = _collection(u, selector['collection_id'])
+        if not entry or entry.get('status') != 'postprocessed': raise ValueError('Select a completed, postprocessed campaign')
+        spec = {'kind':'campaign','directory':entry['workspace_path']+'/'+CAMPAIGNS_DIR+'/'+entry['campaign_folder'],'step':selector.get('step'),'scientific_settings':selector.get('scientific_settings',{})}
+        spec['expected_count'] = entry.get('replicas')
+        spec['explicit_selection'] = selector.get('replica_ids') is not None
+        saved = entry.get('input_card',{}).get('qcd',{})
+        if saved and not spec['scientific_settings']:
+            spec['scientific_settings'] = {'Q20':saved.get('Q20'),'beta version':saved.get('betaVersion',1)}
+    else: raise ValueError('Prior kind must be archive, file, or campaign')
+    with open(prior_replicas.__file__, encoding='utf-8') as handle: source = handle.read()
+    with open(replica_formats.__file__, encoding='utf-8') as handle: source += '\n'+handle.read()
+    source += '\nprint(json.dumps(select(load_source('+repr(spec)+',read),'+repr(norm['job']['replicas'])+','+repr(selector.get('replica_ids'))+'),allow_nan=False))\n'
+    reply = _run_ifarm_py(u, source, apptainer=True, timeout=120, cap=16000000)
+    if reply.get('rc'): raise ValueError('Prior replica inspection failed: '+(reply.get('err') or '')[-1200:])
+    data = prior_replicas.verify(json.loads(reply['out']))
+    source_scale = data['provenance'].get('scientific_settings',{}).get('Q20')
+    source_objects={key[1] for key in data['order'] if key[0]==1}
+    matching_objects=source_objects & {p.get('sector','pdf') for p in norm['parameters_table'] if p['fixed'] is False}
+    if matching_objects and (source_scale is None or source_scale != norm['qcd']['Q20']):
+        raise ValueError('Prior source Q20 metadata is required and must match the campaign; no scale conversion is performed')
+    metadata = data['provenance'].get('scientific_settings',{})
+    expected_settings = {}
+    if 'pdf' in matching_objects: expected_settings['beta version'] = norm['qcd'].get('betaVersion',1)
+    for key in matching_objects:
+        if key in ff_registry.FF_OBJECTS: expected_settings[key+' parametrization'] = ff_registry.ff_library(key)['parametrization']
+    for key, value in expected_settings.items():
+        if key not in metadata or type(metadata[key]) is not type(value) or metadata[key] != value:
+            raise ValueError('Missing or incompatible source parametrization metadata: '+key)
+    definitions = {}
+    for p in norm['parameters_table']:
+        if p['fixed'] is False:
+            definitions[(1, p.get('sector','pdf'), p['name'])] = p
+    for reaction, entries in norm['normalizations'].items():
+        for dataset, p in entries.items():
+            if p['fixed'] is False: definitions[(2,reaction,str(dataset))] = p
+    reports=[]
+    for i in range(len(data['replicas'])):
+        _, report = prior_replicas.apply(data,i+1,list(definitions),[0.]*len(definitions),definitions.__getitem__)
+        reports.append(report)
+    first=reports[0]
+    if not first['matched']: raise ValueError('No prior parameters match the active campaign')
+    return data, {'snapshot_sha256':data['sha256'],'provenance':data['provenance'],
+                  'matched':first['matched'],'missing_newly_initialized':first['newly_initialized'],
+                  'excluded_fixed_or_linked':[{'object':p.get('sector','pdf'),'parameter':p['name'],'fixed':p['fixed']} for p in norm['parameters_table'] if p['fixed'] is not False],
+                  'unused_source':first['unused_source'],'incompatible':[],
+                  'assignments':[{'slurm_replica':x['slurm_replica'],'job_index_zero_based':x['job_index_zero_based'],'source_replica_id':x['source_replica_id']} for x in reports],
+                  'policy':'Exact count or explicit unique replica_ids; no repetition, omission or reshuffling by default'}
+
+
+def preview_prior_replicas(card=None, username=''):
+    u, error = _need_user(username)
+    if error: return error
+    norm, error = _checked_card(u, card)
+    if error: return error
+    return {'status':'ok','preview':norm.get('prior_preview'), 'read_only':True}
 
 
 def _validated(u, norm):
@@ -2793,6 +2895,8 @@ def append_replicas(collection_id="", count=0, confirm="", username=""):
             raise ValueError
     except (TypeError, ValueError):
         return {"status": "error", "message": "count must be between 1 and 2000."}
+    if e.get('input_card',{}).get('parameters',{}).get('priorSnapshot'):
+        return {'status':'error','message':'Appending requires a new explicit prior assignment; create a new validated campaign instead of silently reusing replicas.'}
     first, last = int(e["replicas"]) + 1, int(e["replicas"]) + count
     plan = {"collection_id": collection_id, "current_replicas": e["replicas"], "add": count,
             "new_total": last, "replica_range": f"{first}-{last}",
@@ -10166,6 +10270,13 @@ TOOLS = {
                 "datasets keep no point at all after the cuts is refused. " + 'card = {"object": {"type": "pdf", "parameters": {"g1 a": {"value", "min", "max", "fixed": true|false, "equal_to": "uv1 a"}, ...}}, "reactions": ["idis", "dy"], "datasets": {"idis": ["10010", ...]}, "normalizations": {"idis": {"10010": {"value", "min", "max", "fixed": true|false|"<id of another selected dataset whose normalization this one equals>"}}} (only for datasets campaign_datasets lists with a normalization), "cuts": {"idis": [{"variable": "Q2", "op": ">", "value": 1.69, "enabled": true}]}, "qcd": {"order", "Q20", "tmc": "off"|"AOT", "higherTwist", "dglapMode", "asMode", "pdfPositivity": true|false, "ffpionPositivity": true|false, "ffkaonPositivity": true|false, "ffhadronPositivity": true|false}, "parameters": {"initialization": "default"|"random_within_bounds", "randomSeed", "perReplicaSeed"}, "job": {"campaignName", "replicas", "maxIterations", "tolerance", "optimizer", "bootstrap"}, "slurm": {"partition" ("" = auto), "time" (per replica, HH:MM:SS), "mem", "cpus"}}. Only parameters the user changed need to be listed; the rest keep the library values, and only changed rows are written into the card. A parameter switched to FREE needs a min and a max.',
         "schema": {"type": "object", "properties": {"card": {"type": "object"}}, "required": ["card"]},
         "fn": lambda a: validate_campaign(a.get("card"))},
+    "preview_prior_replicas": {
+        "compact": True,
+        "desc": "Read-only validated starting-value mapping. Set card.parameters.priorSource: {kind: archive, analysis_id: JAM24.final, replica_ids: [0,1]} or {kind: file, path: absolute numeric NPY path, scientific_settings: {Q20: source_scale}, replica_ids: [...]}. Provide source scientific_settings Q20, beta version for PDFs, and relevant FF parametrizations; mismatches are blocked. Count must match jobs unless explicit IDs are supplied. Linked/fixed values are never overwritten; unmatched free parameters retain random initialization. Campaigns may use canonical snapshots or native MSR. Native NPY/MSR use source order; multi-step files require explicit step selection. Unsupported serialized constructors are rejected.",
+        "schema": {"type":"object","required":["card"],"properties":{"card":{"type":"object"},"username":{"type":"string"}}},
+        "annotations": {"readOnlyHint":True,"destructiveHint":False},
+        "fn": lambda a: preview_prior_replicas(a.get("card"), a.get("username", "")),
+    },
     "submit_campaign": {
         "desc": "Submit Jobs: materialize the card and submit one Slurm array task per replica. "
                 + ("" if FF_EXECUTION_ENABLED else "Rejects SIDIS/SIA configuration-only cards before uploads or job creation. ") +

@@ -185,6 +185,7 @@ def _render_stage_override_block(stage: ResolvedStage) -> str:
         # Explicit campaign choices override template defaults. Legacy manifests
         # without these fields retain the previous all-enabled behavior.
         *[f"conf[{(obj + ' positivity')!r}] = {value!r}" for obj, value in positivity.items()],
+        *([f"conf['jamai prior replicas'] = {stage.params['prior_replicas']!r}"] if stage.params.get('prior_replicas') else ["conf.pop('jamai prior replicas', None)"]),
         f"conf['jamai parameter initialization'] = {stage.params.get('initializationMode') or stage.params.get('initialization', 'default_prior')!r}",
         f"conf['jamai parameter random seed'] = {stage.params.get('randomSeed', None)!r}",
         f"conf['jamai per replica seed'] = {bool(stage.params.get('perReplicaSeed', True))!r}",
