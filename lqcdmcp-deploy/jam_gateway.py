@@ -2474,7 +2474,7 @@ def _prepare_prior_replicas(u, norm):
     source += '\nprint(json.dumps(select(load_source('+repr(spec)+',read),'+repr(norm['job']['replicas'])+','+repr(selector.get('replica_ids'))+'),allow_nan=False))\n'
     reply = _run_ifarm_py(u, source, apptainer=True, timeout=120, cap=16000000)
     if reply.get('rc'): raise ValueError('Prior replica inspection failed: '+(reply.get('err') or '')[-1200:])
-    data = prior_replicas.verify(json.loads(reply['out']))
+    data = json.loads(reply['out'])  # preview below verifies the complete snapshot once
     source_scale = data['provenance'].get('scientific_settings',{}).get('Q20')
     source_objects={key[1] for key in data['order'] if key[0]==1}
     matching_objects=source_objects & {p.get('sector','pdf') for p in norm['parameters_table'] if p['fixed'] is False}
@@ -2495,23 +2495,23 @@ def _prepare_prior_replicas(u, norm):
     for reaction, entries in norm['normalizations'].items():
         for dataset, p in entries.items():
             if p['fixed'] is False: definitions[(2,reaction,str(dataset))] = p
-    reports=[]
-    for i in range(len(data['replicas'])):
-        _, report = prior_replicas.apply(data,i+1,list(definitions),[0.]*len(definitions),definitions.__getitem__)
-        reports.append(report)
-    first=reports[0]
+    first = prior_replicas.preview(data, list(definitions), definitions.__getitem__)
     if not first['matched']: raise ValueError('No prior parameters match the active campaign')
     return data, {'snapshot_sha256':data['sha256'],'provenance':data['provenance'],
                   'matched':first['matched'],'missing_newly_initialized':first['newly_initialized'],
                   'excluded_fixed_or_linked':[{'object':p.get('sector','pdf'),'parameter':p['name'],'fixed':p['fixed']} for p in norm['parameters_table'] if p['fixed'] is not False],
                   'unused_source':first['unused_source'],'incompatible':[],
-                  'assignments':[{'slurm_replica':x['slurm_replica'],'job_index_zero_based':x['job_index_zero_based'],'source_replica_id':x['source_replica_id']} for x in reports],
+                  'assignments':first['assignments'],
                   'policy':'Exact count or explicit unique replica_ids; no repetition, omission or reshuffling by default'}
 
 
 def preview_prior_replicas(card=None, username=''):
     u, error = _need_user(username)
     if error: return error
+    return _campaign_task(u, 'preview_prior_replicas', card, lambda snapshot: _preview_prior_replicas(u, snapshot))
+
+
+def _preview_prior_replicas(u, card):
     norm, error = _checked_card(u, card)
     if error: return error
     return {'status':'ok','preview':norm.get('prior_preview'), 'read_only':True}
@@ -2795,12 +2795,34 @@ def _configuration_preview(u, card):
             "dataset_configuration": blocks, "input_preview": fragment if not errors else ""}
 
 
+CAMPAIGN_WAIT = 5  # bounded response/poll wait; scientific work continues in the existing job queue
+
+
+def _campaign_task(u, kind, card, fn, confirm=""):
+    # Freeze the request before a background thread uses it. Do not echo the
+    # full card or prior arrays in running replies; the digest still joins only
+    # identical in-flight requests, including the submission confirmation.
+    try:
+        encoded = json.dumps(card, separators=(',', ':'), allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        return {'status': 'invalid', 'valid': False, 'errors': ['Invalid campaign card: ' + str(exc)]}
+    snapshot = json.loads(encoded)
+    canonical = json.dumps(snapshot, sort_keys=True, separators=(',', ':'), allow_nan=False)
+    params = {'card_sha256': hashlib.sha256(canonical.encode()).hexdigest(),
+              'confirmation_sha256': hashlib.sha256((confirm or '').encode()).hexdigest()}
+    return _background(u, kind, params, lambda: fn(snapshot), wait=CAMPAIGN_WAIT)
+
+
 def validate_campaign(card=None, username=""):
     """Validate an input card and show what would run, with the confirmation
     phrase submit_campaign needs, and warnings about the selected data."""
     u, err = _need_user(username)
     if err:
         return err
+    return _campaign_task(u, 'validate_campaign', card, lambda snapshot: _validate_campaign(u, snapshot))
+
+
+def _validate_campaign(u, card):
     if _configuration_reactions(card):
         return _configuration_preview(u, card)
     norm, err = _checked_card(u, card)
@@ -2824,6 +2846,10 @@ def submit_campaign(card=None, confirm="", username=""):
     u, err = _need_user(username)
     if err:
         return err
+    return _campaign_task(u, 'submit_campaign', card, lambda snapshot: _submit_campaign(u, snapshot, confirm), confirm)
+
+
+def _submit_campaign(u, card, confirm):
     if _configuration_reactions(card):
         return _unsupported_configuration_fit(card)
     norm, err = _checked_card(u, card)
@@ -3286,17 +3312,23 @@ _JOBS_LOCK = threading.Lock()
 def _job_reply(job, wait):
     if job["done"].wait(wait):
         out = dict(job["result"]) if isinstance(job["result"], dict) else {"status": "ok", "result": job["result"]}
-        out["job_id"] = job["job_id"]
+        if job['kind'] == 'submit_campaign' and 'job_id' in out:
+            out['preparation_job_id'] = job['job_id']  # preserve the actual Slurm job_id
+        else:
+            out["job_id"] = job["job_id"]
         return out
+    campaign = job['kind'] in ('validate_campaign', 'preview_prior_replicas', 'submit_campaign')
     return {"status": "running", "job_id": job["job_id"], "kind": job["kind"],
             "collection_id": job["params"].get("collection_id"), "request": job["params"],
             "elapsed_s": round(time.time() - job["started"]),
-            "message": "Still computing on the cluster (the first evaluation of these replicas takes "
+            "message": ("Campaign preparation is still running; no confirmation requirement is skipped. "
+                       "Poll analysis_result with this job_id until complete; do not repeat the original call."
+                       if campaign else "Still computing on the cluster (the first evaluation of these replicas takes "
                        "minutes; later ones read the cache). Call analysis_result with this job_id to wait "
-                       "for it. Do not start the analysis again."}
+                       "for it. Do not start the analysis again.")}
 
 
-def _background(u, kind, params, fn):
+def _background(u, kind, params, fn, wait=None):
     key = json.dumps([u, kind, params], sort_keys=True, default=str)
     now = time.time()
     with _JOBS_LOCK:
@@ -3305,7 +3337,8 @@ def _background(u, kind, params, fn):
         job = next((x for x in _JOBS.values() if x["key"] == key and not x["done"].is_set()), None)
         if job is None:
             job = {"job_id": secrets.token_hex(6), "key": key, "kind": kind, "params": params, "user": u,
-                   "started": now, "finished": None, "done": threading.Event(), "result": None}
+                   "started": now, "finished": None, "done": threading.Event(), "result": None,
+                   "wait": JOB_WAIT if wait is None else wait}
             _JOBS[job["job_id"]] = job
 
             def run():
@@ -3319,7 +3352,7 @@ def _background(u, kind, params, fn):
                     job["done"].set()
 
             threading.Thread(target=run, name=f"job-{kind}", daemon=True).start()
-    return _job_reply(job, JOB_WAIT)
+    return _job_reply(job, job['wait'])
 
 
 def analysis_result(job_id="", username=""):
@@ -3333,7 +3366,7 @@ def analysis_result(job_id="", username=""):
         return {"status": "error", "message": f"No analysis job {job_id!r} (jobs are kept {JOB_KEEP // 3600} h "
                                               "and not across a gateway restart): run the analysis again; "
                                               "what was already computed is cached."}
-    return _job_reply(job, JOB_WAIT)
+    return _job_reply(job, job.get('wait', JOB_WAIT))
 
 
 # ---- analysis ---------------------------------------------------------------------
@@ -10252,7 +10285,9 @@ TOOLS = {
                  if FF_EXECUTION_ENABLED else
                  "SIDIS/SIA selections return a dataset-only input fragment with configuration_valid and "
                  "fit_ready=false, never a runnable fit or submission confirmation. ") +
-                "Create Input Card: validate the composer card and return the summary (free/fixed "
+                "Create Input Card: validate the composer card and return the summary. If status=running, "
+                "poll analysis_result(job_id) until complete; each campaign call/poll waits at most about 5 seconds. "
+                "Never repeat the original request while running. No campaign is created by validation. (Free/fixed "
                 "parameters per object. Additive card.objects=[{type:'pdf',parameters:{}},"
                 "{type:'pdf-pion',parameters:{}}] selects one or both; card.companions={'p->pi,n':"
                 "{parameters:{...}}} edits the fitted leading-neutron companion. Legacy card.object "
@@ -10272,7 +10307,7 @@ TOOLS = {
         "fn": lambda a: validate_campaign(a.get("card"))},
     "preview_prior_replicas": {
         "compact": True,
-        "desc": "Read-only validated starting-value mapping. Set card.parameters.priorSource: {kind: archive, analysis_id: JAM24.final, replica_ids: [0,1]} or {kind: file, path: absolute numeric NPY path, scientific_settings: {Q20: source_scale}, replica_ids: [...]}. Provide source scientific_settings Q20, beta version for PDFs, and relevant FF parametrizations; mismatches are blocked. Count must match jobs unless explicit IDs are supplied. Linked/fixed values are never overwritten; unmatched free parameters retain random initialization. Campaigns may use canonical snapshots or native MSR. Native NPY/MSR use source order; multi-step files require explicit step selection. Unsupported serialized constructors are rejected.",
+        "desc": "Read-only validated starting-value mapping. If status=running, poll analysis_result(job_id) until complete instead of repeating this request. Set card.parameters.priorSource: {kind: archive, analysis_id: JAM24.final, replica_ids: [0,1]} or {kind: file, path: absolute numeric NPY path, scientific_settings: {Q20: source_scale}, replica_ids: [...]}. Provide source scientific_settings Q20, beta version for PDFs, and relevant FF parametrizations; mismatches are blocked. Count must match jobs unless explicit IDs are supplied. Linked/fixed values are never overwritten; unmatched free parameters retain random initialization. Campaigns may use canonical snapshots or native MSR. Native NPY/MSR use source order; multi-step files require explicit step selection. Unsupported serialized constructors are rejected.",
         "schema": {"type":"object","required":["card"],"properties":{"card":{"type":"object"},"username":{"type":"string"}}},
         "annotations": {"readOnlyHint":True,"destructiveHint":False},
         "fn": lambda a: preview_prior_replicas(a.get("card"), a.get("username", "")),
@@ -10281,7 +10316,9 @@ TOOLS = {
         "desc": "Submit Jobs: materialize the card and submit one Slurm array task per replica. "
                 + ("" if FF_EXECUTION_ENABLED else "Rejects SIDIS/SIA configuration-only cards before uploads or job creation. ") +
                 "Needs confirm = the phrase from validate_campaign, after the user has seen the "
-                "summary and the Slurm script and agreed.",
+                "summary and the Slurm script and agreed. If status=running, poll analysis_result(job_id) "
+                "until the final result; do not repeat submit_campaign. Scientific checks and confirmation "
+                "are still required before any upload or Slurm submission.",
         "schema": {"type": "object", "properties": {"card": {"type": "object"}, "confirm": {"type": "string"}},
                    "required": ["card"]},
         "fn": lambda a: submit_campaign(a.get("card"), a.get("confirm", ""))},
@@ -10419,7 +10456,9 @@ TOOLS = {
                                               datasets=a.get("datasets", ""), export_png=a.get("export_png", False),
                                               replicas=a.get("replicas"))},
     "analysis_result": {
-        "desc": "Wait for a long analysis that answered status running (analyze_by_experiment, "
+        "desc": "Wait for a long analysis or campaign preparation that answered status running. "
+                "validate_campaign, preview_prior_replicas and submit_campaign results use about 5-second polls. "
+                "Other analyses (analyze_by_experiment, "
                 "campaign_pdf_plots): returns its result when done, or running again after about 40 s. "
                 "Call it again with the same job_id until it is done; never restart the analysis.",
         "schema": {"type": "object", "properties": {"job_id": {"type": "string"}}, "required": ["job_id"]},

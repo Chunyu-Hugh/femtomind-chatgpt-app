@@ -41,20 +41,52 @@ def select(data,n,replica_ids=None):
     chosen['sha256']=digest({k:v for k,v in chosen.items() if k!='sha256'})
     return chosen
 
+def _mapping(data,order,definitions):
+    """Build the target-first identity map once, independent of replica values."""
+    source={identity(raw):i for i,raw in enumerate(data['order'])}
+    keys=list(map(identity,order));matched=[];missing=[];entries=[]
+    for i,key in enumerate(keys):
+        definition=definitions(key)
+        if definition.get('fixed') is not False:raise ValueError('Runtime free order contains fixed/linked parameter')
+        if key not in source:missing.append(list(key));continue
+        entries.append((i,source[key],key,definition.get('min'),definition.get('max')))
+        matched.append(list(key))
+    target=set(keys)
+    return entries,{'matched':matched,'newly_initialized':missing,
+                    'unused_source':[list(k) for k in source if k not in target],'snapshot_sha256':data['sha256']}
+
+def _values(row,entries):
+    incompatible=[];values=[]
+    for target,source,key,lo,hi in entries:
+        value=row['values'][source]
+        if lo is None or hi is None or not lo<=value<=hi:
+            incompatible.append({'identity':list(key),'value':value,'bounds':[lo,hi]})
+        values.append((target,value))
+    if incompatible:raise ValueError('Incompatible prior bounds: '+json.dumps(incompatible)+'; source replica '+row['id'])
+    return values
+
+def preview(data,order,definitions):
+    """Validate the full ensemble once, then check every assigned value in O(N*P).
+
+    Reports share one identity map; scientific value arrays stay server-side.
+    This is deliberately not a cache: each new request verifies its source.
+    """
+    verify(data)
+    entries,report=_mapping(data,order,definitions)
+    assignments=[]
+    for i,row in enumerate(data['replicas']):
+        _values(row,entries)
+        assignments.append({'job_index_zero_based':i,'slurm_replica':i+1,'source_replica_id':row['id']})
+    return {**report,'assignments':assignments}
+
 def apply(data,replica,order,guess,definitions):
     verify(data)
     if type(replica) is not int or not 1<=replica<=len(data['replicas']):raise ValueError('Slurm job has no assigned prior replica')
-    row=data['replicas'][replica-1];source=dict(zip(map(identity,data['order']),row['values']))
-    result=guess.copy();matched=[];missing=[];incompatible=[]
-    for i,raw in enumerate(order):
-        key=identity(raw);definition=definitions(key)
-        if definition.get('fixed') is not False:raise ValueError('Runtime free order contains fixed/linked parameter')
-        if key not in source:missing.append(list(key));continue
-        value=source[key];lo=definition.get('min');hi=definition.get('max')
-        if lo is None or hi is None or not lo<=value<=hi:incompatible.append({'identity':list(key),'value':value,'bounds':[lo,hi]});continue
-        result[i]=value;matched.append(list(key))
-    if incompatible:raise ValueError('Incompatible prior bounds: '+json.dumps(incompatible))
-    return result,{'job_index_zero_based':replica-1,'slurm_replica':replica,'source_replica_id':row['id'],'matched':matched,'newly_initialized':missing,'unused_source':[list(k) for k in source if k not in set(map(identity,order))],'snapshot_sha256':data['sha256']}
+    row=data['replicas'][replica-1]
+    entries,report=_mapping(data,order,definitions)
+    result=guess.copy()
+    for i,value in _values(row,entries):result[i]=value
+    return result,{**report,'job_index_zero_based':replica-1,'slurm_replica':replica,'source_replica_id':row['id']}
 
 def load_source(spec, native_read=None):
     import numpy as np

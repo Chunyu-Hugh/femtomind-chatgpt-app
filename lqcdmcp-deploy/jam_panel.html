@@ -1536,7 +1536,7 @@
     $("createCard").disabled = true; $("submitErr").textContent = "";
     $("cStatus").innerHTML = '<span class="spin" style="padding:0">Validating on the cluster…</span>';
     let v;
-    try { v = await call("validate_campaign", {card}); }
+    try { v = await settleCampaign(await call("validate_campaign", {card}), ()=>rev === cardRev, "Validating on the cluster"); }
     catch(e){ v = {valid: false, errors: ["Validation failed: "+(e && e.message || e)]}; }
     if (rev === cardRev) validated = v;
     $("createCard").disabled = submitting; paintValidation();
@@ -1550,7 +1550,7 @@
     submitting = true; $("submitJobs").disabled = true; $("createCard").disabled = true; $("submitErr").textContent = "";
     $("cStatus").innerHTML = '<span class="spin" style="padding:0">Submitting…</span>';
     try{
-      const r = await call("submit_campaign", {card, confirm: validated.confirmation_phrase});
+      const r = await settleCampaign(await call("submit_campaign", {card, confirm: validated.confirmation_phrase}), ()=>true, "Preparing submission");
       if (r && r.status === "submitted"){
         submitted = {collection_id: r.collection_id, job_id: r.job_id, replicas: r.replicas, partition: r.partition};
         persist(); cSync();
@@ -1566,6 +1566,14 @@
     } catch(e){ $("submitErr").textContent = "Submit failed: "+(e && e.message || e); }
     submitting = false; $("createCard").disabled = false; paintValidation();
   };
+  async function settleCampaign(r, current, label){
+    while (r && r.status === "running" && r.job_id){
+      if (!current()) return null;
+      $("cStatus").innerHTML = '<span class="spin" style="padding:0">'+esc(label)+'… '+Math.round(r.elapsed_s || 0)+' s</span>';
+      r = await call("analysis_result", {job_id: r.job_id});
+    }
+    return current() ? r : null;
+  }
   function cSync(){
     // Until the composer has loaded there is no card to edit: only the first two
     // steps, which carry the note, can be shown.

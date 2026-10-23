@@ -934,6 +934,29 @@ Use the ordinary campaign card with `parameters.priorSource` and inspect it with
 `preview_prior_replicas(card)` before `validate_campaign` and the existing confirmed
 `submit_campaign`. No alternate executor or objective penalty is introduced.
 
+Campaign validation, prior preview, and submission use the existing background
+job mechanism. A fast request returns the usual final result. Otherwise, within
+about five seconds it returns `status="running"` and a `job_id`; call
+`analysis_result(job_id)` until the final result arrives. Campaign polls also
+wait at most about five seconds. Do not repeat the original request, especially
+a confirmed submission. The composer follows this continuation automatically.
+Validation and unconfirmed submission preparation never create a campaign or
+submit a Slurm job. All scientific checks and the existing confirmation phrase
+still apply before submission. As with existing analysis jobs, pending jobs are
+process-local and are not retained across gateway restarts.
+If the gateway restarts during a confirmed submission, check `list_campaigns`
+and `campaign_status` before attempting another submission. A completed
+submission retains its Slurm `job_id`; `preparation_job_id` identifies the
+background preparation separately.
+
+Prior preview verifies the immutable snapshot once per ensemble, builds one
+target-first scientific identity map, and checks the bounds of **every** matched
+value in **every** assigned replica. It returns the full deterministic assignment
+list and one shared parameter-identity report, without returning replica value
+arrays. No completed-validation cache is used: a new validation or submission
+checks the current source again. Identical in-flight requests join the same job;
+polling does not reload sources, repeat remote checks, or redo the mapping.
+
 Example for two explicitly selected published source replicas:
 
 ```json
