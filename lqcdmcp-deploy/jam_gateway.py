@@ -2753,7 +2753,9 @@ def submit_campaign(card=None, confirm="", username=""):
            f"mkdir -p {qs}/current {qs}/slurm {log_dir} && "
            f"echo {script_b64} | base64 -d > {qs}/slurm/array_1_{n}.sh && "
            f"sbatch {qs}/slurm/array_1_{n}.sh")
-    r = _remote(u, mat, timeout=600)
+    # The manifest can exceed the OS limit for one SSH command argument.
+    # Stream the unchanged materialize/submit script through existing stdin.
+    r = _remote(u, "bash -s", timeout=600, stdin=mat)
     out = (r.get("out") or "") + (r.get("err") or "")
     m = re.search(r"Submitted batch job (\d+)", out)
     if not m:
