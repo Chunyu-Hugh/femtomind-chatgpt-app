@@ -335,6 +335,9 @@ CONFIGURATION_METADATA = {'sia': {1001: {'experiment': 'TASSO (12 GeV)', 'label'
 
 
 # These two included datasets have no filter definition in the supplied excerpt.
+# configuration_dataset_block refuses them unless their cuts are given: FitPack's
+# reader stops on a dataset that has no entry in a per-dataset filter mapping,
+# and both keep no points after cuts anyway.
 SIA_DATASETS_WITHOUT_FILTERS = (1012, 2012)
 
 
@@ -371,6 +374,12 @@ def configuration_dataset_block(reaction: str, dataset_ids, q2cut=None, w2cut=10
     unknown = selected - canonical['xlsx'].keys()
     if unknown:
         raise ValueError(f'{reaction}: unsupported datasets {sorted(unknown)}')
+    if reaction == 'sia':
+        given = {int(key) for key in filters if str(key).isdigit()} if isinstance(filters, dict) else set()
+        unfiltered = sorted((selected & set(SIA_DATASETS_WITHOUT_FILTERS)) - given)
+        if unfiltered:
+            raise ValueError(f'sia: datasets {unfiltered} have no z cut in this configuration and keep no '
+                             'points after cuts (FitPack stops on them); leave them out')
     block = copy.deepcopy(canonical)
     for key in ('xlsx', 'norm', 'filters'):
         if isinstance(block.get(key), dict):
