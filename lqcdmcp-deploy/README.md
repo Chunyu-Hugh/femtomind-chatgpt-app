@@ -213,8 +213,11 @@ first free port from 8080 and registers with the proxy as
   snippets alike: `list_campaigns` and `campaign_status` count `succeeded`
   (fitted), `not_fitted` and `failed` (state `not fitted` when nothing is
   queued and every finished replica did not fit), and postprocessing builds
-  the statistics from fitted replicas only (`not_fitted_replicas` apart,
-  `good_fraction` = fitted / total). Data vs theory takes a dataset's
+  the statistics from fitted replicas only (`not_fitted_replicas` apart).
+  Reported χ² uses central-data point residuals only; penalties and bootstrap
+  diagnostics are separate. `good_fraction` is selected/finished-fitted only
+  when a scientific quality criterion is specified, otherwise N/A;
+  `completion_fraction` is finished/submitted. Data vs theory takes a dataset's
   experiment name from its data file's `col` column, else from
   `DATASET_EXPERIMENTS` (idis 10005 has no `col`), so "HERMES" finds it.
 - **Plots.** `campaign_pdf_plots` evaluates every fitted replica's
@@ -927,6 +930,72 @@ tool, so the resolved records must still be supplied in the card. No jobs were
 submitted during this implementation; known historical reconstruction limitations
 remain separate from readiness to configure this updated campaign.
 
+
+### Central-data scientific chi-square reporting
+
+Scientific replica scores and chi-square selections use only point residuals
+against experimental central values. The analysis cache evaluates each fitted
+vector with native FitPack and `bootstrap=False`, so correlated shifts are
+profiled against central data rather than reused from bootstrap optimization.
+For the nuisance formulation, `prediction = theory / normalization + shift` and
+the point residual is `(central_data - prediction) / alpha`. Data, squared
+correlated-nuisance residuals and squared normalization residuals are separate;
+only the point term is reported chi-square. Their sum is an explicitly named
+complete objective diagnostic, never reported chi-square. Native `_get_nres` supplies the
+normalization penalty, preserving linked/fixed exclusions and covariance-mode
+normalization conventions without double counting. Native covariance-mode
+whitened residuals remain authoritative for the complete objective diagnostic.
+Reported chi-square always uses the stated point-residual/alpha formula;
+optimization itself is unchanged.
+
+The final reported ensemble chi-square first averages the predictions point by point across
+the selected replicas. It does not average individual chi-square values. Its
+separately reported penalty diagnostics are the squares of the mean signed nuisance/normalization
+residuals, not the means of their squares. For the fixed additive correlated
+errors used in JAM24 (`beta version=1`, nuisance mode), averaging central-profiled
+predictions and nuisances agrees with native reprofiling of the mean normalized
+theory. With theory-dependent beta, this equivalence is not asserted: the output
+retains the requested mean predictions and labels the mean-nuisance convention;
+it does not silently perform another profiling operation that changes them.
+
+`campaign_summary` and `postprocess_campaign` reuse the prediction cache and the
+existing asynchronous analysis jobs for expensive initial evaluation. Poll
+`analysis_result` when they return `running`. Cache metric records use a separate
+`metrics_version`, full-precision arrays, signed nuisance/normalization residuals
+and existing content signatures. Scoring version 2 and an explicit point-only
+basis reject older penalty-inclusive score ledgers without changing scientific
+prediction arrays. Old rounded prediction caches are rebuilt when
+needed, rather than treated as complete scientific metrics. Distribution-plot
+cache formats and numerical calculations are unchanged. Chi-square-based PDF,
+FF and experimental selections require matching central scores; there is no
+bootstrap fallback. Default selections still keep every fitted replica.
+
+Summary fields `mean_total_chi2`, `median_total_chi2`, `min_total_chi2` and
+`max_total_chi2` describe individual central-data point-residual chi-square and
+carry `chi2_basis=central_data_point_residuals`. `ensemble_central_chi2.total`,
+`chi2_reported` and `chi2_per_point` exclude penalties. Correlated/normalization
+penalties and `objective_total` are separately named diagnostics. No chi-square
+statistic or selection uses the complete objective. The old
+`mean_central_value_chi2_per_point` name is retained as an alias of the ensemble
+point chi-square/point; the distinct individual mean is explicitly named
+`mean_individual_central_chi2_per_point`. Saved optimization scores remain under
+`bootstrap_diagnostic`, labeled data-only where historical summaries omitted
+explicit penalties. Original per-replica summaries and MSR files are not rewritten.
+Experimental-table legacy `chi2`/`chi2_red` remain the central point term;
+`chi2_total`/`chi2_total_red` are also point-only aliases. `objective_mean` and
+`objective_best` are separate penalty-inclusive diagnostics. Its `ensemble` field is
+separate, and experiment grouping remains a clearly labeled best-replica diagnostic.
+
+There is no automatic scientific-goodness threshold or convergence certificate.
+`good_fraction` is therefore null (N/A in the dashboard) by default, not fitted/submitted. If the user
+supplies existing `chi2_max`/`sigma` quality cuts, it counts passing fitted results
+over all finished fitted results, using central point-only scores; missing score
+coverage leaves it undefined. Manual only/exclude/best selections are not new
+quality thresholds. `fitted_fraction` is fitted/submitted. `completion_fraction`
+is finished-summary/submitted and explicitly does not infer missing scheduler-only
+outcomes. Failed, not-fitted, missing-MSR and missing-summary results remain
+separate. Empty selections have no ensemble chi-square; zero-point datasets stay
+listed without adding invented residuals or penalties.
 
 ### Replica progress, checkpoints and explicit restart
 

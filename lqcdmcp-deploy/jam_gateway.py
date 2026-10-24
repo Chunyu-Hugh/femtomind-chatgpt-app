@@ -3480,64 +3480,59 @@ def analysis_result(job_id="", username=""):
 
 _POSTPROCESS = _REPLICA_STATE + r'''
 import glob, json, os, statistics
-stage = __STAGE__
-total = __TOTAL__
-selection = __SELECTION__; write = __WRITE__
+stage = __STAGE__; total = __TOTAL__; selection = __SELECTION__; write = __WRITE__
+cache = os.path.join(os.path.dirname(os.path.dirname(stage)), 'analysis', 'cache')
 paths = sorted(glob.glob(os.path.join(stage, 'current', 'replica_*', 'fit_summary.json')))
-# A replica selection (select_replicas) restricts the statistics to some fitted
-# replicas; the others are counted as deselected. Only the unselected summary
-# is written to the campaign.
-fitted = []
-for p in paths:
-    state, s = replica_state(p)
-    if state == 'fitted' and s.get('chi2_total') is not None:
-        fitted.append(dict(s, identity=os.path.basename(os.path.dirname(p))))
-kept, dropped = select_replicas(fitted, selection)
-keep = {s['identity'] for s in kept}
-# Only replicas that really fitted enter the statistics; those that did not fit
-# (chi2 at the starting values only) are counted apart from the failed ones.
-completed = failed = not_fitted = deselected = 0; chi2s = []; best = None; per = {}; cv = []
-for p in paths:
-    state, s = replica_state(p)
-    if state == 'not_fitted':
-        not_fitted += 1
-    elif state == 'fitted' and s.get('chi2_total') is not None and os.path.basename(os.path.dirname(p)) not in keep:
-        deselected += 1
-    elif state == 'fitted' and s.get('chi2_total') is not None:
-        completed += 1
-        c = float(s['chi2_total']); chi2s.append(c)
-        if best is None or c < best['chi2_total']:
-            best = {'replica': s.get('replica'), 'chi2_total': c, 'summary_path': p, 'msr_path': s.get('msr_path')}
-        if s.get('central_value_chi2_per_point') is not None:
-            cv.append(float(s['central_value_chi2_per_point']))
-        for k, v in (s.get('chi2_per_dataset') or {}).items():
-            b = per.setdefault(k, {'chi2': [], 'npts': []})
-            b['chi2'].append(float(v.get('chi2') if isinstance(v, dict) else v))
-            if isinstance(v, dict) and v.get('npts') is not None: b['npts'].append(float(v['npts']))
-    else:
-        failed += 1
-agg = {'status': 'success' if completed else 'failed', 'mode': 'aggregate', 'stage_name': 'pdf_stage',
-       'summary_path': os.path.join(stage, 'current', 'fit_summary.json'),
-       'total_replicas': total, 'completed_replicas': completed, 'failed_replicas': failed,
-       'not_fitted_replicas': not_fitted, 'missing_replicas': max(total - len(paths), 0),
-       'good_fraction': completed / total if total else None, 'best_replica': best,
-       'mean_total_chi2': statistics.mean(chi2s) if chi2s else None,
-       'median_total_chi2': statistics.median(chi2s) if chi2s else None,
-       'min_total_chi2': min(chi2s) if chi2s else None, 'max_total_chi2': max(chi2s) if chi2s else None,
-       'mean_central_value_chi2_per_point': statistics.mean(cv) if cv else None,
-       'chi2_per_dataset': {}}
-if selection:
-    agg['deselected_replicas'] = deselected
-    agg['replica_selection'] = selection_report(selection, kept, len(fitted), dropped)
-for k, b in per.items():
-    m = statistics.mean(b['chi2']); n = statistics.mean(b['npts']) if b['npts'] else None
-    agg['chi2_per_dataset'][k] = {'mean': m, 'min': min(b['chi2']), 'max': max(b['chi2']),
-                                  'npts': int(n) if n else None, 'chi2_per_npts': m / n if n else None}
-if write:
-    os.makedirs(os.path.join(stage, 'current'), exist_ok=True)
-    json.dump(agg, open(agg['summary_path'], 'w'), indent=2, sort_keys=True)
+states = [replica_state(p)[0] for p in paths]
+records, excluded = fitted_replicas(stage, replica_state)
+info = (read_json(os.path.join(cache, 'meta.json')) or {}).get('info') or {}
+docs = [read_json(file_of(cache, key)) or {} for key in info] if records else []
+if records:
+    sig = signature(records, stage)
+    if not docs or any(d.get('signature') != sig for d in docs):
+        raise ValueError('Missing or stale central-data predictions; no bootstrap fallback.')
+report = central_report(docs, records, selection, allow_empty=True)
+selected = report['selected_individual']; values = [r['chi2_total'] for r in selected]
+selected_ids = {r['identity'] for r in selected}
+bootstrap = [float(r.get('bootstrap_fit_chi2', r['chi2_total'])) for r in records if r['identity'] in selected_ids]
+fitted_finished = states.count('fitted'); finished = len(paths)
+quality = None
+if selection and any(k in selection for k in ('chi2_max','sigma')) and fitted_finished == len(records):
+    quality_selection = {k:v for k,v in selection.items() if k in ('chi2_max','sigma')}
+    scores = {r['identity']:r['chi2_total'] for r in report['individual']}
+    quality = len(select_replicas([dict(r, central_chi2_reported=scores[r['identity']]) for r in records], quality_selection)[0])
+agg = {'status': 'success' if selected else ('no_selected_replicas' if records else 'failed'), 'metrics_version': METRICS_VERSION,
+       'mode':'aggregate', 'stage_name':'pdf_stage', 'summary_path':os.path.join(stage,'current','fit_summary.json'),
+       'total_replicas':total, 'completed_replicas':len(selected), 'fitted_results':fitted_finished,
+       'failed_replicas':states.count('failed'), 'not_fitted_replicas':states.count('not_fitted'),
+       'missing_replicas':max(total-len(paths),0), 'missing_msr_replicas':excluded['missing_msr'],
+       'deselected_replicas':len(records)-len(selected), 'finished_replicas':finished,
+       'completion_fraction':finished/total if total else None, 'fitted_fraction':fitted_finished/total if total else None,
+       'completion_definition':'replicas with finished result summaries / submitted; missing scheduler-only outcomes are not inferred',
+       'scientifically_good_replicas':quality, 'good_fraction':quality/fitted_finished if quality is not None and fitted_finished else None,
+       'quality_criterion':report['quality_criterion'], 'quality_evaluated_replicas':len(records),
+       'quality_thresholds':{k:v for k,v in (selection or {}).items() if k in ('chi2_max','sigma')},
+       'optimizer_convergence':'not inferred from successful fit status',
+       'replica_selection':report['replica_selection'], 'best_replica':report['best_replica'],
+       'mean_total_chi2':statistics.mean(values) if values else None,
+       'median_total_chi2':statistics.median(values) if values else None,
+       'min_total_chi2':min(values) if values else None, 'max_total_chi2':max(values) if values else None,
+       'chi2_basis':CHI2_BASIS, 'scoring_version':SCORING_VERSION, 'ensemble_central_chi2':report['ensemble'],
+       'mean_central_value_chi2_per_point':report['ensemble']['chi2_per_point'],
+       'mean_individual_central_chi2_per_point':statistics.mean(values)/report['ensemble']['npts'] if values and report['ensemble']['npts'] else None,
+       'bootstrap_diagnostic':{'basis':'saved bootstrap data-only chi2; historical summaries omit explicit penalties',
+           'mean':statistics.mean(bootstrap) if bootstrap else None, 'median':statistics.median(bootstrap) if bootstrap else None,
+           'min':min(bootstrap) if bootstrap else None,'max':max(bootstrap) if bootstrap else None},
+       'configured_datasets':len(info) if info else None,'nonempty_datasets':report['nonempty_datasets'] if records else None,
+       'zero_point_datasets':report['zero_point_datasets'], 'replica_metrics':selected,
+       'chi2_per_dataset':{r['dataset']:{'mean':r['total'],'npts':r['npts'], 'chi2_per_npts':r['total']/r['npts'] if r['npts'] else None,
+                           'min':r['individual_total_min'], 'max':r['individual_total_max'],
+                           'data':r['data'],'correlated':r['correlated'],'normalization':r['normalization'],
+                           'objective_total':r['objective_total'], 'mean_individual':r['mean_individual']} for r in report['datasets']}}
+if write: write_json(agg['summary_path'],agg)
 print(json.dumps(agg))
 '''
+
 
 
 def _stage_root(u, e):
@@ -3559,18 +3554,20 @@ def postprocess_campaign(collection_id="", username=""):
     if not e:
         return {"status": "error", "message": f"No campaign {collection_id!r}."}
     collection_id = e["collection_id"]      # a campaign name resolves to its id
+    ready = _ensure_central_metrics(u, e)
+    if ready.get('status') not in ('success','missing_inputs'): return ready
     code = _analysis_code(_POSTPROCESS, STAGE=_stage_root(u, e), TOTAL=int(e["replicas"]), SELECTION=None, WRITE=True)
     r = _run_ifarm_py(u, code, timeout=120, cap=2000000)
     try:
         agg = json.loads(r["out"].strip().splitlines()[-1])
     except Exception:
         return {"status": "error", "message": "postprocess failed", "detail": (r.get("err") or "")[-400:]}
-    e.update(status="postprocessed", result_summary={k: agg[k] for k in agg if k != "chi2_per_dataset"},
+    e.update(status="postprocessed", result_summary={k: agg[k] for k in agg if k not in ("chi2_per_dataset", "replica_metrics")},
              updated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     _registry(u, {"kind": "upsert", "entry": e})
     out = {"status": "ok", "collection_id": collection_id, "message": "Campaign postprocess completed.",
            "objects": e["input_card"].get("objects", [e["input_card"].get("object", {"type": "pdf"})]),
-           "summary": {k: agg[k] for k in agg if k != "chi2_per_dataset"}}
+           "summary": {k: agg[k] for k in agg if k not in ("chi2_per_dataset", "replica_metrics")}}
     if agg.get("not_fitted_replicas"):
         out["note"] = out["not_fitted_note"] = _not_fitted_note(agg["not_fitted_replicas"],
                                                                 agg["total_replicas"])
@@ -3592,13 +3589,10 @@ def campaign_summary(collection_id="", username="", replicas=None):
         selection = _replica_selection(replicas)
     except ValueError as exc:
         return {"status": "error", "message": str(exc)}
-    if selection:
-        # The selected replicas' statistics, computed now and not stored.
-        r = _run_ifarm_py(u, _analysis_code(_POSTPROCESS, STAGE=_stage_root(u, e), TOTAL=int(e["replicas"]),
-                                            SELECTION=selection, WRITE=False), timeout=120, cap=2000000)
-    else:
-        p = f"{_stage_root(u, e)}/current/fit_summary.json"
-        r = _run_ifarm_py(u, f"import json; print(json.dumps(json.load(open({p!r}))))", timeout=60, cap=2000000)
+    ready = _ensure_central_metrics(u, e)
+    if ready.get('status') not in ('success','missing_inputs'): return ready
+    r = _run_ifarm_py(u, _analysis_code(_POSTPROCESS, STAGE=_stage_root(u, e), TOTAL=int(e['replicas']),
+                                         SELECTION=selection, WRITE=False), timeout=120, cap=4000000)
     try:
         agg = json.loads(r["out"].strip().splitlines()[-1])
     except Exception:
@@ -3612,7 +3606,9 @@ def campaign_summary(collection_id="", username="", replicas=None):
     rows.sort(key=lambda x: -(x["chi2_per_npt"] or 0))
     out = {"status": "ok", "collection_id": collection_id,
            "objects": e["input_card"].get("objects", [e["input_card"].get("object", {"type": "pdf"})]),
-           "summary": {k: agg[k] for k in agg if k not in ("chi2_per_dataset", "replica_selection")}, "datasets": rows}
+           "summary": {k: agg[k] for k in agg if k not in ("chi2_per_dataset", "replica_selection", "replica_metrics")}, "datasets": rows}
+    if selection:
+        out['replica_metrics'] = agg.get('replica_metrics', [])
     if agg.get("replica_selection"):
         out["replica_selection"] = agg["replica_selection"]
     prog, total, notes = _campaign_progress(u, e), int(e["replicas"]), []
@@ -3620,7 +3616,7 @@ def campaign_summary(collection_id="", username="", replicas=None):
     # count them as completed; replicas that finished after the last
     # postprocess are not in it yet.
     counted = sum(agg.get(k) or 0 for k in ("completed_replicas", "not_fitted_replicas", "failed_replicas",
-                                            "deselected_replicas"))
+                                            "deselected_replicas", "missing_msr_replicas"))
     finished = prog.get("finished")
     if "not_fitted_replicas" not in agg:
         notes.append("This summary was made before the gateway told replicas that fitted from replicas "
@@ -3631,7 +3627,7 @@ def campaign_summary(collection_id="", username="", replicas=None):
                      + (f"{finished} of {total} have finished now" if finished is not None
                         else f"the campaign has {total} replicas now")
                      + ": run postprocess_campaign to include them.")
-    elif (prog.get("succeeded") or 0) > (agg.get("completed_replicas") or 0) + (agg.get("deselected_replicas") or 0):
+    elif (prog.get("succeeded") or 0) > sum(agg.get(k) or 0 for k in ('completed_replicas','deselected_replicas','missing_msr_replicas')):
         notes.append(f"This summary counts {agg.get('completed_replicas') or 0} replicas as fitted, but "
                      f"{prog['succeeded']} have fitted now: run postprocess_campaign to include them.")
     if notes:
@@ -3740,7 +3736,7 @@ if todo:
                                    'curves': [[float(v) for v in c] for c in curves[f]]})
 # A replica selection keeps a subset of the (cached, complete) replica curves.
 selection = __SELECTION__
-kept, dropped = select_replicas(records, selection)
+kept, dropped = select_replicas(records, selection, stage=stage)
 if selection:
     idx = [records.index(s) for s in kept]
     if not idx:
@@ -3879,7 +3875,7 @@ if todo:
                                    'curves': [[None if not np.isfinite(v) else float(v) for v in c] for c in fresh[f]],
                                    'breaks': fresh_breaks[f].tolist() if f in fresh_breaks else None})
 selection = __SELECTION__
-kept, dropped = select_replicas(records, selection)
+kept, dropped = select_replicas(records, selection, stage=stage)
 if selection:
     idx = [records.index(s) for s in kept]
     if len(idx) < 2:
@@ -3981,6 +3977,9 @@ def campaign_pdf_plots(collection_id="", flavors="", q2=10.0, mean_overlay=None,
             return {"status": "error", "message": str(exc)}
 
     def run():
+        if selection and any(k in selection for k in ("best","sigma","chi2_max")):
+            ready = _ensure_central_metrics(u, e)
+            if ready.get("status") != "success": return ready
         if object_key == "pdf":
             code = inspect.getsource(object_registry) + inspect.getsource(pdf_plotting) + "\n" + _analysis_code(
                 _PROTON_PDF_PLOTS, STAGE=_stage_root(u, e), FLAVORS=fl, Q2=q2,
@@ -4107,7 +4106,7 @@ if todo:
                                    'curves': {key: [[float(v) for v in row] for row in values]
                                               for key, values in rows.items()}})
 selection = None if configured else __SELECTION__
-kept, dropped = select_replicas(records, selection)
+kept, dropped = select_replicas(records, selection, stage=stage)
 if selection:
     idx = [records.index(s) for s in kept]
     if len(idx) < 2:
@@ -4206,6 +4205,9 @@ def campaign_ff_plots(collection_id="", flavors="", q2=100.0, mean_overlay=False
         return {'status':'error','message':str(exc)}
 
     def run():
+        if selection and any(k in selection for k in ("best","sigma","chi2_max")):
+            ready = _ensure_central_metrics(u, entry)
+            if ready.get("status") != "success": return ready
         code = (_object_registry_source()+'\n'+inspect.getsource(pdf_plotting)+'\n'+inspect.getsource(ff_plotting)
                 + '\n' + _analysis_code(
                     _FF_PLOTS, STAGE=_stage_root(u,entry),FLAVORS=fl,Q2=q2,INTERVAL=interval,CONFIGURED=configured,
@@ -9297,7 +9299,7 @@ if not selected:
     print(json.dumps({'status': 'no_match', 'unknown_datasets': unknown, 'unmatched_experiments': unmatched,
                       'available': catalog(info)}))
     raise SystemExit(0)
-missing = [k for k in selected if (lambda d: d.get('signature') != sig or d.get('version') != VERSION)(read_json(file_of(cache, k)) or {})]
+missing = [k for k in selected if (lambda d: d.get('signature') != sig or d.get('version') != VERSION or d.get('metrics_version') != METRICS_VERSION)(read_json(file_of(cache, k)) or {})]
 import hashlib
 # Columns FitPack rewrites for each replica; sigtot is SIA's inclusive theory
 # cross section. Every other column (data, kinematics, uncertainties) must be
@@ -9335,7 +9337,7 @@ if missing:
                 raise ValueError('No FitPack residual tables for reaction ' + r)
             residuals[r] = res
         fitted_ids = {tuple(x) for x in resman.parman.order if x[0] == 1}
-        acc = {k: {'theory': [], 'shift': [], 'chi2': [], 'chi2_cor': [], 'chi2_norm': [], 'norm': [], 'columns': None}
+        acc = {k: {'theory': [], 'shift': [], 'chi2': [], 'chi2_cor': [], 'chi2_norm': [], 'norm': [], 'columns': None, 'nuisance': [], 'normalization_residuals': [], 'objective_residuals': []}
                for k in missing if ids[k][1] in residuals[ids[k][0]].tabs}
         for s in records:
             context = s['identity']
@@ -9361,13 +9363,21 @@ if missing:
                 a['theory'].append(pred)
                 a['shift'].append(np.asarray(tab.get('shift', np.zeros(n)), dtype=float))
                 a['chi2'].append(float(np.sum(np.asarray(tab['residuals'], dtype=float) ** 2)))
-                rres = np.asarray(tab.get('r-residuals', []), dtype=float)
+                mode = int(tab['resampling'][0]) if n else 0
+                rres = np.asarray(tab.get('r-residuals', []) if mode == 0 else [], dtype=float)
                 a['chi2_cor'].append(float(np.sum(rres ** 2))); a['ncor'] = int(rres.size)
                 spec = (conf['datasets'][r].get('norm') or {}).get(i)
                 a['norm_fitted'] = bool(spec) and spec.get('fixed') is not True
                 a['norm'].append(float(spec['value']) if spec else None)
-                nres = np.asarray(tab.get('n-residuals', [0.0]), dtype=float)
-                a['chi2_norm'].append(float(nres[0] ** 2) if spec and spec.get('fixed') is False and nres.size else 0.0)
+                native_nres = float(residuals[r]._get_nres(i))
+                a['chi2_norm'].append(native_nres ** 2)
+                a['normalization_residuals'].append(native_nres)
+                a['nuisance'].append(rres.tolist())
+                a['objective_residuals'].append(np.asarray(tab['residuals'], dtype=float).tolist())
+                a['nuisance_order'] = list(conf.get('rparams', {}).get(r, {}).get(i, {})) if mode == 0 else []
+                a['resampling'] = mode
+                a['beta_version'] = int(conf.get('beta version', 0))
+                a['normalization'] = ({f: spec[f] for f in ('min','max','fixed','dN') if f in spec} if spec else None)
                 if a['columns'] is None:
                     cols = {}
                     for name, v in tab.items():
@@ -9377,7 +9387,7 @@ if missing:
                                                                        'prediction', 'shift', 'Shift', 'N', 'sigtot'):
                             continue
                         if arr.dtype.kind in 'iuf':
-                            cols[str(name)] = [None if not np.isfinite(x) else float('%.8g' % x) for x in arr.astype(float)]
+                            cols[str(name)] = [None if not np.isfinite(x) else float(x) for x in arr.astype(float)]
                         else:
                             cols[str(name)] = [str(x) for x in arr]
                     a['columns'] = cols
@@ -9387,10 +9397,10 @@ if missing:
         raise SystemExit(0)
     finally:
         if resman is not None: resman.shutdown()
-    rnd = lambda rows: [[float('%.8g' % x) for x in row] for row in rows]
+    rnd = lambda rows: [[float(x) for x in row] for row in rows]
     for k in missing:
         r, i = ids[k]
-        doc = {'version': VERSION, 'key': k, 'reaction': r, 'dataset_id': str(i), 'signature': sig,
+        doc = {'version': VERSION, 'metrics_version': METRICS_VERSION, 'key': k, 'reaction': r, 'dataset_id': str(i), 'signature': sig,
                'replicas': [s['identity'] for s in records],
                **{f: info[k].get(f) for f in ('experiment', 'observable', 'target', 'npts_raw')}}
         a = acc.get(k)
@@ -9400,11 +9410,38 @@ if missing:
             doc.update(npts=len(a['columns']['value']), ncor=a['ncor'], norm_fitted=a['norm_fitted'],
                        point_order_sha256=a['identity'],
                        columns=a['columns'], theory=rnd(a['theory']), shift=rnd(a['shift']),
+                       nuisance_residuals=a['nuisance'], nuisance_order=a['nuisance_order'],
+                       normalization_residuals=a['normalization_residuals'], objective_residuals=a['objective_residuals'],
+                       resampling=a['resampling'], beta_version=a['beta_version'], normalization=a['normalization'],
                        stats={f: a[f] for f in ('chi2', 'chi2_cor', 'chi2_norm', 'norm')})
         write_json(file_of(cache, k), doc)
 print(json.dumps({'status': 'success', 'computed': missing, 'selected': selected,
                   'seconds': round(time.time() - started, 1)}))
 '''
+
+
+_METRICS_VIEW = _REPLICA_STATE + r'''
+import json, os
+stage = __STAGE__; cache = __CACHE__
+records, excluded = fitted_replicas(stage, replica_state)
+if not records:
+    print(json.dumps({'status': 'missing_inputs', 'excluded_replicas': excluded})); raise SystemExit(0)
+sig = signature(records, stage)
+meta = read_json(os.path.join(cache, 'meta.json')) or {}
+info = meta.get('info') or {}
+docs = [read_json(file_of(cache, k)) or {} for k in info]
+if (not info or meta.get('version') != VERSION or any(d.get('version') != VERSION or d.get('metrics_version') != METRICS_VERSION
+        or d.get('signature') != sig for d in docs)):
+    print(json.dumps({'status': 'need_build'})); raise SystemExit(0)
+try:
+    report = central_report(docs, records)
+    write_json(os.path.join(cache, 'central_metrics.json'), {'metrics_version': METRICS_VERSION, 'scoring_version': SCORING_VERSION, 'chi2_basis': CHI2_BASIS, 'signature': sig,
+               'individual': report['individual']})
+    print(json.dumps({'status': 'success', 'n_replicas': len(records), 'npts': report['ensemble']['npts']}))
+except (ValueError, KeyError, TypeError, ArithmeticError) as exc:
+    print(json.dumps({'status': 'error', 'message': 'Central-data metric validation failed: ' + str(exc)}))
+'''
+
 
 _PREDICTIONS_VIEW = _REPLICA_STATE + r'''
 import json, os
@@ -9432,24 +9469,30 @@ for k, d in docs.items():
 stale = [k for k, d in docs.items() if d.get('signature') != sig or d.get('version') != VERSION]
 if stale:
     print(json.dumps({'status': 'need_build', 'stale': stale})); raise SystemExit(0)
-kept, dropped = select_replicas(records, selection)
+kept, dropped = select_replicas(records, selection, stage=stage)
 if not kept:
     print(json.dumps({'status': 'error', 'message': 'The replica selection leaves no fitted replica.',
                       'replica_selection': selection_report(selection, kept, len(records), dropped)}))
     raise SystemExit(0)
 keep = {s['identity'] for s in kept}
-best = min(kept, key=lambda s: float(s.get('chi2_total') if s.get('chi2_total') is not None else 'inf'))
+scores = central_scores(stage, records)
+best = min(kept, key=lambda s: scores[s['identity']])
+subset_metrics = central_report(list(docs.values()), records, {'only': [replica_number(s['identity']) for s in kept]})
+ensemble_rows = {row['dataset']: row for row in subset_metrics['datasets']}
 rows, plots, unavailable = [], [], []
 for k, d in docs.items():
     if d.get('unavailable'):
         unavailable.append({'dataset': k, 'reason': d['unavailable']}); continue
     d = subset_doc(d, keep)
-    rows.append(table_row(d, best['identity']))
+    row = table_row(d, best['identity'])
+    row['ensemble'] = ensemble_rows[k]
+    rows.append(row)
     if charts: plots.append(chart_data(d, interval))
 print(json.dumps({'status': 'success', 'n_replicas': len(kept), 'excluded_replicas': excluded,
                   'replica_selection': selection_report(selection, kept, len(records), dropped) if selection else None,
                   'replica_ids': [s['identity'] for s in kept], 'table': rows, 'charts': plots,
                   'best_replica': best['identity'], 'best_msr': best['msr_path'], 'experiments': by_experiment(rows),
+                  'ensemble_central_chi2': subset_metrics['ensemble'],
                   'unavailable_datasets': unavailable, 'unknown_datasets': unknown,
                   'unmatched_experiments': unmatched}))
 '''
@@ -9463,7 +9506,7 @@ _THEORY_PNG = _REPLICA_STATE + ("\nimport base64, zlib, uuid\n"
 import json, os
 stage = __STAGE__; cache = __CACHE__; keys = __KEYS__; selection = __SELECTION__
 interval = validate_credible_interval(__INTERVAL__)
-keep = {s['identity'] for s in select_replicas(fitted_replicas(stage, replica_state)[0], selection)[0]}
+keep = {s['identity'] for s in select_replicas(fitted_replicas(stage, replica_state)[0], selection, stage=stage)[0]}
 points = []
 for k in keys:
     d = read_json(file_of(cache, k)) or {}
@@ -9489,6 +9532,29 @@ print(json.dumps({'status': 'success', 'images': images, 'rendering_errors': met
 '''
 
 
+def _ensure_central_metrics(u, e):
+    stage, cache = _stage_root(u, e), _cache_dir(u, e)
+    def view():
+        return _last_json(_run_ifarm_py(u, _analysis_code(_METRICS_VIEW, STAGE=stage, CACHE=cache), timeout=300, cap=200000))
+    result = view()
+    if result and result.get('status') == 'need_build':
+        built = _last_json(_run_ifarm_py(u, _analysis_code(_PREDICTIONS, STAGE=stage, CACHE=cache,
+                              DATASETS=[], EXPERIMENTS=[], KNOWN=DATASET_EXPERIMENTS),
+                              apptainer=True, timeout=3600, cap=200000))
+        if not built or built.get('status') != 'success':
+            return built or {'status':'error','message':'Central-data evaluation failed; no bootstrap fallback.'}
+        result = view()
+        if result and result.get('status') == 'need_build':
+            return {'status':'error','message':'The fitted ensemble changed during central-data evaluation. Retry against a stable snapshot; no partial ensemble or bootstrap fallback was used.'}
+    return result or {'status':'error','message':'Central-data metric cache could not be read.'}
+
+
+def _metrics_request(kind, arguments):
+    u, err = _need_user('')
+    if err: return err
+    return _background(u, kind, arguments, lambda: globals()[kind](**arguments), wait=1)
+
+
 def _analysis_code(template, **values):
     """A cluster script: the cache helpers, then the template filled in."""
     return inspect.getsource(analysis_cache) + "\n" + _fill(template, **values)
@@ -9507,12 +9573,12 @@ def _cache_dir(u, e):
 
 REPLICAS_ARG = {
     "description": ("Use only some fitted replicas for the statistics, as JAM analyses do (nothing is refit; the "
-                    "cache keeps every replica). Object with any of: best (keep the n lowest total chi2), chi2_max "
+                    "cache keeps every replica). Object with any of: best (keep the n lowest central-data point-residual chi2), chi2_max "
                     "(drop replicas whose total chi2 is above), sigma (drop outliers above median + k*1.4826*MAD of "
                     "the total chi2), exclude (replica numbers), only (replica numbers); applied in the order only, "
                     "exclude, chi2_max, sigma, best. A string works too: 'best:50', 'chi2_max:1200', 'sigma:3', "
                     "'exclude:3,7', 'only:1-20', several joined by ';'. Omit for every fitted replica. The result's "
-                    "replica_selection says which replicas were kept and why the others were left out."),
+                    "replica_selection says which replicas were kept and why the others were left out. All chi2 rules use central-data point-residual chi2, never bootstrap diagnostics."),
     "anyOf": [{"type": "object", "properties": {
         "best": {"type": "integer", "minimum": 2}, "chi2_max": {"type": "number", "exclusiveMinimum": 0},
         "sigma": {"type": "number", "exclusiveMinimum": 0},
@@ -9592,6 +9658,8 @@ def _theory_results(u, e, datasets, experiments, interval, charts=True, export_p
     """Data vs theory for the datasets asked for: the per-dataset table, the
     chart data and, on request, the thesis PNGs. Computes into the cache only
     what is missing or stale."""
+    ready = _ensure_central_metrics(u, e)
+    if ready.get('status') not in ('success',): return ready
     stage, cache = _stage_root(u, e), _cache_dir(u, e)
     ws = _workspace(u)
     args = dict(STAGE=stage, CACHE=cache, DATASETS=datasets, EXPERIMENTS=experiments, KNOWN=DATASET_EXPERIMENTS)
@@ -9618,17 +9686,18 @@ def _theory_results(u, e, datasets, experiments, interval, charts=True, export_p
            "interval_kind": "pointwise_equal_tailed", "central_estimator": "mean",
            "theory_convention": "FitPack prediction: normalized theory plus profiled correlated shifts",
            "chi2_estimator": ("table: mean over the fitted replicas, each against the central data; "
-                              "experiments: best fitted replica against the central data (not ensemble-mean chi2)"),
+                              "experiments: best central point-chi2 fitted replica, excluding penalties (not ensemble-mean chi2)"),
            "replica_ids": d["replica_ids"], "best_replica": d["best_replica"], "best_msr": d["best_msr"],
            "replica_selection": d.get("replica_selection"),
            "band_drawn": bool(charts and d["n_replicas"] > 1),
-           "table": d["table"], "experiments": d["experiments"], "unavailable_datasets": d["unavailable_datasets"],
+           "table": d["table"], "experiments": d["experiments"], "ensemble_central_chi2": d.get("ensemble_central_chi2"),
+           "metric_scope": "requested datasets; global campaign summary uses all configured datasets", "unavailable_datasets": d["unavailable_datasets"],
            "computed_now": (built or {}).get("computed", []), "compute_seconds": (built or {}).get("seconds")}
     for k in ("unknown_datasets", "unmatched_experiments"):
         if d.get(k):
             out[k] = d[k]
     notes = ["chi2 terms are means over the fitted replicas, each replica against the central data; "
-             "fitted norm is mean(std) over the replicas."]
+             "All reported chi2 and reduced chi2 are point-residual terms only; penalties and objective_mean are separate diagnostics. Fitted norm is mean(std) over the replicas."]
     sel = d.get("replica_selection")
     if sel:
         notes.append(f"Replica selection {sel['applied']}: {sel['kept']} of {sel['of']} fitted replicas used; "
@@ -9707,6 +9776,11 @@ jobs = __JOBS__
 total = __TOTAL__
 want = __REPLICA__
 nlines = __LINES__
+try:
+    central_log_records = fitted_replicas(stage, replica_state)[0]
+    central_log_scores = central_scores(stage, central_log_records)
+except (OSError, ValueError, KeyError):
+    central_log_scores = {}
 MARK = 'Traceback (most recent call last):'
 CHAINED = ('During handling of the above exception, another exception occurred:',
            'The above exception was the direct cause of the following exception:')
@@ -9840,8 +9914,9 @@ def row_of(i, scan):
     log = next((path for stream, path in logs if stream == 'stdout'), logs[0][1] if logs else None)
     error_log = next((path for stream, path in logs if stream == 'stderr'), None)
     existing_logs = [(stream, path) for stream, path in logs if os.path.isfile(path)]
-    row = {'replica': i, 'state': state, 'chi2_total': num(s, 'chi2_total'),
-           'central_value_chi2_per_point': num(s, 'central_value_chi2_per_point'),
+    row = {'replica': i, 'state': state, 'chi2_total': central_log_scores.get('replica_%d' % i),
+           'chi2_basis': CHI2_BASIS, 'bootstrap_data_chi2': num(s, 'chi2_total'),
+           'legacy_central_data_only_chi2_per_point': num(s, 'central_value_chi2_per_point'),
            'job_id': job, 'log': log, 'error_log': error_log,
            'log_exists': bool(existing_logs), 'has_traceback': False}
     if state in ('running', 'queued'):
@@ -9870,8 +9945,9 @@ def detail_of(i):
     row, s = row_of(i, False)
     row['fit_summary'] = None if s is None else {
         'status': s.get('status'), 'mode': s.get('mode'), 'requested_mode': s.get('requested_mode'),
-        'chi2_total': num(s, 'chi2_total'),
-        'central_value_chi2_per_point': num(s, 'central_value_chi2_per_point')}
+        'chi2_total': central_log_scores.get('replica_%d' % i),
+        'bootstrap_data_chi2': num(s, 'chi2_total'),
+        'legacy_central_data_only_chi2_per_point': num(s, 'central_value_chi2_per_point')}
     row.update(traceback='', exceptions=[], tail='', tail_lines=0)
     if row['log_exists']:
         blocks, exceptions, tails = [], [], []
@@ -10451,21 +10527,21 @@ TOOLS = {
     "postprocess_campaign": {
         "desc": "Postprocess: aggregate the finished replicas into the campaign fit summary. Only the "
                 "replicas that really fitted enter the statistics; the ones that did not fit (only chi2 "
-                "at the starting values) are counted apart (not_fitted_replicas).",
+                "at the starting values) are counted apart (not_fitted_replicas). Uses central-data point-residual chi2 and mean-prediction ensemble chi2. If running, poll analysis_result(job_id).",
         "schema": {"type": "object", "properties": {"collection_id": {"type": "string", "description": COLLECTION_ARG}},
                    "required": ["collection_id"]},
-        "fn": lambda a: postprocess_campaign(a.get("collection_id", ""))},
+        "fn": lambda a: _metrics_request("postprocess_campaign", {"collection_id": a.get("collection_id", "")})},
     "campaign_summary": {
         "desc": "Load Fit Summary: replicas that fitted (completed_replicas), did not fit "
                 "(not_fitted_replicas) and failed, chi2 statistics over the fitted ones, the best "
                 "replica, and chi2/N per dataset (worst first). note says when replicas did not fit "
                 "or the summary is out of date. With replicas (a selection), the statistics are recomputed "
                 "over the selected fitted replicas (deselected_replicas counts the rest); the stored summary "
-                "is not changed.",
+                "is not changed. Reported chi2, rankings and selection use central-data point residuals only; final chi2/N uses mean predictions. Correlated and normalization penalties, the complete objective and bootstrap diagnostics are separate. Good fraction is N/A without a scientific selection criterion. If running, poll analysis_result(job_id).",
         "schema": {"type": "object", "properties": {"collection_id": {"type": "string", "description": COLLECTION_ARG},
                                                     "replicas": REPLICAS_ARG},
                    "required": ["collection_id"]},
-        "fn": lambda a: campaign_summary(a.get("collection_id", ""), replicas=a.get("replicas"))},
+        "fn": lambda a: _metrics_request("campaign_summary", {"collection_id": a.get("collection_id", ""), "replicas": a.get("replicas")})},
     "campaign_pdf_plots": {
         "desc": "View PDF Plots: x f(x, Q2) of the fitted replicas at q2 (GeV^2). Proton (object_key pdf) flavors, "
                 "in the requested order: u,d,g,s,ub,db,sb,uv,dv,d/u,db+ub,db-ub,sp,sm,Rs,up,dp; sums are xPDFs, "

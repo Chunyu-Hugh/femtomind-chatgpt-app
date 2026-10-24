@@ -28,6 +28,9 @@ import re
 from statistics import NormalDist
 
 VERSION = 2                         # 2: datasets carry the point-identity check
+METRICS_VERSION = 1                 # Full-precision, central-data objective components.
+SCORING_VERSION = 2                 # Report/rank only central point residuals.
+CHI2_BASIS = 'central_data_point_residuals'
 # Credible intervals offered by the interactive charts, besides the requested one.
 LEVELS = (68.27, 90.0, 95.0, 99.0, 100.0)
 # Columns that are uncertainties or bookkeeping, never a kinematic axis.
@@ -108,9 +111,9 @@ def signature(records, stage=None):
 # the bands are made of. Rules, applied in this order, each to what is left:
 #   only     [numbers]   keep just these replicas
 #   exclude  [numbers]   leave these out
-#   chi2_max x           leave out replicas whose total chi2 is above x
-#   sigma    k           leave out outliers: total chi2 above median + k * 1.4826 * MAD
-#   best     n           keep the n replicas with the lowest total chi2
+#   chi2_max x           leave out replicas whose central point chi2 is above x
+#   sigma    k           leave outliers above median + k * 1.4826 * MAD of point chi2
+#   best     n           keep the n replicas with the lowest central point chi2
 
 SELECTION_KEYS = ('only', 'exclude', 'chi2_max', 'sigma', 'best')
 
@@ -120,18 +123,26 @@ def replica_number(identity):
     return int(m.group(1)) if m else None
 
 
-def select_replicas(records, selection):
-    """(kept, dropped) for records with identity and chi2_total: kept in their
-    original order; dropped as [{replica, chi2_total, reason}]."""
+def select_replicas(records, selection, stage=None):
+    """Keep original order; use central_chi2_reported or the pinned stage ledger.
+
+    Legacy chi2_total may be bootstrap data-only and is never a score fallback.
+    """
     if not selection:
         return list(records), []
     kept, dropped = list(records), []
-    chi2 = lambda s: float(s['chi2_total']) if s.get('chi2_total') is not None else float('inf')
+    scores = central_scores(stage, records) if stage is not None and any(k in selection for k in ('best', 'sigma', 'chi2_max')) else {}
+    def chi2(s):
+        value = scores.get(s['identity'], s.get('central_chi2_reported'))
+        if value is None or not math.isfinite(float(value)):
+            raise ValueError('Central-data point-residual chi2 is required for scientific replica selection; bootstrap or penalty-inclusive scores are not a fallback.')
+        return float(value)
 
     def drop(rule, keep):
         nonlocal kept
         out = [s for s in kept if not keep(s)]
-        dropped.extend({'replica': replica_number(s['identity']), 'chi2_total': s.get('chi2_total'), 'reason': rule} for s in out)
+        dropped.extend({'replica': replica_number(s['identity']), 'chi2_total': scores.get(s['identity'], s.get('central_chi2_reported')),
+                        'chi2_basis': CHI2_BASIS, 'reason': rule} for s in out)
         kept = [s for s in kept if keep(s)]
 
     if selection.get('only'):
@@ -157,6 +168,136 @@ def select_replicas(records, selection):
     return kept, dropped
 
 
+def central_scores(stage, records):
+    """Revision-bound point-only central scores; reject old inclusive ledgers."""
+    path = os.path.join(os.path.dirname(os.path.dirname(stage)), 'analysis', 'cache', 'central_metrics.json')
+    doc = read_json(path) or {}
+    if (doc.get('metrics_version') != METRICS_VERSION or doc.get('scoring_version') != SCORING_VERSION
+            or doc.get('chi2_basis') != CHI2_BASIS or doc.get('signature') != signature(records, stage)):
+        raise ValueError('Central-data metrics are missing or stale; refresh campaign_summary before chi2-based selection.')
+    return {r['identity']: r['chi2_reported'] for r in doc['individual']}
+
+
+def central_report(docs, records, selection=None, allow_empty=False):
+    """Point-only reported chi2 and separately named full objective diagnostics.
+
+    Native FitPack profiles each replica against central data. Ensemble penalties
+    are squares of mean signed nuisance/normalization residuals, not mean squares.
+    For fixed additive beta (V0/beta=1), mean profiling equals reprofiling the mean.
+    Covariance-mode objective residuals are whitened natively; their mean preserves
+    the same covariance and avoids double counting uncertainties/normalizations.
+    """
+    identities = [r['identity'] for r in records]
+    if len(set(identities)) != len(identities) or len({d['key'] for d in docs}) != len(docs):
+        raise ValueError('Duplicate replica or dataset identities.')
+    individual = {k: {'identity': k, 'replica': replica_number(k), 'data': 0., 'objective_data': 0., 'correlated': 0., 'normalization': 0.} for k in identities}
+    available, zero, per_dataset = [], [], {}
+    for doc in docs:
+        if doc.get('unavailable'):
+            zero.append(doc['key']); continue
+        if doc.get('metrics_version') != METRICS_VERSION or doc.get('replicas') != identities:
+            raise ValueError('Incomplete/misaligned central-data metrics: ' + doc['key'])
+        n = doc['npts']; st = doc['stats']; columns = doc['columns']
+        if len(columns['value']) != n or len(columns['alpha']) != n or any(
+                x is None or not math.isfinite(x) for x in columns['value']) or any(
+                x is None or not math.isfinite(x) or x <= 0 for x in columns['alpha']):
+            raise ValueError('Invalid central point count/data/uncertainties: ' + doc['key'])
+        if len(doc['theory']) != len(identities) or any(len(row) != n for row in doc['theory']):
+            raise ValueError('Prediction shape mismatch: ' + doc['key'])
+        if any(not math.isfinite(float(x)) for row in doc['theory'] for x in row):
+            raise ValueError('Nonfinite central prediction: ' + doc['key'])
+        if any(len(st[name]) != len(identities) for name in ('chi2', 'chi2_cor', 'chi2_norm', 'norm')):
+            raise ValueError('Penalty/replica alignment mismatch: ' + doc['key'])
+        if len(doc['nuisance_residuals']) != len(identities) or len(doc['normalization_residuals']) != len(identities):
+            raise ValueError('Penalty/replica shape mismatch: ' + doc['key'])
+        if len(set(doc['nuisance_order'])) != len(doc['nuisance_order']):
+            raise ValueError('Duplicate nuisance identity: ' + doc['key'])
+        per_dataset[doc['key']] = []
+        for i, key in enumerate(identities):
+            residual = [(d-p)/a for d,p,a in zip(columns['value'],doc['theory'][i],columns['alpha'])]
+            if doc['resampling'] == 0:
+                objective_residual = residual
+            elif doc['resampling'] == 1:
+                objective_residual = doc['objective_residuals'][i]
+                if len(objective_residual) != n: raise ValueError('Whitened residual shape mismatch: ' + doc['key'])
+            else: raise ValueError('Unsupported native residual mode: ' + doc['key'])
+            nuisance = doc['nuisance_residuals'][i]
+            if len(nuisance) != len(doc['nuisance_order']): raise ValueError('Nuisance shape mismatch: ' + doc['key'])
+            nr = doc['normalization_residuals'][i]
+            if any(not math.isfinite(x) for x in [*residual,*objective_residual,*nuisance,nr]):
+                raise ValueError('Nonfinite central residual/penalty: ' + doc['key'])
+            terms = {'data': math.fsum(x*x for x in residual), 'objective_data': math.fsum(x*x for x in objective_residual),
+                     'correlated': math.fsum(x*x for x in nuisance),
+                     'normalization': nr*nr}
+            per_dataset[doc['key']].append(terms)
+            for name,value in terms.items(): individual[key][name] += value
+        available.append(doc)
+    npts = sum(doc['npts'] for doc in available)
+    if records and not npts: raise ValueError('No accepted experimental points for central-data chi2.')
+    for row in individual.values():
+        row['chi2_reported'] = row['data']
+        row['chi2_total'] = row['data']  # Legacy report alias; never includes penalties.
+        row['objective_total'] = math.fsum(row[k] for k in ('objective_data', 'correlated', 'normalization'))
+        row['npts'] = npts
+        row['chi2_per_point'] = row['chi2_total']/npts if npts else None
+    scored = [dict(r, central_chi2_reported=individual[r['identity']]['chi2_reported']) for r in records]
+    kept, dropped = select_replicas(scored, selection)
+    keep = [r['identity'] for r in kept]
+    if records and not keep and not allow_empty: raise ValueError('The replica selection leaves no fitted replica.')
+    positions = [identities.index(k) for k in keep]
+    rows = []
+    for doc in available:
+        if not positions: continue
+        n = doc['npts']; columns = doc['columns']
+        if any(x is None or not math.isfinite(x) or x <= 0 for x in columns['alpha']):
+            raise ValueError('Invalid central uncertainty: ' + doc['key'])
+        prediction = [math.fsum(doc['theory'][i][j] for i in positions)/len(positions) for j in range(n)]
+        residual = [(d-p)/a for d,p,a in zip(columns['value'], prediction, columns['alpha'])]
+        if doc['resampling'] == 0:
+            objective_residual = residual
+        elif doc['resampling'] == 1:
+            objective_residual = [math.fsum(doc['objective_residuals'][i][j] for i in positions)/len(positions) for j in range(n)]
+        else: raise ValueError('Unsupported native residual mode: ' + doc['key'])
+        nuisance = doc['nuisance_residuals']
+        size = len(doc['nuisance_order'])
+        if len(nuisance) != len(identities) or any(len(r) != size for r in nuisance):
+            raise ValueError('Correlated nuisance identity/shape mismatch: ' + doc['key'])
+        mean_r = [math.fsum(nuisance[i][j] for i in positions)/len(positions) for j in range(size)]
+        nr = doc['normalization_residuals']
+        if len(nr) != len(identities): raise ValueError('Normalization alignment mismatch: ' + doc['key'])
+        terms = {'data': math.fsum(x*x for x in residual), 'objective_data': math.fsum(x*x for x in objective_residual),
+                 'correlated': math.fsum(x*x for x in mean_r),
+                 'normalization': (math.fsum(nr[i] for i in positions)/len(positions))**2}
+        terms['chi2_reported'] = terms['total'] = terms['data']
+        terms['objective_total'] = math.fsum(terms[k] for k in ('objective_data','correlated','normalization'))
+        mean_individual = {name: mean([per_dataset[doc['key']][i][name] for i in positions])
+                           for name in ('data','correlated','normalization')}
+        totals = [per_dataset[doc['key']][i]['data'] for i in positions]
+        rows.append({'dataset': doc['key'], 'npts': n, **terms, 'mean_individual': mean_individual,
+                     'profiling_mean_equivalent': doc['resampling'] == 0 and doc['beta_version'] == 1,
+                     'individual_total_min': min(totals), 'individual_total_max': max(totals),
+                     'normalization_definition': doc['normalization'], 'mean_norm': mean([doc['stats']['norm'][i] for i in positions if doc['stats']['norm'][i] is not None])})
+    ensemble = {name: math.fsum(row[name] for row in rows) for name in ('data','objective_data','correlated','normalization','total','objective_total')}
+    ensemble.update(chi2_reported=ensemble['data'], chi2_basis=CHI2_BASIS)
+    npts = sum(doc['npts'] for doc in available)
+    ensemble.update(npts=npts, chi2_per_point=ensemble['total']/npts if npts else None,
+                    prediction_convention='mean(theory/normalization + central_profiled_shift)',
+                    penalty_convention='squares of mean signed nuisance and normalization residuals; fixed/link/covariance exclusions native',
+                    reprofiling='individual shifts reprofiled against central data; mean predictions retained, no second fit')
+    if not keep:
+        ensemble.update(data=None, objective_data=None, correlated=None, normalization=None, total=None,
+                        chi2_reported=None, objective_total=None, chi2_per_point=None,
+                        npts=npts if records else None)
+    chosen = [individual[k] for k in keep]
+    return {'metrics_version': METRICS_VERSION, 'scoring_version': SCORING_VERSION, 'chi2_basis': CHI2_BASIS,
+            'individual': list(individual.values()),
+            'selected_individual': chosen, 'ensemble': ensemble, 'datasets': rows,
+            'configured_datasets': len(docs), 'nonempty_datasets': len(available), 'zero_point_datasets': zero,
+            'replica_selection': selection_report(selection, kept, len(records), dropped),
+            'best_replica': min(chosen, key=lambda r:r['chi2_total']) if chosen else None,
+            'quality_criterion': 'No automatic scientific goodness or convergence threshold; optional user chi2_max/sigma cuts only.'}
+
+
 def selection_report(selection, kept, total, dropped):
     return {'applied': selection, 'kept': len(kept), 'of': total,
             'kept_replicas': [replica_number(s['identity']) for s in kept], 'dropped': dropped}
@@ -171,6 +312,8 @@ def subset_doc(doc, keep):
     out = dict(doc, replicas=[ids[i] for i in idx])
     for k in ('theory', 'shift'):
         out[k] = [doc[k][i] for i in idx]
+    for k in ('nuisance_residuals', 'normalization_residuals', 'objective_residuals'):
+        if k in doc: out[k] = [doc[k][i] for i in idx]
     out['stats'] = {k: [v[i] for i in idx] for k, v in doc['stats'].items()}
     return out
 
@@ -322,12 +465,16 @@ def table_row(doc, best=None):
     chi2 of the correlated shifts and of the normalization, and the fitted
     normalization as mean(std). chi2 terms are means over the fitted
     replicas, each replica against the central data; chi2_best is the best
-    replica's (the replica identity best, lowest total chi2)."""
+    replica's (the replica identity best, lowest point-residual chi2).
+    Penalties and the complete objective are separate diagnostics only."""
     st, n = doc['stats'], doc['npts']
-    chi2 = mean(st['chi2'])
+    points = [math.fsum(((d-p)/a)**2 for d,p,a in zip(doc['columns']['value'],row,doc['columns']['alpha']))
+              for row in doc['theory']]
+    chi2 = mean(points)
     replicas = doc.get('replicas') or []
-    chi2_best = st['chi2'][replicas.index(best)] if best in replicas else None
+    chi2_best = points[replicas.index(best)] if best in replicas else None
     norm = [v for v in st.get('norm') or [] if v is not None]
+    total = [math.fsum(v) for v in zip(st['chi2'], st['chi2_cor'], st['chi2_norm'])]
     return {'dataset': doc['key'], 'reaction': doc['reaction'], 'dataset_id': doc['dataset_id'],
             'experiment': doc.get('experiment', ''), 'observable': doc.get('observable', ''),
             'target': doc.get('target', ''), 'npts': n, 'npts_raw': doc.get('npts_raw'),
@@ -335,7 +482,11 @@ def table_row(doc, best=None):
             'z_score': z_score(chi2, n), 'chi2_cor': mean(st['chi2_cor']), 'chi2_norm': mean(st['chi2_norm']),
             'norm': mean(norm) if doc.get('norm_fitted') and norm else None,
             'norm_std': std(norm) if doc.get('norm_fitted') and norm else None,
-            'chi2_best': chi2_best, 'point_order_sha256': doc.get('point_order_sha256')}
+            'chi2_best': chi2_best, 'chi2_point': chi2, 'chi2_total': chi2,
+            'chi2_basis': CHI2_BASIS, 'chi2_total_red': chi2/n if n else None,
+            'chi2_best_total': chi2_best, 'objective_mean': mean(total),
+            'objective_best': total[replicas.index(best)] if best in replicas else None,
+            'point_order_sha256': doc.get('point_order_sha256')}
 
 
 def by_experiment(rows):
@@ -348,11 +499,12 @@ def by_experiment(rows):
             continue
         g = groups.setdefault(r['experiment'] or 'unknown',
                               {'experiment': r['experiment'] or 'unknown', 'datasets': [], 'chi2': 0.0, 'npts': 0})
+        score = r['chi2_best']
         g['datasets'].append({'reaction': r['reaction'], 'dataset_id': r['dataset_id'], 'target': r['target'],
-                              'observable': r['observable'], 'npts': r['npts'], 'chi2': r['chi2_best'],
-                              'chi2_per_npt': r['chi2_best'] / r['npts'] if r['npts'] else None,
+                              'observable': r['observable'], 'npts': r['npts'], 'chi2': score,
+                              'chi2_per_npt': score / r['npts'] if r['npts'] else None,
                               'point_order_sha256': r.get('point_order_sha256')})
-        g['chi2'] += r['chi2_best']
+        g['chi2'] += score
         g['npts'] += r['npts']
     out = list(groups.values())
     for g in out:

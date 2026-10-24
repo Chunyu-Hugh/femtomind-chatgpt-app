@@ -1874,10 +1874,16 @@
       : ["Fitted / not fitted / failed / missing", f(s.completed_replicas)+" / "+f(nf)+" / "+f(s.failed_replicas)+" / "+f(s.missing_replicas)];
     const bad = (Number(nf) || 0) + (Number(s.failed_replicas) || 0) > 0;
     return '<div class="rev">'+[["Status", s.status], counts,
-      ["Good fraction", s.good_fraction == null ? "—" : (100*s.good_fraction).toFixed(0)+"%"],
-      ["χ² mean / median", f(s.mean_total_chi2)+" / "+f(s.median_total_chi2)], ["χ² min / max", f(s.min_total_chi2)+" / "+f(s.max_total_chi2)],
-      ["Central-value χ²/N (mean)", f(s.mean_central_value_chi2_per_point)],
-      ["Best replica", s.best_replica ? ("#"+s.best_replica.replica+"  χ² "+f(s.best_replica.chi2_total)) : "—"]]
+      ["Good fraction", s.good_fraction == null ? "N/A — no scientific quality criterion" : (100*s.good_fraction).toFixed(1)+"%"],
+      ["Finished-summary / submitted", s.completion_fraction == null ? "—" : (100*s.completion_fraction).toFixed(1)+"%"],
+      ["Fitted / submitted", s.fitted_fraction == null ? "—" : (100*s.fitted_fraction).toFixed(1)+"%"],
+      ["Individual central point χ² mean / median", f(s.mean_total_chi2)+" / "+f(s.median_total_chi2)], ["Individual central point χ² min / max", f(s.min_total_chi2)+" / "+f(s.max_total_chi2)],
+      ["Ensemble mean-prediction point χ²/N", f(s.ensemble_central_chi2 && s.ensemble_central_chi2.chi2_per_point)],
+      ["Ensemble correlated penalty (diagnostic)", f(s.ensemble_central_chi2 && s.ensemble_central_chi2.correlated)],
+      ["Ensemble normalization penalty (diagnostic)", f(s.ensemble_central_chi2 && s.ensemble_central_chi2.normalization)],
+      ["Complete central residual objective (diagnostic)", f(s.ensemble_central_chi2 && s.ensemble_central_chi2.objective_total)],
+      ["Bootstrap data-only χ² mean / median (optimization)", s.bootstrap_diagnostic ? f(s.bootstrap_diagnostic.mean)+" / "+f(s.bootstrap_diagnostic.median) : "—"],
+      ["Best replica (central point χ²)", s.best_replica ? ("#"+s.best_replica.replica+"  χ² "+f(s.best_replica.chi2_total)) : "—"]]
       .map(r=>'<div class="row"><span class="k">'+esc(r[0])+'</span><span class="v'+(r === counts && bad ? ' wn' : '')+'">'+esc(r[1])+'</span></div>').join("")+'</div>';
   }
   // A gateway note without the sentences that match drop. Its notes are worded for
@@ -1896,7 +1902,7 @@
   $("caPost").onclick = async ()=>{
     if (!analysisCampaign) return; caBusy("Aggregating the replicas…");
     const cid = analysisCampaign;
-    try{ const r = await call("postprocess_campaign", {collection_id: cid});
+    try{ const r = await settle(await call("postprocess_campaign", {collection_id: cid}), ()=>cid === analysisCampaign, "Evaluating central-data metrics");
       if (cid !== analysisCampaign) return;                 // another campaign was picked meanwhile
       if (!r || r.status !== "ok"){ caWarn(msgOf(r, "Postprocess failed."), r && r.detail); return; }
       $("caOut").innerHTML = '<div class="note">'+esc(r.message)+'</div>'+notFitNote(r)+summaryHtml(r.summary); loadAnalysisCampaigns();
@@ -1905,7 +1911,7 @@
   $("caSum").onclick = async ()=>{
     if (!analysisCampaign) return; caBusy("Loading the fit summary…");
     const cid = analysisCampaign;
-    try{ const sel = replicaSelection(), r = await call("campaign_summary", Object.assign({collection_id: cid}, sel ? {replicas: sel} : {}));
+    try{ const sel = replicaSelection(), r = await settle(await call("campaign_summary", Object.assign({collection_id: cid}, sel ? {replicas: sel} : {})), ()=>cid === analysisCampaign, "Evaluating central-data metrics");
       if (cid !== analysisCampaign) return;
       // The gateway's notes here name its tool (postprocess_campaign); the panel names the button.
       const nfNote = notFitNote(r);
@@ -1915,7 +1921,7 @@
       const rows = r.datasets || [], mx = Math.max(...rows.map(x=>x.chi2_per_npt || 0), 1e-9);
       const stale = r.stale ? '<div class="note warn">This summary aggregates '+esc(r.summary.completed_replicas)
         + ' replicas and is out of date: press Postprocess to update it.</div>' : "";
-      $("caOut").innerHTML = stale + nfNote + selectionNote(r.replica_selection) + summaryHtml(r.summary) + (rows.length ? '<div class="label" style="margin:16px 0 6px">χ² per dataset, fitted pseudo-data (mean over replicas)</div>'
+      $("caOut").innerHTML = stale + nfNote + selectionNote(r.replica_selection) + summaryHtml(r.summary) + (rows.length ? '<div class="label" style="margin:16px 0 6px">Central-data point χ² per dataset, ensemble-mean predictions (penalties excluded)</div>'
         + '<table class="tbl"><thead><tr><th>Dataset</th><th style="text-transform:none">χ²/N</th><th style="text-transform:none">χ²</th><th>Points</th><th style="width:30%"></th></tr></thead><tbody>'
         + rows.map(x=>'<tr><td class="mono">'+esc(x.reaction+":"+x.dataset_id)+'</td><td class="mono">'+esc(x.chi2_per_npt == null ? "—" : fmtNum(x.chi2_per_npt))+'</td>'
           + '<td class="mono">'+esc(x.chi2 == null ? "—" : fmtNum(x.chi2))+'</td><td class="mono">'+esc(x.npts == null ? "—" : x.npts)+'</td>'
@@ -2547,7 +2553,8 @@
   function logDetailHtml(x, lead){
     const pre = (t, none)=>t ? '<pre class="out">'+esc(t)+'</pre>' : '<div class="hint">'+esc(none)+'</div>';
     return '<div class="kv lghead">'+(lead ? '<span>'+esc(lead)+'</span>' : '')+'<span>Replica <b>'+esc(x.replica)+'</b></span>'
-      + (x.state ? replicaTag(x.state) : '')+(x.chi2 == null ? '' : '<span>χ² <b>'+esc(chi2Txt(x.chi2))+'</b></span>')+'</div>'
+      + (x.state ? replicaTag(x.state) : '')+(x.chi2 == null ? '' : '<span>Central χ² <b>'+esc(chi2Txt(x.chi2))+'</b></span>')+'</div>'
+      + (x.bootstrap_data_chi2 == null ? '' : '<div class="hint">Optimization data-only χ² (bootstrap when enabled): '+esc(chi2Txt(x.bootstrap_data_chi2))+'</div>')
       + (x.meaning ? '<div class="hint">'+esc(x.meaning)+'</div>' : '')
       + (x.log ? '<div class="hint mono" style="word-break:break-all">'+esc(x.log)+'</div>' : '')
       + (x.error_log ? '<div class="hint mono" style="word-break:break-all">stderr: '+esc(x.error_log)+'</div>' : '')
@@ -2571,7 +2578,7 @@
     const reps = rows.map(logRow), file = p=>String(p).split("/").pop();
     box.innerHTML = (r.note ? '<div class="note warn" style="margin:0 0 10px">'+esc(r.note)+'</div>' : '')
       + (reps.length ? '<div class="tblwrap" style="margin-top:0"><table class="tbl ptbl lgtbl"><thead><tr><th>Replica</th><th>State</th>'
-        + '<th style="text-transform:none">χ²</th><th class="lgcol">Log</th><th></th></tr></thead><tbody>'
+        + '<th style="text-transform:none">Central χ²</th><th class="lgcol">Log</th><th></th></tr></thead><tbody>'
         + reps.map(x=>'<tr><td class="mono">'+esc(x.replica)+'</td><td>'+replicaTag(x.state)
           + (x.error || x.has_traceback ? '<div class="wn" style="font-size:11px;max-width:260px;overflow-wrap:anywhere">'
              + esc(x.error ? clip(String(x.error), 90) : "Python error")+'</div>' : '')+'</td>'
@@ -2580,7 +2587,7 @@
           + '<td><button class="btn sm" data-r="'+esc(x.replica)+'" aria-label="View the log of replica '+esc(x.replica)+'">View</button></td></tr>').join("")
         + '</tbody></table></div>'
         : '<div class="empty">This campaign has no replicas.</div>')
-      + (reps.some(x=>x.state === "not_fitted") ? '<div class="hint">The χ² of a replica that did not fit is at the starting values.</div>' : '')
+      + (reps.some(x=>x.state === "not_fitted") ? '<div class="hint">Optimization χ² is diagnostic only; central scientific χ² is unavailable until fitted-result metrics are evaluated.</div>' : '')
       + '<div class="lgdet"></div>';
     const det = box.querySelector(".lgdet"), fp = r.first_problem || r.replica_detail;
     box.querySelectorAll("button[data-r]").forEach(b=>b.onclick = ()=>viewLog(cid, Number(b.dataset.r), det));
