@@ -928,6 +928,50 @@ submitted during this implementation; known historical reconstruction limitation
 remain separate from readiness to configure this updated campaign.
 
 
+### Replica progress, checkpoints and explicit restart
+
+New campaign arrays write Slurm-managed logs under
+`/farm_out/<user>/<collection_id>/out/` and `/err/`. Both directories are created
+before submission. Each job records its stdout/stderr prefixes separately;
+historical flat log prefixes and legacy stage logs remain readable.
+
+The application runner suppresses repeated full parameter/dataset tables while
+retaining native residual calculations. It emits a concise objective/progress
+line about every 30 seconds. Python stdout and stderr have per-process budgets
+of 1 MiB and 512 KiB (plus a single budget notice); they are never reopened or
+truncated. Low-level native/subprocess output is not governed by Python streams.
+Full-precision independent parameter values/order, point/correlated/normalization
+terms, recent diagnostics and solver termination metadata are available on Ceph:
+`stages/pdf_stage/checkpoints/replica_N/current_progress.json`, `latest.json`,
+and immutable `attempt-*/bootstrap.npz`. Current progress is replaced atomically
+about every five seconds, and a checkpoint about every 30 seconds after a finite
+objective evaluation, plus normal/interrupted exit. Previous attempt records
+remain available. Checkpoints live outside `current/`, so ordinary rerun result
+archival does not move or destroy them.
+
+`rerun_replicas(collection_id=..., replicas=..., resume=true)` is an explicit
+restart option in the existing confirmed More/Rerun workflow. Its read-only plan
+checks every selected checkpoint and pins checksums in the confirmation phrase.
+Missing, corrupt, changed-input or incompatible checkpoints fail without falling
+back to prior/random starts. Records also bind the campaign ID and absolute stage
+path: moving a checkpoint into another campaign is rejected even for identical
+inputs and replica numbers. The runtime restores parameters by their scientific
+identities **after** native/prior initialization, preserving fixed/link rules and
+bounds. A bootstrap payload stores sampled values and deviation arrays with
+original-data identities; it is restored before worker creation. The initial
+restored objective must match exactly before SciPy starts. Seed replay was
+verified for JAM24 in the existing scientific container, but persisted data—not
+that assumption—protect resumption. A central-data post-fit diagnostic still uses
+central data. `resume=false` (default) preserves fresh/prior/random behavior;
+More Replicas continues to add new identities rather than resume old ones.
+
+This is **optimizer restart**, not restoration of trust-region/Jacobian/history
+state. The restart point is the last persisted completed finite objective
+evaluation, which may be a trial or finite-difference point rather than an
+accepted solver step. SIGTERM/INT trigger a best-effort flush and runner-owned
+worker cleanup. SIGKILL/OOM cannot flush: at most the last valid persisted record
+is available. Existing campaigns without checkpoints cannot be resumed this way.
+
 ### Prior-replica starts (local implementation; partial source-format support)
 
 Campaign manifests are parsed as JSON first, including JSON requests with a YAML

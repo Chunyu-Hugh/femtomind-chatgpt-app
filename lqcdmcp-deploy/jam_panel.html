@@ -495,6 +495,7 @@
         <div class="grid2" style="margin-top:12px"><div class="field"><div class="label sm">Rerun replicas under their own numbers</div>
           <input type="text" id="caRerunN" value="failed" placeholder="failed, or numbers such as 3,7,12"></div>
           <div class="field"><button class="btn" id="caRerunPlan" style="margin-top:22px">Plan rerun</button></div></div>
+        <label class="sm"><input type="checkbox" id="caResumeCheckpoint"> Resume from the last checkpoint with the same bootstrap data (restart optimizer)</label>
         <div class="hint">"failed" takes every replica that failed, did not fit or left no output. Replicas still queued are never resubmitted; earlier results are kept in previous/.</div>
         <div id="caRerunOut"></div>
       </div>
@@ -2644,12 +2645,14 @@
     if (!analysisCampaign) return;
     $("caRerunOut").innerHTML = '<div class="spin">Reading the replicas…</div>';
     const cid = analysisCampaign, spec = $("caRerunN").value.trim() || "failed";
-    try{ const r = await call("rerun_replicas", {collection_id: cid, replicas: spec});
+    const resume = $("caResumeCheckpoint").checked;
+    try{ const r = await call("rerun_replicas", {collection_id: cid, replicas: spec, resume});
       if (cid !== analysisCampaign) return;
       if (!r || r.status !== "needs_confirmation"){ $("caRerunOut").innerHTML = '<div class="note'+(r && r.status === "ok" ? "" : " warn")+'">'+esc(msgOf(r, "Could not plan."))+'</div>'; return; }
       const p = r.plan;
       $("caRerunOut").innerHTML = '<div class="rev">'+[["Replicas to rerun", p.array + "  (" + p.count + ")"],
           ["Their state", Object.entries(p.states).map(([k, v])=>"#"+k+" "+v.replace("_", " ")).join(", ")],
+          ["Starting parameters", p.resume ? "Checkpoint; identical saved bootstrap; optimizer restarted" : "Fresh campaign initialization"],
           ...(p.still_queued_not_resubmitted ? [["Still queued (left alone)", p.still_queued_not_resubmitted.join(", ")]] : []), ["Partition", p.partition]]
         .map(x=>'<div class="row"><span class="k">'+esc(x[0])+'</span><span class="v">'+esc(x[1])+'</span></div>').join("")+'</div>'
         + '<div class="note">Type <span class="phrase">'+esc(r.confirmation_phrase)+'</span> to confirm. Their earlier results move to previous/.</div>'
@@ -2658,7 +2661,7 @@
       $("caRerunGo").onclick = async ()=>{
         const go = $("caRerunGo"), err = $("caRerunErr");
         go.disabled = true; err.textContent = "";
-        try{ const s = await call("rerun_replicas", {collection_id: cid, replicas: spec, confirm: $("caRerunPhrase").value.trim()});
+        try{ const s = await call("rerun_replicas", {collection_id: cid, replicas: spec, resume, confirm: $("caRerunPhrase").value.trim()});
           if (!go.isConnected){ loadAnalysisCampaigns(); return; }
           if (s && s.status === "needs_confirmation"){ err.textContent = "The phrase did not match; nothing was queued."; go.disabled = false; return; }
           $("caRerunOut").innerHTML = s && s.status === "submitted"

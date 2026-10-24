@@ -2194,7 +2194,15 @@ def _slurm_log_dir(user):
 
 
 def _campaign_log_prefix(user, folder):
-    return f"{_slurm_log_dir(user)}/jam_{folder[:40]}"
+    return f"{_slurm_log_dir(user)}/{folder}/out/jam_{folder[:40]}"
+
+
+def _campaign_error_log_prefix(user, folder):
+    return f"{_slurm_log_dir(user)}/{folder}/err/jam_{folder[:40]}"
+
+
+def _campaign_log_dirs(user, folder):
+    return ' '.join(_shq(f"{_slurm_log_dir(user)}/{folder}/{stream}") for stream in ('out', 'err'))
 
 
 def _campaign_log_patterns(user, entry):
@@ -2202,12 +2210,12 @@ def _campaign_log_patterns(user, entry):
         prefix = job.get("log_prefix")
         if prefix:
             return {"stdout": f"{prefix}_<job_id>_<replica>.out",
-                    "stderr": f"{prefix}_<job_id>_<replica>.err"}
+                    "stderr": f"{job.get('error_log_prefix', prefix)}_<job_id>_<replica>.err"}
     legacy = f"{_stage_root(user, entry)}/logs/stage_<job_id>_<replica>.out"
     return {"stdout": legacy, "stderr": None}
 
 
-def _array_script(ws, folder, norm, first, last, indices=None):
+def _array_script(ws, folder, norm, first, last, indices=None, resume_plan=None):
     """The Slurm job array: one replica per task, inside the site's image
     (replicas first-last, or exactly the replica numbers in indices)."""
     sl, c = norm["slurm"], SITE["container"]
@@ -2218,6 +2226,7 @@ def _array_script(ws, folder, norm, first, last, indices=None):
     qs, pypath = _shq(stage), _shq(f"{ws}:{ws}/{JAMAI_REMOTE}")
     log_name = f"jam_{folder[:40]}"
     log_root = SITE.get("slurm_log_root", "/farm_out").rstrip("/")
+    resume_arg = f" --resume-plan {_shq(resume_plan)}" if resume_plan else ""
     return f"""#!/bin/bash
 #SBATCH --job-name=jam_{folder[:40]}
 #SBATCH --partition={sl["partition_effective"]}
@@ -2225,8 +2234,8 @@ def _array_script(ws, folder, norm, first, last, indices=None):
 #SBATCH --mem={sl["mem"]}
 #SBATCH --cpus-per-task={sl["cpus"]}
 #SBATCH --array={_array_ranges(indices) if indices else f"{first}-{last}"}
-#SBATCH --output={log_root}/%u/{log_name}_%A_%a.out
-#SBATCH --error={log_root}/%u/{log_name}_%A_%a.err
+#SBATCH --output={log_root}/%u/{folder}/out/{log_name}_%A_%a.out
+#SBATCH --error={log_root}/%u/{folder}/err/{log_name}_%A_%a.err
 set -euo pipefail
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 # fitlib.maxlike clears the screen at every status print; without a terminal
@@ -2240,7 +2249,7 @@ apptainer exec {binds} \\
   {lhapdf_env}--env MPLCONFIGDIR={qs}/.matplotlib \\
   {c["image"]} \\
   python3 -m modules.jam.jamai.run_replica --manifest {qs}/manifest.resolved.yaml \\
-    --output {qs}/current/replica_${{REPLICA_ID}} --replica "${{REPLICA_ID}}" -n {sl["cpus"]}
+    --output {qs}/current/replica_${{REPLICA_ID}} --replica "${{REPLICA_ID}}" -n {sl["cpus"]}{resume_arg}
 """
 
 
@@ -2937,7 +2946,7 @@ def _submit_campaign(u, card, confirm):
     croot = f"{ws}/{CAMPAIGNS_DIR}/{folder}"
     stage = f"{croot}/stages/{STAGE}"
     n = norm["job"]["replicas"]
-    log_dir = _shq(_slurm_log_dir(u))
+    log_dir = _campaign_log_dirs(u, folder)
     _upload_jamai(u, ws)
     yaml_b64 = base64.b64encode(_campaign_yaml(ws, folder, norm, n).encode()).decode()
     script_b64 = base64.b64encode(_array_script(ws, folder, norm, 1, n).encode()).decode()
@@ -2964,13 +2973,13 @@ def _submit_campaign(u, card, confirm):
              "campaign_folder": folder, "created_at": now, "updated_at": now,
              "workspace_path": ws, "replicas": n,
              "jobs": [{"job_id": m.group(1), "first": 1, "last": n, "submitted_at": now,
-                       "log_prefix": log_prefix}],
+                       "log_prefix": log_prefix, "error_log_prefix": _campaign_error_log_prefix(u, folder)}],
              "slurm_job_id": m.group(1), "status": "submitted", "input_card": norm}
     _registry(u, {"kind": "upsert", "entry": entry})
     return {"status": "submitted", "collection_id": folder, "job_id": m.group(1), "replicas": n,
             "partition": norm["slurm"]["partition_effective"], "campaign_folder": croot,
             "log_path": f"{log_prefix}_{m.group(1)}_<replica>.out",
-            "error_log_path": f"{log_prefix}_{m.group(1)}_<replica>.err", "summary": v["summary"]}
+            "error_log_path": f"{_campaign_error_log_prefix(u, folder)}_{m.group(1)}_<replica>.err", "summary": v["summary"]}
 
 
 def append_replicas(collection_id="", count=0, confirm="", username=""):
@@ -3004,7 +3013,8 @@ def append_replicas(collection_id="", count=0, confirm="", username=""):
     stage = f"{ws}/{CAMPAIGNS_DIR}/{e['campaign_folder']}/stages/{STAGE}"
     sb = base64.b64encode(_array_script(ws, e["campaign_folder"], e["input_card"], first, last).encode()).decode()
     qs = _shq(stage)
-    log_dir = _shq(_slurm_log_dir(u))
+    log_dir = _campaign_log_dirs(u, e['campaign_folder'])
+    _upload_jamai(u, ws)
     r = _remote(u, f"mkdir -p {qs}/slurm {log_dir} && "
                    f"echo {sb} | base64 -d > {qs}/slurm/array_{first}_{last}.sh && "
                    f"sbatch {qs}/slurm/array_{first}_{last}.sh", timeout=60)
@@ -3013,7 +3023,8 @@ def append_replicas(collection_id="", count=0, confirm="", username=""):
         return {"status": "error", "message": "sbatch refused the job.", "detail": (r.get("err") or r.get("out"))[-400:]}
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     e["jobs"] = list(e.get("jobs") or []) + [{"job_id": m.group(1), "first": first, "last": last,
-                                                "submitted_at": now, "log_prefix": _campaign_log_prefix(u, e["campaign_folder"])}]
+                                                "submitted_at": now, "log_prefix": _campaign_log_prefix(u, e["campaign_folder"]),
+                                                "error_log_prefix": _campaign_error_log_prefix(u, e["campaign_folder"])}]
     e.update(replicas=last, updated_at=now, slurm_job_id=m.group(1), status="submitted")
     _registry(u, {"kind": "upsert", "entry": e})
     return {"status": "submitted", "job_id": m.group(1), **plan}
@@ -3048,12 +3059,14 @@ print(json.dumps({'queue_read': read, 'states': states}))
 RERUNNABLE = ("failed", "not_fitted", "no_output")
 
 
-def rerun_replicas(collection_id="", replicas="failed", confirm="", username=""):
+def rerun_replicas(collection_id="", replicas="failed", confirm="", username="", resume=False):
     """Run replicas of a campaign again under their own numbers: the failed
     ones, the ones that did not fit or left no output (replicas='failed'),
     or the numbers given. Replicas still queued or running are never
     resubmitted; earlier results are moved to stages/<stage>/previous/, not
     deleted. Always asks for the confirmation phrase first."""
+    if type(resume) is not bool:
+        return {"status": "error", "message": "resume must be a boolean."}
     u, err = _need_user(username)
     if err:
         return err
@@ -3092,7 +3105,24 @@ def rerun_replicas(collection_id="", replicas="failed", confirm="", username="")
             "partition": (e["input_card"].get("slurm") or {}).get("partition_effective")}
     if busy:
         plan["still_queued_not_resubmitted"] = busy
-    phrase = _confirm_phrase("RERUN", {"collection_id": collection_id, "replicas": wanted})
+    resume_data = None
+    if resume:
+        # Read-only preview, using the same stdlib record verifier as the runner.
+        with open(os.path.join(JAMAI_DIR, 'replica_checkpoint.py'), encoding='utf-8') as source:
+            code = source.read()
+        code += '\nprint(json.dumps(preview(%r, %r)))\n' % (_stage_root(u, e), wanted)
+        checked = _run_ifarm_py(u, code, timeout=90, cap=2000000)
+        resume_data = _last_json(checked)
+        if not resume_data or resume_data.get('failures'):
+            return {"status": "error", "message": "Checkpoint resumption refused; no fallback to fresh/prior initialization.",
+                    "checkpoint_report": resume_data, "detail": (checked.get('err') or '')[-400:]}
+        plan['resume'] = True
+        plan['checkpoint_report'] = resume_data
+        plan['initialization'] = 'last completed objective evaluation; same saved bootstrap; optimizer restarted'
+    binding = {"collection_id": collection_id, "replicas": wanted}
+    if resume_data:
+        binding['checkpoints'] = {k: v['sha256'] for k, v in resume_data['records'].items()}
+    phrase = _confirm_phrase("RERUN", binding)
     if (confirm or "").strip() != phrase:
         return {"status": "needs_confirmation", "plan": plan, "confirmation_phrase": phrase,
                 "message": "Nothing is queued yet. Show the user which replicas run again (their earlier "
@@ -3101,24 +3131,33 @@ def rerun_replicas(collection_id="", replicas="failed", confirm="", username="")
     stage = _stage_root(u, e)
     qs, stamp = _shq(stage), time.strftime("%Y%m%dT%H%M%S", time.gmtime())
     name = f"rerun_{stamp}"
+    resume_path = f"{stage}/slurm/{name}_resume.json" if resume_data else None
     sb = base64.b64encode(_array_script(ws, e["campaign_folder"], e["input_card"], min(wanted), max(wanted),
-                                        indices=wanted).encode()).decode()
+                                        indices=wanted, resume_plan=resume_path).encode()).decode()
     # The script is written first; earlier results move aside just before sbatch
     # and move back if sbatch refuses, so a failed submission changes nothing.
     moves = " ; ".join(f"if [ -e {qs}/current/replica_{i} ]; then mv {qs}/current/replica_{i} {qs}/previous/replica_{i}_{stamp}; fi"
                        for i in wanted)
     back = " ; ".join(f"if [ -e {qs}/previous/replica_{i}_{stamp} ]; then mv {qs}/previous/replica_{i}_{stamp} {qs}/current/replica_{i}; fi"
                       for i in wanted)
-    log_dir = _shq(_slurm_log_dir(u))
-    r = _remote(u, f"mkdir -p {qs}/previous {qs}/slurm {log_dir} && echo {sb} | base64 -d > {qs}/slurm/{name}.sh && "
-                   f"{{ {moves} ; }} && {{ sbatch {qs}/slurm/{name}.sh || {{ {back} ; false; }} ; }}", timeout=90)
+    log_dir = _campaign_log_dirs(u, e['campaign_folder'])
+    _upload_jamai(u, ws)
+    pin = ''
+    if resume_data:
+        encoded = base64.b64encode(json.dumps(resume_data).encode()).decode()
+        pin = f"echo {encoded} | base64 -d > {_shq(resume_path)} && "
+    command = (f"mkdir -p {qs}/previous {qs}/slurm {log_dir} && echo {sb} | base64 -d > {qs}/slurm/{name}.sh && "
+               f"{pin}{{ {moves} ; }} && {{ sbatch {qs}/slurm/{name}.sh || {{ {back} ; false; }} ; }}")
+    r = _remote(u, 'bash -s', stdin=command, timeout=90)
     m = re.search(r"Submitted batch job (\d+)", (r.get("out") or "") + (r.get("err") or ""))
     if not m:
         return {"status": "error", "message": "sbatch refused the job.", "detail": (r.get("err") or r.get("out"))[-400:]}
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     e["jobs"] = list(e.get("jobs") or []) + [{"job_id": m.group(1), "first": min(wanted), "last": max(wanted),
                                               "replicas": wanted, "rerun": True, "submitted_at": now,
-                                              "log_prefix": _campaign_log_prefix(u, e["campaign_folder"])}]
+                                              "log_prefix": _campaign_log_prefix(u, e["campaign_folder"]),
+                                              "error_log_prefix": _campaign_error_log_prefix(u, e["campaign_folder"]),
+                                              "resume": resume}]
     e.update(updated_at=now, slurm_job_id=m.group(1), status="submitted")
     _registry(u, {"kind": "upsert", "entry": e})
     return {"status": "submitted", "job_id": m.group(1), **plan,
@@ -9721,7 +9760,8 @@ def log_paths(i, job_record):
     prefix = job_record.get('log_prefix')
     if prefix:
         stem = '%s_%s_%d' % (prefix, job, i)
-        return [('stdout', stem + '.out'), ('stderr', stem + '.err')]
+        error_stem = '%s_%s_%d' % (job_record.get('error_log_prefix', prefix), job, i)
+        return [('stdout', stem + '.out'), ('stderr', error_stem + '.err')]
     return [('stdout and stderr', os.path.join(stage, 'logs', 'stage_%s_%d.out' % (job, i)))]
 
 def has_traceback(path):
@@ -10539,12 +10579,16 @@ TOOLS = {
                 "results move to previous/ (kept, not deleted). Without confirm it returns the plan and a "
                 "confirmation phrase; show the user the plan and submit with confirm=<phrase> only after they "
                 "agree. Afterwards postprocess_campaign updates the summary. (append_replicas adds new "
-                "replica numbers instead.)",
+                "replica numbers instead.) Set resume=true explicitly to restart the optimizer from each "
+                "last valid checkpoint using its identical saved bootstrap data. Missing, changed or "
+                "incompatible checkpoints fail; internal optimizer state is not restored. Default false "
+                "preserves fresh/random/prior initialization.",
         "schema": {"type": "object", "properties": {"collection_id": {"type": "string", "description": COLLECTION_ARG},
                                                     "replicas": {"type": "string", "default": "failed"},
+                                                    "resume": {"type": "boolean", "default": False},
                                                     "confirm": {"type": "string"}},
                    "required": ["collection_id"]},
-        "fn": lambda a: rerun_replicas(a.get("collection_id", ""), a.get("replicas", "failed"), a.get("confirm", ""))},
+        "fn": lambda a: rerun_replicas(a.get("collection_id", ""), a.get("replicas", "failed"), a.get("confirm", ""), resume=a.get('resume', False))},
     "campaign_logs": {
         "desc": "Logs of a campaign: each replica's state (fitted, not fitted, failed, running, no "
                 "output) and, for a replica that did not fit, the Python error and ends of its Slurm "

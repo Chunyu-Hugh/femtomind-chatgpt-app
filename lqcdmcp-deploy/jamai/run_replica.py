@@ -75,7 +75,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument('--manifest')
     parser.add_argument('--replica', type=int, default=1)
+    parser.add_argument('--output')
+    parser.add_argument('--resume-plan')
     prior_args, _ = parser.parse_known_args()
+    # This is an application-runner option, not a FitPack CLI option.
+    if prior_args.resume_plan:
+        for at, argument in enumerate(sys.argv):
+            if argument == '--resume-plan':
+                del sys.argv[at:at + 2]
+                break
+            if argument.startswith('--resume-plan='):
+                del sys.argv[at]
+                break
     if prior_args.manifest:
         from .campaign_manifest import _load_manifest_payload
         manifest_path = Path(prior_args.manifest)
@@ -87,9 +98,24 @@ def main() -> None:
         if manifest.get('params', {}).get('prior_replicas'):
             from .prior_replicas import install
             install(prior_args.replica)
+    from .replica_runtime import Runtime, RuntimeAbort
+    resume_sha = None
+    if prior_args.resume_plan:
+        plan = json.loads(Path(prior_args.resume_plan).read_text())
+        if plan.get('schema') != 'femtomind.resume-plan.v1' or plan.get('failures'):
+            raise ValueError('Invalid checkpoint resume plan')
+        resume_sha = plan['records'][str(prior_args.replica)]['sha256']
+    runtime = Runtime(prior_args.manifest, prior_args.output, prior_args.replica, resume_sha)
     sys.argv = ['fitlib/ai.py', '--mode', 'fit'] + sys.argv[1:]
     _guard_status_report()
-    runpy.run_module('fitlib.ai', run_name='__main__')
+    try:
+        runtime.install()
+        runpy.run_module('fitlib.ai', run_name='__main__')
+    except RuntimeAbort as exc:
+        print('FEMTOMIND replica stopped: ' + str(exc), file=sys.stderr, flush=True)
+        raise SystemExit(2)
+    finally:
+        runtime.close()
 
 
 if __name__ == '__main__':
