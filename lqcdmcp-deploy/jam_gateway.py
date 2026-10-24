@@ -2247,44 +2247,112 @@ apptainer exec {binds} \\
 # ---- the collection registry (<ws>/campaigns/collections.json) ---------------
 
 _REGISTRY = r'''
-import json, os, sys
+import json, os, sys, hashlib
 path = os.path.join(__WS__, 'campaigns', 'collections.json')
 op = __OP__
 try:
-    items = json.load(open(path))
+    with open(path) as handle:
+        items = json.load(handle)
     if not isinstance(items, list): items = []
 except (OSError, ValueError):
     items = []
+reference_schema = 'femtomind.registry-prior-reference.v1'
+def projected(entry):
+    card = entry.get('input_card') or {}
+    params = card.get('parameters') or {}
+    prior = params.get('priorSnapshot')
+    if not isinstance(prior, dict) or prior.get('schema') != 'femtomind.prior-replicas.v1':
+        return entry
+    reference = {'schema': reference_schema, 'sha256': prior['sha256'], 'replicas': len(prior['replicas'])}
+    return {**entry, 'input_card': {**card, 'parameters': {**params, 'priorSnapshot': reference}}}
 if op['kind'] == 'upsert':
-    items = [e for e in items if e.get('collection_id') != op['entry']['collection_id']] + [op['entry']]
+    entry = op['entry']
+    params = entry.get('input_card', {}).get('parameters', {})
+    prior = params.get('priorSnapshot')
+    if isinstance(prior, dict) and prior.get('schema') == reference_schema:
+        previous = next((e for e in items if e.get('collection_id') == entry['collection_id']), {})
+        original = previous.get('input_card', {}).get('parameters', {}).get('priorSnapshot')
+        if (not isinstance(original, dict) or original.get('schema') != 'femtomind.prior-replicas.v1'
+                or original.get('sha256') != prior.get('sha256')
+                or len(original['replicas']) != prior.get('replicas')):
+            raise ValueError('Stored prior snapshot reference no longer matches the campaign')
+        entry = {**entry, 'input_card': {**entry['input_card'],
+                                      'parameters': {**params, 'priorSnapshot': original}}}
+    items = [e for e in items if e.get('collection_id') != entry['collection_id']] + [entry]
 elif op['kind'] == 'delete':
     items = [e for e in items if e.get('collection_id') != op['id']]
-if op['kind'] != 'read':
+elif op['kind'] != 'read':
+    raise ValueError('Unsupported registry operation')
+if op['kind'] in ('upsert', 'delete'):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + '.tmp'
-    json.dump(items, open(tmp, 'w'), indent=1); os.replace(tmp, path)
-print(json.dumps(items))
+    with open(tmp, 'w') as handle:
+        json.dump(items, handle, indent=1)
+    os.replace(tmp, path)
+    print(json.dumps({'status': 'ok', 'operation': op['kind'],
+                      'collection_id': entry['collection_id'] if op['kind'] == 'upsert' else op['id']}))
+else:
+    selected = [e for e in items if op.get('collection_id') is None or e.get('collection_id') == op['collection_id']]
+    text = json.dumps([projected(e) for e in selected])
+    offset = op.get('offset', 0)
+    if type(offset) is not int or not 0 <= offset <= len(text):
+        raise ValueError('Invalid registry read offset')
+    end = min(len(text), offset + 200000)
+    print(json.dumps({'text': text[offset:end], 'offset': offset, 'total_characters': len(text),
+                      'revision': hashlib.sha256(text.encode()).hexdigest(),
+                      'next_offset': end if end < len(text) else None}))
 '''
 
 
 def _registry(u, op):
-    r = _run_ifarm_py(u, _fill(_REGISTRY, WS=_workspace(u), OP=op), timeout=60, cap=2000000)
-    try:
-        return json.loads(r["out"].strip().splitlines()[-1])
-    except Exception:
-        raise RuntimeError("could not read campaigns/collections.json: " + (r.get("err") or "")[-200:])
+    # Scientific arrays stay in the unchanged on-disk registry. Read replies
+    # carry compact references; upserts restore those exact stored snapshots.
+    # Byte-heavy ordinary metadata is paged too, never silently truncated.
+    for attempt in range(2):
+        parts = []; offset = 0; revision = None; total = None
+        while True:
+            request = {**op, 'offset': offset} if op['kind'] == 'read' else op
+            r = _run_ifarm_py(u, _fill(_REGISTRY, WS=_workspace(u), OP=request), timeout=60, cap=2000000)
+            try:
+                if r.get('rc'):
+                    raise ValueError((r.get('err') or '')[-200:])
+                page = json.loads(r['out'].strip().splitlines()[-1])
+                if op['kind'] != 'read':
+                    if page.get('status') != 'ok' or page.get('operation') != op['kind']:
+                        raise ValueError('Invalid registry write acknowledgement')
+                    return page
+                if revision is not None and page['revision'] != revision:
+                    break  # concurrent update: restart once rather than mix revisions
+                revision = page['revision']
+                if page['offset'] != offset or (total is not None and page['total_characters'] != total):
+                    raise ValueError('Invalid registry continuation')
+                total = page['total_characters']; text = page['text']
+                if not isinstance(text, str) or len(text) > 200000:
+                    raise ValueError('Invalid registry page')
+                parts.append(text); offset += len(text)
+                if page['next_offset'] is None:
+                    data = ''.join(parts)
+                    if offset != total or hashlib.sha256(data.encode()).hexdigest() != revision:
+                        raise ValueError('Registry read integrity failure')
+                    return json.loads(data)
+                if page['next_offset'] != offset or not text:
+                    raise ValueError('Invalid registry continuation')
+            except Exception as exc:
+                raise RuntimeError('could not read campaigns/collections.json: ' + str(exc)) from exc
+    raise RuntimeError('could not read campaigns/collections.json: registry changed during both read attempts')
 
 
 def _collection(u, cid):
     """The campaign a collection id names, or, as people say it, its campaign
     name (case and separators aside): the newest submission of that name."""
-    entries = _registry(u, {"kind": "read"})
+    entries = _registry(u, {"kind": "read", "collection_id": cid})
     for e in entries:
         if e.get("collection_id") == cid:
             return e
     want = analysis_cache.norm_name(cid or "")
     if not want:
         return None
+    entries = _registry(u, {"kind": "read"})
     named = [e for e in entries if analysis_cache.norm_name(e.get("campaign_name") or "") == want]
     if not named:
         named = [e for e in entries if analysis_cache.norm_name(e.get("collection_id") or "").startswith(want)]

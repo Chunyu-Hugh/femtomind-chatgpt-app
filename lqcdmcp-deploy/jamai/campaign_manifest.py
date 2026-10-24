@@ -120,8 +120,13 @@ def _load_basic_yaml(text: str):
 
 
 def _load_manifest_payload(manifest_path: Path) -> dict:
-    # Prefer real YAML parsing, then fall back to the small parser above.
+    # JSON exponent literals such as 1e-10 are strings in PyYAML's YAML 1.1
+    # resolver. Parse JSON with its own numerical rules, regardless of suffix.
     text = manifest_path.read_text()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
     if yaml is not None:
         return yaml.safe_load(text) or {}
     return _load_basic_yaml(text) or {}
@@ -178,6 +183,51 @@ def _build_lock_payload(document: CampaignDocument, resolved_stages: list[Resolv
     }
 
 
+def verify_materialized_priors(document: CampaignDocument, resolved_stages: list[ResolvedStage]) -> dict:
+    """Check final runner manifests and literal input snapshots without executing input.py.
+
+    This is part of materialization, not an optional validation flag. A failure
+    makes the existing materialize && compile && sbatch chain stop before Slurm.
+    """
+    from .prior_replicas import verify
+    checked = []; saved_documents = None
+    def same_snapshot(actual, expected, location):
+        if not isinstance(actual, dict):
+            raise ValueError('Materialized prior snapshot missing from ' + location)
+        verify(actual)
+        if actual != expected:
+            raise ValueError('Materialized prior differs from requested snapshot: ' + location)
+    for stage in resolved_stages:
+        expected = stage.params.get('prior_replicas')
+        if expected is None:
+            continue
+        verify(expected)
+        layout = build_run_layout(document, document.stage_map()[stage.name])
+        if saved_documents is None:
+            saved_documents = [(str(path), _load_manifest_payload(path)) for path in
+                               (layout['campaign_lock'], layout['campaign_yaml'])]
+        for location, saved in saved_documents:
+            record = next((s for s in saved.get('stages', []) if s.get('name') == stage.name), {})
+            same_snapshot(record.get('params', {}).get('prior_replicas'), expected, location + ':' + stage.name)
+        manifest = _load_manifest_payload(layout['stage_manifest'])
+        actual = manifest.get('params', {}).get('prior_replicas')
+        same_snapshot(actual, expected, 'stage manifest:' + stage.name)
+        tree = ast.parse(layout['stage_input'].read_text())
+        assignments = [node.value for node in tree.body if isinstance(node, ast.Assign)
+                       and any(isinstance(target, ast.Subscript)
+                               and isinstance(target.value, ast.Name) and target.value.id == 'conf'
+                               and isinstance(target.slice, ast.Constant)
+                               and target.slice.value == 'jamai prior replicas'
+                               for target in node.targets)]
+        if not assignments:
+            raise ValueError('Materialized prior snapshot missing from input.py: ' + stage.name)
+        actual = ast.literal_eval(assignments[-1])
+        same_snapshot(actual, expected, 'input.py:' + stage.name)
+        checked.append({'stage': stage.name, 'sha256': expected['sha256'],
+                        'replicas': len(expected['replicas']), 'snapshots_checked': 4, 'status': 'verified'})
+    return {'stages': checked, 'status': 'verified' if checked else 'not_applicable'}
+
+
 def materialize_campaign(document: CampaignDocument, resolved_stages: list[ResolvedStage]) -> dict:
     # Write the campaign directory tree and one generated input.py per stage.
     written = []
@@ -223,11 +273,15 @@ def materialize_campaign(document: CampaignDocument, resolved_stages: list[Resol
     )
     manifest_path.write_text(manifest_text)
 
+    # Must finish successfully before the CLI can return success to submission.
+    prior_integrity = verify_materialized_priors(document, resolved_stages)
+
     return {
         'campaign_root': str(campaign_root),
         'campaign_yaml': str(manifest_path),
         'campaign_lock': str(campaign_root / 'campaign.lock.json'),
         'stages': written,
+        'prior_integrity': prior_integrity,
     }
 
 

@@ -930,6 +930,22 @@ remain separate from readiness to configure this updated campaign.
 
 ### Prior-replica starts (local implementation; partial source-format support)
 
+Campaign manifests are parsed as JSON first, including JSON requests with a YAML
+filename. Supported non-JSON YAML still uses the existing YAML parser. This
+preserves numerical exponent literals such as `1e-10` as floats. Materialization
+must verify the pinned prior snapshot in the final lock, campaign manifest,
+resolved stage manifest and generated input before returning success. Any
+integrity mismatch stops the existing submission command before `sbatch`.
+
+The on-disk `campaigns/collections.json` format remains unchanged, with complete
+scientific snapshots. Registry writes return small acknowledgements. Read
+transport uses bounded, revision-checked pages and replaces only the large
+prior-snapshot array with an internal hash/count reference. Updating campaign
+metadata resolves that reference against the existing stored snapshot, preserving
+its full values exactly; a stale reference fails without writing. Exact
+collection-ID lookup reads only that entry, and existing name lookup remains
+supported. These are internal data-transport changes, not new MCP tool arguments.
+
 Use the ordinary campaign card with `parameters.priorSource` and inspect it with
 `preview_prior_replicas(card)` before `validate_campaign` and the existing confirmed
 `submit_campaign`. No alternate executor or objective penalty is introduced.
