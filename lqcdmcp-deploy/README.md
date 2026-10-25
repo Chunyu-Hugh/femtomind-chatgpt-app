@@ -1013,8 +1013,10 @@ Full-precision independent parameter values/order, point/correlated/normalizatio
 terms, recent diagnostics and solver termination metadata are available on Ceph:
 `stages/pdf_stage/checkpoints/replica_N/current_progress.json`, `latest.json`,
 and immutable `attempt-*/bootstrap.npz`. Current progress is replaced atomically
-about every five seconds, and a checkpoint about every 30 seconds after a finite
-objective evaluation, plus normal/interrupted exit. Previous attempt records
+about every five seconds. The verified initial optimizer base is checkpointed
+immediately, and every accepted step replaces it immediately at full precision.
+Periodic/exit flushes update evaluation counts without replacing those parameters
+with numerical-Jacobian probes or rejected trial vectors. Previous attempt records
 remain available. Checkpoints live outside `current/`, so ordinary rerun result
 archival does not move or destroy them.
 
@@ -1035,9 +1037,26 @@ central data. `resume=false` (default) preserves fresh/prior/random behavior;
 More Replicas continues to add new identities rather than resume old ones.
 
 This is **optimizer restart**, not restoration of trust-region/Jacobian/history
-state. The restart point is the last persisted completed finite objective
-evaluation, which may be a trial or finite-difference point rather than an
-accepted solver step. SIGTERM/INT trigger a best-effort flush and runner-owned
+state. SciPy starts normally at the saved vector and recalculates derivatives.
+`point_evaluations` identifies the saved base/accepted point; `evaluations`
+counts all completed objective calls cumulatively across resumes, including the
+exact restart-boundary verification. `last_evaluation` in current progress is
+diagnostic only, and may describe a probe/rejected trial. Accepted-step counts
+are cumulative, with separate per-attempt counts.
+
+The existing SciPy 1.14.1 has no public iteration callback. An application-local
+copy of its Python entrypoint observes its existing Jacobian-base notifications:
+the initial base, then bases requested only after TRF/dogbox accepts a step. Native
+Jacobian calculation, trust-region logic, objective calls and scientific settings
+are unchanged; no derivative/state serialization is implemented. This private
+integration is restricted to the reviewed SciPy 1.14.1 TRF/dogbox, two-point, linear-loss
+path and checks source fingerprints before optimization. Unknown implementations
+fail closed rather than guessing acceptance. SciPy/FitPack files and process-wide
+SciPy bindings are not modified. Legacy last-evaluation checkpoints lack an
+acceptance guarantee and are rejected for resume; they are not rewritten or
+silently treated as accepted points.
+
+SIGTERM/INT trigger a best-effort flush and runner-owned
 worker cleanup. SIGKILL/OOM cannot flush: at most the last valid persisted record
 is available. Existing campaigns without checkpoints cannot be resumed this way.
 

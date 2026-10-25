@@ -1,8 +1,8 @@
-"""Bounded diagnostics and restartable objective checkpoints around native FitPack.
+"""Bounded diagnostics and accepted-parameter restarts around native FitPack.
 
-No optimizer mathematics or residual calculations are replaced. A checkpoint is
-the last completed finite objective evaluation (possibly a finite-difference or
-trial point), not an assertion of the solver's last accepted step/internal state.
+The initial optimizer base and accepted steps are restart points. Objective
+evaluations (including probes and rejected trials) update progress only. No
+Jacobian or optimizer state is saved or restored.
 """
 from __future__ import annotations
 
@@ -22,6 +22,61 @@ from . import replica_checkpoint as store
 
 class RuntimeAbort(BaseException):
     """Bypass FitPack's optimization-error fallback on checkpoint mismatch/stop."""
+
+
+def _accepted_solver(solver, options, on_base):
+    """Observe SciPy 1.14.1 TRF/dogbox Jacobian bases without changing them.
+
+    This version has no public iteration callback. Its initial Jacobian uses x0;
+    subsequent Jacobians are requested only after actual_reduction > 0. Clone
+    the Python entrypoint with one local binding replaced, rather than patching
+    SciPy's process-wide globals or substituting a derivative implementation.
+    Source fingerprints bind this private integration to the reviewed code.
+    Unknown implementations fail before optimization; no heuristic fallback.
+    """
+    import hashlib
+    import importlib
+    import inspect
+    import types
+    import scipy
+
+    if hasattr(solver, '_femtomind_rebind'):
+        core = _accepted_solver(solver._femtomind_solver,
+                                {**options, **solver._femtomind_options}, on_base)
+        return solver._femtomind_rebind(core)
+    native = importlib.import_module('scipy.optimize._lsq.least_squares')
+    trf = importlib.import_module('scipy.optimize._lsq.trf')
+    dogbox = importlib.import_module('scipy.optimize._lsq.dogbox').dogbox
+    fingerprints = (
+        (solver, '2e78a4963702a36c08bc4754fcaadbd739309eb606d7888b12cb9a7ee4b3a242'),
+        (trf.trf, '61b0ede3821164cbe92d001f6899bb240aac16fc580844f9ebe52ebec590ab43'),
+        (trf.trf_bounds, '7452d6f3facb63a665f5231c90634664c9c0e959b8527e535e87a4c4d8aff43b'),
+        (trf.trf_no_bounds, 'f36af72d1d234e0e175535c1d29647026ebb0bf79c92b6f7cf45a181df5d908b'),
+        (dogbox, '1999eeb77fe65f322c881bab937b5d5838d50577af5868152042ce4e915ec564'))
+    try:
+        supported = (scipy.__version__ == '1.14.1' and solver is native.least_squares and
+                     solver.__globals__['trf'] is trf.trf and
+                     solver.__globals__['dogbox'] is dogbox and
+                     all(hashlib.sha256(inspect.getsource(fn).encode('utf-8')).hexdigest() == sha
+                         for fn, sha in fingerprints))
+    except (AttributeError, KeyError, OSError, TypeError):
+        supported = False
+    if not supported:
+        raise RuntimeAbort('Accepted-step checkpointing requires the reviewed SciPy 1.14.1 implementation')
+    if (options.get('method', 'trf') not in ('trf', 'dogbox') or
+            options.get('jac', '2-point') != '2-point' or options.get('loss', 'linear') != 'linear'):
+        raise RuntimeAbort('Accepted-step checkpointing supports TRF/dogbox, two-point Jacobians and linear loss only')
+    derivative = solver.__globals__['approx_derivative']
+    def observed_derivative(fun, x, *args, **kwargs):
+        if 'f0' not in kwargs:
+            raise RuntimeAbort('Unsupported SciPy Jacobian-base notification')
+        on_base(x.copy(), kwargs['f0'].copy())
+        return derivative(fun, x, *args, **kwargs)
+    namespace = dict(solver.__globals__, approx_derivative=observed_derivative)
+    observed = types.FunctionType(solver.__code__, namespace, solver.__name__,
+                                  solver.__defaults__, solver.__closure__)
+    observed.__kwdefaults__ = solver.__kwdefaults__
+    return observed
 
 
 _COMPUTED = {'thy', 'prediction', 'shift', 'Shift', 'N', 'residuals',
@@ -86,6 +141,10 @@ class Runtime:
                                      if resume_sha else (None, None))
         self.bootstrap = {}; self.arrays = {}
         self.latest = None; self.evaluations = 0; self.offset = self.resume['evaluations'] if self.resume else 0
+        self.last_evaluation = None
+        self.boundary_verifications = 0
+        self.accepted_steps = self.resume.get('accepted_steps', 0) if self.resume else 0
+        self.attempt_accepted_steps = 0
         self.last_checkpoint = self.last_progress = self.last_console = -math.inf
         self.checkpoint_seconds = checkpoint_seconds
         self.progress_seconds, self.console_seconds = progress_seconds, console_seconds
@@ -205,46 +264,72 @@ class Runtime:
         return values
 
     def evaluated(self, owner, values, residuals):
+        """Count every completed evaluation, without selecting a restart point."""
         import numpy as np
-        from tools.config import conf
         self.evaluations += 1
         if np.iscomplexobj(values) or np.iscomplexobj(residuals):
             return  # Complex-step probes are not real restart points.
         values, residuals = np.asarray(values, dtype=float), np.asarray(residuals, dtype=float)
         if not np.isfinite(values).all() or not np.isfinite(residuals).all():
             return  # Never replace a valid checkpoint with an unusable evaluation.
+        self.last_evaluation = {'evaluations': self.offset + self.evaluations,
+                                'objective': float(np.dot(residuals.ravel(), residuals.ravel())),
+                                'metrics': dict(self.current_metrics), 'updated_at': time.time()}
+        self.flush()
+
+    def restart_point(self, owner, values, residuals, point):
+        """Publish a verified initial base or a solver-confirmed accepted step."""
+        import numpy as np
+        from tools.config import conf
+        values, residuals = np.asarray(values), np.asarray(residuals)
+        if (point not in store.RESTART_POINTS or np.iscomplexobj(values) or
+                np.iscomplexobj(residuals) or not np.isfinite(values).all() or
+                not np.isfinite(residuals).all()):
+            raise RuntimeAbort('Invalid accepted/base checkpoint notification')
         self.save_bootstrap(owner)
         order = [[int(k[0]), str(k[1]), str(k[2])] for k in owner.parman.order]
         if len(order) != values.size:
             raise RuntimeAbort('Objective parameter/order length mismatch')
+        if point == 'accepted_optimizer_iterate':
+            self.accepted_steps += 1
+            self.attempt_accepted_steps += 1
         self.latest = {'schema': store.SCHEMA, 'replica': self.replica,
                        'campaign': store.campaign_identity(self.stage),
                        'input_sha256': self.input_sha, 'order': order, 'values': values.tolist(),
                        'evaluations': self.offset + self.evaluations,
                        'attempt_evaluations': self.evaluations,
+                        'boundary_verifications': self.boundary_verifications,
+                        'point_evaluations': self.offset + self.evaluations,
+                        'accepted_steps': self.accepted_steps,
+                        'attempt_accepted_steps': self.attempt_accepted_steps,
                        'objective': float(np.dot(residuals.ravel(), residuals.ravel())),
                        'bootstrap_enabled': bool(conf.get('bootstrap')),
                        'bootstrap_seed': conf.get('jamai runtime bootstrap seed'),
                        'bootstrap_file': self.attempt + '/bootstrap.npz',
                        'bootstrap_sha256': self.bootstrap_sha,
-                       'checkpoint_point': 'last_completed_objective_evaluation',
+                       'checkpoint_point': point,
                        'optimizer_state_restored': False, 'metrics': dict(self.current_metrics),
                        'updated_at': time.time()}
-        self.flush()
+        self.flush(checkpoint=True)
 
-    def flush(self, force=False, status='optimizing'):
+    def flush(self, force=False, status='optimizing', checkpoint=False):
         if self.latest is None:
             return
         now = time.monotonic()
+        # Progress counts include probes/rejected trials; saved values/objective
+        # stay at the accepted base and point_evaluations identifies its origin.
+        self.latest.update(evaluations=self.offset + self.evaluations,
+                           attempt_evaluations=self.evaluations)
         try:
-            if force or now - self.last_checkpoint >= self.checkpoint_seconds:
+            if force or checkpoint or now - self.last_checkpoint >= self.checkpoint_seconds:
                 doc = dict(self.latest); doc['sha256'] = store.digest(doc)
                 store.atomic_json(self.folder / 'checkpoint.json', doc)
                 store.atomic_json(self.root / 'latest.json', doc)
                 self.last_checkpoint = now
             if force or now - self.last_progress >= self.progress_seconds:
                 store.atomic_json(self.root / 'current_progress.json',
-                                  {**self.latest, 'status': status, 'solver_result': self.solver_result})
+                                  {**self.latest, 'status': status, 'solver_result': self.solver_result,
+                                   'last_evaluation': self.last_evaluation})
                 store.atomic_json(self.root / 'diagnostic_tail.json', {'text': list(self.tail)})
                 self.last_progress = now
             if force or now - self.last_console >= self.console_seconds:
@@ -296,17 +381,35 @@ class Runtime:
                 point = np.asarray(values).copy()
                 residuals = fun(values, *a, **k)
                 self.evaluated(owner, point, residuals)
+                if self.latest is None:
+                    # First objective call is SciPy's actual feasible x0.
+                    self.restart_point(owner, point, residuals, 'initial_optimizer_base')
                 return residuals
+            first_base = True
+            def accepted_base(values, residuals):
+                nonlocal first_base
+                import numpy as np
+                if first_base:
+                    first_base = False
+                    if self.latest is None or not np.array_equal(values, self.latest['values']):
+                        raise RuntimeAbort('Initial SciPy Jacobian base does not match the verified start')
+                else:
+                    self.restart_point(owner, values, residuals, 'accepted_optimizer_iterate')
             try:
+                import inspect
+                options = inspect.signature(original_solver).bind(evaluate, x0, *args, **kwargs).arguments
+                observed_solver = _accepted_solver(original_solver, options, accepted_base)
                 if self.resume:
                     import numpy as np
                     # Verify before handing x0 to SciPy (which may internally
                     # move boundary points into the feasible interior).
                     residuals = fun(x0)
+                    self.boundary_verifications += 1
+                    self.evaluated(owner, x0, residuals)
                     objective = float(np.dot(np.asarray(residuals).ravel(), np.asarray(residuals).ravel()))
                     if objective != self.resume['objective']:
                         raise RuntimeAbort('Checkpoint objective changed at the restored parameters/bootstrap')
-                result = original_solver(evaluate, x0, *args, **kwargs)
+                result = observed_solver(evaluate, x0, *args, **kwargs)
                 self.solver_result = {k: (getattr(result, k).item() if hasattr(getattr(result, k, None), 'item') else getattr(result, k, None))
                                       for k in ('success', 'status', 'message', 'nfev', 'njev', 'optimality')}
                 self.flush(True, 'optimizer_returned')

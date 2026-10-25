@@ -28,17 +28,27 @@ from pathlib import Path
 
 def _wrap_least_squares(max_nfev: int | None, method: str | None) -> None:
     import scipy.optimize as opt
+    from functools import wraps
 
     original = opt.least_squares
 
-    def wrapped(*args, **kwargs):
-        if max_nfev:
-            kwargs['max_nfev'] = max_nfev
-        if method:
-            kwargs['method'] = method
-        return original(*args, **kwargs)
+    def bind(core):
+        @wraps(core)
+        def wrapped(*args, **kwargs):
+            if max_nfev:
+                kwargs['max_nfev'] = max_nfev
+            if method:
+                kwargs['method'] = method
+            return core(*args, **kwargs)
+        # Allow the checkpoint observer to wrap the core without bypassing the
+        # existing campaign evaluation cap or optimizer-method selection.
+        wrapped._femtomind_solver = core
+        wrapped._femtomind_options = {k: v for k, v in
+                                      (('max_nfev', max_nfev), ('method', method)) if v}
+        wrapped._femtomind_rebind = bind
+        return wrapped
 
-    opt.least_squares = wrapped
+    opt.least_squares = bind(original)
 
 
 def _guard_status_report() -> None:

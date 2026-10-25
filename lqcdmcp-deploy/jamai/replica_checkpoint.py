@@ -9,6 +9,7 @@ from pathlib import Path
 import tempfile
 
 SCHEMA = 'femtomind.replica-checkpoint.v1'
+RESTART_POINTS = {'initial_optimizer_base', 'accepted_optimizer_iterate'}
 
 
 def digest(data):
@@ -72,6 +73,8 @@ def resolve(stage, replica, expected=None):
         raise ValueError('Checkpoint campaign/stage identity mismatch')
     if doc.get('input_sha256') != file_hash(Path(stage) / 'input.py'):
         raise ValueError('Checkpoint scientific input changed')
+    if doc.get('checkpoint_point') not in RESTART_POINTS:
+        raise ValueError('Checkpoint is not a verified initial/accepted optimizer vector; legacy evaluation checkpoints cannot be resumed')
     order, values = doc.get('order', []), doc.get('values', [])
     if not order or len(order) != len(values) or len({tuple(x) for x in order}) != len(order):
         raise ValueError('Invalid checkpoint parameter identities')
@@ -98,7 +101,10 @@ def preview(stage, replicas):
             doc, _ = resolve(stage, replica)
             records[str(replica)] = {'sha256': doc['sha256'], 'evaluations': doc['evaluations'],
                                      'objective': doc['objective'], 'input_sha256': doc['input_sha256'],
-                                     'bootstrap_sha256': doc['bootstrap_sha256']}
+                                     'bootstrap_sha256': doc['bootstrap_sha256'],
+                                     'checkpoint_point': doc['checkpoint_point'],
+                                     'point_evaluations': doc.get('point_evaluations'),
+                                     'accepted_steps': doc.get('accepted_steps')}
         except (OSError, ValueError, KeyError, TypeError) as exc:
             failures.append({'replica': replica, 'error': str(exc)})
     return {'schema': 'femtomind.resume-plan.v1', 'records': records, 'failures': failures,
