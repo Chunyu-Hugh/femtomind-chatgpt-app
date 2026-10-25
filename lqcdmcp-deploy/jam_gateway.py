@@ -3059,7 +3059,7 @@ print(json.dumps({'queue_read': read, 'states': states}))
 RERUNNABLE = ("failed", "not_fitted", "no_output")
 
 
-def rerun_replicas(collection_id="", replicas="failed", confirm="", username="", resume=False):
+def rerun_replicas(collection_id="", replicas="failed", confirm="", username="", resume=False, mem=None):
     """Run replicas of a campaign again under their own numbers: the failed
     ones, the ones that did not fit or left no output (replicas='failed'),
     or the numbers given. Replicas still queued or running are never
@@ -3067,6 +3067,10 @@ def rerun_replicas(collection_id="", replicas="failed", confirm="", username="",
     deleted. Always asks for the confirmation phrase first."""
     if type(resume) is not bool:
         return {"status": "error", "message": "resume must be a boolean."}
+    if mem is not None:
+        if not isinstance(mem, str) or not re.fullmatch(r"[1-9]\d{0,3}[MG]", mem.strip()):
+            return {"status": "error", "message": "mem must be a positive Slurm memory request such as 6G or 500M."}
+        mem = mem.strip()
     u, err = _need_user(username)
     if err:
         return err
@@ -3074,6 +3078,18 @@ def rerun_replicas(collection_id="", replicas="failed", confirm="", username="",
     if not e:
         return {"status": "error", "message": f"No campaign {collection_id!r}; list_campaigns shows them."}
     collection_id = e["collection_id"]      # a campaign name resolves to its id
+    # Only the new job uses this resource card. Keep the historical scientific
+    # card (including a potentially large pinned prior snapshot) untouched.
+    job_card = dict(e["input_card"])
+    slurm = dict(job_card.get("slurm") or {})
+    overrides = {"mem": mem} if mem is not None else {}
+    slurm.update(overrides)
+    if mem is not None and "partition" in slurm:
+        seconds = _parse_hms(slurm.get("time"))
+        if not seconds:
+            return {"status": "error", "message": "The saved campaign has an invalid Slurm time limit."}
+        slurm["partition_effective"] = slurm["partition"] or _auto_partition_seconds(seconds)
+    job_card["slurm"] = slurm
     total = int(e.get("replicas") or 0)
     r = _run_ifarm_py(u, _analysis_code(_REPLICA_STATE + _RERUN_STATE, STAGE=_stage_root(u, e), TOTAL=total,
                                         JOBS=e.get("jobs") or [], USER=u), timeout=90, cap=2000000)
@@ -3102,7 +3118,8 @@ def rerun_replicas(collection_id="", replicas="failed", confirm="", username="",
                     " outside the ones still queued or running." if busy else ".")}
     plan = {"collection_id": collection_id, "replicas": wanted, "count": len(wanted),
             "array": _array_ranges(wanted), "states": {i: states.get(i) for i in wanted},
-            "partition": (e["input_card"].get("slurm") or {}).get("partition_effective")}
+            "partition": slurm.get("partition_effective"), "slurm": slurm,
+            "resource_overrides": overrides}
     if busy:
         plan["still_queued_not_resubmitted"] = busy
     resume_data = None
@@ -3118,8 +3135,8 @@ def rerun_replicas(collection_id="", replicas="failed", confirm="", username="",
                     "checkpoint_report": resume_data, "detail": (checked.get('err') or '')[-400:]}
         plan['resume'] = True
         plan['checkpoint_report'] = resume_data
-        plan['initialization'] = 'last completed objective evaluation; same saved bootstrap; optimizer restarted'
-    binding = {"collection_id": collection_id, "replicas": wanted}
+        plan['initialization'] = 'verified initial/accepted parameters; same saved bootstrap; optimizer restarted'
+    binding = {"collection_id": collection_id, "replicas": wanted, "slurm": slurm}
     if resume_data:
         binding['checkpoints'] = {k: v['sha256'] for k, v in resume_data['records'].items()}
     phrase = _confirm_phrase("RERUN", binding)
@@ -3130,10 +3147,21 @@ def rerun_replicas(collection_id="", replicas="failed", confirm="", username="",
     ws = _workspace(u)
     stage = _stage_root(u, e)
     qs, stamp = _shq(stage), time.strftime("%Y%m%dT%H%M%S", time.gmtime())
-    name = f"rerun_{stamp}"
+    name = f"rerun_{stamp}_{time.time_ns()}"
+    request_path = f"{stage}/slurm/{name}_request.json"
     resume_path = f"{stage}/slurm/{name}_resume.json" if resume_data else None
-    sb = base64.b64encode(_array_script(ws, e["campaign_folder"], e["input_card"], min(wanted), max(wanted),
+    sb = base64.b64encode(_array_script(ws, e["campaign_folder"], job_card, min(wanted), max(wanted),
                                         indices=wanted, resume_plan=resume_path).encode()).decode()
+    request = {"schema": "femtomind.rerun-request.v1", "collection_id": collection_id,
+               "replicas": wanted, "array": plan["array"], "resume": resume,
+               "slurm": slurm, "resource_overrides": overrides,
+               "scientific_input": f"{stage}/input.py", "stage_manifest": f"{stage}/manifest.resolved.yaml"}
+    prior = (e["input_card"].get("parameters") or {}).get("priorSnapshot") or {}
+    if prior.get("sha256"):
+        request["prior_snapshot_sha256"] = prior["sha256"]
+    if resume_data:
+        request["checkpoints"] = binding["checkpoints"]
+    receipt = base64.b64encode(json.dumps(request, separators=(',', ':')).encode()).decode()
     # The script is written first; earlier results move aside just before sbatch
     # and move back if sbatch refuses, so a failed submission changes nothing.
     moves = " ; ".join(f"if [ -e {qs}/current/replica_{i} ]; then mv {qs}/current/replica_{i} {qs}/previous/replica_{i}_{stamp}; fi"
@@ -3147,20 +3175,24 @@ def rerun_replicas(collection_id="", replicas="failed", confirm="", username="",
         encoded = base64.b64encode(json.dumps(resume_data).encode()).decode()
         pin = f"echo {encoded} | base64 -d > {_shq(resume_path)} && "
     command = (f"mkdir -p {qs}/previous {qs}/slurm {log_dir} && echo {sb} | base64 -d > {qs}/slurm/{name}.sh && "
+               f"echo {receipt} | base64 -d > {_shq(request_path)} && "
                f"{pin}{{ {moves} ; }} && {{ sbatch {qs}/slurm/{name}.sh || {{ {back} ; false; }} ; }}")
     r = _remote(u, 'bash -s', stdin=command, timeout=90)
     m = re.search(r"Submitted batch job (\d+)", (r.get("out") or "") + (r.get("err") or ""))
     if not m:
         return {"status": "error", "message": "sbatch refused the job.", "detail": (r.get("err") or r.get("out"))[-400:]}
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    e = dict(e)
     e["jobs"] = list(e.get("jobs") or []) + [{"job_id": m.group(1), "first": min(wanted), "last": max(wanted),
                                               "replicas": wanted, "rerun": True, "submitted_at": now,
                                               "log_prefix": _campaign_log_prefix(u, e["campaign_folder"]),
                                               "error_log_prefix": _campaign_error_log_prefix(u, e["campaign_folder"]),
-                                              "resume": resume}]
+                                              "resume": resume, "slurm": slurm,
+                                              "resource_overrides": overrides, "request_manifest": request_path}]
     e.update(updated_at=now, slurm_job_id=m.group(1), status="submitted")
     _registry(u, {"kind": "upsert", "entry": e})
     return {"status": "submitted", "job_id": m.group(1), **plan,
+            "request_manifest": request_path,
             "previous_results": f"{stage}/previous/replica_<n>_{stamp}",
             "message": "Queued. Run postprocess_campaign once they finish to update the fit summary."}
 
@@ -10658,13 +10690,19 @@ TOOLS = {
                 "replica numbers instead.) Set resume=true explicitly to restart the optimizer from each "
                 "last valid checkpoint using its identical saved bootstrap data. Missing, changed or "
                 "incompatible checkpoints fail; internal optimizer state is not restored. Default false "
-                "preserves fresh/random/prior initialization.",
+                "preserves fresh/random/prior initialization. Optional mem='6G' overrides memory for this "
+                "new job only. Time, CPUs and partition policy remain from the original card (automatic "
+                "partition is resolved from its time limit). The preview and confirmation bind effective "
+                "resources; per-job metadata records them without rewriting historical resources or science. "
+                "Omit mem to retain original resources; pass it again on later checkpoint resumes if needed.",
         "schema": {"type": "object", "properties": {"collection_id": {"type": "string", "description": COLLECTION_ARG},
                                                     "replicas": {"type": "string", "default": "failed"},
                                                     "resume": {"type": "boolean", "default": False},
+                                                    "mem": {"type": "string", "pattern": "^[1-9][0-9]{0,3}[MG]$",
+                                                            "description": "Optional memory for this rerun only, e.g. 6G or 500M; original campaign resources remain unchanged."},
                                                     "confirm": {"type": "string"}},
                    "required": ["collection_id"]},
-        "fn": lambda a: rerun_replicas(a.get("collection_id", ""), a.get("replicas", "failed"), a.get("confirm", ""), resume=a.get('resume', False))},
+        "fn": lambda a: rerun_replicas(a.get("collection_id", ""), a.get("replicas", "failed"), a.get("confirm", ""), resume=a.get('resume', False), mem=a.get('mem'))},
     "campaign_logs": {
         "desc": "Logs of a campaign: each replica's state (fitted, not fitted, failed, running, no "
                 "output) and, for a replica that did not fit, the Python error and ends of its Slurm "

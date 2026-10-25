@@ -1036,6 +1036,28 @@ that assumption—protect resumption. A central-data post-fit diagnostic still u
 central data. `resume=false` (default) preserves fresh/prior/random behavior;
 More Replicas continues to add new identities rather than resume old ones.
 
+The existing Rerun MCP tool accepts an optional per-submission memory override:
+`rerun_replicas(collection_id=..., replicas="failed", mem="6G", resume=false)`.
+Use the preview's confirmation phrase on a second call with the same options.
+Only memory is overridden; saved time, CPU count and partition policy are retained.
+An automatic partition is resolved from the saved time limit (48 hours selects
+the production partition on JLab). The plan shows effective `slurm` resources
+and `resource_overrides`; changing resources invalidates the confirmation.
+Omitting `mem` retains the original card's resources, including on resumes.
+Pass `mem="6G"` again with `resume=true` to use that memory for a later restart.
+
+Each confirmed rerun writes a small `slurm/rerun_<unique>_request.json` resource
+manifest and records effective resources in its new registry job entry. The
+original `input_card`, prior job entries, full pinned prior snapshot, scientific
+`input.py` and `manifest.resolved.yaml` are not rewritten. Replica IDs and their
+prior/bootstrap mapping remain unchanged. `replicas="failed"` selects unfinished
+replicas and excludes fitted results (including a fitted result whose Slurm exit
+was unsuccessful); an explicit replica list retains the existing intentional
+refit behavior. Earlier output is archived only for selected IDs. This does not
+append or renumber replicas, create a second fitting path, or change checkpoint,
+logging or central-data chi-square conventions. The memory override is available
+through MCP; existing interactive More/Rerun calls without it remain compatible.
+
 This is **optimizer restart**, not restoration of trust-region/Jacobian/history
 state. SciPy starts normally at the saved vector and recalculates derivatives.
 `point_evaluations` identifies the saved base/accepted point; `evaluations`
