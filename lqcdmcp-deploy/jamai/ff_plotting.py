@@ -134,7 +134,8 @@ def _ff_regular(text):
     return r'{\normalfont\mdseries\unboldmath$' + text + '$}'
 
 
-def _ff_place(fig, axes, artists, occupied, preferred=(0.35, 0.23), excluded=()):
+def _ff_place(fig, axes, artists, occupied, preferred=(0.35, 0.23), excluded=(),
+              shrink=True):
     """Place measured text/legend rectangles in free log-plot space."""
     import numpy as np
     renderer = fig.canvas.get_renderer()
@@ -175,9 +176,21 @@ def _ff_place(fig, axes, artists, occupied, preferred=(0.35, 0.23), excluded=())
                     continue
                 candidates.append(((tx-preferred[0])**2 + (ty-preferred[1])**2 + .01*i, i, tx, ty))
     if not candidates:
-        for artist in artists:
-            artist.remove()
-        raise ValueError('No clear in-panel space for FF text at the approved font sizes; select fewer flavors or a different z range')
+        # Typography is a preference, never a reason to discard a valid figure.
+        # Use public Text APIs; legend handles retain their original readable size.
+        if shrink:
+            for scale in (.85, .72, .62):
+                for artist in artists:
+                    texts = [artist] if hasattr(artist, 'get_fontsize') else artist.get_texts()
+                    for text in texts:
+                        original = getattr(text, '_ff_original_size', text.get_fontsize())
+                        text._ff_original_size = original
+                        text.set_fontsize(max(18, original * scale))
+                placed = _ff_place(fig, axes, artists, occupied, preferred, excluded, shrink=False)
+                if placed is not None:
+                    return placed
+            return None
+        return None
     _, i, tx, ty = min(candidates)
     for j, artist in enumerate(artists):
         if j != i:
@@ -260,40 +273,80 @@ def draw_ff_figures(zs, bands, flavors, hadrons, modes, q2, campaign_name, inter
                 label = r'\boldmath$zD_{%s}%s$' % (FF_FLAVOR_MATH[flavor], superscript)
                 flavor_text = ax.text(.8, .8, label, transform=ax.transAxes, fontsize=45,
                                       ha='center', va='center', clip_on=True)
-                _ff_place(fig, [ax], [flavor_text], {0:[]}, preferred=(.8,.8))
+                if _ff_place(fig, [ax], [flavor_text], {0:[]}, preferred=(.8,.8)) is None:
+                    # A broad band can occupy every candidate rectangle. Keep a
+                    # small, legible corner label rather than aborting the plot.
+                    flavor_text.set_position((.97, .97))
+                    flavor_text.set_ha('right'); flavor_text.set_va('top')
+                    flavor_text.set_bbox(dict(facecolor='white', edgecolor='none', alpha=.8, pad=1.5))
                 if not positive.size:
                     ax.text(.5, .45, 'No positive FF interval', transform=ax.transAxes,
                             ha='center', fontsize=18, fontweight='normal')
                 layout.append(dict(flavor=flavor, bottom_labels=bottom, y_numeric_labels=i%3==0,
                                    ylim=list(ax.get_ylim())))
+            # Unused grid cells are real annotation space too, especially for
+            # one/two-flavor requests. Search them before adding a footer.
+            text_axes = list(grid.flat)
+            for spare in text_axes[len(axes):]:
+                spare.set_visible(True)
+                spare.set_axis_off()
             renderer = fig.canvas.get_renderer()
             occupied = {i:[text.get_window_extent(renderer).padded(4*fig.dpi/72) for text in ax.texts]
-                        for i, ax in enumerate(axes)}
+                        for i, ax in enumerate(text_axes)}
             annotation = _ff_regular(r'Q^{2} = %g\,\mathrm{GeV}^{2}' % q2) + '\n' + (
                 _ff_regular(r'%g\%%\;\mathrm{C.I.}' % interval) if not configured else 'Configured values')
             texts = [ax.text(.5, .5, annotation, transform=ax.transAxes, fontsize=30,
-                             fontweight='normal', ha='center', va='center', linespacing=1.15) for ax in axes]
-            annotation_panel, _ = _ff_place(fig, axes, texts, occupied)
+                             fontweight='normal', ha='center', va='center', linespacing=1.15) for ax in text_axes]
+            annotation_placement = _ff_place(fig, text_axes, texts, occupied)
+            annotation_panel = annotation_placement[0] if annotation_placement else None
             if mode == 'combined':
                 handles = [Patch(facecolor=FF_HADRONS[h][2], edgecolor=FF_HADRONS[h][2],
                                  alpha=band_alpha, label=r'\boldmath$%s$' % FF_HADRONS[h][1]) for h in selected]
             else:
                 handles = [Patch(facecolor=band_color, edgecolor=band_color, alpha=band_alpha,
                                  label=_ff_literal(campaign_name))]
-            legend_axes = list(axes)
-            if len(axes) == 1:
-                # Keep single-flavor requests usable without sharing its text panel.
-                spare = list(grid.flat)[1]
-                spare.set_visible(True)
-                spare.set_axis_off()
-                legend_axes.append(spare)
-                occupied[1] = []
+            legend_axes = text_axes
             legends = [ax.legend(handles=handles, loc='lower left', bbox_to_anchor=(0,0),
                                   frameon=False, ncol=2 if len(handles)>2 else 1,
                                   fontsize=28, handlelength=1, columnspacing=.3, handletextpad=.4)
                        for ax in legend_axes]
-            legend_panel, _ = _ff_place(fig, legend_axes, legends, occupied,
-                                       preferred=(0,0), excluded=(annotation_panel,))
+            legend_placement = _ff_place(fig, legend_axes, legends, occupied,
+                                         preferred=(0,0), excluded=(annotation_panel,))
+            legend_panel = legend_placement[0] if legend_placement else None
+            footer = annotation_placement is None or legend_placement is None
+            if footer:
+                # Keep scientific axes at their original physical size. Reserve
+                # a separate strip below the x labels; nothing covers a band.
+                if annotation_placement:
+                    annotation_placement[1].remove()
+                else:
+                    for artist in texts: artist.remove()
+                if legend_placement:
+                    legend_placement[1].remove()
+                else:
+                    for artist in legends: artist.remove()
+                legend_lines = 1
+                if mode == 'individual':
+                    import textwrap
+                    wrapped = textwrap.fill(str(campaign_name), width=48)
+                    handles[0].set_label(_ff_literal(wrapped))
+                    legend_lines = len(wrapped.splitlines())
+                footer_height = max(1.3, .38 * legend_lines + .2)
+                height = fig.get_figheight() + footer_height
+                fig.set_size_inches(18, height)
+                fig.subplots_adjust(bottom=(1+footer_height)/height, top=1-.15/height)
+                annotation_ax = fig.add_axes([.075, .12/height, .38, (footer_height-.35)/height])
+                legend_ax = fig.add_axes([.48, .12/height, .505, (footer_height-.35)/height])
+                annotation_ax.set_axis_off(); legend_ax.set_axis_off()
+                annotation_ax.text(.5, .5, annotation, transform=annotation_ax.transAxes,
+                                   fontsize=24, fontweight='normal', ha='center', va='center')
+                legend_ax.legend(handles=handles, loc='center', frameon=False,
+                                 ncol=min(4, len(handles)), fontsize=22, handlelength=1,
+                                 columnspacing=.6, handletextpad=.4)
+                annotation_panel, legend_panel = 'footer_annotation', 'footer_legend'
+            for index in range(len(axes), len(text_axes)):
+                if index not in (annotation_panel, legend_panel):
+                    text_axes[index].set_visible(False)
             fig.canvas.draw()
             save = fig.savefig
             def styled_save(*args, _save=save, **kwargs):
@@ -301,6 +354,7 @@ def draw_ff_figures(zs, bands, flavors, hadrons, modes, q2, campaign_name, inter
             fig.savefig = styled_save
             figures.append((fig, dict(mode=mode, hadrons=selected, layout=layout,
                                       annotation_panel=annotation_panel, legend_panel=legend_panel,
+                                      text_layout='dedicated_footer' if footer else 'in_panel',
                                       log_limitations=limits_info, text_rendering='latex',
                                       font_family=font_family, dpi=FF_PREVIEW_DPI, q2=q2,
                                       z_min=float(zs[0]), z_max=float(zs[-1]),

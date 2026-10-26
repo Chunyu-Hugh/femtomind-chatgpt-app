@@ -1055,6 +1055,34 @@ submitted during this implementation; known historical reconstruction limitation
 remain separate from readiness to configure this updated campaign.
 
 
+### Readable future campaign input cards
+
+Native FitPack loads `input.py` one line at a time. New cards retain the legacy
+template and a small, line-compatible loader; readable generated definitions
+and overrides live in `stage_configuration/<sha256>.py` beside the card.
+The loader verifies those bytes before executing them. Literal initialization
+and bootstrap seed declarations remain in the card for existing provenance
+readers. This changes source formatting/storage, not the effective `conf`.
+
+For prior-initialized campaigns, the complete, original prior snapshot lives
+once in `prior_replicas/<snapshot-sha256>.json` beside the stage input, shared
+by every replica. Both its exact file bytes and canonical snapshot hash are
+verified. Publication is atomic and refuses to overwrite different existing
+bytes. The existing manifests/lock retain their full audit snapshots, and the
+pre-submission barrier checks the new settings/reference as well as those
+manifests. Native initialization still receives the same complete dictionary;
+historical inline cards remain supported. Keep the card and its referenced
+files together on shared Ceph. Relocation requires rematerializing references;
+copying only the card is not a portable standalone campaign export.
+
+FF publication figures search all selected panels for text space, then try
+smaller readable fonts. If annotations or legends still cannot fit without
+covering bands, a separate footer is reserved below the x labels. Long campaign
+labels wrap and expand that footer. Dense flavor panels retain a small corner
+label rather than causing the entire figure to fail. Numerical FF values,
+interval calculations, hadron colors, LaTeX, three columns and logarithmic
+display limits remain unchanged.
+
 ### Central-data scientific chi-square reporting
 
 Scientific replica scores and chi-square selections use only point residuals

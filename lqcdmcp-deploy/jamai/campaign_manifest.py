@@ -189,7 +189,7 @@ def verify_materialized_priors(document: CampaignDocument, resolved_stages: list
     This is part of materialization, not an optional validation flag. A failure
     makes the existing materialize && compile && sbatch chain stop before Slurm.
     """
-    from .prior_replicas import verify
+    from .prior_replicas import verify, load_snapshot_reference
     checked = []; saved_documents = None
     def same_snapshot(actual, expected, location):
         if not isinstance(actual, dict):
@@ -198,11 +198,29 @@ def verify_materialized_priors(document: CampaignDocument, resolved_stages: list
         if actual != expected:
             raise ValueError('Materialized prior differs from requested snapshot: ' + location)
     for stage in resolved_stages:
+        layout = build_run_layout(document, document.stage_map()[stage.name])
+        tree = ast.parse(layout['stage_input'].read_text())
+        settings = {target.id: ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
+                    for target in node.targets if isinstance(target, ast.Name)
+                    and target.id in ('_JAMAI_SETTINGS_PATH', '_JAMAI_SETTINGS_SHA256')}
+        if settings:
+            import hashlib
+            if set(settings) != {'_JAMAI_SETTINGS_PATH', '_JAMAI_SETTINGS_SHA256'}:
+                raise ValueError('Incomplete materialized campaign settings reference: ' + stage.name)
+            raw = Path(settings['_JAMAI_SETTINGS_PATH']).read_bytes()
+            if hashlib.sha256(raw).hexdigest() != settings['_JAMAI_SETTINGS_SHA256']:
+                raise ValueError('Materialized campaign settings integrity failure: ' + stage.name)
+            if any(isinstance(node, ast.Assign) and any(
+                    isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name)
+                    and target.value.id == 'conf' and isinstance(target.slice, ast.Constant)
+                    and target.slice.value == 'jamai prior replicas' for target in node.targets)
+                    for node in tree.body):
+                raise ValueError('Materialized input integrity failure: prior override outside pinned settings: ' + stage.name)
+            tree = ast.parse(raw)
         expected = stage.params.get('prior_replicas')
         if expected is None:
             continue
         verify(expected)
-        layout = build_run_layout(document, document.stage_map()[stage.name])
         if saved_documents is None:
             saved_documents = [(str(path), _load_manifest_payload(path)) for path in
                                (layout['campaign_lock'], layout['campaign_yaml'])]
@@ -212,7 +230,6 @@ def verify_materialized_priors(document: CampaignDocument, resolved_stages: list
         manifest = _load_manifest_payload(layout['stage_manifest'])
         actual = manifest.get('params', {}).get('prior_replicas')
         same_snapshot(actual, expected, 'stage manifest:' + stage.name)
-        tree = ast.parse(layout['stage_input'].read_text())
         assignments = [node.value for node in tree.body if isinstance(node, ast.Assign)
                        and any(isinstance(target, ast.Subscript)
                                and isinstance(target.value, ast.Name) and target.value.id == 'conf'
@@ -221,7 +238,14 @@ def verify_materialized_priors(document: CampaignDocument, resolved_stages: list
                                for target in node.targets)]
         if not assignments:
             raise ValueError('Materialized prior snapshot missing from input.py: ' + stage.name)
-        actual = ast.literal_eval(assignments[-1])
+        if isinstance(assignments[-1], ast.Name) and assignments[-1].id == '_JAMAI_PRIOR_SNAPSHOT':
+            references = [node.value for node in tree.body if isinstance(node, ast.Assign)
+                          and any(isinstance(t, ast.Name) and t.id == '_JAMAI_PRIOR_REFERENCE' for t in node.targets)]
+            if len(references) != 1:
+                raise ValueError('Materialized prior reference missing or ambiguous: ' + stage.name)
+            actual = load_snapshot_reference(ast.literal_eval(references[0]))
+        else:
+            actual = ast.literal_eval(assignments[-1])  # Historical inline inputs remain supported.
         same_snapshot(actual, expected, 'input.py:' + stage.name)
         checked.append({'stage': stage.name, 'sha256': expected['sha256'],
                         'replicas': len(expected['replicas']), 'snapshots_checked': 4, 'status': 'verified'})
