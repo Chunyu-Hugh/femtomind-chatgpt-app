@@ -94,8 +94,9 @@ def job_state():
 def queued():
     """Stop on a gateway job that waits in the queue: it may wait for hours, so
     waiting here would not help."""
-    say("   your gateway job is waiting in the queue: gateways run one at a time, so it waits for a"
-        " colleague's gateway to stop, then starts by itself.")
+    say("   your gateway job is waiting in the queue. Only a job in the reservation chen_mcp_daily (the"
+        " default) can start on qcd24s100: if you set JAM_GW_RESERVATION, unset it, cancel"
+        " (python3 redeploy_jam.py cancel) and launch again.")
     sys.exit("the gateway is not up yet: run python3 deploy_and_verify.py --check again later")
 
 

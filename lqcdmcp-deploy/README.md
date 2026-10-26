@@ -50,31 +50,31 @@ on a clone of `main` without the submodule: 31 JAM tools, and `hot_redeploy.py`'
 check on the node passes.)
 
 The job script carries the gateway, the panel and `jamai/` (zlib + base64)
-and no credential. It asks for partition `24s`, reservation `chen_mcp_daily`
-(no time window since 2026-10-16; before, about 10:00–16:00 US Eastern), 6 h,
-16 CPUs (a quarter of the reserved 64-core node, so four gateways fit on it,
-each on its own port) and the `hadstruc24s` account, as agreed with Jie Chen
-on 2026-10-19
-(`JAM_GW_PARTITION`, `JAM_GW_RESERVATION`, `JAM_GW_HOURS`, `JAM_GW_CPUS` and
-`JAM_GW_ACCOUNT` override; `JAM_GW_ACCOUNT=none` uses your default Slurm
-account). The job unpacks the files into `~/.jam_gateway/app`, and a
+and no credential. Its header is the one tested on 2026-10-23: the
+reservation `chen_mcp_daily`, no partition line (the job goes to the
+reservation's partition, `mcp`), no `--nodes`, `--ntasks=1`, 16 CPUs, 6 h and
+the `hadstruc24s` account. (`JAM_GW_RESERVATION`, `JAM_GW_PARTITION`,
+`JAM_GW_HOURS`, `JAM_GW_CPUS`, `JAM_GW_MEM` and `JAM_GW_ACCOUNT` override it;
+`JAM_GW_PARTITION=none` and `JAM_GW_ACCOUNT=none` leave that line out.) The job
+unpacks the files into `~/.jam_gateway/app`, and a
 supervisor loop restarts the server whenever it exits. The server takes the
 first free port from 8080 and registers with the proxy as
 `jam-gateway-<user>`, at `https://lqcdmcp.jlab.org:8000/cloud/jam-gateway-<user>/mcp`.
 
-- **Accounts.** Jie Chen must first enable an account for MCP servers and the
-  reservation. Until then the dashboard's `launch_mcp_server_using_script`
-  fails with `Slurm command failed: sudo sbatch --uid <user> ... (rc=1)`, and
-  `deploy_and_verify.py` stops there with that explanation.
-- **The reservation is required.** `chen_mcp_daily` has a user list (Jie
-  adds people). The proxy reaches port 8080 only on the reserved node
-  (`qcd24s100`); a gateway on another `24s` node starts but is unreachable
-  ("No route to host", 2026-10-13). The partition allows the `hadstruc24s`
-  account, not `jlablqcd24s`, so the job asks for `hadstruc24s`; every
-  collaborator needs access to that account.
-- **One at a time.** So far the reservation has run only one gateway job at a
-  time; a second one stays PENDING until the first is cancelled
-  (`python3 redeploy_jam.py cancel`).
+- **Accounts.** Jie Chen must first enable an account for MCP servers, add it
+  to the user list of `chen_mcp_daily` and allow it the `hadstruc24s` account
+  in partition `mcp`. Until then the dashboard's
+  `launch_mcp_server_using_script` fails with
+  `Slurm command failed: sudo sbatch --uid <user> ... (rc=1)`, and
+  `deploy_and_verify.py` stops there with that explanation. The list on
+  2026-10-23: chen, chunyu, edwards, jkarpie, wmoore, treyand.
+- **The reservation is required.** The proxy reaches gateways only on
+  `qcd24s100` (64 CPUs, in partition `mcp` since 2026-10-22, before that in
+  `24s`), and `chen_mcp_daily` holds all of that node until 2027-10-15. A job
+  without `--reservation=chen_mcp_daily` stays PENDING even when the node is
+  idle: job 7342219 (`--partition=mcp`, no reservation) waited about 20 h.
+- **One gateway at a time, unless started together:** see
+  [One node, and its prolog](#one-node-and-its-prolog-running-two-gateways).
 - **Shared mode.** `JAM_GW_SHARED=1` at launch (or `"shared": true` in
   `~/.jam_gateway/site.json` on the node) makes the gateway act as the
   user named by `username` in each call, with that user's own chain,
@@ -94,6 +94,53 @@ first free port from 8080 and registers with the proxy as
   after the swap, runs the uploaded file (sha256) and still accepts the
   token. It refuses a gateway that is not a Slurm job, since nothing would
   restart it. The job and the cluster sign-in survive.
+
+### One node, and its prolog: running two gateways
+
+Slurm itself would run four 16-CPU gateways on `qcd24s100`: it allocates CPUs
+only (`SelectTypeParameters=CR_CPU`, so the default `ReqMem=1000G` blocks
+nothing), with `OverSubscribe=NO` and `PreemptMode=OFF`. What ends them is the
+node's Prolog and Epilog, `/usr/local/libexec/slurm/proepilog.sh`, the script
+of every LQCD node, which assumes one job per node. Its "hanging job check"
+sends TERM, then KILL, to every non-root process with a UID above
+`SYS_UID_MAX`, whoever owns it and whatever job it belongs to; it also empties
+`/scratch` and `/dev/shm`. Hence (sacct and `scontrol`, read on the node
+through `node_diag` on 2026-10-23):
+
+- **A gateway that starts kills every gateway already on the node.** Trey
+  Anderson's 7342594 ended `FAILED` with exit code `0:15` (SIGTERM) at
+  14:39:04, one second after 7342596 started; 7342597 the same way at
+  14:42:41, one second after 7342598, a second gateway of the same user,
+  started. The two jobs' headers were identical; leaving out `--nodes=1` or
+  adding `--mem` changes nothing.
+- **A gateway that ends kills the others too**, since the Epilog runs the same
+  check: stopping one, or one reaching its 6 h limit, takes the rest down, and
+  with them the cluster sign-in (its ControlMasters are user processes too).
+- **Gateways submitted together all survive**: their Prologs run before any
+  gateway process exists. At 14:45 two gateways launched at the same moment
+  (7342599 and 7342600) both ran, on ports 8080 and 8081, and both answered
+  through the proxy.
+
+To run two, until the Prolog changes: stop every gateway on the node, then
+launch them in the same moment and verify each.
+
+```bash
+JAM_GW_NAME=jam-gateway-<you>  python3 redeploy_jam.py launch &
+JAM_GW_NAME=jam-gateway-<you>2 python3 redeploy_jam.py launch &
+wait
+JAM_GW_NAME=jam-gateway-<you>  python3 deploy_and_verify.py --check
+JAM_GW_NAME=jam-gateway-<you>2 python3 deploy_and_verify.py --check
+```
+
+Two people do the same: both stop their gateways, then each runs
+`python3 redeploy_jam.py launch` in the same minute, and each signs in on
+their own panel. After that nobody starts or stops a gateway until all are
+done, and all stop together. Two gateways of one user share
+`~/.jam_gateway/app`; both jobs unpack the same files into it.
+
+The lasting fix is the system team's: skip the kill step (and the scratch
+cleanup) on `qcd24s100`, or for jobs in `chen_mcp_daily`. Then gateways can
+start and stop independently, four at a time.
 
 ## How it works
 
@@ -297,6 +344,7 @@ first free port from 8080 and registers with the proxy as
   <hash>`), which ties it to exactly that card or plan.
 - **Other Slurm jobs.** `draft_slurm_job` writes `<workspace>/slurm/<name>.sh`
   and checks it with `sbatch --test-only`; `submit_slurm_job` submits it.
+  Their stdout and stderr go to separate, unique files under `/farm_out/<user>/`.
 - **Partition.** Auto: `priority` when the wall clock per replica is up to
   4 h, `production` beyond.
 - **Tools.** ping, get_console, open_panel, connect_hpc, check_hpc_connection,
@@ -344,7 +392,6 @@ FitPack/JAM RESMAN and MAXLIKE
         ↓
 Replica outputs, chi2 summaries, and plots
 ```
-  Their stdout and stderr go to separate, unique files under `/farm_out/<user>/`.
 
 ### Component responsibilities
 
@@ -512,8 +559,7 @@ The offline suites are not part of this repository.
 **Not yet verified live:** the pion objects on the platform (whether the
 reference file is readable from each account and what the FitPack `ai`
 branch does with dy-pion, ln, `pdf-pion` and `p->pi,n` under `dis version`
-0); a workspace clone with a GitHub token; the deploy scripts' queue
-handling when another gateway holds the reservation; the VS Code and
+0); a workspace clone with a GitHub token; the VS Code and
 Claude Desktop setups in the guide; Claude Code tool calls longer than 60 s
 with the guide's timeout settings (taken from the Claude Code
 documentation). In October 2026 the dashboard was found to answer yes for

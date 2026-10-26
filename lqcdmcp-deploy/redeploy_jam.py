@@ -11,10 +11,11 @@ Usage:
   python3 redeploy_jam.py launch | cancel | status
   python3 redeploy_jam.py script     # write the job script, to paste into the dashboard page
 
-Optional: JAM_GW_RESERVATION (default chen_mcp_daily, "" for none),
+Optional: JAM_GW_RESERVATION (default chen_mcp_daily; "" for none),
 JAM_GW_SHARED=1 (the gateway then acts as the user named in each call: see
-the guide's "Shared gateway"), JAM_GW_PARTITION (default 24s), JAM_GW_HOURS
-(default 6), JAM_GW_CPUS (default 16), JAM_GW_ACCOUNT (the Slurm account, default
+the guide's "Shared gateway"), JAM_GW_PARTITION (default none: the reservation's
+partition, mcp), JAM_GW_HOURS (default 6), JAM_GW_CPUS (default 16), JAM_GW_MEM
+(e.g. 16G; default: the partition's), JAM_GW_ACCOUNT (the Slurm account, default
 hadstruc24s as agreed with Jie Chen; "none" for your default account).
 """
 import base64
@@ -42,15 +43,20 @@ USER = gw_auth.USER
 if not USER:
     raise SystemExit("set JAM_GW_USER to your JLab username")
 MCP_NAME = gw_auth.NAME
+# qcd24s100 is in partition mcp (since 2026-10-22) and wholly held by the
+# reservation chen_mcp_daily: a job without the reservation never starts there.
+# Without a partition line the job goes to the reservation's partition, as the
+# header Trey Anderson and Chunyu Hu tested on 2026-10-23.
 RESERVATION = os.environ.get("JAM_GW_RESERVATION", "chen_mcp_daily").strip()
-PARTITION = os.environ.get("JAM_GW_PARTITION", "24s").strip()
+PARTITION = os.environ.get("JAM_GW_PARTITION", "none").strip()
+if PARTITION.lower() == "none":
+    PARTITION = ""                  # the cluster's default partition
 HOURS = int(os.environ.get("JAM_GW_HOURS", "6"))
-# Agreed with Jie Chen (2026-10-19): gateways run under hadstruc24s; 16 CPUs per
-# job, so that four gateways share the reserved 64-core node (each takes its own port).
 ACCOUNT = os.environ.get("JAM_GW_ACCOUNT", "hadstruc24s").strip()
 if ACCOUNT.lower() == "none":
     ACCOUNT = ""                    # your default Slurm account
 CPUS = int(os.environ.get("JAM_GW_CPUS", "16"))
+MEM = os.environ.get("JAM_GW_MEM", "").strip()      # e.g. 16G; empty: the partition's default
 SHARED = os.environ.get("JAM_GW_SHARED", "").strip() == "1"
 ctx = ssl.create_default_context()
 sid = None
@@ -163,14 +169,19 @@ def build_slurm():
     """Job script that boots the CURRENT gateway with its panel and campaign
     package, under the launching user's account. It carries no credential: the
     gateway checks callers' dashboard tokens with the dashboard."""
-    sbatch = [f"#SBATCH --partition={PARTITION}",
-              f"#SBATCH --time={HOURS:02d}:00:00",
-              "#SBATCH --nodes=1", "#SBATCH --ntasks=1", f"#SBATCH --cpus-per-task={CPUS}",
+    # No --nodes=1: Jie Chen (2026-10-22) pointed to it as what kept gateways
+    # from sharing the mcp node; --ntasks=1 already keeps the job on one node.
+    sbatch = [f"#SBATCH --time={HOURS:02d}:00:00",
+              "#SBATCH --ntasks=1", f"#SBATCH --cpus-per-task={CPUS}",
               f"#SBATCH --job-name={MCP_NAME}"]
+    if PARTITION:
+        sbatch.insert(0, f"#SBATCH --partition={PARTITION}")
     if RESERVATION:
         sbatch.insert(2, f"#SBATCH --reservation={RESERVATION}")
     if ACCOUNT:
         sbatch.append(f"#SBATCH --account={ACCOUNT}")
+    if MEM:
+        sbatch.append(f"#SBATCH --mem={MEM}")
     return ("#!/bin/bash\n" + "\n".join(sbatch) + "\n"
             "python3 - <<'PYDEC' > /dev/null\n"
             "import base64, json, os, shutil, zlib\n"
@@ -219,22 +230,21 @@ def main():
         if refused or re.search(r"Error calling tool|Slurm command failed", out):
             # An error answer: nothing was queued. deploy_and_verify.py stops on this message.
             asked = ((f"reservation {RESERVATION}" if RESERVATION else "no reservation")
-                     + f", partition {PARTITION}, {HOURS} h"
+                     + (f", partition {PARTITION}" if PARTITION else ", the default partition") + f", {HOURS} h"
                      + (f", account {ACCOUNT}" if ACCOUNT else ", your default Slurm account"))
             raise SystemExit(f"the platform did not start your gateway ({asked}): {out[:600]}\n"
-                             f"Most often Jie Chen has not yet enabled your JLab account ({USER}) for MCP "
-                             f"servers and the gateway reservation: ask him, and send him this output. The "
-                             f"reservation is required: the proxy reaches a gateway only on its reserved node, "
-                             f"so a job without it starts on a node nobody can connect to. Also ask for "
-                             f"access to the hadstruc24s Slurm account (the 24s partition does not allow "
-                             f"jlablqcd24s; the job asks for hadstruc24s unless JAM_GW_ACCOUNT says otherwise). "
+                             f"Check with Jie Chen that your JLab account ({USER}) is enabled for MCP "
+                             f"servers, is on the user list of the reservation chen_mcp_daily and may use "
+                             f"the hadstruc24s Slurm account in partition mcp. The job asks for hadstruc24s "
+                             f"unless JAM_GW_ACCOUNT says otherwise. "
                              f"If you set JAM_GW_RESERVATION, JAM_GW_PARTITION, JAM_GW_HOURS, JAM_GW_CPUS or "
                              f"JAM_GW_ACCOUNT yourself, unset them and "
                              f"try again first.")
         print(out)
         print(f"\nyour gateway: {gw_auth.URL}\npanel:        {gw_auth.URL} (in a browser)\n"
-              "The job usually starts within minutes; while a colleague's gateway holds the reservation "
-              "it waits in the queue and starts by itself. It runs for JAM_GW_HOURS (6 h) at most. python3 deploy_and_verify.py --check shows when your gateway is up.")
+              "It runs for JAM_GW_HOURS (6 h) at most. Starting it ends every other gateway on the node "
+              "(see the README, \"One node, and its prolog\"). "
+              "python3 deploy_and_verify.py --check shows when your gateway is up.")
     else:
         print(tool_call("check_mcp_server_status_by_name", {"mcp_name": MCP_NAME})[0])
 

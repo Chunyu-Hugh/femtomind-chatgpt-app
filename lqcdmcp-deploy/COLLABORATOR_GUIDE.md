@@ -60,10 +60,10 @@ Jie Chen runs the LQCDMCP platform. Before you start a gateway for the first
 time, ask him to enable your JLab account for:
 
 - MCP servers,
-- the gateway reservation `chen_mcp_daily` (partition `24s`), and
+- the user list of the reservation `chen_mcp_daily` (the gateway node,
+  `qcd24s100`, in partition `mcp`), and
 - the Slurm account `hadstruc24s` (the gateway job asks for it, with 16
-  CPUs, as agreed with Jie on 2026-10-19; `jlablqcd24s` cannot use the
-  partition).
+  CPUs).
 
 Without this, step 2.1 stops with "the LQCDMCP platform could not start your
 gateway". Trying again, or from another computer, gives the same result. Only
@@ -113,10 +113,12 @@ day since 2026-10-16; before, only in a 10:00–16:00 US Eastern window). Your
 files and results on ifarm stay, and fits keep running after the gateway
 stops.
 
-> **One gateway at a time.** So far the platform's reservation has run only
-> one gateway job at a time. If a colleague's gateway is running, yours waits
-> in the queue (PENDING) until theirs is stopped; `deploy_and_verify.py` tells
-> you when this happens. Agree on turns, and always do step 2.4 when you
+> **One gateway at a time, for now.** All gateways run on one node, and
+> that node's start-up script ends every program already running there. So
+> when anyone starts a gateway, every other gateway stops, yours included;
+> when anyone stops one, the others stop too. Agree on turns with your
+> colleagues, or start your gateways together in the same minute (the
+> README, "One node, and its prolog", says how). Always do step 2.4 when you
 > finish.
 
 ### 2.1 Start your gateway
@@ -547,11 +549,12 @@ platform does not offer. Use Codex (4.2) with your ChatGPT account instead.
 
 | What you see | What to do |
 |---|---|
-| `deploy_and_verify.py` stops with "the LQCDMCP platform could not start your gateway", after lines such as `validate: {}` and `Slurm command failed: sudo sbatch --uid <you> ... (rc=1)` | Most often your account is not enabled on LQCDMCP yet (step 1.2); then retrying, or using another computer, does not help. Send the report to Jie Chen. The reservation `chen_mcp_daily` has a user list; ask Jie to add you (and to make `hadstruc24s` your default Slurm account: the `24s` partition does not allow `jlablqcd24s`). There is no way around the reservation: the proxy reaches a gateway only on the reserved node, so a job started without it runs where nobody can connect to it. Until your default account is changed, `export JAM_GW_ACCOUNT=hadstruc24s` before `python3 deploy_and_verify.py`. |
+| `deploy_and_verify.py` stops with "the LQCDMCP platform could not start your gateway", after lines such as `validate: {}` and `Slurm command failed: sudo sbatch --uid <you> ... (rc=1)` | Check that your account is enabled for MCP servers, on the user list of the reservation `chen_mcp_daily` and allowed the account `hadstruc24s` (step 1.2). Send Jie Chen the report if all three are in place and the launch still fails. |
 | "the dashboard refused this token" | The dashboard token expired or was copied incompletely. Sign in to the dashboard again, copy the token, export it (1.5) and run the command again. Ctrl-C stops a script that is still waiting. |
 | "could not reach the dashboard", "timed out", "did not answer" or "the connection to the dashboard dropped" | A network problem. Check your network connection, then run the command again (after a failed launch, read the next row first). |
 | "stop: the launch request failed" | The lines above it say why (token or network: see the rows above). If the request timed out or the connection dropped, a job may still have been queued: run `python3 deploy_and_verify.py --check` before launching again. |
-| "your gateway job is waiting in the queue" | Another gateway holds the reservation. Yours starts by itself: run `python3 deploy_and_verify.py --check` later, or ask your colleagues whether one of them can stop theirs. |
+| "your gateway job is waiting in the queue" | The job does not use the reservation `chen_mcp_daily`, so it can never start. Unset `JAM_GW_RESERVATION` and `JAM_GW_PARTITION`, run `python3 redeploy_jam.py cancel`, then `python3 deploy_and_verify.py`. |
+| Your gateway stopped long before 6 hours, and the panel asks you to sign in again | Someone started or stopped another gateway on the node (see Part 2). Start yours again when they are done. |
 | "the gateway is not up yet: its job runs but the gateway does not answer" | Wait a few minutes, then run `python3 deploy_and_verify.py --check`. If it still does not answer: `python3 redeploy_jam.py cancel`, then `python3 deploy_and_verify.py`. |
 | "the gateway is not up yet, and the job launched above is no longer queued or running" | Gateway jobs end 6 hours after they start: start a new one. If yours ended much earlier than that, send the report to Chunyu. |
 | "the gateway is not up yet: you have no gateway job queued or running" | Run `python3 deploy_and_verify.py` without `--check`. |
