@@ -25,6 +25,8 @@ def schema(tools):
     """Reuse existing option schemas/defaults without attaching their UI metadata."""
     properties = {}
     for kind, backend in BACKENDS.items():
+        if tools[backend].get("denied"):
+            continue            # a family whose backend this deployment leaves out
         source = tools[backend]["schema"]["properties"]
         for key in sorted(OPTIONS[kind]):
             definition = deepcopy(source[key])
@@ -39,7 +41,7 @@ def schema(tools):
     return {"type": "object", "additionalProperties": False,
             "description": "Start with plot_type and collection_id plus optional options; poll with job_id alone.",
             "properties": {
-        "plot_type": {"type": "string", "enum": list(BACKENDS)},
+        "plot_type": {"type": "string", "enum": [k for k, b in BACKENDS.items() if not tools[b].get("denied")]},
         "collection_id": deepcopy(tools[BACKENDS["pdf"]]["schema"]["properties"]["collection_id"]),
         "options": {"type": "object", "additionalProperties": False, "properties": properties},
         "job_id": {"type": "string", "minLength": 1,
@@ -152,6 +154,8 @@ def get_plot(gateway, arguments):
     kind = args.get("plot_type")
     if not isinstance(kind, str) or kind not in BACKENDS:
         raise ValueError("plot_type must be experimental, pdf or ff")
+    if gateway.TOOLS[BACKENDS[kind]].get("denied"):
+        raise ValueError("plot_type " + kind + " is not available on this gateway (its backend tool is left out)")
     cid = args.get("collection_id")
     if not isinstance(cid, str) or not cid.strip():
         raise ValueError("collection_id must be a campaign name or collection ID")

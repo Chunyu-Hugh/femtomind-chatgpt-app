@@ -166,6 +166,33 @@ SITE = _load_site()
 SHARED = os.environ.get("JAM_GW_SHARED", "").strip() == "1" or bool(SITE.get("shared"))
 USERNAME_RE = r"[a-z0-9._-]{1,32}"
 
+# Tools a deployment leaves out: JAM_GW_TOOLS_DENY="a,b" (or "none"), else
+# site.json "tools_deny". A denied tool is absent from tools/list and
+# "unknown tool" when called, and the instructions do not mention it. Used by
+# the evaluation's knowledge conditions (a gateway that cannot reach the
+# published catalog or the reference archive) and by cautious deployments.
+ARCHIVE_TOOLS = ("list_analysis_results", "get_analysis_fit_statistics", "get_analysis_theory_predictions",
+                 "compare_with_reference")
+CATALOG_TOOLS = ("list_analysis_catalog", "get_analysis_catalog", "get_analysis_requirements",
+                 "preview_analysis_configuration", "preview_compiled_input")
+
+
+def _tools_deny():
+    raw = os.environ.get("JAM_GW_TOOLS_DENY")
+    names = ([x.strip() for x in raw.split(",")] if raw is not None and raw.strip().lower() != "none"
+             else (SITE.get("tools_deny") if raw is None and isinstance(SITE.get("tools_deny"), list) else []))
+    good = set()
+    for n in names:
+        if isinstance(n, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", n):
+            good.add(n)
+        elif n:
+            print(f"ignoring tools_deny entry {n!r}", flush=True)
+    return frozenset(good)
+
+
+TOOLS_DENY = _tools_deny()
+ARCHIVE_DENIED = bool(TOOLS_DENY & set(ARCHIVE_TOOLS))
+
 
 def _area(user):
     return SITE["area"].format(user=user)
@@ -701,6 +728,8 @@ def _audit_call(name, args, result, t0, rid):
     """The record of one tools/call, whatever its outcome."""
     try:
         status, code, is_error = _outcome(result)
+        if code == "UNKNOWN_TOOL" and TOOLS.get(name, {}).get("denied"):
+            code = "TOOL_DENIED"
         a = args if isinstance(args, dict) else {}
         public = {k: v for k, v in a.items() if k not in SECRET_ARGS}
         _audit("call", principal=getattr(_tls, "principal", ""), acting=getattr(_tls, "user", ""),
@@ -1274,6 +1303,7 @@ def check_hpc_connection(username=""):
     return {"connected": alive, "login_open": login_open, "cluster_reachable": alive,
             "shared": SHARED, "owner": GATEWAY_OWNER,
             "auth": AUTH_MODE, "legacy_shared": SHARED and AUTH_MODE == "dashboard", "audit": True,
+            "tools_denied": sorted(TOOLS_DENY),
             "account": account, "site": _site_public(), "sites": [_site_public()],
             "note": ("Ready to run fits." if alive else
                      "Not signed in to the cluster. Sign in on the Connect tab of the "
@@ -1862,7 +1892,7 @@ CAMPAIGN_CHOICES = {
     "order": ["LO", "NLO", "NNLO"], "tmc": ["off", "AOT"], "dglapMode": ["truncated", "iterated"],
     "asMode": ["backward", "forward"], "optimizer": ["trf", "dogbox"],
     "initialization": ["default", "random_within_bounds"],
-    "priorSource": {"kinds": ["archive", "file", "campaign"], "mapping": "exact count or explicit unique replica_ids", "native_msr": "order-bearing supported layouts; select step explicitly when multiple steps exist"},
+    "priorSource": {"kinds": [k for k in ("archive", "file", "campaign") if k != "archive" or not ARCHIVE_DENIED], "mapping": "exact count or explicit unique replica_ids", "native_msr": "order-bearing supported layouts; select step explicitly when multiple steps exist"},
     "betaVersion": [0, 1], "siaVersion": [0, 1],
 }
 
@@ -3767,6 +3797,8 @@ def _card_error_code(errors):
         return "DATA_FILE_MISSING"
     if first.startswith("The workspace") or first.startswith("Could not check workspace"):
         return "WORKSPACE_NOT_READY"
+    if "denied on this gateway" in first:
+        return "PRIOR_ARCHIVE_DENIED"
     if "prior" in first.lower() or "archive" in first.lower():
         return "PRIOR_SOURCE_INVALID"
     return "CARD_INVALID"
@@ -3786,6 +3818,8 @@ def _prepare_prior_replicas(u, norm):
     if required is None or not isinstance(selector.get(required),str) or not selector[required].strip():
         raise ValueError('Select a source kind and its nonempty analysis_id, path, or collection_id')
     if kind == 'archive':
+        if ARCHIVE_DENIED:
+            raise ValueError('Prior source kind archive is denied on this gateway (its reference-results tools are left out)')
         manifest = _analysis_results_store().resolve(selector['analysis_id'])
         directories = analysis_results.archive_directories(manifest)
         if any(_outside_read_roots(p, u) for p in directories):
@@ -12117,6 +12151,17 @@ TOOLS = {
 # UI template, including when the same backend job is polled asynchronously.
 from jamai import thesis_delivery
 
+def _mark_denied():
+    """Flag the denied tools. They stay in TOOLS (thesis_delivery reads their
+    schemas at run time) but are never listed, never called and never named."""
+    for _name in sorted(TOOLS_DENY):
+        if _name in TOOLS:
+            TOOLS[_name]["denied"] = True
+        elif _name not in ARCHIVE_TOOLS + CATALOG_TOOLS:
+            print(f"note: tools_deny names no tool: {_name}", flush=True)
+
+
+_mark_denied()          # before get_thesis_plot builds its schema from the backends
 TOOLS["get_thesis_plot"] = {
     "desc": "Display thesis-style PNG plots directly in the conversation, without opening FEMTOMIND. "
             "Prefer this for natural-language requests to show plots, figures, PNGs or thesis-style images. "
@@ -12151,13 +12196,18 @@ _FALLBACK_PANEL = ("<!doctype html><meta charset='utf-8'><title>JAM gateway</tit
                    "<p style='font-family:sans-serif'>The panel file (jam_panel.html) is "
                    "missing on the gateway node. Re-run hot_redeploy.py to upload it.</p>")
 
-INSTRUCTIONS = (
-    "Published-analysis catalog questions use list_analysis_catalog, get_analysis_catalog and "
-    "get_analysis_requirements. These are read-only, need no HPC/workspace, and do not start "
+_CATALOG_TOOLS_AVAILABLE = [n for n in ("list_analysis_catalog", "get_analysis_catalog", "get_analysis_requirements")
+                            if n not in TOOLS_DENY]
+_CATALOG_PARAGRAPH = (
+    "Published-analysis catalog questions use " + ", ".join(_CATALOG_TOOLS_AVAILABLE) + ". "
+    "These are read-only, need no HPC/workspace, and do not start "
     "a fit. Prefer summaries and targeted selectors; keep numerical configuration server-side and "
     "reuse catalog_ref instead of retrieving/retransmitting all parameters. Full definitions/export "
     "are opt-in. Follow pagination; use current requirements rather than historical unresolved notes. "
     "Only follow the campaign workflow below when the user requests a fitting campaign.\n"
+    if _CATALOG_TOOLS_AVAILABLE else "")      # a gateway without the catalog tools never mentions them
+INSTRUCTIONS = (
+    _CATALOG_PARAGRAPH +
     f"JAM global-analysis gateway for {SITE['label']}: the FemtoMind JAM app's fitting "
     "campaign, as a conversation. Every call acts as the gateway's owner (the user whose "
     "dashboard token the client sends); never ask for or pass another username. Go one "
@@ -12286,6 +12336,8 @@ if os.path.isfile(_PLUGINS_INIT):
                 + INSTRUCTIONS + _plugin_text)
     except Exception as e:
         PLUGIN_STATUS = {"loaded": [], "errors": {"plugins": f"{type(e).__name__}: {e}"}}
+
+_mark_denied()          # again, for tools the plugins added
 
 if SHARED:
     _legacy_shared = AUTH_MODE == "dashboard"
@@ -12488,7 +12540,7 @@ class H(BaseHTTPRequestHandler):
             result = {}
         elif method == "tools/list":
             # Hidden tools (deploy, for hot_redeploy.py) stay callable by name.
-            result = {"tools": [_tool_entry(k, v) for k, v in TOOLS.items() if not v.get("hidden")]}
+            result = {"tools": [_tool_entry(k, v) for k, v in TOOLS.items() if not v.get("hidden") and not v.get("denied")]}
         elif method == "resources/list":
             result = {"resources": [
                 {"uri": PANEL_URI, "name": "jam-panel", "mimeType": PANEL_MIME,
@@ -12520,8 +12572,9 @@ class H(BaseHTTPRequestHandler):
             name = params.get("name", "")
             args = params.get("arguments") or {}
             spec = TOOLS.get(name)
-            if spec is None or (spec.get("hidden") and getattr(_tls, "user", "") != GATEWAY_OWNER):
-                # A hidden tool does not exist for anyone but the owner, token or no token.
+            if spec is None or spec.get("denied") or (spec.get("hidden") and getattr(_tls, "user", "") != GATEWAY_OWNER):
+                # A denied tool does not exist on this deployment; a hidden one does
+                # not exist for anyone but the owner, token or no token.
                 result = _tool_result("unknown tool", is_error=True)
             elif not getattr(_tls, "user", ""):
                 result = _tool_result({"status": "unauthorized", "code": "AUTH_REQUIRED", "message": AUTH_HELP},

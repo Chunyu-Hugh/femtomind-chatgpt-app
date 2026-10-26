@@ -199,9 +199,12 @@ else:
 
 say("\n5. tools on the deployed gateway")
 names = [t["name"] for t in gateway("tools/list")["result"]["tools"]]
+denied = set(conn.get("tools_denied") or [])      # left out on purpose (JAM_GW_TOOLS_DENY)
 missing = [n for n in ("campaign_options", "validate_campaign", "submit_campaign", "list_campaigns",
                        "cancel_campaign", "delete_campaign", "campaign_pdf_plots", "campaign_logs", "draft_slurm_job")
-           if n not in names]
+           if n not in names and n not in denied]
+if denied:
+    say(f"   tools left out by this deployment: {', '.join(sorted(denied))}")
 say(f"   {len(names)} tools; campaign tools present: {'all' if not missing else 'MISSING ' + ', '.join(missing)}")
 say(f"   node shell absent: {'yes (good)' if 'node_diag' not in names else 'NO (bad): this gateway predates the deploy tool'}")
 say(f"   deploy tool hidden from AI clients: {'yes (good)' if 'deploy' not in names else 'NO (bad)'}")

@@ -179,7 +179,9 @@ def _auth_exports():
     gateway compares sha256(bearer) with the hash and never asks the dashboard."""
     return (f"export JAM_GW_TOKEN_SHA256={gw_auth.sha256(gw_auth.ensure_secret('token'))}\n"
             f"export JAM_GW_ADMIN_SHA256={gw_auth.sha256(gw_auth.ensure_secret('admin'))}\n"
-            "export JAM_GW_DASHBOARD_AUTH=0\n")
+            "export JAM_GW_DASHBOARD_AUTH=0\n"
+            + (f"export JAM_GW_TOOLS_DENY={os.environ['JAM_GW_TOOLS_DENY'].strip()}\n"
+               if os.environ.get("JAM_GW_TOOLS_DENY", "").strip() else ""))
 
 
 def build_slurm():
