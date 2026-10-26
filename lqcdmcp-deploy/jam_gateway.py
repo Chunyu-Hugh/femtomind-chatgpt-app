@@ -10720,7 +10720,7 @@ nlines = __LINES__
 try:
     central_log_records = fitted_replicas(stage, replica_state)[0]
     central_log_scores = central_scores(stage, central_log_records)
-except (OSError, ValueError, KeyError):
+except Exception:                   # the scores decorate the logs; they never block them
     central_log_scores = {}
 MARK = 'Traceback (most recent call last):'
 CHAINED = ('During handling of the above exception, another exception occurred:',
@@ -10961,7 +10961,8 @@ def campaign_logs(collection_id="", replica=0, lines=80, username=""):
     if not 0 <= replica <= total:
         return {"status": "error", "message": f"Campaign {collection_id!r} has replicas 1 to {total}; "
                                               f"there is no replica {replica}."}
-    code = _fill(_LOGS, STAGE=_stage_root(u, e), JOBS=e.get("jobs") or [], TOTAL=total,
+    # _LOGS scores the fitted replicas with the analysis helpers, so they travel with it.
+    code = _analysis_code(_LOGS, STAGE=_stage_root(u, e), JOBS=e.get("jobs") or [], TOTAL=total,
                  REPLICA=replica, LINES=max(1, min(lines, 400)), USER=u)
     try:
         r = _run_ifarm_py(u, code, timeout=150, cap=4000000)
