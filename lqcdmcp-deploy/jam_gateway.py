@@ -39,6 +39,7 @@ cluster chain · tools · campaigns · tool registry · http · boot.
 """
 
 import base64
+import binascii
 import getpass
 import hashlib
 import hmac
@@ -50,6 +51,9 @@ import os
 import posixpath
 import re
 import secrets
+import py_compile
+import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -872,10 +876,217 @@ def get_console(tab="connect"):
                     "chat. The page asks once for the user's LQCDMCP dashboard token."}
 
 
-def node_diag(cmd="id; hostname"):
-    """Shell ON THE GATEWAY NODE (hot-redeploy + diagnostics)."""
-    r = _run(["bash", "-lc", cmd], timeout=30)
-    return {"rc": r["rc"], "out": r["out"], "err": r["err"]}
+# ── deploy (hot upgrade) ─────────────────────────────────────────────────────
+#
+# hot_redeploy.py replaces the running gateway's code inside the same Slurm
+# job through the hidden tool `deploy`: eight fixed operations, never a shell.
+# Files are staged under APP_DIR/.hot_redeploy.stage-<stage>, hashed and
+# import-checked in a fresh interpreter (verify) before install swaps them in,
+# and restart stops this process so the job's supervisor loop starts the new
+# one. The tool needs the owner's token AND the admin secret (X-JAM-Admin, or
+# _meta "jam/admin" when a proxy strips the header); without ADMIN_SHA256 it
+# is off, and the gateway is upgraded by relaunching the job.
+
+APP_DIR = os.path.realpath(os.environ.get("JAM_GW_APP_DIR") or HERE)
+_STARTED = time.time()
+_DEPLOY_LOCK = threading.Lock()
+_DEPLOY_CHUNKS = {}                  # (stage, rel) -> next chunk index expected
+DEPLOY_COMPONENTS = ("jamai", "plugins", "analyses", "jam_panel.html", "jam_gateway.py")
+DEPLOY_CHUNK_B64_MAX = 400_000       # about 300 KB per chunk
+
+# Runs in a fresh python3 -B inside the stage: the staged gateway must import,
+# with its complete package, from the stage alone.
+_STAGE_CHECK_PROGRAM = r"""
+import hashlib, importlib, json, os, pathlib, sys
+args = json.load(sys.stdin)
+stage = pathlib.Path(args['stage']).resolve()
+os.chdir(stage)
+sys.path.insert(0, str(stage))
+for rel, expected in args['hashes'].items():
+    path = stage / rel
+    if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+        raise RuntimeError('staged hash mismatch: ' + rel)
+    if path.suffix == '.py':
+        compile(path.read_bytes(), str(path), 'exec')
+gateway = importlib.import_module('jam_gateway')
+catalog_root = gateway.analysis_catalog.catalog_root(stage)
+if catalog_root.resolve() != (stage / 'analyses').resolve():
+    raise RuntimeError('catalog escaped staged application')
+if not gateway.analysis_catalog.Catalog(catalog_root).deployment_files():
+    raise RuntimeError('no validated scientific catalog entries were staged')
+results_root = gateway.analysis_results.results_root(stage)
+if results_root.resolve() != (stage / 'analyses').resolve():
+    raise RuntimeError('results manifests escaped staged application')
+if not gateway.analysis_results.Results(results_root).deployment_files():
+    raise RuntimeError('no validated reference-results manifests were staged')
+for name, module in list(sys.modules.items()):
+    if (name == 'jam_gateway' or name == 'jamai' or name.startswith('jamai.')
+            or name == 'jam_plugins' or name.startswith('jam_plugin_')):
+        path = pathlib.Path(module.__file__).resolve()
+        if stage not in path.parents:
+            raise RuntimeError('import escaped staged application: ' + name)
+errors = getattr(gateway, 'PLUGIN_STATUS', {}).get('errors') or {}
+if errors:
+    raise RuntimeError('plugin failed to load: ' + '; '.join(n + ': ' + w for n, w in errors.items()))
+print('IMPORT-OK')
+"""
+
+
+def _deploy_stage_dir(stage):
+    if not re.fullmatch(r"\d{10,20}", str(stage or "")):
+        raise ValueError("BAD_STAGE")
+    return os.path.join(APP_DIR, f".hot_redeploy.stage-{stage}")
+
+
+def _deploy_rel(rel):
+    """A relative path inside the application package, or ValueError."""
+    rel = str(rel or "")
+    norm = os.path.normpath(rel).replace(os.sep, "/")
+    parts = norm.split("/")
+    if (not rel or rel.startswith("/") or norm != rel.rstrip("/") or ".." in parts or "" in parts
+            or not (norm in ("jam_gateway.py", "jam_panel.html") or norm.startswith(("jamai/", "plugins/", "analyses/")))):
+        raise ValueError("BAD_PATH")
+    return norm
+
+
+def _deploy_result(ok, **fields):
+    return {"ok": ok, **fields}
+
+
+def deploy(args):
+    """The hot-upgrade operations; see the section comment."""
+    op = str(args.get("op") or "")
+    u = GATEWAY_OWNER
+    try:
+        if op == "status":
+            with _DEPLOY_LOCK:
+                stages = sorted(d[len(".hot_redeploy.stage-"):] for d in os.listdir(APP_DIR)
+                                if d.startswith(".hot_redeploy.stage-")) if os.path.isdir(APP_DIR) else []
+            return _deploy_result(True, slurm_job_id=os.environ.get("SLURM_JOB_ID"), app_dir=APP_DIR,
+                                  cwd=os.path.realpath(os.getcwd()), gateway_sha256=_GATEWAY_SHA256,
+                                  started_at=_STARTED, uptime_s=round(time.time() - _STARTED), version="0.9.0",
+                                  auth_mode=AUTH_MODE, admin_via=getattr(_tls, "admin_via", None), stages=stages,
+                                  audit_seq=_AUDIT["seq"])
+        if op == "node_info":
+            try:
+                load1 = os.getloadavg()[0]
+            except OSError:
+                load1 = None
+            st = os.statvfs(os.path.expanduser("~"))
+            socks = sorted(os.listdir(CM_DIR)) if os.path.isdir(CM_DIR) else []
+            return _deploy_result(True, hostname=socket.gethostname(), user=GATEWAY_OWNER, python=sys.version.split()[0],
+                                  load1=load1, home_free_mb=round(st.f_bavail * st.f_frsize / 2**20), cm_sockets=socks)
+        if op == "restart":
+            if not os.environ.get("SLURM_JOB_ID"):
+                return _refuse("NOT_A_JOB", "this gateway is not a Slurm job, so nothing would start it again")
+            if os.path.realpath(os.getcwd()) != APP_DIR:
+                return _refuse("NOT_A_JOB", f"this gateway does not run from {APP_DIR}")
+            _effect("deploy.restart", u, pid=os.getpid())
+            threading.Timer(1.0, os.kill, (os.getpid(), signal.SIGTERM)).start()
+            return _deploy_result(True, pid=os.getpid(), in_s=1)
+        stage_dir = _deploy_stage_dir(args.get("stage"))
+        if op == "stage_chunk":
+            rel = _deploy_rel(args.get("rel"))
+            index = args.get("index")
+            data = str(args.get("data_b64") or "")
+            if type(index) is not int or index < 0 or len(data) > DEPLOY_CHUNK_B64_MAX:
+                return _refuse("BAD_ARGUMENT", "index: a chunk number from 0; data_b64: at most %d characters"
+                               % DEPLOY_CHUNK_B64_MAX)
+            try:
+                chunk = base64.b64decode(data, validate=True)
+            except (ValueError, binascii.Error):
+                return _refuse("BAD_ARGUMENT", "data_b64 is not base64")
+            part = os.path.join(stage_dir, rel + ".part")
+            with _DEPLOY_LOCK:
+                expected = _DEPLOY_CHUNKS.get((stage_dir, rel), 0)
+                if index != expected:
+                    return _refuse("BAD_ARGUMENT", f"chunk {index} out of order; {expected} is next")
+                os.makedirs(os.path.dirname(part), mode=0o700, exist_ok=True)
+                if index == 0:
+                    fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                else:
+                    fd = os.open(part, os.O_WRONLY | os.O_APPEND)
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(chunk)
+                _DEPLOY_CHUNKS[(stage_dir, rel)] = index + 1
+            return _deploy_result(True, rel=rel, index=index, bytes=len(chunk))
+        if op == "stage_finish":
+            rel = _deploy_rel(args.get("rel"))
+            part, final = os.path.join(stage_dir, rel + ".part"), os.path.join(stage_dir, rel)
+            with open(part, "rb") as fh:
+                content = fh.read()
+            if hashlib.sha256(content).hexdigest() != str(args.get("sha256") or "").lower():
+                os.remove(part)
+                return _refuse("HASH_MISMATCH", f"{rel}: the staged bytes do not match sha256")
+            compiled = False
+            if rel.endswith(".py"):
+                compile(content, rel, "exec")        # SyntaxError -> INTERNAL_ERROR below, nothing installed
+                compiled = True
+            os.replace(part, final)
+            with _DEPLOY_LOCK:
+                _DEPLOY_CHUNKS.pop((stage_dir, rel), None)
+            return _deploy_result(True, rel=rel, sha256=hashlib.sha256(content).hexdigest(), compiled=compiled)
+        if op == "verify":
+            hashes = args.get("hashes")
+            if not isinstance(hashes, dict) or not hashes:
+                return _refuse("BAD_ARGUMENT", "hashes: {relative path: sha256} of every staged file")
+            for rel in hashes:
+                _deploy_rel(rel)
+            p = subprocess.run([sys.executable, "-B", "-c", _STAGE_CHECK_PROGRAM],
+                               input=json.dumps({"stage": stage_dir, "hashes": hashes}),
+                               capture_output=True, text=True, cwd=stage_dir, timeout=120)
+            output = ((p.stdout or "") + (p.stderr or ""))[-2000:]
+            if p.returncode != 0 or "IMPORT-OK" not in (p.stdout or ""):
+                _effect("deploy.verify", u, stage=os.path.basename(stage_dir), ok=False)
+                return _refuse("VERIFY_FAILED", "the staged application does not load on the node", output=output)
+            with open(os.path.join(stage_dir, ".verified"), "w") as fh:
+                fh.write(_canonical_sha256(hashes) + "\n")
+            _effect("deploy.verify", u, stage=os.path.basename(stage_dir), files=len(hashes), ok=True)
+            return _deploy_result(True, files=len(hashes), output=output[-400:])
+        if op == "install":
+            if not os.path.exists(os.path.join(stage_dir, ".verified")):
+                return _refuse("VERIFY_FAILED", "verify this stage first")
+            backup = os.path.join(APP_DIR, ".hot_redeploy.previous")
+            saved, installed = [], []
+            with _DEPLOY_LOCK:
+                if os.path.exists(backup):
+                    shutil.rmtree(backup)
+                os.mkdir(backup, 0o700)
+                try:
+                    for name in DEPLOY_COMPONENTS:
+                        if os.path.exists(os.path.join(APP_DIR, name)):
+                            shutil.move(os.path.join(APP_DIR, name), os.path.join(backup, name))
+                            saved.append(name)
+                        if name == "plugins" and not os.path.exists(os.path.join(stage_dir, name)):
+                            continue                # an application without plugins
+                        shutil.move(os.path.join(stage_dir, name), os.path.join(APP_DIR, name))
+                        installed.append(name)
+                except BaseException:
+                    for name in reversed(installed):
+                        target = os.path.join(APP_DIR, name)
+                        shutil.rmtree(target) if os.path.isdir(target) else os.unlink(target)
+                    for name in reversed(saved):
+                        shutil.move(os.path.join(backup, name), os.path.join(APP_DIR, name))
+                    _effect("deploy.install", u, stage=os.path.basename(stage_dir), ok=False)
+                    raise
+            _effect("deploy.install", u, stage=os.path.basename(stage_dir), installed=installed, ok=True)
+            return _deploy_result(True, installed=installed, previous=backup)
+        if op == "clean":
+            removed = os.path.isdir(stage_dir)
+            if removed:
+                shutil.rmtree(stage_dir)
+            with _DEPLOY_LOCK:
+                for key in [k for k in _DEPLOY_CHUNKS if k[0] == stage_dir]:
+                    del _DEPLOY_CHUNKS[key]
+            return _deploy_result(True, removed=removed)
+        return _refuse("BAD_ARGUMENT", "op: status, node_info, stage_chunk, stage_finish, verify, install, clean or restart")
+    except ValueError as e:
+        if str(e) in ("BAD_STAGE", "BAD_PATH"):
+            return _refuse(str(e), {"BAD_STAGE": "stage: 10 to 20 digits (a timestamp)",
+                                    "BAD_PATH": "rel: a path inside the application package"}[str(e)])
+        raise
+    except FileNotFoundError as e:
+        return _refuse("BAD_PATH", f"nothing staged at {e.filename}")
 
 
 def _outside_read_roots(p, user=""):
@@ -11494,11 +11705,19 @@ TOOLS = {
                    "properties": {"pin_otp": {"type": "string"},
                                   "password": {"type": "string"}}},
         "fn": lambda a: connect_hpc(pin_otp=a.get("pin_otp", ""), password=a.get("password", ""))},
-    "node_diag": {"hidden": True,
-                  "desc": "Run a shell command on the gateway node (hot_redeploy.py and "
-                          "diagnostics). Not in tools/list; callable by name.",
-                  "schema": {"type": "object", "properties": {"cmd": {"type": "string"}}},
-                  "fn": lambda a: node_diag(a.get("cmd", "id; hostname"))},
+    "deploy": {"hidden": True, "admin": True,
+               "desc": "Hot upgrade of this gateway's code (hot_redeploy.py): stage files, verify, install, "
+                       "restart; status and node_info. Owner's token plus the admin secret (X-JAM-Admin). "
+                       "Not in tools/list; callable by name.",
+               "schema": {"type": "object",
+                          "properties": {"op": {"type": "string", "enum": ["status", "node_info", "stage_chunk", "stage_finish",
+                                                                             "verify", "install", "clean", "restart"]},
+                                         "stage": {"type": "string"}, "rel": {"type": "string"},
+                                         "index": {"type": "integer"}, "data_b64": {"type": "string"},
+                                         "sha256": {"type": "string"}, "hashes": {"type": "object"}},
+                          "required": ["op"]},
+               "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": False},
+               "fn": lambda a: deploy(a)},
     "fs_list": {"desc": "List a directory on the cluster (defaults to the user's own area).",
                 "schema": {"type": "object", "properties": {"path": {"type": "string"}}},
                 "fn": lambda a: fs_list(a.get("path", ""))},
@@ -12071,7 +12290,7 @@ if os.path.isfile(_PLUGINS_INIT):
 if SHARED:
     _legacy_shared = AUTH_MODE == "dashboard"
     for _name, _spec in TOOLS.items():
-        if _name != "node_diag":
+        if _name != "deploy":
             _spec["schema"].setdefault("properties", {})["username"] = {
                 "type": "string",
                 "description": ("The JLab username to act as: the person who signed in on the panel. "
@@ -12157,6 +12376,13 @@ def _request_identity(headers):
     return _identify(headers.get("Authorization"))
 
 
+def _admin_ok(secret):
+    """Whether secret is the admin secret (the second factor of `deploy`)."""
+    secret = str(secret or "").strip()
+    return bool(ADMIN_SHA256 and secret and len(secret) <= 1024
+                and hmac.compare_digest(_sha(secret), ADMIN_SHA256))
+
+
 class H(BaseHTTPRequestHandler):
     def do_GET(self):
         _hlog(f"GET {self.path} accept={self.headers.get('Accept')!r} "
@@ -12226,6 +12452,7 @@ class H(BaseHTTPRequestHandler):
         _tls.user = _request_identity(self.headers)
         _tls.principal = _tls.user          # the token's user; _tls.user may become the user acted as
         _tls.sid, _tls.client = sid, (self.headers.get("User-Agent") or "")[:40]
+        _tls.admin, _tls.admin_via = _admin_ok(self.headers.get("X-JAM-Admin")), "header"
         try:
             self._dispatch(sid)
         finally:
@@ -12260,7 +12487,7 @@ class H(BaseHTTPRequestHandler):
         elif method == "ping":
             result = {}
         elif method == "tools/list":
-            # Hidden tools (node_diag, for hot_redeploy.py) stay callable by name.
+            # Hidden tools (deploy, for hot_redeploy.py) stay callable by name.
             result = {"tools": [_tool_entry(k, v) for k, v in TOOLS.items() if not v.get("hidden")]}
         elif method == "resources/list":
             result = {"resources": [
@@ -12293,7 +12520,8 @@ class H(BaseHTTPRequestHandler):
             name = params.get("name", "")
             args = params.get("arguments") or {}
             spec = TOOLS.get(name)
-            if spec is None:
+            if spec is None or (spec.get("hidden") and getattr(_tls, "user", "") != GATEWAY_OWNER):
+                # A hidden tool does not exist for anyone but the owner, token or no token.
                 result = _tool_result("unknown tool", is_error=True)
             elif not getattr(_tls, "user", ""):
                 result = _tool_result({"status": "unauthorized", "code": "AUTH_REQUIRED", "message": AUTH_HELP},
@@ -12315,9 +12543,20 @@ class H(BaseHTTPRequestHandler):
                 else:
                     if asked:
                         _tls.user = asked   # legacy shared mode: the caller names the user (audited as acting != principal)
+                    if spec.get("admin") and not _tls.admin and isinstance(params.get("_meta"), dict):
+                        # A proxy may strip the header: the secret may travel in _meta instead.
+                        _tls.admin, _tls.admin_via = _admin_ok(params["_meta"].get("jam/admin")), "meta"
                     if spec.get("hidden") and _tls.user != GATEWAY_OWNER:
-                        # The node shell is the owner's alone, shared mode or not.
+                        # The upgrade tool is the owner's alone, shared mode or not.
                         result = _tool_result("unknown tool", is_error=True)
+                    elif spec.get("admin") and not ADMIN_SHA256:
+                        result = _tool_result(_refuse("ADMIN_DISABLED", "this gateway has no admin secret "
+                                                      "(JAM_GW_ADMIN_SHA256); upgrade it by relaunching the job",
+                                                      status="unauthorized"), is_error=True)
+                    elif spec.get("admin") and not _tls.admin:
+                        result = _tool_result(_refuse("ADMIN_REQUIRED", "deploy needs the admin secret in the "
+                                                      "X-JAM-Admin header (or _meta jam/admin)", status="unauthorized"),
+                                              is_error=True)
                     else:
                         try:
                             out = spec["fn"](args)

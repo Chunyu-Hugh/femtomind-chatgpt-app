@@ -203,7 +203,15 @@ missing = [n for n in ("campaign_options", "validate_campaign", "submit_campaign
                        "cancel_campaign", "delete_campaign", "campaign_pdf_plots", "campaign_logs", "draft_slurm_job")
            if n not in names]
 say(f"   {len(names)} tools; campaign tools present: {'all' if not missing else 'MISSING ' + ', '.join(missing)}")
-say(f"   node_diag hidden from AI clients: {'yes (good)' if 'node_diag' not in names else 'NO (bad)'}")
+say(f"   node shell absent: {'yes (good)' if 'node_diag' not in names else 'NO (bad): this gateway predates the deploy tool'}")
+say(f"   deploy tool hidden from AI clients: {'yes (good)' if 'deploy' not in names else 'NO (bad)'}")
+_adm = gateway("tools/call", {"name": "deploy", "arguments": {"op": "status"}})["result"]
+_adm_sc = _adm.get("structuredContent") or {}
+say("   deploy without the admin secret -> " + ("refused (good)" if _adm.get("isError") else "ALLOWED (bad)")
+    + (f" [{_adm_sc.get('code')}]" if _adm_sc.get("code") else ""))
+if not _adm.get("isError"):
+    sys.exit("stop: the gateway's deploy tool answers without the admin secret: stop it now with "
+             "python3 redeploy_jam.py cancel, and send this report.")
 # Plugins never stop this check: the JAM gateway works without them.
 _spec = importlib.util.spec_from_file_location("jam_plugins", os.path.join(HERE, "plugins", "__init__.py"))
 _plugins = importlib.util.module_from_spec(_spec)
@@ -215,7 +223,7 @@ for _name in sorted({p.split("/")[1] for p in _shipped if p.count("/") > 1}):
         "MISSING on the running gateway (its start-up log says why; update it with python3 hot_redeploy.py)"))
 for _name, _why in _skipped.items():
     say(f"   plugin {_name}: not in this folder's package ({_why})")
-if missing or "node_diag" in names:
+if missing or "node_diag" in names or "deploy" in names:
     sys.exit("stop: the running gateway is an older version than the code in this folder. Update it with "
              "python3 hot_redeploy.py (keeps the cluster sign-in), then run python3 deploy_and_verify.py "
              "--check again; or start over with python3 redeploy_jam.py cancel, then python3 deploy_and_verify.py.")
