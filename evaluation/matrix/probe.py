@@ -29,7 +29,9 @@ from evaluation.common import ssh
 
 ROOT = "/w/ceph24/JAM/chunyu/bench_eval"
 LOGS = "/farm_out/chunyu"
-FIT_MARK = re.compile(r"^\s*chi2\s*=\s*[-0-9.]", re.MULTILINE)
+# The optimizer's own lines, or what only a finished fit leaves: a written
+# .msr replica file, FitPack's "replica finished".
+FIT_MARK = re.compile(r"^\s*chi2\s*=\s*[-0-9.]|\.msr\b|replica finished|FIT_EVIDENCE:\s*[1-9]", re.MULTILINE | re.IGNORECASE)
 LOAD_MARK = re.compile(r"loading \w+ data sets", re.IGNORECASE)
 ENDED = ("FAILED", "OUT_OF_MEMORY", "TIMEOUT", "CANCELLED", "NODE_FAIL", "COMPLETED", "PREEMPTED", "DEADLINE")
 
@@ -51,7 +53,7 @@ def job_of(run, arm):
         rc, out, _ = ssh.run("cat %s/state/%s.jobid 2>/dev/null" % (ROOT, shlex.quote(run)))
         ids = _digits(out) if rc == 0 else []
         return (ids[0] if ids else None), {"source": "state/%s.jobid" % run, "log": None if not ids else
-                                           "%s/eval_%s_%s.out" % (LOGS, run, ids[0])}
+                                           "%s/eval_%s_%s.out" % (LOGS, run, ids[0]), "run_dir": "%s/nomcp/%s" % (ROOT, run)}
     ws = "%s/mcp/%s" % (ROOT, run)
     rc, out, _ = ssh.run("cat %s/campaigns/collections.json 2>/dev/null" % shlex.quote(ws))
     if rc != 0 or not out.strip():
@@ -95,11 +97,20 @@ def look(job, details):
         cmd += "; echo '--log'; for f in %s; do [ -f \"$f\" ] && tail -n 60 \"$f\"; done 2>/dev/null" % details["log_glob"]
     if details.get("progress"):
         cmd += "; echo '--progress'; cat %s 2>/dev/null" % q(details["progress"])
+    if details.get("run_dir"):
+        # the agent may send FitPack's output to files of its own: count chi2 lines
+        # in any log under the run directory, and .msr files it wrote
+        rd = q(details["run_dir"])
+        cmd += ("; echo '--evidence'; n=$(find %s -maxdepth 4 \\( -name '*.txt' -o -name '*.log' -o -name '*.out' \\) "
+                "-not -path '*/fitpack/*' -newer %s/fitpack 2>/dev/null | xargs -r grep -l -m1 -E '^\\s*chi2\\s*=' 2>/dev/null | wc -l); "
+                "m=$(find %s -maxdepth 4 -name '*.msr' -not -path '*/fitpack/*' 2>/dev/null | wc -l); echo FIT_EVIDENCE: $((n + m)) logs_with_chi2=$n msr_files=$m" % (rd, rd, rd))
     rc, out, err = ssh.run(cmd, timeout=120)
-    parts = re.split(r"^--(sacct|log|progress)$", out, flags=re.MULTILINE)
-    obs = {"squeue": parts[0].strip(), "sacct": "", "log_tail": "", "progress": None, "ssh_rc": rc}
+    parts = re.split(r"^--(sacct|log|progress|evidence)$", out, flags=re.MULTILINE)
+    obs = {"squeue": parts[0].strip(), "sacct": "", "log_tail": "", "progress": None, "evidence": "", "ssh_rc": rc}
     for i in range(1, len(parts) - 1, 2):
         obs[parts[i] if parts[i] != "log" else "log_tail"] = parts[i + 1].strip()
+    if obs["evidence"]:
+        obs["log_tail"] = obs["log_tail"] + "\n" + obs["evidence"]
     if obs.get("progress"):
         try:
             obs["progress"] = json.loads(obs["progress"])
@@ -122,6 +133,25 @@ def verdict_of(obs):
     if obs["state"] in ENDED:
         return "failed_before_fit"
     return None
+
+
+def reverdict(report):
+    """Re-derive a saved probe report's verdict from its observations (after a
+    change of the evidence rules); says when the first evidence appeared."""
+    first = None
+    verdict = None
+    for o in report.get("observations", []):
+        v = verdict_of({"state": o.get("state"), "log_tail": o.get("log_tail") or "", "progress": o.get("progress")})
+        if v == "started_fitting" and first is None:
+            first = o.get("t")
+        if v:
+            verdict = v
+    if verdict:
+        report["verdict_original"] = report.get("verdict")
+        report["verdict"] = verdict
+        report["seconds_to_first_fit_mark"] = first if first is not None else report.get("seconds_to_first_fit_mark")
+        report["reverdict"] = "re-derived from the saved observations with the current evidence rules"
+    return report
 
 
 def cancel(job, obs, me):

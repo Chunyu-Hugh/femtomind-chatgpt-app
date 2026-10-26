@@ -47,6 +47,48 @@ def _exists(paths):
     return [ln for ln in out.splitlines() if ln.strip()]
 
 
+def script_candidates(script, run_dir):
+    """The input files a job script runs, as glob patterns in order: python
+    lines' .py arguments after the program, with the script's own VAR=value
+    assignments expanded, loop variables widened to '*', and relative names
+    resolved against the directory the script cd'ed into (else the run dir)."""
+    assigns = {"WD": run_dir, "WORK": run_dir, "RUN": run_dir, "PWD": run_dir}
+    for m in re.finditer(r"^\s*(?:export\s+)?([A-Za-z_]\w*)=([^\s;]+)", script, re.MULTILINE):
+        assigns.setdefault(m.group(1), m.group(2))
+
+    def expand(tok, rounds=4):
+        for _ in range(rounds):
+            new = re.sub(r"\$\{?([A-Za-z_]\w*)\}?", lambda m: assigns.get(m.group(1), "*"), tok)
+            if new == tok:
+                break
+            tok = new
+        return tok.strip("\"'")
+    cwd = run_dir
+    out = []
+    for line in script.splitlines():
+        text = line.strip()
+        if not text or text.startswith("#"):
+            continue
+        m = re.match(r"cd\s+(\S+)", text)
+        if m:
+            target = expand(m.group(1))
+            cwd = target if target.startswith("/") else cwd + "/" + target
+            continue
+        if re.search(r"\bpython[0-9.]*\b", text):
+            toks = re.findall(r"[\w./${}\"'-]+\.py\b", text)
+            for tok in toks[1:]:
+                tok = expand(tok)
+                if re.search(r"/fitpack/", tok):
+                    continue
+                out.append(tok if tok.startswith("/") else cwd + "/" + tok.lstrip("./"))
+    seen, ordered = set(), []
+    for c in out:
+        if c not in seen:
+            seen.add(c)
+            ordered.append(c)
+    return ordered
+
+
 def nomcp_inputs(run):
     """(job_script_path, script_text, [input paths in order], how)"""
     run_dir = "%s/nomcp/%s" % (ROOT, run)
@@ -54,26 +96,22 @@ def nomcp_inputs(run):
     m = re.search(r"\sbash\s+(\S+\.sh)\s*$", launcher.strip().splitlines()[-1] if launcher.strip() else "")
     script_path = m.group(1) if m else None
     script = _cat(script_path) if script_path else None
-    candidates = []
+    present, how = [], "job script python lines (variables, cd and loops expanded)"
     if script:
-        for line in script.splitlines():
-            if re.search(r"\bpython[0-9.]*\b", line) and not line.strip().startswith("#"):
-                toks = re.findall(r"[\w./${}-]+\.py\b", line)
-                # the first .py on a python line is the program; the rest are its inputs
-                for tok in toks[1:]:
-                    tok = re.sub(r"\$\{?WORK\}?|\$\{?RUN\}?|\$\{?PWD\}?", run_dir, tok)
-                    candidates.append(tok if tok.startswith("/") else run_dir + "/" + tok.lstrip("./"))
-    seen, ordered = set(), []
-    for c in candidates:
-        if c not in seen and not re.search(r"/fitpack/", c):
-            seen.add(c)
-            ordered.append(c)
-    present = _exists(ordered)
-    how = "job script python lines"
+        patterns = script_candidates(script, run_dir)
+        if patterns:
+            cmd = "; ".join("ls -1 %s 2>/dev/null" % p for p in patterns)   # globs expand on the host
+            rc, out, _ = ssh.run(cmd)
+            for ln in out.splitlines():
+                ln = ln.strip()
+                if ln and ln not in present:
+                    present.append(ln)
+            # a loop's glob lists its files in name order, which is the chain's order
     if not present:
-        rc, out, _ = ssh.run("ls %s/*.py %s/inputs/*.py 2>/dev/null" % (shlex.quote(run_dir), shlex.quote(run_dir)))
-        present = sorted(ln for ln in out.splitlines() if ln.strip())
-        how = "all top-level and inputs/*.py by name"
+        rc, out, _ = ssh.run("find %s -maxdepth 3 -name '*.py' -not -path '*/fitpack/*' -not -path '*/scratch/*' 2>/dev/null | sort"
+                             % shlex.quote(run_dir))
+        present = [ln.strip() for ln in out.splitlines() if ln.strip()]
+        how = "all *.py under the run directory (depth 3, not fitpack/ or scratch/) by name"
     return script_path, script, present, how
 
 
