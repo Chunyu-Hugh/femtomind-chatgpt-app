@@ -244,7 +244,12 @@ def _workspace(user):
     if user not in _WS_CACHE:
         area = _area(user)
         r = _remote(user, f"cat {area}/.jam_workspace 2>/dev/null", timeout=30)
-        _WS_CACHE[user] = (r.get("out") or "").strip() or f"{area}/fitpack_legacy"
+        ws = (r.get("out") or "").strip() or f"{area}/fitpack_legacy"
+        # rc 1 is a missing marker (the default applies); an SSH failure (255) is
+        # not remembered, or the default would stand for the rest of the process.
+        if r.get("rc", 0) in (0, 1):
+            _WS_CACHE[user] = ws
+        return ws
     return _WS_CACHE[user]
 
 
