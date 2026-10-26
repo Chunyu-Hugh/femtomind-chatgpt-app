@@ -393,8 +393,11 @@ def _identify(auth_header):
     if not token:
         return ""
     if TEST_TOKEN and hmac.compare_digest(token, TEST_TOKEN):
+        _tls.auth = "test"
         return GATEWAY_OWNER
-    return _dashboard_identify(token, _sha(token))
+    user = _dashboard_identify(token, _sha(token))
+    _tls.auth = "dashboard" if user else "none"      # which check accepted the token, for the audit log
+    return user
 
 
 # ── dashboard tokens ─────────────────────────────────────────────────────────
@@ -552,6 +555,99 @@ def _need_user(username):
         return u, {"status": "disconnected", "code": "CHAIN_DOWN", "username": u,
                    "message": f"no live chain for {u}; call connect_hpc first"}
     return u, None
+
+
+# ── audit ───────────────────────────────────────────────────────────────────
+#
+# Every tools/call, every background job and every write effect leaves one
+# JSON line in ACCESS_DIR/audit.jsonl (mode 600). The lines are chained: each
+# carries the sha256 of the previous line, so a removed or edited line breaks
+# the chain, which audit_verify.py checks. A record says who acted (the
+# token's user, and the user acted as), the tool, the argument KEYS and a
+# digest of the arguments, the outcome's status and code, and the duration.
+# Argument values are never written: the PIN, passwords, GitHub tokens and
+# campaign cards stay out of the log.
+
+AUDIT_FILE = os.path.join(ACCESS_DIR, "audit.jsonl")
+SECRET_ARGS = {"pin_otp", "password", "github_token", "token", "confirm"}
+_AUDIT_LOCK = threading.Lock()
+_AUDIT = {"fd": None, "prev": "0" * 64, "seq": 0}
+
+
+def _canonical_sha256(obj):
+    return hashlib.sha256(json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+
+
+def _printable(s, limit=64):
+    return "".join(ch for ch in str(s or "") if 32 <= ord(ch) < 127)[:limit]
+
+
+def _audit_open():
+    """Open the log for appending and continue its chain from its last line.
+    Called at start-up, never at import (deploy_and_verify imports this module)."""
+    _ensure_access_dir()
+    broken = False
+    with _AUDIT_LOCK:
+        if _AUDIT["fd"] is not None:
+            return
+        fd = os.open(AUDIT_FILE, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        os.fchmod(fd, 0o600)
+        prev, seq = "0" * 64, 0
+        try:
+            with open(AUDIT_FILE, "rb") as fh:
+                fh.seek(0, os.SEEK_END)
+                size = fh.tell()
+                fh.seek(max(0, size - 65536))
+                lines = [ln for ln in fh.read().split(b"\n") if ln.strip()]
+            if lines:
+                try:
+                    seq = int(json.loads(lines[-1])["seq"])
+                    prev = hashlib.sha256(lines[-1]).hexdigest()
+                except (ValueError, KeyError, TypeError):
+                    broken = True
+        except OSError:
+            pass
+        _AUDIT.update(fd=fd, prev=prev, seq=seq)
+    if broken:
+        _audit("audit.recover", note="the last line of the log could not be parsed; the chain restarts here")
+
+
+def _audit(kind, **fields):
+    """Append one record. Returns its sha256 (the next record's prev), or None
+    when nothing could be written; a failure to log never fails the call."""
+    try:
+        if _AUDIT["fd"] is None:
+            _audit_open()
+        now = time.time()
+        rec = {"v": 1, "kind": kind, "ts": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(now)) + f".{int(now * 1000) % 1000:03d}Z",
+               "gateway": MCP_NAME, "owner": GATEWAY_OWNER, "job": os.environ.get("SLURM_JOB_ID"), **fields}
+        with _AUDIT_LOCK:
+            rec["seq"] = _AUDIT["seq"] + 1
+            rec["prev"] = _AUDIT["prev"]
+            line = json.dumps(rec, sort_keys=True, separators=(",", ":"), default=str)
+            digest = hashlib.sha256(line.encode()).hexdigest()
+            os.write(_AUDIT["fd"], (line + "\n").encode())
+            _AUDIT["seq"], _AUDIT["prev"] = rec["seq"], digest
+        return digest
+    except Exception:
+        return None
+
+
+def _audit_call(name, args, result, t0, rid):
+    """The record of one tools/call, whatever its outcome."""
+    try:
+        status, code, is_error = _outcome(result)
+        a = args if isinstance(args, dict) else {}
+        public = {k: v for k, v in a.items() if k not in SECRET_ARGS}
+        _audit("call", principal=getattr(_tls, "principal", ""), acting=getattr(_tls, "user", ""),
+               auth=getattr(_tls, "auth", ""), sid=_printable(getattr(_tls, "sid", "")), rid=_printable(rid),
+               client=_printable(getattr(_tls, "client", ""), 40), tool=str(name)[:80],
+               arg_keys=sorted(str(k) for k in a)[:40], args_sha256=_canonical_sha256(public) if public else None,
+               confirmation_sha256=_sha(str(a["confirm"]).strip()) if a.get("confirm") else None,
+               outcome={"status": status, "code": code, "is_error": is_error},
+               duration_ms=int((time.monotonic() - t0) * 1000))
+    except Exception:
+        pass
 
 
 # ── chain ───────────────────────────────────────────────────────────────────
@@ -4279,6 +4375,24 @@ _JOBS = {}
 _JOBS_LOCK = threading.Lock()
 
 
+def _audit_job(job):
+    """The record of one finished background job: validate and submit refuse
+    inside such jobs, so this is where those refusals are counted."""
+    try:
+        result = job["result"]
+        status, code, is_error = _outcome(result)
+        params = job.get("params") if isinstance(job.get("params"), dict) else {}
+        public = {k: v for k, v in params.items() if k not in SECRET_ARGS}
+        errors = result.get("errors") if isinstance(result, dict) else None
+        _audit("job", job_id=job["job_id"], job_kind=job["kind"], user=job["user"], principal=job.get("principal", ""),
+               sid=_printable(job.get("sid", "")), params_sha256=_canonical_sha256(public) if public else None,
+               card_sha256=params.get("card_sha256"), confirmation_sha256=params.get("confirmation_sha256"),
+               status=status, code=code, errors=[str(x)[:200] for x in (errors or [])[:5]] if isinstance(errors, list) else [],
+               duration_ms=int(((job["finished"] or time.time()) - job["started"]) * 1000))
+    except Exception:
+        pass
+
+
 def _job_reply(job, wait):
     if job["done"].wait(wait):
         out = dict(job["result"]) if isinstance(job["result"], dict) else {"status": "ok", "result": job["result"]}
@@ -4308,7 +4422,8 @@ def _background(u, kind, params, fn, wait=None):
         if job is None:
             job = {"job_id": secrets.token_hex(6), "key": key, "kind": kind, "params": params, "user": u,
                    "started": now, "finished": None, "done": threading.Event(), "result": None,
-                   "wait": JOB_WAIT if wait is None else wait}
+                   "wait": JOB_WAIT if wait is None else wait,
+                   "principal": getattr(_tls, "principal", ""), "sid": getattr(_tls, "sid", "")}
             _JOBS[job["job_id"]] = job
 
             def run():
@@ -4316,10 +4431,12 @@ def _background(u, kind, params, fn, wait=None):
                 try:
                     job["result"] = fn()
                 except Exception as exc:
-                    job["result"] = {"status": "error", "message": f"{type(exc).__name__}: {exc}"}
+                    job["result"] = {"status": "error", "code": "INTERNAL_ERROR",
+                                     "message": f"{type(exc).__name__}: {exc}"}
                 finally:
                     job["finished"] = time.time()
                     job["done"].set()
+                    _audit_job(job)
 
             threading.Thread(target=run, name=f"job-{kind}", daemon=True).start()
     return _job_reply(job, job['wait'])
@@ -11958,11 +12075,14 @@ class H(BaseHTTPRequestHandler):
               f"ua={self.headers.get('User-Agent', '')[:40]!r} "
               f"len={self.headers.get('Content-Length')}")
         sid = _req_sid(self.headers)
+        _tls.auth = "none"
         _tls.user = _request_identity(self.headers)
+        _tls.principal = _tls.user          # the token's user; _tls.user may become the user acted as
+        _tls.sid, _tls.client = sid, (self.headers.get("User-Agent") or "")[:40]
         try:
             self._dispatch(sid)
         finally:
-            _tls.user = ""
+            _tls.user = _tls.principal = ""
 
     def _dispatch(self, sid):
         n = int(self.headers.get("Content-Length", 0) or 0)
@@ -12022,6 +12142,7 @@ class H(BaseHTTPRequestHandler):
                 result = {"contents": [{"uri": uri, "mimeType": mime, "text": _panel_html(),
                                         "_meta": {"ui": {"prefersBorder": True}}}]}
         elif method == "tools/call":
+            t0 = time.monotonic()
             name = params.get("name", "")
             args = params.get("arguments") or {}
             spec = TOOLS.get(name)
@@ -12052,6 +12173,7 @@ class H(BaseHTTPRequestHandler):
                             result = formatter(out) if formatter else _tool_result(out, compact=spec.get("compact", False))
                         except Exception as e:
                             result = _tool_result(f"error: {e}", is_error=True)
+            _audit_call(name, args, result, t0, rid)
         else:
             error = {"code": -32601, "message": f"method not found: {method}"}
         payload = {"jsonrpc": "2.0", "id": rid}
@@ -12102,6 +12224,9 @@ def _bind():
 if __name__ == "__main__":
     _ensure_access_dir()
     server, port = _bind()
+    _audit_open()
+    _audit("audit.start", pid=os.getpid(), port=port, gateway_sha256=_GATEWAY_SHA256,
+           auth_mode="test" if TEST_TOKEN else "dashboard")
     print(f"jam-gateway '{MCP_NAME}' (owner {GATEWAY_OWNER}, site {SITE['id']}) "
           f"listening on {port}, host {socket.getfqdn()}", flush=True)
     if PLUGIN_STATUS["loaded"] or PLUGIN_STATUS["errors"]:
