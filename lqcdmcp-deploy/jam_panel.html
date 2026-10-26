@@ -245,6 +245,16 @@
     <div class="err" id="tokenErr"></div>
   </div>
 
+  <!-- Human-gate mode: writes an assistant prepared wait here for a person to
+       read the phrase and tell the assistant. -->
+  <div class="card" id="pendingCard" style="display:none">
+    <h3>Pending confirmations</h3>
+    <p class="sub">This gateway requires a person to approve every submission, rerun, cancel or deletion. An
+      assistant that prepared one cannot see its phrase; read it here and tell the assistant.</p>
+    <div id="pendingList" class="sub">Nothing is waiting for approval.</div>
+    <div class="actions"><button class="btn" id="pendingRefresh">Refresh</button></div>
+  </div>
+
   <nav class="tabs" id="tabs"></nav>
 
   <!-- CONNECT -->
@@ -668,6 +678,9 @@
         const hdrs = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream",
                       "Authorization": "Bearer " + token};
         if (sid) hdrs["Mcp-Session-Id"] = sid;
+        // Human-gate mode: only the page the gateway served carries its nonce, and
+        // only requests with it are shown confirmation phrases.
+        if (window.JAM_PANEL_NONCE) hdrs["X-JAM-Panel"] = window.JAM_PANEL_NONCE;
         const r = await fetch(location.pathname, {method: "POST", headers: hdrs,
           body: JSON.stringify({jsonrpc: "2.0", id: Date.now() % 1e9, method: "tools/call",
                                 params: {name, arguments: args||{}}})});
@@ -840,6 +853,8 @@
     $("connUser").value = acct.username || "";
     // A shared gateway: the username field is the user's own, and switching it
     // switches whose chain and workspace every tab shows.
+    $("pendingCard").style.display = (c.human_gate && page) ? "block" : "none";
+    if (c.human_gate && page) loadPending();
     if (c.shared && c.legacy_shared){
       $("connUser").readOnly = false;
       $("connUserHint").textContent = "This gateway is shared: type your own JLab username, then sign in. "
@@ -874,6 +889,17 @@
     return c;
   }
   $("recheckBtn").onclick = recheck;
+  async function loadPending(){
+    const box = $("pendingList");
+    try {
+      const r = await call("pending_confirmations", {});
+      const items = (r && r.pending) || [];
+      box.innerHTML = items.length ? items.map(p => '<div class="note"><b>'+esc(p.kind)+'</b> · '+esc(String(p.age_s))+' s ago<br>'
+          + '<span class="phrase">'+esc(p.phrase)+'</span><br><small>'+esc(String(p.summary || "").slice(0, 300))+'</small></div>').join("")
+        : '<div class="sub">Nothing is waiting for approval.</div>';
+    } catch(e){ box.innerHTML = '<div class="err">'+esc(e && e.message || e)+'</div>'; }
+  }
+  $("pendingRefresh").onclick = loadPending;
   $("connUser").addEventListener("change", ()=>{
     if ($("connUser").readOnly) return;
     const u = $("connUser").value.trim().toLowerCase();

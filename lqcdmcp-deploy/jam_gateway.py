@@ -193,6 +193,17 @@ def _tools_deny():
 TOOLS_DENY = _tools_deny()
 ARCHIVE_DENIED = bool(TOOLS_DENY & set(ARCHIVE_TOOLS))
 
+# Write controls. The confirmation phrase of a submit/append/rerun/reproduce is
+# a digest of the request, so a repeat with the same phrase is the same request:
+# for IDEMPOTENT_HOURS it is answered with the earlier result instead of queued
+# again (0 turns this off). JAM_GW_HUMAN_GATE=1 keeps the phrase away from AI
+# clients altogether: it is shown only on the panel page a person opened (which
+# carries this process's nonce), so every write needs a person to read it off
+# the panel and tell the assistant.
+IDEMPOTENT_HOURS = float(os.environ.get("JAM_GW_IDEMPOTENT_HOURS", "6") or 0)
+HUMAN_GATE = os.environ.get("JAM_GW_HUMAN_GATE", "").strip() == "1" or bool(SITE.get("human_gate"))
+PANEL_NONCE = secrets.token_urlsafe(24)
+
 
 def _area(user):
     return SITE["area"].format(user=user)
@@ -412,7 +423,7 @@ REFUSAL_CODES = (
     "CHECKPOINT_INVALID",
     # the gateway's own code path
     "NOT_A_JOB", "BAD_STAGE", "BAD_PATH", "HASH_MISMATCH", "VERIFY_FAILED", "INSTALL_FAILED",
-    "INTERNAL_ERROR", "ERROR_UNCODED",
+    "PANEL_ONLY", "INTERNAL_ERROR", "ERROR_UNCODED",
 )
 
 
@@ -1303,7 +1314,7 @@ def check_hpc_connection(username=""):
     return {"connected": alive, "login_open": login_open, "cluster_reachable": alive,
             "shared": SHARED, "owner": GATEWAY_OWNER,
             "auth": AUTH_MODE, "legacy_shared": SHARED and AUTH_MODE == "dashboard", "audit": True,
-            "tools_denied": sorted(TOOLS_DENY),
+            "tools_denied": sorted(TOOLS_DENY), "human_gate": HUMAN_GATE,
             "account": account, "site": _site_public(), "sites": [_site_public()],
             "note": ("Ready to run fits." if alive else
                      "Not signed in to the cluster. Sign in on the Connect tab of the "
@@ -1900,6 +1911,101 @@ CAMPAIGN_CHOICES = {
 def _confirm_phrase(kind, payload):
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()[:10]
     return f"CONFIRM JAM {kind} {digest}"
+
+
+# ---- the same confirmed request is carried out once ------------------------------
+
+_IDEMP_FILE = os.path.join(ACCESS_DIR, "idempotency.json")
+_IDEMP_LOCK = threading.Lock()
+
+
+def _idemp_table():
+    """{key: {at, job_id, result}} of recent confirmed writes, pruned to IDEMPOTENT_HOURS."""
+    try:
+        with open(_IDEMP_FILE) as fh:
+            table = json.load(fh)
+    except (OSError, ValueError):
+        table = {}
+    cutoff = time.time() - IDEMPOTENT_HOURS * 3600
+    return {k: v for k, v in table.items() if isinstance(v, dict) and v.get("epoch", 0) > cutoff}
+
+
+def _idempotent(u, kind, phrase):
+    """The earlier result of this very request (user, kind, phrase), or None."""
+    if IDEMPOTENT_HOURS <= 0:
+        return None
+    with _IDEMP_LOCK:
+        hit = _idemp_table().get(_sha(f"{u}\n{kind}\n{phrase}"))
+    if not hit:
+        return None
+    return {**hit["result"], "status": "submitted", "replayed": True, "code": "IDEMPOTENT_REPLAY",
+            "message": f"This exact request (same confirmation phrase) was already carried out at {hit['at']} as job "
+                       f"{hit.get('job_id')}; nothing new was queued. Change the request (it gets a new phrase) to "
+                       f"queue it again, or wait {IDEMPOTENT_HOURS:g} h."}
+
+
+def _remember(u, kind, phrase, result):
+    if IDEMPOTENT_HOURS <= 0 or not isinstance(result, dict) or result.get("status") != "submitted":
+        return
+    with _IDEMP_LOCK:
+        table = _idemp_table()
+        table[_sha(f"{u}\n{kind}\n{phrase}")] = {"epoch": time.time(), "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                                 "job_id": result.get("job_id"),
+                                                 "result": {k: v for k, v in result.items() if k != "summary"}}
+        try:
+            _ensure_access_dir()
+            fd = os.open(_IDEMP_FILE + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as fh:
+                json.dump(table, fh, default=str)
+            os.replace(_IDEMP_FILE + ".tmp", _IDEMP_FILE)
+        except OSError:
+            pass
+
+
+# ---- a person approves writes (JAM_GW_HUMAN_GATE) ----------------------------------
+
+_PENDING = {}
+_PENDING_LOCK = threading.Lock()
+
+
+def _apply_human_gate(out):
+    """With JAM_GW_HUMAN_GATE the confirmation phrase never reaches an AI client.
+    The reply says a person must read it off the panel page, where
+    pending_confirmations lists it (the page carries this process's nonce)."""
+    if not HUMAN_GATE or getattr(_tls, "panel", False) or not isinstance(out, dict):
+        return out
+    phrase = out.get("confirmation_phrase")
+    if not isinstance(phrase, str) or not phrase.startswith("CONFIRM JAM "):
+        return out
+    now = time.time()
+    summary = {k: out[k] for k in ("plan", "summary", "collection_id", "script") if k in out}
+    with _PENDING_LOCK:
+        for key in [k for k, v in _PENDING.items() if now - v["created"] > 3600]:
+            del _PENDING[key]
+        _PENDING[_sha(phrase)] = {"kind": phrase.split()[2], "phrase": phrase, "user": getattr(_tls, "user", ""),
+                                  "created": now, "summary": json.dumps(summary, default=str)[:1500]}
+    out = dict(out)
+    out.pop("confirmation_phrase")
+    out["human_gate"] = True
+    out["how"] = ("This gateway requires a person to approve writes. Ask the user to open the panel page, read the "
+                  "confirmation phrase under 'Pending confirmations' and tell it to you; then call again with confirm "
+                  "set to that phrase. Never guess or derive the phrase.")
+    return out
+
+
+def pending_confirmations(username=""):
+    """The confirmations waiting for a person (human-gate mode); the panel page only."""
+    u, err = _resolve_user(username)
+    if err:
+        return err
+    if not HUMAN_GATE:
+        return {"status": "ok", "human_gate": False, "pending": []}
+    if not getattr(_tls, "panel", False):
+        return _refuse("PANEL_ONLY", "the confirmation phrases are shown only on the gateway's panel page",
+                       status="unauthorized")
+    with _PENDING_LOCK:
+        items = [dict(v, age_s=round(time.time() - v["created"])) for v in _PENDING.values() if v["user"] == u]
+    return {"status": "ok", "human_gate": True, "pending": sorted(items, key=lambda x: -x["created"])}
 
 
 def _parse_hms(text):
@@ -2810,60 +2916,69 @@ apptainer exec {binds} \\
 # ---- the collection registry (<ws>/campaigns/collections.json) ---------------
 
 _REGISTRY = r'''
-import json, os, sys, hashlib
+import json, os, sys, hashlib, fcntl
 path = os.path.join(__WS__, 'campaigns', 'collections.json')
 op = __OP__
+# One reader or writer at a time: a submit and a rerun of two campaigns can
+# land together, and each must keep the other's entry.
+os.makedirs(os.path.dirname(path), exist_ok=True)
+lock = open(path + '.lock', 'a')
+fcntl.flock(lock, fcntl.LOCK_EX if op.get('kind') in ('upsert', 'delete') else fcntl.LOCK_SH)
 try:
-    with open(path) as handle:
-        items = json.load(handle)
-    if not isinstance(items, list): items = []
-except (OSError, ValueError):
-    items = []
-reference_schema = 'femtomind.registry-prior-reference.v1'
-def projected(entry):
-    card = entry.get('input_card') or {}
-    params = card.get('parameters') or {}
-    prior = params.get('priorSnapshot')
-    if not isinstance(prior, dict) or prior.get('schema') != 'femtomind.prior-replicas.v1':
-        return entry
-    reference = {'schema': reference_schema, 'sha256': prior['sha256'], 'replicas': len(prior['replicas'])}
-    return {**entry, 'input_card': {**card, 'parameters': {**params, 'priorSnapshot': reference}}}
-if op['kind'] == 'upsert':
-    entry = op['entry']
-    params = entry.get('input_card', {}).get('parameters', {})
-    prior = params.get('priorSnapshot')
-    if isinstance(prior, dict) and prior.get('schema') == reference_schema:
-        previous = next((e for e in items if e.get('collection_id') == entry['collection_id']), {})
-        original = previous.get('input_card', {}).get('parameters', {}).get('priorSnapshot')
-        if (not isinstance(original, dict) or original.get('schema') != 'femtomind.prior-replicas.v1'
-                or original.get('sha256') != prior.get('sha256')
-                or len(original['replicas']) != prior.get('replicas')):
-            raise ValueError('Stored prior snapshot reference no longer matches the campaign')
-        entry = {**entry, 'input_card': {**entry['input_card'],
-                                      'parameters': {**params, 'priorSnapshot': original}}}
-    items = [e for e in items if e.get('collection_id') != entry['collection_id']] + [entry]
-elif op['kind'] == 'delete':
-    items = [e for e in items if e.get('collection_id') != op['id']]
-elif op['kind'] != 'read':
-    raise ValueError('Unsupported registry operation')
-if op['kind'] in ('upsert', 'delete'):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + '.tmp'
-    with open(tmp, 'w') as handle:
-        json.dump(items, handle, indent=1)
-    os.replace(tmp, path)
-    print(json.dumps({'status': 'ok', 'operation': op['kind'],
-                      'collection_id': entry['collection_id'] if op['kind'] == 'upsert' else op['id']}))
-else:
-    selected = [e for e in items if op.get('collection_id') is None or e.get('collection_id') == op['collection_id']]
-    text = json.dumps([projected(e) for e in selected])
-    offset = op.get('offset', 0)
-    if type(offset) is not int or not 0 <= offset <= len(text):
-        raise ValueError('Invalid registry read offset')
-    end = min(len(text), offset + 200000)
-    print(json.dumps({'text': text[offset:end], 'offset': offset, 'total_characters': len(text),
-                      'revision': hashlib.sha256(text.encode()).hexdigest(),
-                      'next_offset': end if end < len(text) else None}))
+    try:
+        with open(path) as handle:
+            items = json.load(handle)
+        if not isinstance(items, list): items = []
+    except (OSError, ValueError):
+        items = []
+    reference_schema = 'femtomind.registry-prior-reference.v1'
+    def projected(entry):
+        card = entry.get('input_card') or {}
+        params = card.get('parameters') or {}
+        prior = params.get('priorSnapshot')
+        if not isinstance(prior, dict) or prior.get('schema') != 'femtomind.prior-replicas.v1':
+            return entry
+        reference = {'schema': reference_schema, 'sha256': prior['sha256'], 'replicas': len(prior['replicas'])}
+        return {**entry, 'input_card': {**card, 'parameters': {**params, 'priorSnapshot': reference}}}
+    if op['kind'] == 'upsert':
+        entry = op['entry']
+        params = entry.get('input_card', {}).get('parameters', {})
+        prior = params.get('priorSnapshot')
+        if isinstance(prior, dict) and prior.get('schema') == reference_schema:
+            previous = next((e for e in items if e.get('collection_id') == entry['collection_id']), {})
+            original = previous.get('input_card', {}).get('parameters', {}).get('priorSnapshot')
+            if (not isinstance(original, dict) or original.get('schema') != 'femtomind.prior-replicas.v1'
+                    or original.get('sha256') != prior.get('sha256')
+                    or len(original['replicas']) != prior.get('replicas')):
+                raise ValueError('Stored prior snapshot reference no longer matches the campaign')
+            entry = {**entry, 'input_card': {**entry['input_card'],
+                                          'parameters': {**params, 'priorSnapshot': original}}}
+        items = [e for e in items if e.get('collection_id') != entry['collection_id']] + [entry]
+    elif op['kind'] == 'delete':
+        items = [e for e in items if e.get('collection_id') != op['id']]
+    elif op['kind'] != 'read':
+        raise ValueError('Unsupported registry operation')
+    if op['kind'] in ('upsert', 'delete'):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + '.tmp'
+        with open(tmp, 'w') as handle:
+            json.dump(items, handle, indent=1)
+        os.replace(tmp, path)
+        print(json.dumps({'status': 'ok', 'operation': op['kind'],
+                          'collection_id': entry['collection_id'] if op['kind'] == 'upsert' else op['id']}))
+    else:
+        selected = [e for e in items if op.get('collection_id') is None or e.get('collection_id') == op['collection_id']]
+        text = json.dumps([projected(e) for e in selected])
+        offset = op.get('offset', 0)
+        if type(offset) is not int or not 0 <= offset <= len(text):
+            raise ValueError('Invalid registry read offset')
+        end = min(len(text), offset + 200000)
+        print(json.dumps({'text': text[offset:end], 'offset': offset, 'total_characters': len(text),
+                          'revision': hashlib.sha256(text.encode()).hexdigest(),
+                          'next_offset': end if end < len(text) else None}))
+finally:
+    fcntl.flock(lock, fcntl.LOCK_UN)
+    lock.close()
 '''
 
 
@@ -3654,6 +3769,9 @@ def _reproduce_campaign(u, collection_id, replicas, check, confirm, node_constra
                 "message": f"Nothing is queued yet. {how}. Results go to a new reproduce/<stamp>/ folder; the "
                            "current results are not touched. Show the user the plan and submit with confirm=<phrase> "
                            "only after they agree."}
+    replay = _idempotent(u, "REPRODUCE", phrase)
+    if replay:
+        return replay
     code_ws = ws
     built = None
     if p["mode"] == "clone":
@@ -3710,12 +3828,14 @@ def _reproduce_campaign(u, collection_id, replicas, check, confirm, node_constra
              "output": out_dir, "matches": p["matches"], "run": stamp, "node_constraint": constraint,
              "original_hosts": p["hosts"]}
     why = _record_submission(u, croot, stage, "reproduce", m.group(1), wanted, e["input_card"], ws=code_ws, extra=extra)
-    return {"status": "submitted", "job_id": m.group(1), "run": stamp, **plan, "workspace": code_ws, "results_to": out_dir,
-            **({"rebuilt": built} if built else {}),
-            "log_path": f"{_campaign_log_prefix(u, folder, 'repro')}_{m.group(1)}_<replica>.out",
-            "error_log_path": f"{_campaign_error_log_prefix(u, folder, 'repro')}_{m.group(1)}_<replica>.err",
-            "message": f"Queued. When it finishes, reproduce_campaign(collection_id, check='{stamp}') compares the "
-                       "results with the current ones.", **_reproduce_note(why)}
+    result = {"status": "submitted", "job_id": m.group(1), "run": stamp, **plan, "workspace": code_ws, "results_to": out_dir,
+              **({"rebuilt": built} if built else {}),
+              "log_path": f"{_campaign_log_prefix(u, folder, 'repro')}_{m.group(1)}_<replica>.out",
+              "error_log_path": f"{_campaign_error_log_prefix(u, folder, 'repro')}_{m.group(1)}_<replica>.err",
+              "message": f"Queued. When it finishes, reproduce_campaign(collection_id, check='{stamp}') compares the "
+                         "results with the current ones.", **_reproduce_note(why)}
+    _remember(u, "REPRODUCE", phrase, result)
+    return result
 
 
 # ---- validate / submit / append ------------------------------------------------
@@ -4239,6 +4359,9 @@ def _submit_campaign(u, card, confirm):
                 "summary": v["summary"], "slurm_script": v["slurm_script"],
                 "message": "Not submitted. Show the user the summary and Slurm script; when they "
                            "confirm, call again with confirm set to the phrase."}
+    replay = _idempotent(u, "SUBMIT", v["confirmation_phrase"])
+    if replay:
+        return replay
     ws = _workspace(u)
     folder = norm["job"]["campaignName"] + "_" + time.strftime("%Y%m%d_%H%M%S", time.gmtime())
     croot = f"{ws}/{CAMPAIGNS_DIR}/{folder}"
@@ -4275,11 +4398,13 @@ def _submit_campaign(u, card, confirm):
              "slurm_job_id": m.group(1), "status": "submitted", "input_card": norm}
     _registry(u, {"kind": "upsert", "entry": entry})
     why = _record_submission(u, croot, stage, "submit", m.group(1), range(1, n + 1), norm)
-    return {"status": "submitted", "collection_id": folder, "job_id": m.group(1), "replicas": n,
-            "partition": norm["slurm"]["partition_effective"], "campaign_folder": croot,
-            "log_path": f"{log_prefix}_{m.group(1)}_<replica>.out",
-            "error_log_path": f"{_campaign_error_log_prefix(u, folder)}_{m.group(1)}_<replica>.err", "summary": v["summary"],
-            "reproduce_file": f"{croot}/reproduce.json", **_reproduce_note(why)}
+    result = {"status": "submitted", "collection_id": folder, "job_id": m.group(1), "replicas": n,
+              "partition": norm["slurm"]["partition_effective"], "campaign_folder": croot,
+              "log_path": f"{log_prefix}_{m.group(1)}_<replica>.out",
+              "error_log_path": f"{_campaign_error_log_prefix(u, folder)}_{m.group(1)}_<replica>.err", "summary": v["summary"],
+              "reproduce_file": f"{croot}/reproduce.json", **_reproduce_note(why)}
+    _remember(u, "SUBMIT", v["confirmation_phrase"], result)
+    return result
 
 
 def append_replicas(collection_id="", count=0, confirm="", username=""):
@@ -4309,6 +4434,9 @@ def append_replicas(collection_id="", count=0, confirm="", username=""):
         return {"status": "needs_confirmation", "code": "CONFIRM_REQUIRED", "plan": plan, "confirmation_phrase": phrase,
                 "message": "Validated and launch-ready. Ask the user to confirm with the phrase; "
                            "nothing is queued until then."}
+    replay = _idempotent(u, "APPEND", phrase)
+    if replay:
+        return replay
     ws = _workspace(u)
     stage = f"{ws}/{CAMPAIGNS_DIR}/{e['campaign_folder']}/stages/{STAGE}"
     sb = base64.b64encode(_array_script(ws, e["campaign_folder"], e["input_card"], first, last).encode()).decode()
@@ -4329,7 +4457,9 @@ def append_replicas(collection_id="", count=0, confirm="", username=""):
     _registry(u, {"kind": "upsert", "entry": e})
     why = _record_submission(u, os.path.dirname(os.path.dirname(stage)), stage, "append", m.group(1),
                              range(first, last + 1), e["input_card"])
-    return {"status": "submitted", "job_id": m.group(1), **plan, **_reproduce_note(why)}
+    result = {"status": "submitted", "job_id": m.group(1), **plan, **_reproduce_note(why)}
+    _remember(u, "APPEND", phrase, result)
+    return result
 
 
 # Each replica's state and whether it is still in the Slurm queue (rerun_replicas).
@@ -4446,6 +4576,9 @@ def rerun_replicas(collection_id="", replicas="failed", confirm="", username="",
         return {"status": "needs_confirmation", "code": "CONFIRM_REQUIRED", "plan": plan, "confirmation_phrase": phrase,
                 "message": "Nothing is queued yet. Show the user which replicas run again (their earlier "
                            "results are kept in previous/) and ask them to confirm with the phrase."}
+    replay = _idempotent(u, "RERUN", phrase)
+    if replay:
+        return replay
     ws = _workspace(u)
     stage = _stage_root(u, e)
     qs, stamp = _shq(stage), time.strftime("%Y%m%dT%H%M%S", time.gmtime())
@@ -4499,11 +4632,13 @@ def rerun_replicas(collection_id="", replicas="failed", confirm="", username="",
                              wanted, e["input_card"],
                              extra={"resume": bool(resume), "slurm": slurm, "resource_overrides": overrides,
                                     "request_manifest": request_path, "checkpoints": binding.get("checkpoints")})
-    return {"status": "submitted", "job_id": m.group(1), **plan,
-            "request_manifest": request_path,
-            "previous_results": f"{stage}/previous/replica_<n>_{stamp}",
-            "message": "Queued. Run postprocess_campaign once they finish to update the fit summary.",
-            **_reproduce_note(why)}
+    result = {"status": "submitted", "job_id": m.group(1), **plan,
+              "request_manifest": request_path,
+              "previous_results": f"{stage}/previous/replica_<n>_{stamp}",
+              "message": "Queued. Run postprocess_campaign once they finish to update the fit summary.",
+              **_reproduce_note(why)}
+    _remember(u, "RERUN", phrase, result)
+    return result
 
 
 # ---- collections and status ----------------------------------------------------
@@ -4733,14 +4868,23 @@ def delete_campaign(collection_id="", delete_folder=False, confirm="", username=
     phrase = _confirm_phrase("DELETE", plan)
     if (confirm or "").strip() != phrase:
         return {"status": "needs_confirmation", "code": "CONFIRM_REQUIRED", "plan": plan, "confirmation_phrase": phrase}
+    # What was deleted stays on record: reproduce.json, the request and the
+    # registry entry go to <area>/.jam_trash/<folder>/ before anything is removed.
+    trash = None
+    if re.fullmatch(r"[A-Za-z0-9._-]+", e["campaign_folder"]):
+        trash = f"{_area(u)}/.jam_trash/{e['campaign_folder']}"
+        croot = f"{_workspace(u)}/{CAMPAIGNS_DIR}/{e['campaign_folder']}"
+        _remote(u, f"umask 077; mkdir -p {_shq(trash)} && cp -p {_shq(croot)}/reproduce.json "
+                   f"{_shq(croot)}/campaign.request.json {_shq(trash)}/ 2>/dev/null; cat > {_shq(trash)}/registry_entry.json",
+                stdin=json.dumps(e, default=str), timeout=60)
     _registry(u, {"kind": "delete", "id": collection_id})
     removed = False
     if delete_folder:
         folder = f"{_workspace(u)}/{CAMPAIGNS_DIR}/{e['campaign_folder']}"
         if re.fullmatch(r"[A-Za-z0-9._-]+", e["campaign_folder"]):
             removed = "GONE" in (_remote(u, f"rm -rf {_shq(folder)} && echo GONE", timeout=120).get("out") or "")
-    _effect("delete", u, collection_id=collection_id, folder=e["campaign_folder"], folder_removed=removed)
-    return {"status": "ok", "deleted": collection_id, "folder_removed": removed}
+    _effect("delete", u, collection_id=collection_id, folder=e["campaign_folder"], folder_removed=removed, trash=trash)
+    return {"status": "ok", "deleted": collection_id, "folder_removed": removed, "trash": trash}
 
 
 # ---- long analyses ----------------------------------------------------------------
@@ -12337,6 +12481,39 @@ if os.path.isfile(_PLUGINS_INIT):
     except Exception as e:
         PLUGIN_STATUS = {"loaded": [], "errors": {"plugins": f"{type(e).__name__}: {e}"}}
 
+TOOLS["pending_confirmations"] = {
+    "desc": "Human-gate mode only: the confirmations waiting for a person (kind, phrase, what they would do). "
+            "Answered only to the gateway's panel page; an AI client gets a refusal and must ask the user to read "
+            "the phrase off the panel.",
+    "schema": {"type": "object", "properties": {}},
+    "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+    "fn": lambda a: pending_confirmations()}
+
+
+def _default_annotations():
+    """MCP annotations for every tool that has none: hosts show and gate tools
+    by them (a destructive tool asks the person; a read-only one need not)."""
+    submits = {"submit_campaign", "append_replicas", "rerun_replicas", "reproduce_campaign"}
+    destructive = {"cancel_campaign", "delete_campaign"}
+    mutating = {"setup_workspace", "use_workspace", "use_ai_branch", "connect_hpc", "postprocess_campaign",
+                "draft_slurm_job"}
+    for name, spec in TOOLS.items():
+        if spec.get("annotations"):
+            continue
+        if name in submits:        # repeating a confirmed request replays it (IDEMPOTENT_HOURS)
+            a = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}
+        elif name in destructive:
+            a = {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": False}
+        elif name == "submit_slurm_job":
+            a = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False}
+        elif name in mutating:
+            a = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}
+        else:
+            a = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}
+        spec["annotations"] = a
+
+
+_default_annotations()
 _mark_denied()          # again, for tools the plugins added
 
 if SHARED:
@@ -12382,9 +12559,14 @@ def inline_charts(html):
 def _panel_html():
     try:
         with open(PANEL_FILE, encoding="utf-8") as fh:
-            return inline_charts(fh.read())
+            html = inline_charts(fh.read())
     except OSError:
         return _FALLBACK_PANEL
+    if HUMAN_GATE:
+        # Only a page this process served carries the nonce, and only requests
+        # with it are shown confirmation phrases (pending_confirmations).
+        html = html.replace("</head>", f"<script>window.JAM_PANEL_NONCE={json.dumps(PANEL_NONCE)};</script></head>", 1)
+    return html
 
 
 def _tool_entry(name, spec):
@@ -12505,6 +12687,7 @@ class H(BaseHTTPRequestHandler):
         _tls.principal = _tls.user          # the token's user; _tls.user may become the user acted as
         _tls.sid, _tls.client = sid, (self.headers.get("User-Agent") or "")[:40]
         _tls.admin, _tls.admin_via = _admin_ok(self.headers.get("X-JAM-Admin")), "header"
+        _tls.panel = HUMAN_GATE and hmac.compare_digest(str(self.headers.get("X-JAM-Panel") or ""), PANEL_NONCE)
         try:
             self._dispatch(sid)
         finally:
@@ -12612,7 +12795,7 @@ class H(BaseHTTPRequestHandler):
                                               is_error=True)
                     else:
                         try:
-                            out = spec["fn"](args)
+                            out = _apply_human_gate(spec["fn"](args))
                             formatter = spec.get("format_result")
                             result = formatter(out) if formatter else _tool_result(out, compact=spec.get("compact", False))
                         except Exception as e:
