@@ -174,7 +174,7 @@ USERNAME_RE = r"[a-z0-9._-]{1,32}"
 ARCHIVE_TOOLS = ("list_analysis_results", "get_analysis_fit_statistics", "get_analysis_theory_predictions",
                  "compare_with_reference")
 CATALOG_TOOLS = ("list_analysis_catalog", "get_analysis_catalog", "get_analysis_requirements",
-                 "preview_analysis_configuration", "preview_compiled_input")
+                 "preview_analysis_configuration", "preview_compiled_input", "campaign_card_from_catalog")
 
 
 def _tools_deny():
@@ -2728,7 +2728,18 @@ def _card_summary(norm):
         rendered = rows if reaction == "sia" else object_registry.cut_filters(rows)
         cuts[reaction] = ([f'{dataset_id}: {expression}' for dataset_id, expressions in rendered.items()
                            for expression in expressions] if isinstance(rendered, dict) else rendered)
-    return {"object": " + ".join(o["label"] for o in objects), "objects": objects,
+    # The composer enables only the first FF shape by default; the published
+    # JAM24 fit uses both (215 free parameters against the composer's 140).
+    ff_selected = [o.get("type") for o in objects if o.get("type") in ff_registry.FF_OBJECTS]
+    ff_second = {key: any(p.get("sector") == key and p["name"] in ff_registry.FF_OPTIONAL[key] and not p["fixed"]
+                          for p in norm["parameters_table"]) for key in ff_selected}
+    ff_note = {}
+    if ff_selected and not all(ff_second.values()):
+        ff_note = {"ff_second_shapes": {k: ("enabled" if v else "disabled") for k, v in ff_second.items()},
+                   "ff_note": "Only the first FF shape is enabled for " + ", ".join(k for k, v in ff_second.items() if not v)
+                              + " (the composer's default). The published JAM24 fit uses both shapes; "
+                                "campaign_card_from_catalog gives a card with both."}
+    return {"object": " + ".join(o["label"] for o in objects), "objects": objects, **ff_note,
             "fit_objects": norm.get("fit_objects", ["pdf"]),
             "frozen_objects": norm.get("frozen_objects", []),
             "library_sources": norm.get("library_sources", {}),
@@ -3860,6 +3871,11 @@ def _checked_card(u, card):
         code = "LIBRARY_UNREADABLE" if str(e).startswith("Could not read object libraries") else "CARD_INVALID"
         return None, _refuse(code, str(e), valid=False)
     norm, errors = _normalize_card(card, library)
+    if not errors and isinstance(card.get("source"), dict):
+        # The published analysis the card was built from (campaign_card_from_catalog):
+        # validate_campaign compares the two, and the registry keeps the provenance.
+        norm["source"] = {k: card["source"][k] for k in ("analysis_id", "configuration_ref", "compiled_ref", "catalog_ref")
+                          if isinstance(card["source"].get(k), str)}
     if not errors:
         ws = _workspace(u)
         for key, lib in library.items():
@@ -4013,13 +4029,318 @@ def _preview_prior_replicas(u, card):
     return {'status':'ok','preview':norm.get('prior_preview'), 'read_only':True}
 
 
+# ---- a campaign card from a published analysis -------------------------------------
+#
+# The catalog knows a published fit's complete configuration; the composer's
+# defaults do not (they enable only the first FF shape, 140 free parameters
+# against JAM24's 215, and keep library normalization bounds). In the pilot
+# every AI client copied the catalog into a card by hand, each differently.
+# campaign_card_from_catalog does it once, deterministically, and the card
+# carries its source so that validate_campaign can compare the two.
+
+_QCD_FROM_CONF = {"order": "order", "Q20": "Q20", "ht": "higherTwist", "dglap mode": "dglapMode",
+                  "alphaSmode": "asMode", "beta version": "betaVersion", "sia version": "siaVersion"}
+
+
+def _catalog_conf(analysis_id):
+    """A catalog entry's configuration as FitPack's conf (the compiler's
+    reproduction projection: the official input plus the author-confirmed
+    overlays), with the references that pin it."""
+    from jamai import compiled_input, configuration_compiler, configuration_snapshot
+    store = _analysis_catalog_store()
+    entry = store._entry(str(analysis_id or ""))
+    snap = configuration_snapshot.snapshot(store.root, entry, store._reference(entry))
+    compiled = configuration_compiler.compile_configuration(store, snap.ref)
+    conf = compiled_input._expected(compiled["ir"], True)
+    return conf, {"analysis_id": entry["config"]["analysis_id"], "configuration_ref": snap.ref,
+                  "compiled_ref": compiled["compiled_ref"], "catalog_ref": store._reference(entry),
+                  "parity_passed": not compiled["issues"]}
+
+
+def _conf_free_parameters(conf):
+    return sum(1 for table in conf["params"].values() for d in table.values() if d.get("fixed") is False)
+
+
+def _canonical_filters(filters):
+    """Filter expressions with their numbers normalised, so Q2>1.690000 equals Q2>1.69."""
+    if filters is None:
+        return None
+    if isinstance(filters, dict):
+        return {str(k): _canonical_filters(v) for k, v in filters.items()}
+    out = []
+    for expression in filters:
+        parts = [p.strip() for p in re.split(r"\band\b", str(expression))]
+        # Numbers only, not the digits of a variable name (Q2, W2SIDIS).
+        out.extend(re.sub(r"\s+", "", re.sub(r"(?<![A-Za-z_\d.])(\d+\.\d*|\.\d+|\d+)(?![A-Za-z_])",
+                                             lambda m: repr(float(m.group(0))), p)) for p in parts)
+    return sorted(out)
+
+
+def _composer_filters(reaction, filters, selected=None):
+    """The part of a reaction's published filters the composer can express:
+    none for reactions whose cut policy is none, pT only for jets (x<1 removes
+    nothing; FitPack skips it), and for per-dataset mappings only the selected
+    datasets. (filters, dropped)."""
+    policy = {r["key"]: r.get("cut_policy") for r in CAMPAIGN_REACTIONS}
+    if filters is None:
+        return None, []
+    if policy.get(reaction) == "none":
+        return None, list(filters) if isinstance(filters, list) else []
+    if isinstance(filters, dict):
+        keep = {str(k): v for k, v in filters.items() if selected is None or str(k) in selected}
+        return keep, []
+    if reaction == "jet":
+        kept = [f for f in filters if str(f).replace(" ", "").startswith("pT")]
+        return kept, [f for f in filters if f not in kept]
+    return list(filters), []
+
+
+def _slurm_recommendation(free_parameters, points):
+    """Resources for a fit of this size, from the pilot's timings: the full JAM24
+    fit (215 free parameters, 5853 points) takes 21-29 s per chi2 evaluation and
+    about an hour per optimizer iteration, a proton-only DIS fit (35 parameters,
+    2680 points) 0.6 s per evaluation. The composer's default (30 min, 4G) is
+    enough only for the smallest fits."""
+    free, pts = int(free_parameters or 0), int(points or 0)
+    if free > 150 or pts > 4000:
+        return {"time": "24:00:00", "mem": "8G", "cpus": 1, "partition": "",
+                "why": f"{free} free parameters, {pts or 'unknown'} points: a full global fit; an hour per optimizer iteration"}
+    if free > 60 or pts > 1500:
+        return {"time": "08:00:00", "mem": "6G", "cpus": 1, "partition": "",
+                "why": f"{free} free parameters, {pts or 'unknown'} points: several minutes per iteration"}
+    return {"time": "02:00:00", "mem": "4G", "cpus": 1, "partition": "",
+            "why": f"{free} free parameters, {pts or 'unknown'} points: seconds per iteration"}
+
+
+def _card_from_conf(conf, source, overrides=None, replicas=10):
+    """A campaign card that says exactly what the conf says: every parameter
+    with its bounds and ties (both FF shapes enabled), the datasets, their
+    normalizations and cuts, the QCD settings, the author-confirmed positivity;
+    job and Slurm from the size of the fit. overrides: top-level sections to
+    replace or update (job, slurm, qcd, parameters, datasets, reactions)."""
+    overrides = overrides if isinstance(overrides, dict) else {}
+    objects, notes = [], []
+    for obj, table in conf["params"].items():
+        if obj not in SELECTABLE_OBJECTS:
+            raise ValueError(f"the published fit has a {obj} object this gateway cannot compose")
+        params = {}
+        for name, d in table.items():
+            row = {"value": d.get("value"), "fixed": bool(d.get("fixed", False))}
+            if d.get("min") is not None:
+                row["min"] = d["min"]
+            if d.get("max") is not None:
+                row["max"] = d["max"]
+            if isinstance(d.get("fixed"), str):
+                # A tie: the parameter follows another one of the same object.
+                if obj in ff_registry.FF_OBJECTS:
+                    row["fixed"] = d["fixed"]
+                else:
+                    row["equal_to"] = d["fixed"]
+            if obj in ff_registry.FF_OBJECTS:
+                row["enabled"] = True       # both shapes, as the published fit has them
+            params[name] = row
+        objects.append({"type": obj, "parameters": params})
+    reactions, datasets, normalizations, cuts = [], {}, {}, {}
+    for reaction, block in conf["datasets"].items():
+        reactions.append(reaction)
+        datasets[reaction] = [str(k) for k in sorted(block["xlsx"])]
+        if block.get("norm"):
+            normalizations[reaction] = {str(k): {"value": d.get("value"), "min": d.get("min"), "max": d.get("max"),
+                                                 "fixed": d.get("fixed", False)} for k, d in block["norm"].items()}
+        filters, dropped = _composer_filters(reaction, block.get("filters"), set(datasets[reaction]))
+        if dropped:
+            notes.append(f"{reaction}: the published filters {dropped} are not composer cuts and were left out "
+                         "(they remove no points)")
+        if filters is None:
+            continue
+        try:
+            cuts[reaction] = object_registry.library_cuts(filters)
+        except (ValueError, SyntaxError) as e:
+            notes.append(f"{reaction}: filters {filters} could not be turned into cuts ({e}); the composer's defaults apply")
+    qcd = dict(CAMPAIGN_DEFAULTS["qcd"])
+    for ck, kk in _QCD_FROM_CONF.items():
+        if ck in conf:
+            qcd[kk] = conf[ck]
+    if "tmc" in conf:
+        qcd["tmc"] = "AOT" if conf["tmc"] in ("AOT", True) else "off"
+    for k, v in conf.items():
+        if k.endswith(" positivity") and isinstance(v, bool):
+            qcd[f"{k.split()[0]}Positivity"] = v
+    free, points = _conf_free_parameters(conf), None
+    try:
+        rows = source.get("retained_points") or {}
+        points = sum(rows.values()) or None
+    except Exception:
+        points = None
+    slurm = {k: v for k, v in _slurm_recommendation(free, points).items() if k != "why"}
+    card = {"objects": objects, "reactions": reactions, "datasets": datasets, "normalizations": normalizations,
+            "cuts": cuts, "qcd": qcd,
+            "parameters": dict(CAMPAIGN_DEFAULTS["parameters"]),
+            "job": {**CAMPAIGN_DEFAULTS["job"], "campaignName": re.sub(r"[^A-Za-z0-9_]", "_", source["analysis_id"]),
+                    "replicas": int(replicas), "tolerance": str(conf.get("ftol", CAMPAIGN_DEFAULTS["job"]["tolerance"])),
+                    "bootstrap": bool(conf.get("bootstrap", True))},
+            "slurm": slurm,
+            "source": {k: source[k] for k in ("analysis_id", "configuration_ref", "compiled_ref", "catalog_ref") if k in source}}
+    for section in ("job", "slurm", "qcd", "parameters"):
+        if isinstance(overrides.get(section), dict):
+            card[section].update(overrides[section])
+    if isinstance(overrides.get("datasets"), dict):
+        card["datasets"].update({str(r): [str(x) for x in v] for r, v in overrides["datasets"].items()})
+    if isinstance(overrides.get("reactions"), list):
+        card["reactions"] = [str(r) for r in overrides["reactions"]]
+    if conf.get("flat par") or any(d.get("gaussian") for t in conf["params"].values() for d in t.values()):
+        notes.append("The published fit drew its starting values from Gaussian priors (flat par); the FF library "
+                     "carries that metadata, the PDF starts from the catalog values (initialization 'default').")
+    return card, notes, {"free_parameters": free, "datasets": {r: len(b["xlsx"]) for r, b in conf["datasets"].items()},
+                         "normalizations": {r: len(b["norm"]) for r, b in conf["datasets"].items() if b.get("norm")},
+                         "points_after_cuts": points}
+
+
+def campaign_card_from_catalog(analysis_id="JAM24.final", replicas=10, overrides=None, username=""):
+    """A complete, validate-ready campaign card for a published analysis in the
+    catalog, built from the compiled configuration (no hand copying). Needs no
+    cluster: validate_campaign then checks it against the workspace and reports
+    how it compares with the catalog (catalog_comparison)."""
+    u, err = _resolve_user(username)
+    if err:
+        return err
+    try:
+        conf, refs = _catalog_conf(analysis_id)
+    except Exception as e:
+        return _refuse("NOT_FOUND", f"No catalog configuration for {analysis_id!r}: {e}")
+    try:
+        n = int(replicas or 10)
+        if not 1 <= n <= 2000:
+            raise ValueError
+    except (TypeError, ValueError):
+        return _refuse("BAD_ARGUMENT", "replicas: a whole number from 1 to 2000")
+    try:
+        entry = _analysis_catalog_store()._entry(str(analysis_id))
+        retained = {}
+        for reaction, block in entry["config"]["source_verification"]["datasets"].items():
+            for row in block.get("entries", []):
+                v = (row.get("current_reader_verification") or {}).get("retained_count")
+                if isinstance(v, int):
+                    retained[f"{reaction}:{row['id']}"] = v
+        refs["retained_points"] = retained
+    except Exception:
+        pass
+    try:
+        card, notes, expected = _card_from_conf(conf, refs, overrides, n)
+    except ValueError as e:
+        return _refuse("CARD_INVALID", str(e))
+    return {"status": "ok", "card": card, "source": card["source"], "expected": expected, "notes": notes,
+            "message": f"A card for {refs['analysis_id']} with {expected['free_parameters']} free parameters over "
+                       f"{sum(expected['datasets'].values())} datasets. Call validate_campaign(card) next: it checks the "
+                       "card against the workspace and its catalog_comparison says where it still differs from the "
+                       "published fit. The confirmation phrase comes from that validation."}
+
+
+def _catalog_comparison(norm):
+    """How a card compares with the published analysis it names (card.source):
+    datasets, free parameters, normalizations, QCD settings and cuts."""
+    src = norm.get("source") if isinstance(norm.get("source"), dict) else None
+    if not src or not src.get("analysis_id"):
+        return None
+    try:
+        conf, refs = _catalog_conf(src["analysis_id"])
+    except Exception as e:
+        return {"analysis_id": src.get("analysis_id"), "error": f"{type(e).__name__}: {e}"}
+    diffs, datasets = [], {}
+    for reaction, block in conf["datasets"].items():
+        expected = {str(k) for k in block["xlsx"]}
+        selected = {str(x) for x in norm["datasets"].get(reaction, [])}
+        datasets[reaction] = {"expected": len(expected), "selected": len(selected),
+                              "missing": sorted(expected - selected), "extra": sorted(selected - expected)}
+        if expected != selected:
+            diffs.append(f"{reaction}: datasets differ (missing {sorted(expected - selected)}, extra {sorted(selected - expected)})")
+    for reaction, ids in norm["datasets"].items():
+        if reaction not in conf["datasets"]:
+            datasets[reaction] = {"expected": 0, "selected": len(ids), "missing": [], "extra": sorted(map(str, ids))}
+            diffs.append(f"{reaction}: not part of the published fit")
+    expected_free = _conf_free_parameters(conf)
+    card_free = sum(1 for p in norm["parameters_table"] if not p["fixed"])
+    if expected_free != card_free:
+        diffs.append(f"free parameters: {card_free} in the card, {expected_free} in the published fit")
+    expected_norm = sum(len(b.get("norm") or {}) for b in conf["datasets"].values())
+    card_norm = sum(len(v) for v in (norm.get("normalizations") or {}).values())
+    if expected_norm != card_norm:
+        diffs.append(f"normalization parameters: {card_norm} in the card, {expected_norm} in the published fit")
+    qcd = {}
+
+    def same(a, b):
+        try:
+            return float(a) == float(b)
+        except (TypeError, ValueError):
+            return str(a).strip().lower() == str(b).strip().lower()
+
+    for ck, kk in _QCD_FROM_CONF.items():
+        if ck in conf:
+            got = norm["qcd"].get(kk)
+            qcd[kk] = {"expected": conf[ck], "card": got, "match": same(conf[ck], got)}
+    if "tmc" in conf:
+        expected_tmc = "AOT" if conf["tmc"] in ("AOT", True) else "off"
+        qcd["tmc"] = {"expected": expected_tmc, "card": norm["qcd"].get("tmc"), "match": same(expected_tmc, norm["qcd"].get("tmc"))}
+    for k, v in conf.items():
+        if k.endswith(" positivity") and isinstance(v, bool):
+            kk = f"{k.split()[0]}Positivity"
+            got = norm["qcd"].get(kk, True)
+            qcd[kk] = {"expected": v, "card": got, "match": bool(v) == bool(got)}
+    diffs.extend(f"{k}: card {v['card']!r}, published {v['expected']!r}" for k, v in qcd.items() if not v["match"])
+    cuts = {}
+    for reaction, block in conf["datasets"].items():
+        if reaction not in norm["datasets"]:
+            continue
+        expected, _ = _composer_filters(reaction, block.get("filters"), {str(x) for x in norm["datasets"].get(reaction, [])})
+        rows = norm["cuts"].get(reaction)
+
+        def to_filters(x):
+            # Cut rows (the card) or filter strings (the normalized card's SIA mapping).
+            if isinstance(x, dict):
+                return {str(k): to_filters(v) for k, v in x.items()}
+            if isinstance(x, list) and x and all(isinstance(c, dict) for c in x):
+                return object_registry.cut_filters(x)
+            return x
+
+        try:
+            got = to_filters(rows) if rows is not None else None
+        except (ValueError, KeyError, TypeError):
+            got = rows
+        if isinstance(got, dict):
+            got = {k: v for k, v in got.items() if str(k) in {str(x) for x in norm["datasets"].get(reaction, [])}}
+        match = _canonical_filters(expected) == _canonical_filters(got) if (expected or got) else True
+        cuts[reaction] = {"expected": expected, "card": got, "match": match}
+        if not match:
+            diffs.append(f"{reaction}: cuts differ")
+    return {**refs, "datasets": datasets,
+            "free_parameters": {"expected": expected_free, "card": card_free, "match": expected_free == card_free},
+            "normalizations": {"expected": expected_norm, "card": card_norm},
+            "qcd": qcd, "cuts": cuts, "verdict": "matches" if not diffs else "differs", "differences": diffs}
+
+
 def _validated(u, norm):
     """validate_campaign's result for a card that passed _checked_card."""
-    return {"status": "ok", "valid": True, "summary": _card_summary(norm),
-            "slurm_script": _array_script(_workspace(u), "<campaign-folder>", norm, 1, norm["job"]["replicas"]),
-            "confirmation_phrase": _confirm_phrase("SUBMIT", norm),
-            "next": "Show the user this summary and the Slurm script. Submit with "
-                    "submit_campaign(card, confirm=<the phrase>) only after they confirm."}
+    summary = _card_summary(norm)
+    points = sum((norm.get("_data_points") or {}).values()) or None
+    rec = _slurm_recommendation(summary["free_parameters"], points)
+    summary["slurm_recommendation"] = rec
+    asked, wanted = _parse_hms(norm["slurm"].get("time")), _parse_hms(rec["time"])
+    if asked is not None and wanted is not None and asked < wanted:
+        summary["slurm_warning"] = (f"The card asks for {norm['slurm']['time']} per replica; a fit of this size "
+                                    f"({rec['why']}) usually needs about {rec['time']} and {rec['mem']}. A task that "
+                                    "hits the time limit can be continued with rerun_replicas(resume=true).")
+    out = {"status": "ok", "valid": True, "summary": summary,
+           "slurm_script": _array_script(_workspace(u), "<campaign-folder>", norm, 1, norm["job"]["replicas"]),
+           "confirmation_phrase": _confirm_phrase("SUBMIT", norm),
+           "next": "Show the user this summary and the Slurm script. Submit with "
+                   "submit_campaign(card, confirm=<the phrase>) only after they confirm."}
+    comparison = _catalog_comparison(norm)
+    if comparison:
+        out["catalog_comparison"] = comparison
+        if comparison.get("verdict") == "differs":
+            out["next"] = ("The card differs from the published analysis it names (catalog_comparison.differences). "
+                           "Show the user the differences with the summary; submit only after they agree to them.")
+    return out
 
 
 # The data a card selects, read as FitPack reads it: the reaction's reader
@@ -12622,6 +12943,22 @@ if os.path.isfile(_PLUGINS_INIT):
     except Exception as e:
         PLUGIN_STATUS = {"loaded": [], "errors": {"plugins": f"{type(e).__name__}: {e}"}}
 
+TOOLS["campaign_card_from_catalog"] = {
+    "desc": "A complete, validate-ready campaign card for a published analysis in the catalog (default "
+            "JAM24.final: the published configuration; JAM24.current: the updated workbooks), built from the "
+            "compiled configuration instead of copying values by hand: every parameter with its bounds and "
+            "ties, both FF shapes (215 free parameters for JAM24), the 98 datasets with their normalizations "
+            "and cuts, the QCD settings and the author-confirmed positivity flags, Slurm resources sized "
+            "for the fit. replicas sets the number of replicas; overrides replaces or updates the sections "
+            "job, slurm, qcd, parameters, datasets or reactions. Needs no cluster. Then call "
+            "validate_campaign(card): its catalog_comparison says where the card still differs from the "
+            "published fit, and its phrase is what submit_campaign needs. Use this whenever the user wants "
+            "to run, reproduce or start from a published analysis.",
+    "schema": {"type": "object", "properties": {"analysis_id": {"type": "string", "default": "JAM24.final"},
+                                                "replicas": {"type": "integer", "default": 10},
+                                                "overrides": {"type": "object"}}},
+    "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+    "fn": lambda a: campaign_card_from_catalog(a.get("analysis_id", "JAM24.final"), a.get("replicas", 10), a.get("overrides"))}
 TOOLS["pending_confirmations"] = {
     "desc": "Human-gate mode only: the confirmations waiting for a person (kind, phrase, what they would do). "
             "Answered only to the gateway's panel page; an AI client gets a refusal and must ask the user to read "
