@@ -1094,6 +1094,42 @@ cache formats and numerical calculations are unchanged. Chi-square-based PDF,
 FF and experimental selections require matching central scores; there is no
 bootstrap fallback. Default selections still keep every fitted replica.
 
+#### Incremental prediction cohorts and dashboard progress
+
+Summary, Postprocess and experimental analysis coordinate one central-cache
+builder per campaign. An OS advisory lock also serializes builders across
+gateway processes. Each invocation evaluates at most eight missing/changed
+replicas, using the existing scientific container and calculation. Every
+completed replica (all configured datasets together) is journaled atomically
+with full-precision arrays, a payload hash, dataset identity and exact source
+fingerprints. A restart replays committed rows; interrupted temporary files
+are never treated as completed replicas. Failed replicas remain explicit
+blockers rather than being dropped from the requested cohort.
+
+The store is `<campaign>/analysis/cache/incremental/`: `rows/` and `static/`
+hold recoverable batches, `builds/` pins target identities and signatures,
+`cohorts/` holds complete snapshots, and atomic `active.json` selects the last
+complete cohort. Legacy `datasets/` files remain untouched; the first adoption
+uses hard links where possible, with a copy fallback. No cleanup or destructive
+migration is performed. New fitted replicas cannot enter an in-progress cohort;
+they belong to a later cohort. Changed input invalidates the scientific context;
+changed MSR/summary fingerprints invalidate only the corresponding replica.
+
+While extending a valid cohort, the browser displays its actual replica count
+and metrics immediately, with cached/new/remaining/failed progress, and refreshes
+after publication. It never labels those metrics as the complete current
+ensemble. `campaign_metrics_progress(collection_id)` reads compact durable
+progress without starting a scientific calculation. First-ever cohorts retain
+the existing asynchronous `analysis_result` workflow. Chi-square selections and
+experimental plots use the same pinned cohort and score ledger, even if another
+cohort finishes during a request. Ordinary PDF/FF plotting without a chi-square
+selection remains independent of central-cache construction.
+
+This changes persistence and orchestration, not scientific evaluation,
+normalization, profiling, threading, credible intervals or figure styling.
+Repeated W+charm grid loading remains in the existing FitPack implementation;
+no numerical-library thread settings or protected FitPack code are changed.
+
 Summary fields `mean_total_chi2`, `median_total_chi2`, `min_total_chi2` and
 `max_total_chi2` describe individual central-data point-residual chi-square and
 carry `chi2_basis=central_data_point_residuals`. `ensemble_central_chi2.total`,

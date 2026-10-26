@@ -12,8 +12,10 @@ it is done once per campaign and kept on the cluster, next to the campaign:
 
 A dataset file is valid while the campaign's fitted replicas are the ones it was
 made from (signature: replica identity, .msr content and summary metadata, plus
-the stage input content); appended or changed replicas make it stale and only
-that dataset is computed again. Timestamps are not scientific cache identities.
+the stage input content). The incremental prediction store reuses unchanged
+replica rows, journals missing rows, and publishes complete pinned cohorts.
+The legacy dataset files stay readable and untouched. Timestamps are not
+scientific source identities.
 
 Everything here is stdlib only: the gateway ships this module's source to the
 cluster in front of its scripts (the plain python3 reader and the container
@@ -123,7 +125,7 @@ def replica_number(identity):
     return int(m.group(1)) if m else None
 
 
-def select_replicas(records, selection, stage=None):
+def select_replicas(records, selection, stage=None, score_cache=None):
     """Keep original order; use central_chi2_reported or the pinned stage ledger.
 
     Legacy chi2_total may be bootstrap data-only and is never a score fallback.
@@ -131,7 +133,7 @@ def select_replicas(records, selection, stage=None):
     if not selection:
         return list(records), []
     kept, dropped = list(records), []
-    scores = central_scores(stage, records) if stage is not None and any(k in selection for k in ('best', 'sigma', 'chi2_max')) else {}
+    scores = central_scores(stage, records, score_cache) if stage is not None and any(k in selection for k in ('best', 'sigma', 'chi2_max')) else {}
     def chi2(s):
         value = scores.get(s['identity'], s.get('central_chi2_reported'))
         if value is None or not math.isfinite(float(value)):
@@ -168,14 +170,22 @@ def select_replicas(records, selection, stage=None):
     return kept, dropped
 
 
-def central_scores(stage, records):
+def central_scores(stage, records, cache=None):
     """Revision-bound point-only central scores; reject old inclusive ledgers."""
-    path = os.path.join(os.path.dirname(os.path.dirname(stage)), 'analysis', 'cache', 'central_metrics.json')
-    doc = read_json(path) or {}
-    if (doc.get('metrics_version') != METRICS_VERSION or doc.get('scoring_version') != SCORING_VERSION
-            or doc.get('chi2_basis') != CHI2_BASIS or doc.get('signature') != signature(records, stage)):
-        raise ValueError('Central-data metrics are missing or stale; refresh campaign_summary before chi2-based selection.')
-    return {r['identity']: r['chi2_reported'] for r in doc['individual']}
+    root = os.path.join(os.path.dirname(os.path.dirname(stage)), 'analysis', 'cache')
+    paths = [os.path.join(root, 'central_metrics.json')]
+    active = read_json(os.path.join(root, 'incremental', 'active.json')) or {}
+    token = active.get('cohort', '')
+    if re.fullmatch(r'[0-9a-f]{64}', token):
+        paths.insert(0, os.path.join(root, 'incremental', 'cohorts', token, 'central_metrics.json'))
+    if cache is not None: paths = [os.path.join(cache, 'central_metrics.json')]
+    sig = signature(records, stage)
+    for path in paths:
+        doc = read_json(path) or {}
+        if (doc.get('metrics_version') == METRICS_VERSION and doc.get('scoring_version') == SCORING_VERSION
+                and doc.get('chi2_basis') == CHI2_BASIS and doc.get('signature') == sig):
+            return {r['identity']: r['chi2_reported'] for r in doc['individual']}
+    raise ValueError('Central-data metrics are missing or stale; refresh campaign_summary before chi2-based selection.')
 
 
 def central_report(docs, records, selection=None, allow_empty=False):
