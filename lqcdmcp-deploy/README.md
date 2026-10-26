@@ -1082,6 +1082,23 @@ theory. With theory-dependent beta, this equivalence is not asserted: the output
 retains the requested mean predictions and labels the mean-nuisance convention;
 it does not silently perform another profiling operation that changes them.
 
+The **By experiment** dataset table, overview/KPI totals, CSV and LaTeX exports
+use that same ensemble calculation and selected, pinned replica cohort.
+`chi2`/`chi2_red` are the central point-residual chi-square of the pointwise mean
+complete predictions, not the mean of individual chi-squares; `z_score` applies
+the existing chi-square-CDF-to-normal transformation with dataset Npts degrees
+of freedom. `chi2_cor` is the sum of squared mean signed nuisance residuals.
+`chi2_norm` evaluates the native normalization penalty at mean fitted N: native
+`_get_nres` is `(N-1)/dN` or zero for its fixed/linked/covariance exclusions, so
+the square of its mean equals the penalty at mean N. Finite `dN=1000` remains
+finite. `norm`/`norm_std` retain the fitted normalization mean and sample standard
+deviation across selected replicas (no standard deviation for one replica).
+Cached `theory` already contains normalization and the central-profiled shift;
+reporting never applies either again. `mean_individual_chi2*`, `objective_mean`,
+and the explicitly labeled best-replica experiment diagnostic remain separate
+from the ensemble result. Unavailable zero-point datasets remain unavailable;
+a complete cached partial cohort is labeled by its actual replica count.
+
 `campaign_summary` and `postprocess_campaign` reuse the prediction cache and the
 existing asynchronous analysis jobs for expensive initial evaluation. Poll
 `analysis_result` when they return `running`. Cache metric records use a separate

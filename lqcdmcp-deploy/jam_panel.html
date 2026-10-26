@@ -2151,7 +2151,7 @@
       const v = view(), n = v.reduce((a, x)=>a + x.npts, 0), raw = v.reduce((a, x)=>a + (x.npts_raw || 0), 0), c2 = v.reduce((a, x)=>a + (x.chi2 || 0), 0);
       const worst = v.slice().sort((a, b)=>(b.chi2_red || 0) - (a.chi2_red || 0))[0], tension = v.filter(x=>isNum(x.z_score) && Math.abs(x.z_score) > 3).length;
       const tiles = [["Datasets", v.length + " / " + rows.length, reactions.filter(x=>onR.has(x)).join(", ")],
-        ["Points", String(n), raw ? "of " + raw + " before cuts" : ""], ["χ²/N", n ? f2(c2 / n) : "—", "mean over " + esc(r.n_replicas) + " fitted replicas"],
+        ["Points", String(n), raw ? "of " + raw + " before cuts" : ""], ["χ²/N", n ? f2(c2 / n) : "—", "ensemble-mean predictions · " + esc(r.n_replicas) + " fitted replicas"],
         ["Worst χ²_red", worst ? f2(worst.chi2_red) : "—", worst ? (worst.experiment || "") + " " + worst.dataset : "", worst ? worst.dataset : ""],
         ["|Z| > 3", String(tension), tension ? "datasets in tension" : "no dataset in tension"]];
       $("tvKpis").innerHTML = tiles.map(t=>'<div class="kpi'+(t[3] ? " link" : "")+'"'+(t[3] ? ' data-ds="'+esc(t[3])+'" title="Draw this dataset"' : "")+'><div class="k">'+esc(t[0])+'</div><div class="v">'+esc(t[1])+'</div><div class="d">'+esc(t[2])+'</div></div>').join("");

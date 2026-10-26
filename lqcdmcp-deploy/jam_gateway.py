@@ -10352,7 +10352,7 @@ for k, d in docs.items():
     if d.get('unavailable'):
         unavailable.append({'dataset': k, 'reason': d['unavailable']}); continue
     d = subset_doc(d, keep)
-    row = table_row(d, best['identity'])
+    row = table_row(d, best['identity'], ensemble=ensemble_rows[k])
     row['ensemble'] = ensemble_rows[k]
     rows.append(row)
     if charts: plots.append(chart_data(d, interval))
@@ -10625,7 +10625,7 @@ def _theory_results(u, e, datasets, experiments, interval, charts=True, export_p
            "percentiles": [(100 - interval) / 2, 100 - (100 - interval) / 2],
            "interval_kind": "pointwise_equal_tailed", "central_estimator": "mean",
            "theory_convention": "FitPack prediction: normalized theory plus profiled correlated shifts",
-           "chi2_estimator": ("table: mean over the fitted replicas, each against the central data; "
+           "chi2_estimator": ("table: central point-residual chi2 of pointwise mean complete predictions, excluding penalties; "
                               "experiments: best central point-chi2 fitted replica, excluding penalties (not ensemble-mean chi2)"),
            "replica_ids": d["replica_ids"], "best_replica": d["best_replica"], "best_msr": d["best_msr"],
            "replica_selection": d.get("replica_selection"),
@@ -10636,8 +10636,9 @@ def _theory_results(u, e, datasets, experiments, interval, charts=True, export_p
     for k in ("unknown_datasets", "unmatched_experiments"):
         if d.get(k):
             out[k] = d[k]
-    notes = ["chi2 terms are means over the fitted replicas, each replica against the central data; "
-             "All reported chi2 and reduced chi2 are point-residual terms only; penalties and objective_mean are separate diagnostics. Fitted norm is mean(std) over the replicas."]
+    notes = ["Table chi2 and reduced chi2 use pointwise mean complete central-data predictions, excluding penalties. "
+             "Correlated chi2 is the squared mean signed nuisance residual; normalization chi2 is the native penalty at the mean fitted norm, preserving fixed/link/covariance exclusions. "
+             "Fitted norm is mean(sample std) over selected replicas. mean_individual_* and objective_mean are separate diagnostics."]
     sel = d.get("replica_selection")
     if sel:
         notes.append(f"Replica selection {sel['applied']}: {sel['kept']} of {sel['of']} fitted replicas used; "
@@ -11557,8 +11558,10 @@ TOOLS = {
                 "'D0, CDF, STAR' (case, accents and separators do not matter; a prefix matches). Both empty "
                 "= every dataset of the campaign. table has, per dataset (as in the JAM papers): npts / "
                 "npts_raw (after / before cuts), ncor (correlated systematics), chi2_red with its z_score, "
-                "chi2_cor, chi2_norm and the fitted norm as norm(norm_std); chi2 terms are means over the "
-                "fitted replicas. experiments: chi2/N of the best replica grouped by experiment (SLAC, BCDMS, "
+                "chi2_cor, chi2_norm and the fitted norm as norm(norm_std). Table chi2 uses pointwise mean "
+                "complete central-data predictions, excluding penalties; correlated chi2 uses mean signed nuisance residuals, "
+                "normalization chi2 is the native penalty at mean norm. mean_individual_* are separate diagnostics. "
+                "experiments: chi2/N of the best replica grouped by experiment (SLAC, BCDMS, "
                 "NMC, E866 ...), a separate best-replica diagnostic, not chi2 of the ensemble mean. The panel and the chat widget draw interactive data vs mean-theory charts "
                 "(axis and grouping choices, ratio and pull views, credible-interval switch, zoom, hover). "
                 "plot=false: the table only. export_png=true also renders the thesis-style PNGs (slow: "

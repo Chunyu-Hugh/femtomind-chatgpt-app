@@ -469,19 +469,27 @@ def z_score(chi2, npts):
     return ((chi2 / npts) ** (1 / 3.0) - (1 - s)) / math.sqrt(s)
 
 
-def table_row(doc, best=None):
-    """One line of the per-dataset table (as in the JAM papers): points after and
-    before cuts, correlated systematics, reduced chi2 and its Z-score, the
-    chi2 of the correlated shifts and of the normalization, and the fitted
-    normalization as mean(std). chi2 terms are means over the fitted
-    replicas, each replica against the central data; chi2_best is the best
-    replica's (the replica identity best, lowest point-residual chi2).
-    Penalties and the complete objective are separate diagnostics only."""
+def table_row(doc, best=None, ensemble=None):
+    """Dataset statistics for the selected, pinned ensemble (not mean chi2).
+
+    Cached theory already includes normalization and central-profiled shifts.
+    Reuse central_report's pointwise mean prediction and mean signed nuisance
+    residuals. Native normalization residuals are affine, (N-1)/dN, or zero
+    for fixed/linked/covariance exclusions: their squared mean is exactly the
+    native penalty at mean N, not the mean of individual penalties. No second
+    normalization, profiling, or scientific evaluation belongs here.
+    """
     st, n = doc['stats'], doc['npts']
+    replicas = doc.get('replicas') or []
+    if ensemble is None:
+        records = [{'identity': identity} for identity in replicas]
+        report = central_report([doc], records)
+        ensemble = next((r for r in report['datasets'] if r['dataset'] == doc['key']), None)
+    if ensemble is None or ensemble['dataset'] != doc['key'] or ensemble['npts'] != n:
+        raise ValueError('Ensemble dataset identity/point-count mismatch: ' + doc['key'])
     points = [math.fsum(((d-p)/a)**2 for d,p,a in zip(doc['columns']['value'],row,doc['columns']['alpha']))
               for row in doc['theory']]
-    chi2 = mean(points)
-    replicas = doc.get('replicas') or []
+    chi2 = ensemble['data']
     chi2_best = points[replicas.index(best)] if best in replicas else None
     norm = [v for v in st.get('norm') or [] if v is not None]
     total = [math.fsum(v) for v in zip(st['chi2'], st['chi2_cor'], st['chi2_norm'])]
@@ -489,13 +497,17 @@ def table_row(doc, best=None):
             'experiment': doc.get('experiment', ''), 'observable': doc.get('observable', ''),
             'target': doc.get('target', ''), 'npts': n, 'npts_raw': doc.get('npts_raw'),
             'ncor': doc.get('ncor', 0), 'chi2': chi2, 'chi2_red': chi2 / n if n else None,
-            'z_score': z_score(chi2, n), 'chi2_cor': mean(st['chi2_cor']), 'chi2_norm': mean(st['chi2_norm']),
+            'z_score': z_score(chi2, n), 'chi2_cor': ensemble['correlated'], 'chi2_norm': ensemble['normalization'],
             'norm': mean(norm) if doc.get('norm_fitted') and norm else None,
             'norm_std': std(norm) if doc.get('norm_fitted') and norm else None,
             'chi2_best': chi2_best, 'chi2_point': chi2, 'chi2_total': chi2,
             'chi2_basis': CHI2_BASIS, 'chi2_total_red': chi2/n if n else None,
             'chi2_best_total': chi2_best, 'objective_mean': mean(total),
             'objective_best': total[replicas.index(best)] if best in replicas else None,
+            'chi2_estimator': 'pointwise_mean_central_prediction',
+            'penalty_estimator': 'squared_mean_native_residuals; normalization penalty at mean fitted norm',
+            'mean_individual_chi2': mean(points), 'mean_individual_chi2_red': mean(points)/n if n else None,
+            'mean_individual_chi2_cor': mean(st['chi2_cor']), 'mean_individual_chi2_norm': mean(st['chi2_norm']),
             'point_order_sha256': doc.get('point_order_sha256')}
 
 
