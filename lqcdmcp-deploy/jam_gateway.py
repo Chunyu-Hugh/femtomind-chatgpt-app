@@ -2193,12 +2193,19 @@ def _slurm_log_dir(user):
     return f"{SITE.get('slurm_log_root', '/farm_out').rstrip('/')}/{user}"
 
 
-def _campaign_log_prefix(user, folder):
-    return f"{_slurm_log_dir(user)}/{folder}/out/jam_{folder[:40]}"
+def _log_name(folder, tag=""):
+    """The job and log name of a campaign's array: jam_<folder>, or jam_<tag>_<folder>
+    for a reproduction. One place, so the registry's log prefixes and the Slurm
+    script's --output always agree."""
+    return f"jam_{tag + '_' if tag else ''}{folder[:40 - len(tag) - 1 if tag else 40]}"
 
 
-def _campaign_error_log_prefix(user, folder):
-    return f"{_slurm_log_dir(user)}/{folder}/err/jam_{folder[:40]}"
+def _campaign_log_prefix(user, folder, tag=""):
+    return f"{_slurm_log_dir(user)}/{folder}/out/{_log_name(folder, tag)}"
+
+
+def _campaign_error_log_prefix(user, folder, tag=""):
+    return f"{_slurm_log_dir(user)}/{folder}/err/{_log_name(folder, tag)}"
 
 
 def _campaign_log_dirs(user, folder):
@@ -2207,6 +2214,8 @@ def _campaign_log_dirs(user, folder):
 
 def _campaign_log_patterns(user, entry):
     for job in reversed(entry.get("jobs") or []):
+        if job.get("reproduce"):
+            continue    # a reproduction's logs belong to its own run, not to the replicas
         prefix = job.get("log_prefix")
         if prefix:
             return {"stdout": f"{prefix}_<job_id>_<replica>.out",
@@ -2227,12 +2236,16 @@ def _array_script(ws, folder, norm, first, last, indices=None, resume_plan=None,
     sl, c = norm["slurm"], SITE["container"]
     stage = f"{ws}/{CAMPAIGNS_DIR}/{folder}/stages/{STAGE}"
     code_ws = code_ws or ws
+    # A reproduction writes beside the original replicas and keeps its own
+    # checkpoints: the originals under current/ are what a later
+    # rerun_replicas(resume=true) restarts from, so they must stay untouched.
+    checkpoint_env = f"--env JAMAI_CHECKPOINT_ROOT={_shq(out_dir + '/checkpoints')} " if out_dir else ""
     out_dir = out_dir or f"{stage}/current"
     binds = " ".join(f"--bind {b}" for b in c.get("binds", []))
     lhapdf = ":".join(SITE.get("lhapdf_extra") or [])
     lhapdf_env = f"--env LHAPDF_DATA_PATH={lhapdf} " if lhapdf else ""
     qs, qo, pypath = _shq(stage), _shq(out_dir), _shq(f"{code_ws}:{code_ws}/{JAMAI_REMOTE}")
-    log_name = f"jam_{tag + '_' if tag else ''}{folder[:40 - len(tag) - 1 if tag else 40]}"
+    log_name = _log_name(folder, tag)
     log_root = SITE.get("slurm_log_root", "/farm_out").rstrip("/")
     resume_arg = f" --resume-plan {_shq(resume_plan)}" if resume_plan else ""
     return f"""#!/bin/bash
@@ -2266,7 +2279,7 @@ apptainer exec {binds} \\
   --env JAMAI_FITPACK_COMMIT="$FITPACK_COMMIT" --env JAMAI_FITPACK_CHANGED_FILES="$FITPACK_CHANGED" \\
   --env JAMAI_IMAGE={_shq(c["image"])} --env JAMAI_IMAGE_REALPATH="$IMAGE_REAL" \\
   --env JAMAI_MAX_NFEV={norm["job"]["maxIterations"]} --env JAMAI_METHOD={norm["job"]["optimizer"]} \\
-  {lhapdf_env}--env MPLCONFIGDIR={qs}/.matplotlib \\
+  {lhapdf_env}{checkpoint_env}--env MPLCONFIGDIR={qs}/.matplotlib \\
   {c["image"]} \\
   python3 -m modules.jam.jamai.run_replica --manifest {qs}/manifest.resolved.yaml \\
     --output {qo}/replica_${{REPLICA_ID}} --replica "${{REPLICA_ID}}" -n {sl["cpus"]}{resume_arg}
@@ -2702,14 +2715,23 @@ path = os.path.join(croot, 'reproduce.json')
 lock = open(path + '.lock', 'a')
 fcntl.flock(lock, fcntl.LOCK_EX)
 try:
-    rec = None
+    rec, note = None, None
+    stamp = sub['submitted_at'].replace(':', '')
     if os.path.exists(path):
         try:
             rec = json.load(open(path))
         except (OSError, ValueError):
             # An unreadable record is kept, never silently replaced.
-            os.replace(path, path + '.unreadable.' + sub['submitted_at'].replace(':', ''))
-    if not isinstance(rec, dict) or rec.get('schema') != SCHEMA:
+            os.replace(path, path + '.unreadable.' + stamp)
+            note = 'the earlier reproduce.json could not be parsed and was kept as reproduce.json.unreadable.' + stamp
+    if rec is not None and (not isinstance(rec, dict) or rec.get('schema') != SCHEMA):
+        # A readable record of another schema (or not a record at all) is kept too.
+        found = rec.get('schema') if isinstance(rec, dict) else type(rec).__name__
+        aside = path + '.schema-' + re.sub('[^A-Za-z0-9._-]', '_', str(found))[:40] + '.' + stamp
+        os.replace(path, aside)
+        note = 'the earlier reproduce.json had schema %r and was kept as %s' % (found, os.path.basename(aside))
+        rec = None
+    if rec is None:
         rec = {'schema': SCHEMA, 'campaign_root': croot, 'stage': stage, 'how_to_reproduce': HOW, 'submissions': []}
     rec['how_to_reproduce'] = HOW
     rec['submissions'].append(dict(sub, fitpack=fitpack, container=container, external=externals,
@@ -2723,7 +2745,7 @@ try:
 finally:
     fcntl.flock(lock, fcntl.LOCK_UN)
     lock.close()
-print(json.dumps({'ok': True, 'commit': fitpack['commit'], 'clean': fitpack['clean']}))
+print(json.dumps({'ok': True, 'commit': fitpack['commit'], 'clean': fitpack['clean'], 'note': note}))
 '''
 
 
@@ -2747,11 +2769,19 @@ def _record_submission(u, croot, stage, kind, job_id, replicas, card, ws=None, e
     except Exception as e:
         return f"{type(e).__name__}: {e}"
     d = _last_json(r)
-    return "" if d and d.get("ok") else ((r.get("err") or r.get("out") or "no answer").strip()[-300:])
+    if d and d.get("ok"):
+        return f"note: {d['note']}" if d.get("note") else ""
+    return (r.get("err") or r.get("out") or "no answer").strip()[-300:]
 
 
 def _reproduce_note(why):
-    return {"warning": f"The jobs are queued, but reproduce.json was not written: {why}"} if why else {}
+    """The caller's reply gets a warning when the record was not written, or a
+    note when it was written but an earlier record had to be set aside."""
+    if not why:
+        return {}
+    if why.startswith("note: "):
+        return {"note": f"reproduce.json: {why[6:]}"}
+    return {"warning": f"The jobs are queued, but reproduce.json was not written: {why}"}
 
 
 # Not part of a workspace's state: its campaigns, the uploaded JAMAI package and
@@ -2906,9 +2936,12 @@ entry = next((s for s in reversed(rec['submissions']) if s.get('kind') == 'repro
 queued = set()
 if entry and entry.get('job_id'):
     try:
-        q = subprocess.run(['squeue', '-h', '-u', user, '-j', str(entry['job_id']), '-o', '%i'],
+        # -r: one line per array task (without it pending tasks fold into id_[a-b]).
+        q = subprocess.run(['squeue', '-h', '-r', '-u', user, '-j', str(entry['job_id']), '-o', '%i'],
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
-        if q.returncode:
+        if q.returncode and 'Invalid job id' in (q.stderr or ''):
+            pass                # Slurm has forgotten the job: nothing of it is queued
+        elif q.returncode:
             queued.add('?')     # queue unknown: a missing result is not called failed
         for line in q.stdout.split():
             if '_' in line:
@@ -2978,6 +3011,19 @@ def reproduce_campaign(collection_id="", replicas="all", check="", confirm="", u
     u, err = _need_user(username)
     if err:
         return err
+    # Planning reads the workspace's git state and a confirmed run may rebuild a
+    # clone (minutes): like validate and submit this runs as a job the client
+    # polls, so no MCP call waits that long. The confirmation is part of the
+    # key, since the plan and the confirmed run are different requests.
+    params = {"collection_id": collection_id, "replicas": str(replicas or "all"), "check": str(check or ""),
+              "node_constraint": str(node_constraint or "auto"),
+              "confirmation_sha256": _sha((confirm or "").strip()) if (confirm or "").strip() else None}
+    return _background(u, "reproduce_campaign", params,
+                       lambda: _reproduce_campaign(u, collection_id, replicas, check, confirm, node_constraint),
+                       wait=CAMPAIGN_WAIT)
+
+
+def _reproduce_campaign(u, collection_id, replicas, check, confirm, node_constraint):
     e = _collection(u, collection_id)
     if not e:
         return {"status": "error", "message": f"No campaign {collection_id!r}; list_campaigns shows them."}
@@ -3090,24 +3136,52 @@ def reproduce_campaign(collection_id="", replicas="all", check="", confirm="", u
                     "detail": built or (r.get("err") or r.get("out") or "")[-600:]}
         code_ws = dest
         _upload_jamai(u, dest)
+    else:
+        # In place, the workspace keeps the JAMAI it has (exactness). An older
+        # upload does not know JAMAI_CHECKPOINT_ROOT and would overwrite the
+        # original replicas' checkpoints, so such a workspace gets the current
+        # JAMAI first (the fit code itself is FitPack's and is not touched).
+        probe = _remote(u, f"grep -q JAMAI_CHECKPOINT_ROOT {_shq(ws)}/{JAMAI_REMOTE}/modules/jam/jamai/replica_checkpoint.py",
+                        timeout=30)
+        if probe.get("rc") != 0:
+            _upload_jamai(u, ws)
+            plan["note_jamai"] = ("The workspace's JAMAI wrapper predates reproduction-safe checkpoints and was "
+                                  "replaced by the current one before the run (the fit code itself is FitPack's).")
     out_dir = f"{stage}/reproduce/{stamp}"
-    sb = base64.b64encode(_array_script(ws, e["campaign_folder"], e["input_card"], min(wanted), max(wanted),
+    folder = e["campaign_folder"]
+    sb = base64.b64encode(_array_script(ws, folder, e["input_card"], min(wanted), max(wanted),
                                         indices=wanted, code_ws=code_ws, out_dir=out_dir, tag="repro",
                                         constraint=constraint).encode()).decode()
-    qs, qo, log_dir = _shq(stage), _shq(out_dir), _shq(_slurm_log_dir(u))
-    r = _remote(u, f"mkdir -p {qo} {qs}/slurm {log_dir} && echo {sb} | base64 -d > {qs}/slurm/reproduce_{stamp}.sh && "
-                   f"sbatch {qs}/slurm/reproduce_{stamp}.sh", timeout=90)
+    qs, qo = _shq(stage), _shq(out_dir)
+    script = f"{qs}/slurm/reproduce_{stamp}.sh"
+    # The log folders are the campaign's (Slurm does not create them), and a
+    # refused sbatch leaves no empty reproduce/<stamp>/ behind for check= to find.
+    r = _remote(u, f"mkdir -p {qo} {qs}/slurm {_campaign_log_dirs(u, folder)} && echo {sb} | base64 -d > {script} && "
+                   f"{{ sbatch {script} || {{ rmdir {qo} 2>/dev/null; rm -f {script}; false; }}; }}", timeout=90)
     m = re.search(r"Submitted batch job (\d+)", (r.get("out") or "") + (r.get("err") or ""))
     if not m:
         return {"status": "error", "message": "sbatch refused the job.", "detail": (r.get("err") or r.get("out"))[-400:],
                 **({"rebuilt_workspace": dest} if built else {})}
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    # The reproduction is a job of the campaign too: the queue counts it, cancel
+    # stops it and delete refuses while it runs. Replica states and logs keep
+    # reading the original jobs (entries marked reproduce are skipped there).
+    e = dict(e)
+    e["jobs"] = list(e.get("jobs") or []) + [{"job_id": m.group(1), "first": min(wanted), "last": max(wanted),
+                                              "replicas": wanted, "reproduce": True, "run": stamp, "output": out_dir,
+                                              "submitted_at": now,
+                                              "log_prefix": _campaign_log_prefix(u, folder, "repro"),
+                                              "error_log_prefix": _campaign_error_log_prefix(u, folder, "repro")}]
+    e["updated_at"] = now
+    _registry(u, {"kind": "upsert", "entry": e})
     extra = {"reproduces_job_id": p["submission"]["job_id"], "mode": p["mode"], "workspace_used": code_ws,
              "output": out_dir, "matches": p["matches"], "run": stamp, "node_constraint": constraint,
              "original_hosts": p["hosts"]}
     why = _record_submission(u, croot, stage, "reproduce", m.group(1), wanted, e["input_card"], ws=code_ws, extra=extra)
     return {"status": "submitted", "job_id": m.group(1), "run": stamp, **plan, "workspace": code_ws, "results_to": out_dir,
             **({"rebuilt": built} if built else {}),
-            "log_path": f"{_slurm_log_dir(u)}/jam_repro_{e['campaign_folder'][:34]}_{m.group(1)}_<replica>.out",
+            "log_path": f"{_campaign_log_prefix(u, folder, 'repro')}_{m.group(1)}_<replica>.out",
+            "error_log_path": f"{_campaign_error_log_prefix(u, folder, 'repro')}_{m.group(1)}_<replica>.err",
             "message": f"Queued. When it finishes, reproduce_campaign(collection_id, check='{stamp}') compares the "
                        "results with the current ones.", **_reproduce_note(why)}
 
@@ -3869,8 +3943,12 @@ def rerun_replicas(collection_id="", replicas="failed", confirm="", username="",
                                               "resource_overrides": overrides, "request_manifest": request_path}]
     e.update(updated_at=now, slurm_job_id=m.group(1), status="submitted")
     _registry(u, {"kind": "upsert", "entry": e})
+    # A checkpoint restart does not start from the seeds, so the record says so:
+    # reproduce_campaign runs from the seeds and such a replica is expected to differ.
     why = _record_submission(u, os.path.dirname(os.path.dirname(stage)), stage, "rerun", m.group(1),
-                             wanted, e["input_card"])
+                             wanted, e["input_card"],
+                             extra={"resume": bool(resume), "slurm": slurm, "resource_overrides": overrides,
+                                    "request_manifest": request_path, "checkpoints": binding.get("checkpoints")})
     return {"status": "submitted", "job_id": m.group(1), **plan,
             "request_manifest": request_path,
             "previous_results": f"{stage}/previous/replica_<n>_{stamp}",
@@ -4132,12 +4210,12 @@ _JOBS_LOCK = threading.Lock()
 def _job_reply(job, wait):
     if job["done"].wait(wait):
         out = dict(job["result"]) if isinstance(job["result"], dict) else {"status": "ok", "result": job["result"]}
-        if job['kind'] == 'submit_campaign' and 'job_id' in out:
+        if job['kind'] in ('submit_campaign', 'reproduce_campaign') and 'job_id' in out:
             out['preparation_job_id'] = job['job_id']  # preserve the actual Slurm job_id
         else:
             out["job_id"] = job["job_id"]
         return out
-    campaign = job['kind'] in ('validate_campaign', 'preview_prior_replicas', 'submit_campaign')
+    campaign = job['kind'] in ('validate_campaign', 'preview_prior_replicas', 'submit_campaign', 'reproduce_campaign')
     return {"status": "running", "job_id": job["job_id"], "kind": job["kind"],
             "collection_id": job["params"].get("collection_id"), "request": job["params"],
             "elapsed_s": round(time.time() - job["started"]),
@@ -10533,6 +10611,8 @@ def job_of(i):
     # The latest job that ran replica i: a range (first-last) or, for a rerun, a list.
     found = None
     for j in jobs:
+        if j.get('reproduce'):
+            continue    # a reproduction writes elsewhere; the replica's own logs are the original jobs'
         try:
             if (i in j['replicas']) if j.get('replicas') else int(j['first']) <= i <= int(j['last']):
                 found = j
@@ -11396,7 +11476,10 @@ TOOLS = {
                 "replica: identical, differs (with the differing keys and both hosts), running, no_output. Results "
                 "are bit-identical only on the same node type, so the reproduction asks Slurm for the original one "
                 "(node_constraint='auto'). Use it when the user asks to reproduce, re-derive or verify a campaign's "
-                "results.",
+                "results. Planning and the confirmed run may take minutes: a reply with status running carries a "
+                "job_id to poll with analysis_result; do not repeat the call. A queued reproduction counts as a job "
+                "of the campaign (list_campaigns shows it, cancel_campaign stops it, delete_campaign refuses while "
+                "it runs); the replicas' own logs and states keep pointing at the original jobs.",
         "schema": {"type": "object", "properties": {"collection_id": {"type": "string", "description": COLLECTION_ARG},
                                                     "replicas": {"type": "string", "default": "all"},
                                                     "check": {"type": "string", "description": "'latest' or a run stamp: compare instead of submitting"},
