@@ -2215,20 +2215,25 @@ def _campaign_log_patterns(user, entry):
     return {"stdout": legacy, "stderr": None}
 
 
-def _array_script(ws, folder, norm, first, last, indices=None, resume_plan=None):
+def _array_script(ws, folder, norm, first, last, indices=None, resume_plan=None, code_ws=None, out_dir=None, tag=""):
     """The Slurm job array: one replica per task, inside the site's image
-    (replicas first-last, or exactly the replica numbers in indices)."""
+    (replicas first-last, or exactly the replica numbers in indices). code_ws:
+    the FitPack the tasks run (default: the workspace that holds the campaign;
+    a rebuilt one for a reproduction); out_dir: where replica_<n> folders go
+    (default: the stage's current/); tag: a word in the job and log names."""
     sl, c = norm["slurm"], SITE["container"]
     stage = f"{ws}/{CAMPAIGNS_DIR}/{folder}/stages/{STAGE}"
+    code_ws = code_ws or ws
+    out_dir = out_dir or f"{stage}/current"
     binds = " ".join(f"--bind {b}" for b in c.get("binds", []))
     lhapdf = ":".join(SITE.get("lhapdf_extra") or [])
     lhapdf_env = f"--env LHAPDF_DATA_PATH={lhapdf} " if lhapdf else ""
-    qs, pypath = _shq(stage), _shq(f"{ws}:{ws}/{JAMAI_REMOTE}")
-    log_name = f"jam_{folder[:40]}"
+    qs, qo, pypath = _shq(stage), _shq(out_dir), _shq(f"{code_ws}:{code_ws}/{JAMAI_REMOTE}")
+    log_name = f"jam_{tag + '_' if tag else ''}{folder[:40 - len(tag) - 1 if tag else 40]}"
     log_root = SITE.get("slurm_log_root", "/farm_out").rstrip("/")
     resume_arg = f" --resume-plan {_shq(resume_plan)}" if resume_plan else ""
     return f"""#!/bin/bash
-#SBATCH --job-name=jam_{folder[:40]}
+#SBATCH --job-name={log_name}
 #SBATCH --partition={sl["partition_effective"]}
 #SBATCH --time={sl["time"]}
 #SBATCH --mem={sl["mem"]}
@@ -2242,14 +2247,25 @@ export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 # that only writes "TERM environment variable not set." on each step.
 export TERM=dumb
 REPLICA_ID="$SLURM_ARRAY_TASK_ID"
-cd {_shq(ws)}
+cd {_shq(code_ws)}
+# The FitPack this task runs, for replica_provenance.json: the workspace can change
+# while a task waits in the queue. No index writes, since many tasks start at once.
+if FITPACK_COMMIT=$(GIT_OPTIONAL_LOCKS=0 git rev-parse HEAD 2>/dev/null); then
+  FITPACK_CHANGED=$(GIT_OPTIONAL_LOCKS=0 git status --porcelain --untracked-files=no 2>/dev/null | wc -l) || FITPACK_CHANGED=unknown
+else
+  FITPACK_COMMIT=unknown; FITPACK_CHANGED=unknown
+fi
+# The image file is not visible inside the container, so resolve its link here.
+IMAGE_REAL=$(readlink -f {_shq(c["image"])} 2>/dev/null || echo {_shq(c["image"])})
 apptainer exec {binds} \\
-  --env PYTHONPATH={pypath} --env FITPACK={_shq(ws)} --env TERM=dumb \\
+  --env PYTHONPATH={pypath} --env FITPACK={_shq(code_ws)} --env TERM=dumb \\
+  --env JAMAI_FITPACK_COMMIT="$FITPACK_COMMIT" --env JAMAI_FITPACK_CHANGED_FILES="$FITPACK_CHANGED" \\
+  --env JAMAI_IMAGE={_shq(c["image"])} --env JAMAI_IMAGE_REALPATH="$IMAGE_REAL" \\
   --env JAMAI_MAX_NFEV={norm["job"]["maxIterations"]} --env JAMAI_METHOD={norm["job"]["optimizer"]} \\
   {lhapdf_env}--env MPLCONFIGDIR={qs}/.matplotlib \\
   {c["image"]} \\
   python3 -m modules.jam.jamai.run_replica --manifest {qs}/manifest.resolved.yaml \\
-    --output {qs}/current/replica_${{REPLICA_ID}} --replica "${{REPLICA_ID}}" -n {sl["cpus"]}{resume_arg}
+    --output {qo}/replica_${{REPLICA_ID}} --replica "${{REPLICA_ID}}" -n {sl["cpus"]}{resume_arg}
 """
 
 
@@ -2436,6 +2452,614 @@ print('JAMAI-OK', len(files))
     r = _run_ifarm_py(u, code, timeout=90)
     if "JAMAI-OK" not in (r.get("out") or ""):
         raise RuntimeError("uploading the JAMAI package failed: " + (r.get("err") or "")[-300:])
+
+
+# ---- reproduce.json: what each submission of a campaign was made from ---------
+#
+# Rerunning an analysis exactly needs the FitPack it ran with (bug fixes change
+# results between versions) and each replica's seeds. Every submit, append and
+# rerun adds one entry to <campaign>/reproduce.json: the FitPack commit, the
+# uncommitted changes and small untracked files (saved as fitpack_<hash>.diff
+# next to it), the image with its sha256, the external data folders' listings,
+# the JAMAI files, the input hashes and the seeds fitlib/ai.py derives for each
+# replica. Each replica folder also gets replica_provenance.json (run_replica.py)
+# with the commit it actually ran with. reproduce_campaign reads the record,
+# rebuilds that workspace when the live one has moved on, runs the replicas
+# again into <stage>/reproduce/<stamp>/ and compares.
+
+with open(os.path.abspath(__file__), "rb") as _fh:
+    _GATEWAY_SHA256 = hashlib.sha256(_fh.read()).hexdigest()
+
+REPRODUCTION_SCHEMA = "femtomind.campaign_reproduction.v1"
+
+# Shared by the snippets below: how a workspace's state is measured. The same
+# code measures a workspace at submission and the live or rebuilt one later, so
+# the two are comparable byte for byte.
+_STATE_LIB = r'''
+import ast, fcntl, hashlib, json, os, re, subprocess, time
+MAX_FILE, MAX_DIFF = 2 * 1024 * 1024, 50 * 1024 * 1024
+ENV = dict(os.environ, GIT_OPTIONAL_LOCKS='0', GIT_TERMINAL_PROMPT='0')
+
+def git(ws, *args, ok=(0,), timeout=120):
+    try:
+        p = subprocess.run(['git', '-C', ws] + list(args), stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, env=ENV, timeout=timeout)
+    except Exception:
+        return None
+    return p.stdout if p.returncode in ok else None
+
+def text(ws, *args):
+    out = git(ws, *args)
+    return None if out is None else out.decode('utf-8', 'replace').strip()
+
+def sha(path):
+    h = hashlib.sha256()
+    try:
+        with open(path, 'rb') as fh:
+            for block in iter(lambda: fh.read(1 << 20), b''):
+                h.update(block)
+    except OSError:
+        return None
+    return h.hexdigest()
+
+def fitpack_state(ws, exclude):
+    """(record, diff): the workspace's commit, changed tracked files and untracked
+    files; diff holds the tracked changes and the small untracked files as new
+    files, so that git apply on a clone at the commit gives the workspace back."""
+    status = git(ws, 'status', '--porcelain', '--untracked-files=no')
+    status = None if status is None else status.decode('utf-8', 'replace').rstrip('\n')
+    fp = {'path': ws, 'commit': text(ws, 'rev-parse', 'HEAD'), 'branch': text(ws, 'rev-parse', '--abbrev-ref', 'HEAD'),
+          'commit_date': text(ws, 'show', '-s', '--format=%cI', 'HEAD'),
+          # A token in the remote URL never goes into the record.
+          'remote': re.sub(r'//[^/@]*@', '//', text(ws, 'remote', 'get-url', 'origin') or '') or None,
+          'clean': None if status is None else not status,
+          'changed_files': status.splitlines()[:200] if status else []}
+    diff = (git(ws, 'diff', 'HEAD', '--binary') or b'') if status else b''
+    # Untracked files (not ignored) other than the excluded folders and links.
+    others = git(ws, 'ls-files', '--others', '--exclude-standard', '-z') or b''
+    untracked = {'count': 0, 'saved': [], 'not_saved': [], 'excluded_prefixes': exclude}
+    for rel in sorted(p for p in others.decode('utf-8', 'replace').split('\0') if p):
+        if any(rel.startswith(x) for x in exclude):
+            continue
+        full = os.path.join(ws, rel)
+        if os.path.islink(full) or not os.path.isfile(full):
+            continue
+        untracked['count'] += 1
+        size = os.path.getsize(full)
+        entry = {'path': rel, 'bytes': size, 'sha256': sha(full)}
+        piece = (git(ws, 'diff', '--no-index', '--binary', '--', '/dev/null', rel, ok=(0, 1))
+                 if size <= MAX_FILE and len(diff) + size + size // 3 <= MAX_DIFF else None)   # binary hunks grow by ~5/4
+        if piece and len(untracked['saved']) < 500:
+            diff += piece
+            untracked['saved'].append(entry)
+        elif len(untracked['not_saved']) < 500:
+            untracked['not_saved'].append(entry)
+    fp['untracked'] = untracked
+    fp['changes_sha256'] = hashlib.sha256(diff).hexdigest() if diff else None
+    return fp, diff
+
+def save_diff(croot, diff):
+    digest = hashlib.sha256(diff).hexdigest()
+    name = 'fitpack_%s.diff' % digest[:12]
+    if len(diff) > MAX_DIFF:
+        return {'file': None, 'sha256': digest, 'bytes': len(diff), 'note': 'larger than 50 MB, so not saved'}
+    if not os.path.exists(os.path.join(croot, name)):
+        tmp = os.path.join(croot, '%s.%d.tmp' % (name, os.getpid()))
+        with open(tmp, 'wb') as fh:
+            fh.write(diff)
+        os.replace(tmp, os.path.join(croot, name))   # never a half-written diff
+    return {'file': name, 'sha256': digest, 'bytes': len(diff)}
+
+def image_record(image, cache_dir):
+    """Path, real path, size, mtime and sha256 of the container image; the
+    sha256 (about 10 s for 6 GB) once per (file, size, mtime), cached."""
+    try:
+        real = os.path.realpath(image)
+        st = os.stat(real)
+    except OSError:
+        return {'image': image, 'realpath': None, 'bytes': None, 'modified': None, 'sha256': None}
+    cache = os.path.join(cache_dir, '.image_sha256.json')
+    key = '%s|%d|%d' % (real, st.st_size, st.st_mtime_ns)
+    try:
+        known = json.load(open(cache))
+    except (OSError, ValueError):
+        known = {}
+    known = known if isinstance(known, dict) else {}
+    digest = known.get(key) if isinstance(known.get(key), str) else sha(real)
+    if digest and known.get(key) != digest:
+        known = dict((k, v) for k, v in known.items() if isinstance(v, str))
+        known[key] = digest
+        tmp = '%s.%d.tmp' % (cache, os.getpid())
+        try:
+            with open(tmp, 'w') as fh:
+                json.dump(known, fh, indent=1)
+            os.replace(tmp, cache)
+        except OSError:
+            pass
+    return {'image': image, 'realpath': real, 'bytes': st.st_size,
+            'modified': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(st.st_mtime)), 'sha256': digest}
+
+def fingerprint(root):
+    # The folder's listing (path, bytes, mtime), not its content: grids run to hundreds of GB.
+    real = os.path.realpath(root)
+    if not os.path.isdir(real):
+        return {'path': root, 'realpath': real, 'exists': False}
+    rows, total = [], 0
+    for base, dirs, files in os.walk(real):
+        dirs.sort()
+        for f in sorted(files):
+            try:
+                st = os.stat(os.path.join(base, f))
+            except OSError:
+                continue
+            rows.append('%s\t%d\t%d' % (os.path.relpath(os.path.join(base, f), real), st.st_size, int(st.st_mtime)))
+            total += st.st_size
+            if len(rows) >= 200000:
+                break
+    return {'path': root, 'realpath': real, 'exists': True, 'files': len(rows), 'bytes': total,
+            'listing_sha256': hashlib.sha256('\n'.join(rows).encode()).hexdigest(),
+            'truncated': len(rows) >= 200000}
+
+def jamai_hashes(pkg):
+    return dict((n, sha(os.path.join(pkg, n))) for n in sorted(os.listdir(pkg)) if n.endswith('.py')) \
+        if os.path.isdir(pkg) else {}
+
+def parse_ranges(spec):
+    out = []
+    for part in str(spec or '').split(','):
+        part = part.strip()
+        if not part:
+            continue
+        a, _, b = part.partition('-')
+        out.extend(range(int(a), int(b or a) + 1))
+    return out
+
+def load_record(croot):
+    try:
+        rec = json.load(open(os.path.join(croot, 'reproduce.json')))
+    except (OSError, ValueError):
+        return None
+    return rec if isinstance(rec, dict) and isinstance(rec.get('submissions'), list) else None
+'''
+
+_PROVENANCE = _STATE_LIB + r'''
+ws, croot, stage, pkg = __WS__, __CROOT__, __STAGE__, __PKG__
+sub, replicas, image, gateway = __SUB__, __REPLICAS__, __IMAGE__, __GATEWAY__
+exclude, external, extra = __EXCLUDE__, __EXTERNAL__, __EXTRA__
+SCHEMA = __SCHEMA__
+HOW = [
+    "Each entry of submissions is one sbatch (submit, append, rerun or reproduce) and the state it was made from.",
+    "FitPack: check out fitpack.commit in a clone of fitpack.remote. When fitpack.diff names a file, "
+    "apply that file from this folder with git apply: it holds the uncommitted changes to tracked files "
+    "and the untracked files listed in fitpack.untracked.saved (regular files up to 2 MB each, outside "
+    "the campaign and JAMAI folders). fitpack.untracked.not_saved lists the rest with their sha256.",
+    "Container: run inside container.realpath; its sha256 must equal container.sha256.",
+    "External data: lhapdf tables and grids are read from external[].realpath; listing_sha256 is the "
+    "sha256 of the sorted (path, bytes, mtime) listing of that folder at submission.",
+    "JAMAI: the files in <workspace>/.jamai/modules/jam/jamai must match jamai_sha256.",
+    "Input: campaign.request.json is the request. python3 -m modules.jam.jamai.campaign_manifest "
+    "campaign.request.json --materialize recreates the stage, whose files must match inputs_sha256.",
+    "Replica N: run task N of the stage's Slurm script (stages/<stage>/slurm/). Its seeds follow from N "
+    "(seeds.replicas). Each replica folder holds replica_provenance.json (the FitPack commit it ran "
+    "with) and fit_summary.json (the seed and bootstrap_seed it used).",
+    "The gateway's reproduce_campaign tool does all of this: it rebuilds the recorded workspace when "
+    "the live one differs, runs the replicas into stages/<stage>/reproduce/<stamp>/ and compares them "
+    "with the current results; such runs are the entries of kind reproduce.",
+]
+
+fitpack, diff = fitpack_state(ws, exclude)
+if diff:
+    fitpack['diff'] = save_diff(croot, diff)
+container = image_record(image, os.path.dirname(croot))
+externals = [fingerprint(r) for r in external]
+jamai = jamai_hashes(pkg)
+inputs = dict((rel, sha(os.path.join(croot, rel))) for rel in
+              ('campaign.request.json', os.path.relpath(os.path.join(stage, 'manifest.resolved.yaml'), croot),
+               os.path.relpath(os.path.join(stage, 'input.py'), croot)))
+
+# The seeds as fitlib/ai.py derives them from the stage's input.py.
+try:
+    card = open(os.path.join(stage, 'input.py'), encoding='utf-8').read()
+except OSError:
+    card = ''
+
+def conf(key):
+    m = re.search('^' + re.escape('conf[%r] = ' % key) + '(.+)$', card, re.M)
+    try:
+        return ast.literal_eval(m.group(1).strip()) if m else None
+    except (ValueError, SyntaxError):
+        return None
+
+base, per = conf('jamai base seed'), conf('jamai per replica seed')
+base = base if isinstance(base, int) else 120000
+per = True if per is None else bool(per)
+seeds = {'base_seed': base, 'per_replica_seed': per,
+         'initialization': conf('jamai parameter initialization'), 'bootstrap': sub.get('bootstrap'),
+         'parameter_seed': 'base_seed + replica' if per else 'base_seed',
+         'bootstrap_seed': 'base_seed + 100000 + replica' if per else 'base_seed + 100000',
+         'replicas': dict((str(i), {'parameter_seed': base + (i if per else 0),
+                                    'bootstrap_seed': base + 100000 + (i if per else 0)}) for i in replicas)}
+
+path = os.path.join(croot, 'reproduce.json')
+# One writer at a time: an append and a rerun of the same campaign can be
+# submitted together, and each must keep the other's entry.
+lock = open(path + '.lock', 'a')
+fcntl.flock(lock, fcntl.LOCK_EX)
+try:
+    rec = None
+    if os.path.exists(path):
+        try:
+            rec = json.load(open(path))
+        except (OSError, ValueError):
+            # An unreadable record is kept, never silently replaced.
+            os.replace(path, path + '.unreadable.' + sub['submitted_at'].replace(':', ''))
+    if not isinstance(rec, dict) or rec.get('schema') != SCHEMA:
+        rec = {'schema': SCHEMA, 'campaign_root': croot, 'stage': stage, 'how_to_reproduce': HOW, 'submissions': []}
+    rec['how_to_reproduce'] = HOW
+    rec['submissions'].append(dict(sub, fitpack=fitpack, container=container, external=externals,
+                                   jamai_sha256=jamai, gateway_sha256=gateway, inputs_sha256=inputs, seeds=seeds,
+                                   **extra))
+    rec['updated_at'] = sub['submitted_at']
+    tmp = '%s.%d.tmp' % (path, os.getpid())
+    with open(tmp, 'w') as fh:
+        json.dump(rec, fh, indent=1)
+    os.replace(tmp, path)
+finally:
+    fcntl.flock(lock, fcntl.LOCK_UN)
+    lock.close()
+print(json.dumps({'ok': True, 'commit': fitpack['commit'], 'clean': fitpack['clean']}))
+'''
+
+
+def _record_submission(u, croot, stage, kind, job_id, replicas, card, ws=None, extra=None):
+    """Add one submission to <croot>/reproduce.json. Returns '' or why it was
+    not written; the jobs are queued either way. ws: the workspace whose code
+    the jobs run (the user's, or a rebuilt one for a reproduction)."""
+    job = card.get("job") or {}
+    sub = {"kind": kind, "job_id": job_id, "replicas": _array_ranges(replicas),
+           "submitted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+           "bootstrap": job.get("bootstrap"), "optimizer": job.get("optimizer"),
+           "max_iterations": job.get("maxIterations"), "tolerance": job.get("tolerance")}
+    ws = ws or _workspace(u)
+    try:
+        r = _run_ifarm_py(u, _fill(_PROVENANCE, WS=ws, CROOT=croot, STAGE=stage,
+                                   PKG=f"{ws}/{JAMAI_REMOTE}/modules/jam/jamai", SUB=sub,
+                                   REPLICAS=sorted(replicas), IMAGE=SITE["container"]["image"],
+                                   GATEWAY=_GATEWAY_SHA256, EXCLUDE=_STATE_EXCLUDE,
+                                   EXTERNAL=_external_roots(), EXTRA=extra or {}, SCHEMA=REPRODUCTION_SCHEMA),
+                          timeout=300)
+    except Exception as e:
+        return f"{type(e).__name__}: {e}"
+    d = _last_json(r)
+    return "" if d and d.get("ok") else ((r.get("err") or r.get("out") or "no answer").strip()[-300:])
+
+
+def _reproduce_note(why):
+    return {"warning": f"The jobs are queued, but reproduce.json was not written: {why}"} if why else {}
+
+
+# Not part of a workspace's state: its campaigns, the uploaded JAMAI package and
+# the marker of a rebuilt workspace.
+_STATE_EXCLUDE = [CAMPAIGNS_DIR + "/", JAMAI_REMOTE + "/", ".jam_reproduction.json"]
+
+
+def _external_roots():
+    return list(SITE.get("lhapdf_extra") or []) + ([SITE["grid_root"]] if SITE.get("grid_root") else [])
+
+
+# ---- reproduce_campaign: run recorded replicas again, exactly ------------------
+
+# Which recorded state produced the requested replicas, and whether the live
+# workspace still is that state.
+_REPRODUCE_PLAN = _STATE_LIB + r'''
+ws, croot, stage, pkg = __WS__, __CROOT__, __STAGE__, __PKG__
+replicas, image, exclude = __REPLICAS__, __IMAGE__, __EXCLUDE__
+rec = load_record(croot)
+if rec is None:
+    print(json.dumps({'ok': False, 'error': 'no_record',
+                      'message': 'This campaign has no reproduce.json: it was submitted before the record existed.'}))
+    raise SystemExit
+# The submission that last produced each requested replica (reproductions aside).
+produced = {}
+for s in rec['submissions']:
+    if s.get('kind') == 'reproduce':
+        continue
+    for i in parse_ranges(s.get('replicas')):
+        if i in replicas:
+            produced[i] = s
+missing = sorted(i for i in replicas if i not in produced)
+groups = {}
+for i, s in produced.items():
+    key = (s['fitpack'].get('commit'), (s['fitpack'].get('diff') or {}).get('sha256'), (s.get('container') or {}).get('sha256'))
+    groups.setdefault(key, {'submission': s, 'replicas': []})['replicas'].append(i)
+if len(groups) > 1:
+    print(json.dumps({'ok': False, 'error': 'mixed_states', 'message': 'These replicas were made from different '
+                      'workspace states; reproduce the replicas of one state at a time.',
+                      'groups': [{'commit': k[0], 'changes_sha256': k[1], 'image_sha256': k[2],
+                                  'replicas': sorted(g['replicas']), 'job_id': g['submission'].get('job_id')}
+                                 for k, g in groups.items()], 'missing_replicas': missing}))
+    raise SystemExit
+if not groups:
+    print(json.dumps({'ok': False, 'error': 'not_recorded', 'message': 'None of these replicas has a recorded submission.',
+                      'missing_replicas': missing}))
+    raise SystemExit
+s = next(iter(groups.values()))['submission']
+rfp, rimg = s['fitpack'], s.get('container') or {}
+rdiff = rfp.get('diff') or {}
+live_fp, live_diff = fitpack_state(ws, exclude)
+live_img = image_record(image, os.path.dirname(croot))
+live_jamai = jamai_hashes(pkg)
+matches = {'commit': live_fp['commit'] is not None and live_fp['commit'] == rfp.get('commit'),
+           'changes': live_fp['changes_sha256'] == rdiff.get('sha256'),
+           'image': live_img.get('sha256') is not None and live_img.get('sha256') == rimg.get('sha256'),
+           'jamai': live_jamai == s.get('jamai_sha256')}
+diff_available = (not rdiff) or bool(rdiff.get('file') and os.path.exists(os.path.join(croot, rdiff['file'])))
+in_place = matches['commit'] and matches['changes']
+print(json.dumps({'ok': True, 'mode': 'in_place' if in_place else 'clone', 'matches': matches,
+                  'diff_available': diff_available, 'missing_replicas': missing,
+                  'submission': {'kind': s.get('kind'), 'job_id': s.get('job_id'), 'replicas': s.get('replicas'),
+                                 'submitted_at': s.get('submitted_at')},
+                  'record': {'commit': rfp.get('commit'), 'branch': rfp.get('branch'), 'remote': rfp.get('remote'),
+                             'clean': rfp.get('clean'), 'changed_files': rfp.get('changed_files'),
+                             'untracked_saved': [e['path'] for e in (rfp.get('untracked') or {}).get('saved', [])],
+                             'untracked_saved_entries': [{'path': e['path'], 'sha256': e['sha256']} for e in (rfp.get('untracked') or {}).get('saved', [])],
+                             'untracked_not_saved': [e['path'] for e in (rfp.get('untracked') or {}).get('not_saved', [])],
+                             'diff': rdiff, 'image': {'realpath': rimg.get('realpath'), 'sha256': rimg.get('sha256')},
+                             'seeds': dict((str(i), (s.get('seeds') or {}).get('replicas', {}).get(str(i))) for i in replicas)},
+                  'live': {'commit': live_fp['commit'], 'branch': live_fp['branch'], 'clean': live_fp['clean'],
+                           'changes_sha256': live_fp['changes_sha256'], 'image_sha256': live_img.get('sha256'),
+                           'untracked_count': live_fp['untracked']['count']}}))
+'''
+
+# A workspace as recorded: a clone of the user's workspace at the recorded
+# commit with the recorded diff applied, measured again with the same code.
+_REPRODUCE_BUILD = _STATE_LIB + r'''
+ws, croot, dest, commit, diff_file, saved = __WS__, __CROOT__, __DEST__, __COMMIT__, __DIFF_FILE__, __SAVED__
+expected_sha, grid_links, exclude, image = __EXPECTED_SHA__, __GRID_LINKS__, __EXCLUDE__, __IMAGE__
+
+def fail(step, detail=''):
+    print(json.dumps({'ok': False, 'step': step, 'detail': detail[-600:]}))
+    raise SystemExit
+
+def run(cmd, cwd=None, timeout=600):
+    p = subprocess.run(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=ENV, timeout=timeout)
+    return p.returncode, p.stdout.decode('utf-8', 'replace')
+
+if os.path.exists(dest):
+    fail('exists', dest)
+os.makedirs(os.path.dirname(dest), exist_ok=True)
+rc, out = run(['git', 'clone', '-q', '--no-checkout', ws, dest])
+if rc:
+    fail('clone', out)
+if run(['git', 'cat-file', '-e', commit + '^{commit}'], cwd=dest)[0]:
+    # The commit is not in the workspace's history any more: ask its remote.
+    rc, out = run(['git', 'fetch', '-q', 'origin', commit], cwd=dest)
+    if rc or run(['git', 'cat-file', '-e', commit + '^{commit}'], cwd=dest)[0]:
+        fail('commit_unavailable', 'commit %s is neither in the workspace nor fetchable from its remote: %s' % (commit, out))
+rc, out = run(['git', 'checkout', '-q', '--detach', commit], cwd=dest)
+if rc:
+    fail('checkout', out)
+if diff_file:
+    rc, out = run(['git', 'apply', '--whitespace=nowarn', os.path.join(croot, diff_file)], cwd=dest)
+    if rc:
+        fail('apply', out)
+bad = [e['path'] for e in saved if sha(os.path.join(dest, e['path'])) != e['sha256']]
+if bad:
+    fail('untracked_mismatch', 'restored files differ from the record: %s' % bad[:20])
+linked = []
+for name, target in sorted(grid_links.items()):
+    d = os.path.join(dest, 'grids', name)
+    if not os.path.lexists(d) and os.path.exists(target):
+        os.makedirs(os.path.dirname(d), exist_ok=True)
+        os.symlink(target, d)
+        linked.append(name)
+fp, diff = fitpack_state(dest, exclude)
+rebuilt_sha = hashlib.sha256(diff).hexdigest() if diff else None
+if fp['commit'] != commit:
+    fail('verify_commit', '%s != %s' % (fp['commit'], commit))
+if rebuilt_sha != expected_sha:
+    fail('verify_changes', 'the rebuilt workspace measures %s, the record says %s' % (rebuilt_sha, expected_sha))
+with open(os.path.join(dest, '.jam_reproduction.json'), 'w') as fh:
+    json.dump({'schema': 'femtomind.reproduction_workspace.v1', 'campaign_root': croot, 'commit': commit,
+               'diff': diff_file, 'changes_sha256': rebuilt_sha, 'built_from': ws,
+               'built_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}, fh, indent=1)
+img = image_record(image, os.path.dirname(croot))
+print(json.dumps({'ok': True, 'dest': dest, 'commit': fp['commit'], 'changes_sha256': rebuilt_sha,
+                  'untracked_restored': len(saved), 'grids_linked': linked, 'image_sha256': img.get('sha256')}))
+'''
+
+# A finished (or running) reproduction against the current results.
+_REPRODUCE_CHECK = _STATE_LIB + r'''
+stage, croot, run_name, user = __STAGE__, __CROOT__, __RUN__, __USER__
+root = os.path.join(stage, 'reproduce')
+runs = sorted(d for d in (os.listdir(root) if os.path.isdir(root) else []) if os.path.isdir(os.path.join(root, d)))
+if not runs:
+    print(json.dumps({'ok': False, 'error': 'no_runs', 'message': 'This campaign has no reproduction runs yet.'}))
+    raise SystemExit
+if run_name in ('', 'latest'):
+    run_name = runs[-1]
+if run_name not in runs:
+    print(json.dumps({'ok': False, 'error': 'no_such_run', 'runs': runs}))
+    raise SystemExit
+out_dir = os.path.join(root, run_name)
+rec = load_record(croot) or {'submissions': []}
+entry = next((s for s in reversed(rec['submissions']) if s.get('kind') == 'reproduce' and s.get('output') == out_dir), None)
+queued = set()
+if entry and entry.get('job_id'):
+    try:
+        q = subprocess.run(['squeue', '-h', '-u', user, '-j', str(entry['job_id']), '-o', '%i'],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
+        if q.returncode:
+            queued.add('?')     # queue unknown: a missing result is not called failed
+        for line in q.stdout.split():
+            if '_' in line:
+                queued.add(line.split('_', 1)[1])
+            elif line.strip():
+                queued.add('*')
+    except Exception:
+        queued.add('?')
+
+SKIP = ('output_directory', 'output_path')
+def comparable(d):
+    return dict((k, v) for k, v in d.items() if not k.endswith('_path') and k not in SKIP)
+
+def compare(i):
+    new, old = os.path.join(out_dir, 'replica_%d' % i), os.path.join(stage, 'current', 'replica_%d' % i)
+    ns, os_ = os.path.join(new, 'fit_summary.json'), os.path.join(old, 'fit_summary.json')
+    if not os.path.exists(ns):
+        if '*' in queued or str(i) in queued or '?' in queued:
+            return {'replica': i, 'state': 'running'}
+        return {'replica': i, 'state': 'no_output', 'folder': new}
+    if not os.path.exists(os_):
+        return {'replica': i, 'state': 'no_original'}
+    try:
+        a, b = comparable(json.load(open(os_))), comparable(json.load(open(ns)))
+    except ValueError as exc:
+        return {'replica': i, 'state': 'unreadable', 'detail': str(exc)}
+    keys = sorted(k for k in set(a) | set(b) if a.get(k) != b.get(k))
+    msr_old, msr_new = os.path.join(old, 'msr'), os.path.join(new, 'msr')
+    msr = None
+    if os.path.isdir(msr_old) and os.path.isdir(msr_new):
+        names = sorted(set(os.listdir(msr_old)) | set(os.listdir(msr_new)))
+        msr = all(sha(os.path.join(msr_old, n)) == sha(os.path.join(msr_new, n)) for n in names) if names else None
+    state = 'identical' if not keys and msr is not False else 'differs'
+    r = {'replica': i, 'state': state, 'differing_keys': keys, 'msr_identical': msr,
+         'chi2': {'original': a.get('chi2_total'), 'reproduced': b.get('chi2_total')}}
+    for k in keys[:12]:
+        r.setdefault('differences', {})[k] = {'original': a.get(k), 'reproduced': b.get(k)}
+    return r
+
+wanted = parse_ranges(entry['replicas']) if entry else sorted(
+    int(d.split('_', 1)[1]) for d in os.listdir(out_dir) if d.startswith('replica_') and d.split('_', 1)[1].isdigit())
+results = [compare(i) for i in wanted]
+counts = {}
+for r in results:
+    counts[r['state']] = counts.get(r['state'], 0) + 1
+print(json.dumps({'ok': True, 'run': run_name, 'output': out_dir, 'runs': runs, 'job_id': entry.get('job_id') if entry else None,
+                  'mode': entry.get('mode') if entry else None, 'workspace_used': entry.get('workspace_used') if entry else None,
+                  'reproduces_job_id': entry.get('reproduces_job_id') if entry else None, 'counts': counts, 'replicas': results}))
+'''
+
+
+def reproduce_campaign(collection_id="", replicas="all", check="", confirm="", username=""):
+    """Run replicas of a campaign again exactly as recorded in reproduce.json,
+    into stages/<stage>/reproduce/<stamp>/ (the current results stay). The
+    live workspace is used when it still is the recorded state; otherwise a
+    clone at the recorded commit with the recorded diff applied is built under
+    <area>/reproductions/ and used. check='latest' or a run name compares a
+    reproduction with the current results instead."""
+    u, err = _need_user(username)
+    if err:
+        return err
+    e = _collection(u, collection_id)
+    if not e:
+        return {"status": "error", "message": f"No campaign {collection_id!r}; list_campaigns shows them."}
+    collection_id = e["collection_id"]
+    total = int(e.get("replicas") or 0)
+    ws, stage = _workspace(u), _stage_root(u, e)
+    croot = os.path.dirname(os.path.dirname(stage))
+    if (check or "").strip():
+        r = _run_ifarm_py(u, _fill(_REPRODUCE_CHECK, STAGE=stage, CROOT=croot, RUN=str(check).strip(), USER=u),
+                          timeout=180, cap=2000000)
+        d = _last_json(r)
+        if not d:
+            return {"status": "error", "message": "Could not read the reproduction.", "detail": (r.get("err") or "")[-400:]}
+        if not d.get("ok"):
+            return {"status": "error", "collection_id": collection_id, **d}
+        d.pop("ok")
+        c = d["counts"]
+        d["message"] = (f"{c.get('identical', 0)} of {len(d['replicas'])} replicas reproduced identically"
+                        + (f", {c['differs']} differ" if c.get("differs") else "")
+                        + (f", {c['running']} still running" if c.get("running") else "")
+                        + (f", {c['no_output']} left no output" if c.get("no_output") else "") + ".")
+        return {"status": "ok", "collection_id": collection_id, **d}
+    spec = str(replicas or "all").strip().lower()
+    if spec in ("all", "", "*"):
+        wanted = list(range(1, total + 1))
+    else:
+        try:
+            wanted = sorted(set(_numbers(replicas)))
+        except ValueError:
+            return {"status": "error", "message": "replicas: 'all' or replica numbers such as 3,7 or 10-12."}
+        outside = [i for i in wanted if not 1 <= i <= total]
+        if outside:
+            return {"status": "error", "message": f"This campaign has replicas 1-{total}; no replica {outside}."}
+    if not wanted:
+        return {"status": "error", "message": "This campaign has no replicas."}
+    r = _run_ifarm_py(u, _fill(_REPRODUCE_PLAN, WS=ws, CROOT=croot, STAGE=stage,
+                               PKG=f"{ws}/{JAMAI_REMOTE}/modules/jam/jamai", REPLICAS=wanted,
+                               IMAGE=SITE["container"]["image"], EXCLUDE=_STATE_EXCLUDE), timeout=300, cap=400000)
+    p = _last_json(r)
+    if not p:
+        return {"status": "error", "message": "Could not read the campaign's record.", "detail": (r.get("err") or "")[-400:]}
+    if not p.get("ok"):
+        return {"status": "error", "collection_id": collection_id, **{k: v for k, v in p.items() if k != "ok"}}
+    if p["missing_replicas"]:
+        return {"status": "error", "collection_id": collection_id,
+                "message": f"Replicas {p['missing_replicas']} have no recorded submission.", "plan": p}
+    if p["mode"] == "clone" and not p["diff_available"]:
+        return {"status": "error", "collection_id": collection_id,
+                "message": "The live workspace is not the recorded state, and the recorded changes were not "
+                           "saved (the diff was larger than 50 MB), so the workspace cannot be rebuilt exactly.",
+                "plan": p}
+    stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime())
+    dest = f"{_area(u)}/reproductions/{e['campaign_folder']}/{stamp}/fitpack"
+    plan = {"collection_id": collection_id, "replicas": wanted, "count": len(wanted), "mode": p["mode"],
+            "matches": p["matches"], "reproduces": p["submission"], "record": p["record"], "live": p["live"],
+            "results_to": f"{stage}/reproduce/<stamp>/replica_<n>",
+            "workspace": ws if p["mode"] == "in_place" else f"{_area(u)}/reproductions/{e['campaign_folder']}/<stamp>/fitpack",
+            "partition": (e["input_card"].get("slurm") or {}).get("partition_effective")}
+    if not p["matches"]["image"]:
+        plan["warning_image"] = (("The record has no checksum of the container image (it predates that part of the "
+                                  "record), so whether the image is still the same cannot be told; ")
+                                 if not p["record"]["image"].get("sha256") else
+                                 "The container image is not the recorded one (sha256 differs); ") + \
+                                "the run uses the image the site has now, so results may differ."
+    if not p["matches"]["jamai"]:
+        plan["note_jamai"] = "The JAMAI wrapper files differ from the recorded ones (the fit code itself is FitPack's)."
+    phrase = _confirm_phrase("REPRODUCE", {"collection_id": collection_id, "replicas": wanted,
+                                           "commit": p["record"]["commit"], "changes": p["record"]["diff"].get("sha256")})
+    if (confirm or "").strip() != phrase:
+        how = ("the live workspace is still the recorded state, so the replicas run in it"
+               if p["mode"] == "in_place" else
+               "the live workspace differs from the record, so a clone at the recorded commit with the recorded "
+               "changes applied is built first and the replicas run in that")
+        return {"status": "needs_confirmation", "plan": plan, "confirmation_phrase": phrase,
+                "message": f"Nothing is queued yet. {how}. Results go to a new reproduce/<stamp>/ folder; the "
+                           "current results are not touched. Show the user the plan and submit with confirm=<phrase> "
+                           "only after they agree."}
+    code_ws = ws
+    built = None
+    if p["mode"] == "clone":
+        rec_fp = p["record"]
+        r = _run_ifarm_py(u, _fill(_REPRODUCE_BUILD, WS=ws, CROOT=croot, DEST=dest, COMMIT=rec_fp["commit"],
+                                   DIFF_FILE=rec_fp["diff"].get("file"), SAVED=rec_fp["untracked_saved_entries"],
+                                   EXPECTED_SHA=rec_fp["diff"].get("sha256"), GRID_LINKS=SITE.get("grid_links") or {},
+                                   EXCLUDE=_STATE_EXCLUDE, IMAGE=SITE["container"]["image"]), timeout=900, cap=400000)
+        built = _last_json(r)
+        if not built or not built.get("ok"):
+            return {"status": "error", "collection_id": collection_id, "message": "The recorded workspace could not be rebuilt.",
+                    "detail": built or (r.get("err") or r.get("out") or "")[-600:]}
+        code_ws = dest
+        _upload_jamai(u, dest)
+    out_dir = f"{stage}/reproduce/{stamp}"
+    sb = base64.b64encode(_array_script(ws, e["campaign_folder"], e["input_card"], min(wanted), max(wanted),
+                                        indices=wanted, code_ws=code_ws, out_dir=out_dir, tag="repro").encode()).decode()
+    qs, qo, log_dir = _shq(stage), _shq(out_dir), _shq(_slurm_log_dir(u))
+    r = _remote(u, f"mkdir -p {qo} {qs}/slurm {log_dir} && echo {sb} | base64 -d > {qs}/slurm/reproduce_{stamp}.sh && "
+                   f"sbatch {qs}/slurm/reproduce_{stamp}.sh", timeout=90)
+    m = re.search(r"Submitted batch job (\d+)", (r.get("out") or "") + (r.get("err") or ""))
+    if not m:
+        return {"status": "error", "message": "sbatch refused the job.", "detail": (r.get("err") or r.get("out"))[-400:],
+                **({"rebuilt_workspace": dest} if built else {})}
+    extra = {"reproduces_job_id": p["submission"]["job_id"], "mode": p["mode"], "workspace_used": code_ws,
+             "output": out_dir, "matches": p["matches"], "run": stamp}
+    why = _record_submission(u, croot, stage, "reproduce", m.group(1), wanted, e["input_card"], ws=code_ws, extra=extra)
+    return {"status": "submitted", "job_id": m.group(1), "run": stamp, **plan, "workspace": code_ws, "results_to": out_dir,
+            **({"rebuilt": built} if built else {}),
+            "log_path": f"{_slurm_log_dir(u)}/jam_repro_{e['campaign_folder'][:34]}_{m.group(1)}_<replica>.out",
+            "message": f"Queued. When it finishes, reproduce_campaign(collection_id, check='{stamp}') compares the "
+                       "results with the current ones.", **_reproduce_note(why)}
 
 
 # ---- validate / submit / append ------------------------------------------------
@@ -2976,10 +3600,12 @@ def _submit_campaign(u, card, confirm):
                        "log_prefix": log_prefix, "error_log_prefix": _campaign_error_log_prefix(u, folder)}],
              "slurm_job_id": m.group(1), "status": "submitted", "input_card": norm}
     _registry(u, {"kind": "upsert", "entry": entry})
+    why = _record_submission(u, croot, stage, "submit", m.group(1), range(1, n + 1), norm)
     return {"status": "submitted", "collection_id": folder, "job_id": m.group(1), "replicas": n,
             "partition": norm["slurm"]["partition_effective"], "campaign_folder": croot,
             "log_path": f"{log_prefix}_{m.group(1)}_<replica>.out",
-            "error_log_path": f"{_campaign_error_log_prefix(u, folder)}_{m.group(1)}_<replica>.err", "summary": v["summary"]}
+            "error_log_path": f"{_campaign_error_log_prefix(u, folder)}_{m.group(1)}_<replica>.err", "summary": v["summary"],
+            "reproduce_file": f"{croot}/reproduce.json", **_reproduce_note(why)}
 
 
 def append_replicas(collection_id="", count=0, confirm="", username=""):
@@ -3027,7 +3653,9 @@ def append_replicas(collection_id="", count=0, confirm="", username=""):
                                                 "error_log_prefix": _campaign_error_log_prefix(u, e["campaign_folder"])}]
     e.update(replicas=last, updated_at=now, slurm_job_id=m.group(1), status="submitted")
     _registry(u, {"kind": "upsert", "entry": e})
-    return {"status": "submitted", "job_id": m.group(1), **plan}
+    why = _record_submission(u, os.path.dirname(os.path.dirname(stage)), stage, "append", m.group(1),
+                             range(first, last + 1), e["input_card"])
+    return {"status": "submitted", "job_id": m.group(1), **plan, **_reproduce_note(why)}
 
 
 # Each replica's state and whether it is still in the Slurm queue (rerun_replicas).
@@ -3191,10 +3819,13 @@ def rerun_replicas(collection_id="", replicas="failed", confirm="", username="",
                                               "resource_overrides": overrides, "request_manifest": request_path}]
     e.update(updated_at=now, slurm_job_id=m.group(1), status="submitted")
     _registry(u, {"kind": "upsert", "entry": e})
+    why = _record_submission(u, os.path.dirname(os.path.dirname(stage)), stage, "rerun", m.group(1),
+                             wanted, e["input_card"])
     return {"status": "submitted", "job_id": m.group(1), **plan,
             "request_manifest": request_path,
             "previous_results": f"{stage}/previous/replica_<n>_{stamp}",
-            "message": "Queued. Run postprocess_campaign once they finish to update the fit summary."}
+            "message": "Queued. Run postprocess_campaign once they finish to update the fit summary.",
+            **_reproduce_note(why)}
 
 
 # ---- collections and status ----------------------------------------------------
@@ -10703,6 +11334,24 @@ TOOLS = {
                                                     "confirm": {"type": "string"}},
                    "required": ["collection_id"]},
         "fn": lambda a: rerun_replicas(a.get("collection_id", ""), a.get("replicas", "failed"), a.get("confirm", ""), resume=a.get('resume', False), mem=a.get('mem'))},
+    "reproduce_campaign": {
+        "desc": "Run replicas of a campaign again exactly as recorded in its reproduce.json (the FitPack commit "
+                "and uncommitted changes, the image, the seeds). replicas='all' (default) or numbers such as "
+                "'1,3' or '2-4'. The live workspace is used when it still is the recorded state; otherwise a clone "
+                "at the recorded commit with the recorded changes applied is built under <area>/reproductions/ "
+                "and used. Results go to stages/<stage>/reproduce/<stamp>/replica_<n>; the current results are "
+                "not touched. Without confirm it returns the plan (recorded vs live state, in place or clone) and "
+                "a confirmation phrase; submit with confirm=<phrase> only after the user agrees. "
+                "check='latest' (or a run stamp) compares a finished reproduction with the current results per "
+                "replica: identical, differs (with the differing keys), running, no_output. Use it when the user "
+                "asks to reproduce, re-derive or verify a campaign's results.",
+        "schema": {"type": "object", "properties": {"collection_id": {"type": "string", "description": COLLECTION_ARG},
+                                                    "replicas": {"type": "string", "default": "all"},
+                                                    "check": {"type": "string", "description": "'latest' or a run stamp: compare instead of submitting"},
+                                                    "confirm": {"type": "string"}},
+                   "required": ["collection_id"]},
+        "fn": lambda a: reproduce_campaign(a.get("collection_id", ""), a.get("replicas", "all"), a.get("check", ""),
+                                           a.get("confirm", ""))},
     "campaign_logs": {
         "desc": "Logs of a campaign: each replica's state (fitted, not fitted, failed, running, no "
                 "output) and, for a replica that did not fit, the Python error and ends of its Slurm "
@@ -10884,7 +11533,14 @@ INSTRUCTIONS = (
     "confirmed with its phrase), cancel_campaign (stops its queued and running tasks) and "
     "delete_campaign (only when nothing of it is queued) — both also confirmed with their "
     "phrase. rerun_replicas runs failed or unfitted replicas again under their own numbers (also "
-    "confirmed with its phrase). The analysis tools (campaign_summary, analyze_by_experiment, "
+    "confirmed with its phrase). Each campaign folder holds reproduce.json (per submission: the "
+    "FitPack commit and any uncommitted changes, the image, the JAMAI files, input hashes and every "
+    "replica's seeds, with how_to_reproduce) and each replica folder replica_provenance.json; read "
+    "them with fs_read when the user asks how a fit was made. When the user asks to reproduce, re-derive "
+    "or verify a campaign's results, use reproduce_campaign: it runs the recorded replicas again (in the live "
+    "workspace when it is still the recorded state, else in a rebuilt clone at the recorded commit), confirmed "
+    "with its phrase, and reproduce_campaign(check='latest') then says per replica whether the results are "
+    "identical. The analysis tools (campaign_summary, analyze_by_experiment, "
     "campaign_pdf_plots, campaign_ff_plots) take replicas, a selection of the fitted replicas "
     "(best N, chi2_max, sigma outlier cut, exclude, only), when the user wants statistics over some "
     "replicas only; say how many were kept and why the others were left out. "

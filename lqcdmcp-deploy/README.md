@@ -228,13 +228,69 @@ first free port from 8080 and registers with the proxy as
   two fitted replicas). The answer carries the interval metadata and which
   replicas were excluded and why.
 - **Logs.** `campaign_logs` reads, in one plain-Python call on ifarm, each
-  replica's `fit_summary.json`, its Slurm log (`logs/stage_<job>_<replica>.out`
-  of the job whose replica range holds it) and the queue. It returns each
-  replica's state, χ² and whether its log holds a Python traceback, and for
-  the first replica that did not fit, failed or left no output (or for
-  replica N) the traceback and the end of the log (`lines`, default 80, at
-  most 400). The whole log is searched: the traceback goes to stderr while
-  stdout is buffered, so it often sits near the start of the merged file.
+  replica's `fit_summary.json`, its Slurm stdout and stderr logs under
+  `/farm_out/<user>/` (the job name, job ID and array task distinguish each
+  replica) and the queue. It returns each replica's state, χ² and whether
+  either log holds a Python traceback, and for the first replica that did not
+  fit, failed or left no output (or for replica N) the traceback and the ends
+  of both logs (`lines`, default 80, at most 400). Older campaigns keep using
+  their workspace log.
+- **Reproducibility.** `submit_campaign`, `append_replicas` and
+  `rerun_replicas` each add one entry to `<campaign>/reproduce.json`
+  (`femtomind.campaign_reproduction.v1`), written on ifarm right after
+  `sbatch`. It holds the workspace's FitPack commit, branch, remote (any token
+  stripped) and changed tracked files, with the uncommitted changes saved as
+  `fitpack_<sha256 prefix>.diff` beside it (up to 50 MB; a larger diff is
+  noted, not saved). Untracked files that are not ignored, other than
+  `campaigns/`, `.jamai/` and links, go into the same diff as new files when
+  they are regular files of at most 2 MB and the diff stays under 50 MB
+  (`fitpack.untracked.saved`); the rest are listed with size and sha256
+  (`not_saved`). `git apply` of the diff on a clone at the commit gives the
+  workspace back. The container is recorded by path, real path, size,
+  modification time and sha256 (about 10 s per image, cached in
+  `campaigns/.image_sha256.json` by path, size and mtime). The external data
+  folders the replicas read (the LHAPDF tables and the shared grids) are
+  recorded by real path and a sha256 of their sorted (path, bytes, mtime)
+  listing, not their content. It also records the sha256 of each JAMAI file,
+  of `campaign.request.json`, `manifest.resolved.yaml` and `input.py`, and the
+  gateway's own sha256. The seeds are read from `input.py` and derived as
+  `fitlib/ai.py` does: parameter seed `base + replica`, bootstrap seed
+  `base + 100000 + replica` (base 120000 unless the card sets one), listed for
+  every replica (verified on 2026-10-25 against `fit_summary.json` of a live
+  campaign; a rerun of a replica reproduced its results byte for byte).
+  `how_to_reproduce` says how to use the record. Writers take
+  `reproduce.json.lock` (flock), so an append and a rerun submitted together
+  both keep their entries; an unreadable record is set aside as
+  `reproduce.json.unreadable.<time>`, never overwritten. If the record cannot
+  be written, the jobs stay queued and the answer carries a `warning`. Each
+  array task also notes the FitPack commit and the number of changed tracked
+  files it found at start (`git` without index writes), and `run_replica.py`
+  writes them, with the image and its real path, Slurm ids, library versions
+  and JAMAI hashes, to `replica_<n>/replica_provenance.json` before the fit.
+  `fit_summary.json` keeps the `seed` and `bootstrap_seed` that `ai.py` used.
+- **Reproducing a campaign.** `reproduce_campaign(collection_id, replicas)`
+  runs recorded replicas again exactly. It finds the submission that last
+  produced each replica in `reproduce.json` (replicas from different
+  workspace states are refused together), measures the live workspace with
+  the same code and compares: when commit and changes still match, the
+  replicas run in the live workspace (`in_place`); otherwise a clone of the
+  workspace at the recorded commit with the recorded diff applied is built
+  under `<area>/reproductions/<campaign>/<stamp>/fitpack`, verified (commit,
+  the untracked files' sha256, the same changes sha256 the record has, the
+  site's grid links, a `.jam_reproduction.json` marker) and used (`clone`).
+  The current JAMAI package is uploaded into it; whether its files equal the
+  recorded ones is reported. The job is the ordinary array script with the
+  code workspace, output folder and name changed: results go to
+  `stages/<stage>/reproduce/<stamp>/replica_<n>` (the current results are
+  not touched; logs are `/farm_out/<user>/jam_repro_<campaign>_<job>_<n>.*`),
+  and the run is itself an entry of kind `reproduce` in `reproduce.json`
+  (with `reproduces_job_id`, `mode`, `workspace_used`, `output`). Like every
+  submission it asks for a confirmation phrase first. A record whose diff was
+  too large to save cannot be rebuilt, and the tool says so. Afterwards
+  `reproduce_campaign(collection_id, check='latest')` (or a run stamp)
+  compares each replica's `fit_summary.json` (paths aside) and `msr` files
+  with the current ones: `identical`, `differs` (with the differing keys and
+  both values), `running`, `no_output`.
 - **Confirmation phrases.** `submit_campaign`, `append_replicas`,
   `cancel_campaign`, `delete_campaign` and `submit_slurm_job` act only when
   called again with the phrase from a first call (`CONFIRM JAM <kind>
@@ -288,6 +344,7 @@ FitPack/JAM RESMAN and MAXLIKE
         ↓
 Replica outputs, chi2 summaries, and plots
 ```
+  Their stdout and stderr go to separate, unique files under `/farm_out/<user>/`.
 
 ### Component responsibilities
 

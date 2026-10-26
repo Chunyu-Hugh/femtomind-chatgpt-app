@@ -591,12 +591,25 @@ platform does not offer. Use Codex (4.2) with your ChatGPT account instead.
   in the folder name is UTC; Collections shows US Eastern):
   - the input card: `stages/pdf_stage/input.py` (your workspace's
     `examples/input02.py`, with your choices appended at the end);
-  - each replica's log: `stages/pdf_stage/logs/stage_<job>_<replica>.out`
-    (Analysis → **Logs** shows it);
+  - each replica's temporary Slurm logs: `/farm_out/<you>/jam_<campaign>_<job>_<replica>.out`
+    and `.err` (Analysis → **Logs** reads both; Slurm may clean these files up);
   - each replica's results: `stages/pdf_stage/current/replica_<n>/`;
   - the fit summary: `stages/pdf_stage/current/fit_summary.json`;
-  - plots: `analysis/pdf_plots/` and `analysis/by_experiment/`.
-- Other Slurm jobs written with the assistant: `<workspace>/slurm/`.
+  - plots: `analysis/pdf_plots/` and `analysis/by_experiment/`;
+  - what is needed to run it again exactly: `reproduce.json` (for each
+    submission: the FitPack commit, the uncommitted changes and small untracked
+    files as a `.diff` beside it, the image with its sha256, the shared data
+    folders' listings, and every replica's seeds) and, in each replica's
+    folder, `replica_provenance.json` (the FitPack commit that replica ran
+    with). Ask the assistant *"Reproduce this campaign"*: it runs the
+    recorded replicas again (in a rebuilt copy of the recorded code when
+    your workspace has changed since), puts the results in
+    `stages/pdf_stage/reproduce/<time>/` next to the current ones, and
+    *"Check the reproduction"* then says per replica whether the results
+    are identical.
+    Ask the assistant *"How was this campaign made? How do I rerun it exactly?"*
+- Other Slurm job scripts written with the assistant: `<workspace>/slurm/`;
+  their stdout and stderr logs go under `/farm_out/<you>/`.
 - `python3 redeploy_jam.py status` — is your gateway running?
 - `python3 check_dashboard_token.py` — what the dashboard says about your
   token and your gateway.
