@@ -17,7 +17,7 @@ import statistics
 
 def load(chunks_dir):
     chunks = []
-    for path in sorted(glob.glob(os.path.join(chunks_dir, "l2_*.json"))):
+    for path in sorted(glob.glob(os.path.join(chunks_dir, "l2_[0-9]*.json"))):
         with open(path, encoding="utf-8") as fh:
             chunks.append(json.load(fh))
     return chunks
@@ -64,7 +64,9 @@ def report(chunks):
            "gamma8": {"datasets_all_ok": sum(1 for k in comparable if per_dataset[k]["gamma8_fail"] == 0),
                       "datasets_with_failures": sorted(k for k in comparable if per_dataset[k]["gamma8_fail"])},
            "chi2_data": {"max_relative_difference": max(rel) if rel else None, "replicas": len(chi2_pairs)},
-           "environment": envs[0] if envs else None, "environments_differ": len({json.dumps(e, sort_keys=True) for e in envs}) > 1,
+           "environment": envs[0] if envs else None,
+           "nodes": sorted({e.get("node") for e in envs if e.get("node")}),
+           "environments_differ_beyond_node": len({json.dumps({k: v for k, v in e.items() if k != "node"}, sort_keys=True) for e in envs}) > 1,
            "deviations": devs[0] if devs else None, "per_dataset": per_dataset,
            "caveats": ["BLAS thread count can change floating-point sums; the worker pins OPENBLAS/OMP threads to 1 and records them.",
                        "The historical grid files (U09) are not the mounted ones; where predictions differ, the ULP distance is reported, not a bit-identity claim.",
@@ -79,7 +81,10 @@ def markdown(r):
              "- largest ULP distance of a prediction: %s (median over datasets %s)" % (r["max_ulp_prediction"]["max"], r["max_ulp_prediction"]["median_over_datasets"]),
              "- gamma_8 bound held for all replicas in %d datasets; failures in: %s" % (r["gamma8"]["datasets_all_ok"], ", ".join(r["gamma8"]["datasets_with_failures"]) or "none"),
              "- data chi2 per replica, max relative difference recomputed vs stored: %s" % r["chi2_data"]["max_relative_difference"],
-             "- not comparable: %s" % (", ".join(r["datasets_not_comparable"]) or "none"), ""]
+             "- not comparable: %s" % (", ".join(r["datasets_not_comparable"]) or "none"),
+             "- environment: FitPack %s (%s), numpy %s, %d node(s); software differs between chunks: %s" % (
+                 (r["environment"] or {}).get("fitpack_commit"), "dirty" if (r["environment"] or {}).get("fitpack_dirty") else "clean",
+                 (r["environment"] or {}).get("numpy"), len(r["nodes"]), r["environments_differ_beyond_node"]), ""]
     lines += ["| dataset | points | replicas | exact | max ULP (pred) | max |Δ| (pred) | gamma8 fail |", "| --- | --- | --- | --- | --- | --- | --- |"]
     for k, d in sorted(r["per_dataset"].items()):
         lines.append("| %s | %s | %d | %d | %.3g | %.3g | %d |" % (k, d["points"], d["comparable"], d["exact_prediction_replicas"],
