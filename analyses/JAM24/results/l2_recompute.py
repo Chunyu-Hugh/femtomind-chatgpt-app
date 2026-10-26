@@ -144,7 +144,7 @@ def main(argv=None):
             resman.get_residuals(params[i], initial=True)
         rec = {"replica": i, "datasets": {}, "chi2_data": 0.0, "seconds": None}
         for reaction, did, key in datasets:
-            res_obj = getattr(resman, reaction + "res", None)
+            res_obj = getattr(resman, reaction + "_res", None)   # RESMAN names them idis_res, dy_res, ...
             tabs = getattr(res_obj, "tabs", {}) if res_obj is not None else {}
             idx = int(did) if did.isdigit() else did
             tab = tabs.get(idx) or tabs.get(str(idx))
