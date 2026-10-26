@@ -346,10 +346,23 @@ start and stop independently, four at a time.
   `replica_provenance.json`; `node_constraint='none'` lifts it, a feature name
   sets it), the check names the node types when a differing pair ran on
   different ones, and `replica_provenance.json` records the CPU model.
+- **Registry merges.** An upsert of `campaigns/collections.json` merges with
+  the stored entry: the union of both job lists (by job id, the newer record
+  of a repeated id) and the larger replica count, so an append and a rerun
+  that read the entry before either wrote both keep their jobs (one such
+  lost update happened on 2026-10-25).
 - **Confirmation phrases.** `submit_campaign`, `append_replicas`,
-  `cancel_campaign`, `delete_campaign` and `submit_slurm_job` act only when
-  called again with the phrase from a first call (`CONFIRM JAM <kind>
-  <hash>`), which ties it to exactly that card or plan.
+  `rerun_replicas`, `reproduce_campaign`, `cancel_campaign`,
+  `delete_campaign` and `submit_slurm_job` act only when called again with
+  the phrase from a first call (`CONFIRM JAM <kind> <hash>`), which ties it
+  to exactly that card or plan. The gateway remembers when it first showed
+  each phrase and refuses a confirm that comes within 20 seconds of that
+  (`CONFIRM_TOO_SOON`), or carries a phrase it never showed
+  (`CONFIRM_NOT_SHOWN`, after a restart): on 2026-10-26 Claude Code, asked in
+  one message to reproduce a campaign, confirmed its own plan in the same
+  turn without the user seeing it. Every `needs_confirmation` answer also
+  carries the rule in its message. `JAM_GW_HUMAN_GATE=1` goes further and
+  keeps the phrase off AI clients altogether (the panel shows it).
 - **Other Slurm jobs.** `draft_slurm_job` writes `<workspace>/slurm/<name>.sh`
   and checks it with `sbatch --test-only`; `submit_slurm_job` submits it.
   Their stdout and stderr go to separate, unique files under `/farm_out/<user>/`.

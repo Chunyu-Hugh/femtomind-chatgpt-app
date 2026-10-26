@@ -1376,9 +1376,46 @@ CAMPAIGN_CHOICES = {
 }
 
 
+CONFIRM_WAIT = 20          # seconds between showing a plan and accepting its phrase
+CONFIRM_RULE = ("Stop here and show the user the plan; the phrase is accepted only after they answer. "
+                "The request that led to this plan is not their confirmation, and a confirm sent in the same "
+                f"turn, or within {CONFIRM_WAIT} seconds of the plan, is refused.")
+_PHRASES = {}              # phrase -> when it was first shown (monotonic seconds)
+_PHRASES_LOCK = threading.Lock()
+
+
 def _confirm_phrase(kind, payload):
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()[:10]
-    return f"CONFIRM JAM {kind} {digest}"
+    phrase = f"CONFIRM JAM {kind} {digest}"
+    with _PHRASES_LOCK:
+        now = time.monotonic()
+        if len(_PHRASES) > 2000:
+            for k in [k for k, t in _PHRASES.items() if now - t > 86400]:
+                del _PHRASES[k]
+        _PHRASES.setdefault(phrase, now)      # the first showing counts, a repeat does not reset it
+    return phrase
+
+
+def _confirm_gate(args):
+    """Refuse a confirmation phrase this gateway never showed, or showed less
+    than CONFIRM_WAIT seconds ago: an assistant that confirms its own plan in
+    the same turn never gives the user the chance to say no."""
+    phrase = str(args.get("confirm") or "").strip() if isinstance(args, dict) else ""
+    if not re.fullmatch(r"CONFIRM JAM [A-Z]+ [0-9a-f]{10}", phrase):
+        return None
+    with _PHRASES_LOCK:
+        shown = _PHRASES.get(phrase)
+    if shown is None:
+        return {"status": "error", "code": "CONFIRM_NOT_SHOWN",
+                "message": "This phrase was not issued by this gateway (it may have restarted). Call the tool "
+                           "without confirm to get the plan and its phrase again, show the plan to the user, and "
+                           "confirm only after they agree."}
+    age = time.monotonic() - shown
+    if age < CONFIRM_WAIT:
+        return {"status": "error", "code": "CONFIRM_TOO_SOON", "seconds_since_plan": round(age, 1),
+                "message": f"The plan was shown {age:.0f} seconds ago. Nothing was submitted. Show the user the plan "
+                           "and wait for their answer; confirm only after they have agreed in their own message."}
+    return None
 
 
 def _parse_hms(text):
@@ -2276,9 +2313,13 @@ apptainer exec {binds} \\
 # ---- the collection registry (<ws>/campaigns/collections.json) ---------------
 
 _REGISTRY = r'''
-import json, os, sys, hashlib
+import json, os, sys, hashlib, fcntl
 path = os.path.join(__WS__, 'campaigns', 'collections.json')
 op = __OP__
+# One writer at a time (readers share): the lock lives as long as this process.
+os.makedirs(os.path.dirname(path), exist_ok=True)
+lock = open(path + '.lock', 'a')
+fcntl.flock(lock, fcntl.LOCK_EX if op.get('kind') in ('upsert', 'delete') else fcntl.LOCK_SH)
 try:
     with open(path) as handle:
         items = json.load(handle)
@@ -2307,6 +2348,15 @@ if op['kind'] == 'upsert':
             raise ValueError('Stored prior snapshot reference no longer matches the campaign')
         entry = {**entry, 'input_card': {**entry['input_card'],
                                       'parameters': {**params, 'priorSnapshot': original}}}
+    stored = next((e for e in items if e.get('collection_id') == entry['collection_id']), None)
+    if stored:
+        # Two tools may have read the entry before either wrote (an append and a
+        # rerun together): keep every job both know, and the larger replica count.
+        jobs = {}
+        for j in list(stored.get('jobs') or []) + list(entry.get('jobs') or []):
+            jobs[str(j.get('job_id'))] = j
+        entry = {**entry, 'jobs': sorted(jobs.values(), key=lambda j: (str(j.get('submitted_at') or ''), str(j.get('job_id')))),
+                 'replicas': max(int(entry.get('replicas') or 0), int(stored.get('replicas') or 0))}
     items = [e for e in items if e.get('collection_id') != entry['collection_id']] + [entry]
 elif op['kind'] == 'delete':
     items = [e for e in items if e.get('collection_id') != op['id']]
@@ -11714,6 +11764,8 @@ def _tool_result(out, is_error=False, compact=False):
         # widget only (chart data, PNG data URLs): it goes in _meta, which
         # hosts hand to the widget and keep out of the model's context.
         out = dict(out)
+        if out.get("status") == "needs_confirmation":
+            out["message"] = (str(out.get("message") or "") + " " + CONFIRM_RULE).strip()
         images = out.pop("_images", None) or []
         ui = out.pop("_ui", None)
         if "_panel_plots" in out:           # the older spelling of _ui's panel_plots
@@ -11890,6 +11942,8 @@ class H(BaseHTTPRequestHandler):
                     if spec.get("hidden") and _tls.user != GATEWAY_OWNER:
                         # The node shell is the owner's alone, shared mode or not.
                         result = _tool_result("unknown tool", is_error=True)
+                    elif _confirm_gate(args):
+                        result = _tool_result(_confirm_gate(args), is_error=True)
                     else:
                         try:
                             out = spec["fn"](args)
