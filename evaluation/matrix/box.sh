@@ -168,11 +168,12 @@ case "$CMD" in
     ;;
   prepare)
     run=${2:?run}; parse_run "$run"
+    # idempotent: a prepared farm directory is kept (a run is measured once; see run)
     if [ "$ARM" = nomcp ]; then
-      farm_raw "test ! -e $ROOT/nomcp/$run && mkdir -p $ROOT/nomcp/$run && cp -a $FITPACK_MAIN $ROOT/nomcp/$run/fitpack && echo farm: $ROOT/nomcp/$run ready"
+      farm_raw "if test -e $ROOT/nomcp/$run; then echo farm: $ROOT/nomcp/$run already prepared; else mkdir -p $ROOT/nomcp/$run && cp -a $FITPACK_MAIN $ROOT/nomcp/$run/fitpack && echo farm: $ROOT/nomcp/$run ready; fi"
       chmod u+w "$LBIN"; rm -f "$LBIN/RUN"; echo "$run" > "$LBIN/RUN"; chmod 444 "$LBIN/RUN"; chmod 555 "$LBIN"
     else
-      farm_raw "test -d $FITPACK_AI/fitlib && test ! -e $ROOT/mcp/$run && cp -a $FITPACK_AI $ROOT/mcp/$run && echo farm: $ROOT/mcp/$run ready"
+      farm_raw "test -d $FITPACK_AI/fitlib && if test -e $ROOT/mcp/$run; then echo farm: $ROOT/mcp/$run already prepared; else cp -a $FITPACK_AI $ROOT/mcp/$run && echo farm: $ROOT/mcp/$run ready; fi"
     fi
     mkdir -p "$LWORK/$run" "$RESULTS"
     (cd "$APP" && FEMTOMIND_APP_ROOT=$APP python3 -B -m evaluation.conditions.materials \

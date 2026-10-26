@@ -125,6 +125,23 @@ def capabilities(tree):
             "card_from_catalog": "def campaign_card_from_catalog" in src}
 
 
+def ensure_cm():
+    """The gateway reaches ifarm through ~/fm-cm/{gateway,ifarm}-<owner>; point
+    them at the evaluation's ControlMaster (FEMTOMIND_IFARM_SOCK) when they are
+    missing. Existing links are reported, never changed."""
+    from evaluation.common import ssh
+    os.makedirs(CM_DIR, mode=0o700, exist_ok=True)
+    out = {}
+    for name in ("gateway-" + OWNER, "ifarm-" + OWNER):
+        link = os.path.join(CM_DIR, name)
+        if not os.path.lexists(link):
+            os.symlink(ssh.SOCK, link)
+            out[name] = {"created": True, "target": ssh.SOCK}
+        else:
+            out[name] = {"created": False, "target": os.path.realpath(link), "alive": os.path.exists(os.path.realpath(link))}
+    return out
+
+
 def pidfile(port):
     return os.path.join(paths.EVAL_ROOT, "gw_%d.pid" % port)
 
@@ -132,7 +149,8 @@ def pidfile(port):
 def start(label, commit, variant, condition, port, results_dir=None):
     tree, sha = worktree(label, commit)
     caps = capabilities(tree)
-    info = {"label": label, "commit": commit, "sha": sha, "worktree": tree, "variant": variant, "condition": condition,
+    cm = ensure_cm()
+    info = {"label": label, "controlmaster": cm, "commit": commit, "sha": sha, "worktree": tree, "variant": variant, "condition": condition,
             "port": port, "url": url(port), "capabilities": caps, "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     if variant == "B":
         info["catalog_variant"] = overlay_variant_b(tree)
@@ -176,6 +194,7 @@ def preflight(port, condition, workspace):
     """Before a run: the hidden tools are absent, the workspace is set, the
     chain is up. Returns a report; 'ok' says whether all held."""
     tok = token()
+    ensure_cm()
     names = tool_names(port, tok)
     denied = set(deny_lists.denied(condition))
     visible_denied = sorted(denied & set(names))
