@@ -1179,10 +1179,18 @@ def setup_workspace(repo_url="", github_token="", target_dir="", username="",
 
     repo_url defaults to the JAM repository. folder_name is the panel's way of
     naming target_dir inside the user's own area; branch picks the branch to
-    clone."""
+    clone. The clone can take minutes, so this runs as a background job the
+    client polls with analysis_result (the token never enters the job's key)."""
     u, err = _need_user(username)
     if err:
         return dict(err, ok=False)
+    params = {"repo_url": repo_url, "target_dir": target_dir, "folder_name": folder_name, "branch": branch}
+    return _background(u, "setup_workspace", params,
+                       lambda: _setup_workspace(u, repo_url, github_token, target_dir, folder_name, branch),
+                       wait=CAMPAIGN_WAIT)
+
+
+def _setup_workspace(u, repo_url, github_token, target_dir, folder_name, branch):
     root = _area(u)
     folder = (folder_name or "").strip()
     if folder and not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", folder):
@@ -2052,8 +2060,12 @@ def _object_libraries(u, keys):
                            + (r.get("err") or r.get("out") or str(exc))[-600:]) from exc
 
 
-def campaign_options(username=""):
-    """Composer metadata from the proton library and one-shape pion reference."""
+def campaign_options(username="", section="", object_type=""):
+    """Composer metadata from the proton library and one-shape pion reference.
+    The default answer is the summary: every section but the parameter tables,
+    which are counted per object (the full tables ran to 125 kB and overflowed
+    the pilot's clients). section='parameters' with object_type gives one
+    object's table; any other section name gives that section alone."""
     u, err = _need_user(username)
     if err:
         return err
@@ -2093,7 +2105,7 @@ def campaign_options(username=""):
     parameters = {key: {k: v for k, v in lib.items() if k not in ("params", "datasets", "fixed_companions")}
                   for key, lib in libraries.items()}
     parameters["pdf"].update(parametrization=PDF_DETAILS["parametrization"], note=PDF_DETAILS["note"])
-    return {"status": "ok",
+    full = {"status": "ok",
             "steps": ["Non-perturbative object", "Reactions", "QCD settings", "Job config", "Review"],
             "objects": objects, "parameters": parameters,
             "companions": {"ln": {"fitted": ["p->pi,n"], "fixed_unless_selected": ["pdf"]}},
@@ -2104,6 +2116,30 @@ def campaign_options(username=""):
             "partition_auto": {"short": SITE.get("short_partition"),
                                "short_hours": SITE.get("short_hours"), "long": SITE["partition"]},
             "template": CAMPAIGN_TEMPLATE}
+    sec = str(section or "").strip().lower()
+    if sec == "parameters":
+        key = str(object_type or "pdf").strip()
+        if key not in parameters:
+            return _refuse("BAD_ARGUMENT", f"object_type: one of {sorted(parameters)}")
+        return {"status": "ok", "section": "parameters", "object_type": key, "parameters": parameters[key]}
+    if sec and sec != "summary":
+        if sec not in full:
+            return _refuse("BAD_ARGUMENT", "section: summary, parameters, " + ", ".join(k for k in full if k != "status"))
+        return {"status": "ok", "section": sec, sec: full[sec]}
+    # The summary: the parameter tables counted, not listed.
+    counts = {}
+    for key, lib in parameters.items():
+        rows = lib.get("rows") if isinstance(lib.get("rows"), list) else []
+        counts[key] = {"rows": len(rows),
+                       "free": sum(1 for r in rows if r.get("fixed") is False and r.get("enabled", True)),
+                       "fixed": sum(1 for r in rows if r.get("fixed") is True and r.get("enabled", True)),
+                       "tied": sum(1 for r in rows if isinstance(r.get("fixed"), str) or r.get("tied_to")),
+                       "optional_disabled": sum(1 for r in rows if r.get("enabled") is False),
+                       **{k: v for k, v in lib.items() if k in ("source", "sha256", "parametrization", "note")}}
+    return {**full, "parameters": counts,
+            "parameter_tables": "campaign_options(section='parameters', object_type=<object>) returns one object's full "
+                                "table (name, value, min, max, fixed/tied, enabled). Only rows the user changes go into "
+                                "the card; the rest keep these library values."}
 
 
 _IDIS_CATALOG = r'''
@@ -4612,7 +4648,7 @@ def _configuration_preview(u, card):
             "dataset_configuration": blocks, "input_preview": fragment if not errors else ""}
 
 
-CAMPAIGN_WAIT = 5  # bounded response/poll wait; scientific work continues in the existing job queue
+CAMPAIGN_WAIT = 30  # a validate, submit or clone answers within this many seconds or hands out a job id to poll
 
 
 def _campaign_task(u, kind, card, fn, confirm=""):
@@ -5368,14 +5404,19 @@ def _job_reply(job, wait):
             out["job_id"] = job["job_id"]
         return out
     campaign = job['kind'] in ('validate_campaign', 'preview_prior_replicas', 'submit_campaign', 'reproduce_campaign')
+    if job['kind'] == 'setup_workspace':
+        message = ("The workspace is being created (git clone can take minutes). Poll analysis_result with this "
+                   "job_id until complete; do not call setup_workspace again.")
+    elif campaign:
+        message = ("Campaign preparation is still running; no confirmation requirement is skipped. "
+                   "Poll analysis_result with this job_id until complete; do not repeat the original call.")
+    else:
+        message = ("Still computing on the cluster (the first evaluation of these replicas takes "
+                   "minutes; later ones read the cache). Call analysis_result with this job_id to wait "
+                   "for it. Do not start the analysis again.")
     return {"status": "running", "job_id": job["job_id"], "kind": job["kind"],
             "collection_id": job["params"].get("collection_id"), "request": job["params"],
-            "elapsed_s": round(time.time() - job["started"]),
-            "message": ("Campaign preparation is still running; no confirmation requirement is skipped. "
-                       "Poll analysis_result with this job_id until complete; do not repeat the original call."
-                       if campaign else "Still computing on the cluster (the first evaluation of these replicas takes "
-                       "minutes; later ones read the cache). Call analysis_result with this job_id to wait "
-                       "for it. Do not start the analysis again.")}
+            "elapsed_s": round(time.time() - job["started"]), "message": message}
 
 
 def _background(u, kind, params, fn, wait=None):
@@ -5416,9 +5457,10 @@ def analysis_result(job_id="", username=""):
         return err
     job = _JOBS.get(str(job_id or ""))
     if not job or job["user"] != u:
-        return {"status": "error", "message": f"No analysis job {job_id!r} (jobs are kept {JOB_KEEP // 3600} h "
-                                              "and not across a gateway restart): run the analysis again; "
-                                              "what was already computed is cached."}
+        return _refuse("NOT_FOUND", f"No job {job_id!r} (jobs are kept {JOB_KEEP // 3600} h and not across a gateway "
+                                    "restart). An analysis: run it again, what was computed is cached. A submission: "
+                                    "check list_campaigns first, the campaign may already be queued; a confirmed "
+                                    f"request repeated within {IDEMPOTENT_HOURS:g} h is answered with its earlier result.")
     return _job_reply(job, job.get('wait', JOB_WAIT))
 
 
@@ -12418,9 +12460,12 @@ TOOLS = {
                 "Slurm partitions. Pion metadata also supplies its QCD/job defaults. Temporary "
                 "compatibility selects DIS 0 for fitted pion (including combined), otherwise 1. "
                 "Needs the cluster chain and a workspace. Call it first and walk "
-                "the user through each step.",
-        "schema": {"type": "object", "properties": {}},
-        "fn": lambda a: campaign_options()},
+                "the user through each step. The default answer is the summary, with the parameter tables "
+                "counted per object; section='parameters' with object_type (pdf, pdf-pion, ffpion, ffkaon, "
+                "ffhadron) returns one object's full table, and section=<name> one other section "
+                "(objects, reactions, defaults, choices, partitions).",
+        "schema": {"type": "object", "properties": {"section": {"type": "string"}, "object_type": {"type": "string"}}},
+        "fn": lambda a: campaign_options(section=a.get("section", ""), object_type=a.get("object_type", ""))},
     "campaign_datasets": {
         "desc": "The datasets of one available reaction from campaign_options, grouped by experiment, with labels "
                 "(experiment, observable, target). Optional search text. Nothing is preselected. "
