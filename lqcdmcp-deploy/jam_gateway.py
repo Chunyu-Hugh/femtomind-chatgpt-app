@@ -628,6 +628,7 @@ def _audit(kind, **fields):
             digest = hashlib.sha256(line.encode()).hexdigest()
             os.write(_AUDIT["fd"], (line + "\n").encode())
             _AUDIT["seq"], _AUDIT["prev"] = rec["seq"], digest
+        _audit_queue(fields.get("acting") or fields.get("user") or "", line)
         return digest
     except Exception:
         return None
@@ -650,6 +651,61 @@ def _audit_call(name, args, result, t0, rid):
         pass
 
 
+# The ifarm mirror. Records about a user are also appended to
+# <area>/.jam_audit.jsonl through that user's own chain, so a copy exists where
+# the gateway (same uid, same node) cannot quietly rewrite it. Lines wait while
+# the chain is down; a flush follows every write effect and runs every 30 s.
+AUDIT_MIRROR = os.environ.get("JAM_GW_AUDIT_MIRROR", "1") != "0"
+_AUDIT_PENDING = {}
+_AUDIT_PENDING_CAP = 2000
+
+
+def _audit_queue(user, line):
+    if not AUDIT_MIRROR or not user or not re.fullmatch(USERNAME_RE, user):
+        return
+    with _AUDIT_LOCK:
+        q = _AUDIT_PENDING.setdefault(user, [])
+        q.append(line)
+        dropped = max(0, len(q) - _AUDIT_PENDING_CAP)
+        del q[:dropped]
+    if dropped:
+        _audit("audit.mirror_dropped", user=user, n=dropped)
+
+
+def _audit_mirror_flush(user):
+    """Append the user's pending lines to the mirror, when the chain is up."""
+    with _AUDIT_LOCK:
+        lines = list(_AUDIT_PENDING.get(user) or [])
+    if not lines:
+        return
+    try:
+        if not _chain_alive(user):
+            return
+        area = _area(user)
+        r = _remote(user, f"umask 077; mkdir -p {_shq(area)} && cat >> {_shq(area + '/.jam_audit.jsonl')}",
+                    stdin="".join(ln + "\n" for ln in lines), timeout=30)
+        if r.get("rc") == 0:
+            with _AUDIT_LOCK:
+                del (_AUDIT_PENDING.get(user) or [])[:len(lines)]
+    except Exception:
+        pass
+
+
+def _audit_mirror_loop():
+    while True:
+        time.sleep(30)
+        for user in list(_AUDIT_PENDING):
+            _audit_mirror_flush(user)
+
+
+def _effect(effect, user, **fields):
+    """The record of one write effect (a submission, a cancel, a delete, a
+    workspace change, a sign-in), flushed to the mirror right away."""
+    _audit("effect", effect=effect, user=user, principal=getattr(_tls, "principal", ""),
+           sid=_printable(getattr(_tls, "sid", "")), **fields)
+    threading.Thread(target=_audit_mirror_flush, args=(user,), daemon=True).start()
+
+
 # ── chain ───────────────────────────────────────────────────────────────────
 
 def _close_master(sock, dest, opts=None):
@@ -664,6 +720,16 @@ def _close_master(sock, dest, opts=None):
 
 
 def connect_hpc(username="", pin_otp="", password=""):
+    out = _connect_hpc(username, pin_otp, password)
+    # The sign-in is a write effect (it opens the chain every cluster tool
+    # uses); only its outcome is recorded, never the credentials.
+    if out.get("username"):
+        _effect("connect_hpc", out["username"], status=out.get("status"), step=out.get("step"),
+                connected=bool(out.get("connected")))
+    return out
+
+
+def _connect_hpc(username, pin_otp, password):
     u, err = _resolve_user(username)
     if err:
         return dict(err, connected=False)
@@ -883,6 +949,7 @@ def setup_workspace(repo_url="", github_token="", target_dir="", username="",
                     "detail": text.replace(tok, "***")[-400:] if tok else text[-400:]}
     out = _remote(u, f"printf '%s\\n' {_shq(target)} > {root}/.jam_workspace && echo DONE", timeout=60)
     steps.append("workspace marker: " + (out.get("out") or "").strip()[-60:])
+    _effect("setup_workspace", u, workspace=target)
     steps.append(_link_grids(u, target))
     _WS_CACHE.pop(u, None)
     message = (f"A folder named {os.path.relpath(target, root)} already exists in your area: it was "
@@ -1049,6 +1116,7 @@ def use_workspace(path="", username=""):
         return {"ok": False, "message": f"{p} is not a fitpack checkout (no fitlib/ inside)."}
     _link_grids(u, p)
     _WS_CACHE.pop(u, None)
+    _effect("use_workspace", u, workspace=p)
     return {"ok": True, "workspace": p, "report": check_project(u)}
 
 
@@ -2595,6 +2663,7 @@ def use_ai_branch(username=""):
     if "SWITCHED" not in out:
         return {"status": "error", "workspace": ws, "message": "Could not check out the ai branch.",
                 "detail": out[-400:]}
+    _effect("use_ai_branch", u, workspace=ws)
     return {"status": "ok", "workspace": ws, "message": "Switched the workspace to the FitPack ai branch."}
 
 
@@ -2911,19 +2980,27 @@ def _record_submission(u, croot, stage, kind, job_id, replicas, card, ws=None, e
            "bootstrap": job.get("bootstrap"), "optimizer": job.get("optimizer"),
            "max_iterations": job.get("maxIterations"), "tolerance": job.get("tolerance")}
     ws = ws or _workspace(u)
+    extra = extra or {}
+    why, d = "", None
     try:
         r = _run_ifarm_py(u, _fill(_PROVENANCE, WS=ws, CROOT=croot, STAGE=stage,
                                    PKG=f"{ws}/{JAMAI_REMOTE}/modules/jam/jamai", SUB=sub,
                                    REPLICAS=sorted(replicas), IMAGE=SITE["container"]["image"],
                                    GATEWAY=_GATEWAY_SHA256, EXCLUDE=_STATE_EXCLUDE,
-                                   EXTERNAL=_external_roots(), EXTRA=extra or {}, SCHEMA=REPRODUCTION_SCHEMA),
+                                   EXTERNAL=_external_roots(), EXTRA=extra, SCHEMA=REPRODUCTION_SCHEMA),
                           timeout=300)
+        d = _last_json(r)
+        if not (d and d.get("ok")):
+            why = (r.get("err") or r.get("out") or "no answer").strip()[-300:]
     except Exception as e:
-        return f"{type(e).__name__}: {e}"
-    d = _last_json(r)
-    if d and d.get("ok"):
-        return f"note: {d['note']}" if d.get("note") else ""
-    return (r.get("err") or r.get("out") or "no answer").strip()[-300:]
+        why = f"{type(e).__name__}: {e}"
+    # The audit record of the effect itself, whether or not reproduce.json took it.
+    _effect(kind, u, campaign_folder=os.path.basename(croot), slurm_job_id=str(job_id), replicas=sub["replicas"],
+            card_sha256=_canonical_sha256(card), recorded=not why,
+            **{k: extra[k] for k in ("mode", "run", "resume", "reproduces_job_id") if k in extra})
+    if why:
+        return why
+    return f"note: {d['note']}" if d.get("note") else ""
 
 
 def _reproduce_note(why):
@@ -4322,6 +4399,7 @@ def cancel_campaign(collection_id="", confirm="", username=""):
                 "detail": ((r.get("err") or "") + (r.get("out") or ""))[-400:]}
     e.update(status="cancelled", updated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     _registry(u, {"kind": "upsert", "entry": e})
+    _effect("cancel", u, collection_id=collection_id, job_ids=ids, cancelled=live)
     return {"status": "cancelled", "collection_id": collection_id, "job_ids": ids, "cancelled": live,
             "message": "Stopped. Replicas that had already finished keep their results; postprocess "
                        "them as usual."}
@@ -4356,6 +4434,7 @@ def delete_campaign(collection_id="", delete_folder=False, confirm="", username=
         folder = f"{_workspace(u)}/{CAMPAIGNS_DIR}/{e['campaign_folder']}"
         if re.fullmatch(r"[A-Za-z0-9._-]+", e["campaign_folder"]):
             removed = "GONE" in (_remote(u, f"rm -rf {_shq(folder)} && echo GONE", timeout=120).get("out") or "")
+    _effect("delete", u, collection_id=collection_id, folder=e["campaign_folder"], folder_removed=removed)
     return {"status": "ok", "deleted": collection_id, "folder_removed": removed}
 
 
@@ -11146,6 +11225,7 @@ def submit_slurm_job(name="", confirm="", username=""):
     m = re.search(r"Submitted batch job (\d+)", (s.get("out") or "") + (s.get("err") or ""))
     if not m:
         return {"status": "error", "code": "SBATCH_REFUSED", "message": "sbatch refused the job", "detail": (s.get("err") or s.get("out"))[-400:]}
+    _effect("slurm_submit", u, name=name, script_path=path, slurm_job_id=m.group(1))
     return {"status": "submitted", "job_id": m.group(1), "script_path": path}
 
 
@@ -12235,4 +12315,5 @@ if __name__ == "__main__":
               flush=True)
     if os.environ.get("SLURM_JOB_ID"):
         register(port)
+    threading.Thread(target=_audit_mirror_loop, name="audit-mirror", daemon=True).start()
     server.serve_forever()
