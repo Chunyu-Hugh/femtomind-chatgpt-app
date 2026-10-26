@@ -166,10 +166,53 @@ USERNAME_RE = r"[a-z0-9._-]{1,32}"
 def _area(user):
     return SITE["area"].format(user=user)
 
-# Access: the owner's LQCDMCP dashboard token is the only credential (see
-# "dashboard tokens" below). JAM_GW_TEST_TOKEN is for a test instance that runs
-# off the proxy and so is unknown to the dashboard; it is never set in a launch.
+# Access. The gateway has a token of its own: redeploy_jam.py makes a secret
+# per gateway and puts only its sha256 into the job script
+# (JAM_GW_TOKEN_SHA256); the owner sends the secret as the bearer. A shared
+# gateway has one secret per person (site.json "users": {name: sha256}). The
+# dashboard is then never asked, because in October 2026 it answered yes for
+# any token (README, Access). Without a hash the gateway falls back to that
+# dashboard check (legacy) and says so at start-up. JAM_GW_TEST_TOKEN is the
+# plain secret of a test instance; it is never set in a launch.
 TEST_TOKEN = os.environ.get("JAM_GW_TEST_TOKEN", "")
+
+
+def _hash_setting(env, filename):
+    """A sha256 from the environment, else from ACCESS_DIR/<filename> (mode
+    600; a file others can read is ignored), else ''."""
+    value = os.environ.get(env, "").strip().lower()
+    if not value:
+        path = os.path.join(ACCESS_DIR, filename)
+        try:
+            if os.stat(path).st_mode & 0o077:
+                print(f"ignoring {path}: readable by others", flush=True)
+            else:
+                with open(path) as fh:
+                    value = fh.read().strip().lower()
+        except OSError:
+            value = ""
+    if value and not re.fullmatch(r"[0-9a-f]{64}", value):
+        print(f"ignoring {env}: not a sha256", flush=True)
+        value = ""
+    return value
+
+
+def _load_users(table):
+    """site.json "users": {name: sha256}; entries that are not that are dropped."""
+    users = {}
+    for name, h in (table.items() if isinstance(table, dict) else []):
+        if isinstance(name, str) and re.fullmatch(USERNAME_RE, name) and isinstance(h, str) \
+                and re.fullmatch(r"[0-9a-f]{64}", h.lower()):
+            users[name] = h.lower()
+        else:
+            print(f"ignoring site.json user entry {name!r}", flush=True)
+    return users
+
+
+TOKEN_SHA256 = _hash_setting("JAM_GW_TOKEN_SHA256", "token.sha256")
+ADMIN_SHA256 = _hash_setting("JAM_GW_ADMIN_SHA256", "admin.sha256")
+USERS_SHA256 = _load_users(SITE.get("users"))
+AUTH_MODE = "token" if (TOKEN_SHA256 or USERS_SHA256) else ("test" if TEST_TOKEN else "dashboard")
 
 # The operations panel. One HTML file, served as a browser page on GET and as
 # an MCP Apps resource. Two URIs because ChatGPT still keys its widget on the
@@ -306,10 +349,15 @@ def _fill(template, **values):
 # serves calls between them, and _resolve_user refuses any other name.
 
 _tls = threading.local()
-AUTH_HELP = ("This gateway needs your LQCDMCP dashboard token (the one from the dashboard "
-             "login you launched the gateway with). Configure the MCP client to send the header "
-             "'Authorization: Bearer <token>', or paste it into the panel page when it asks for "
-             "one. When the dashboard login expires, log in again and update the token.")
+AUTH_HELP = (("This gateway takes its own token, not the dashboard token: the owner gets it with "
+              "`python3 redeploy_jam.py token` and exports it as JAM_GW_TOKEN. Configure the MCP client to "
+              "send the header 'Authorization: Bearer <that token>', or paste it into the panel page when it "
+              "asks for one. On a shared gateway, use the token its owner gave you.")
+             if AUTH_MODE == "token" else
+             ("This gateway needs your LQCDMCP dashboard token (the one from the dashboard "
+              "login you launched the gateway with). Configure the MCP client to send the header "
+              "'Authorization: Bearer <token>', or paste it into the panel page when it asks for "
+              "one. When the dashboard login expires, log in again and update the token."))
 
 # ── refusal codes ───────────────────────────────────────────────────────────
 #
@@ -390,7 +438,18 @@ def _identify(auth_header):
     if token[:7].lower() == "bearer ":
         # A client that was given "Bearer <token>" as the token sends it twice.
         token = token[7:].strip()
-    if not token:
+    if not token or len(token) > 1024:
+        return ""
+    if AUTH_MODE == "token":
+        h = _sha(token)
+        if TOKEN_SHA256 and hmac.compare_digest(h, TOKEN_SHA256):
+            _tls.auth = "token"
+            return GATEWAY_OWNER
+        # Every entry is compared (no early exit) and exactly one must match.
+        hits = [name for name, hh in USERS_SHA256.items() if hmac.compare_digest(h, hh)]
+        if len(hits) == 1:
+            _tls.auth = "user"
+            return hits[0]
         return ""
     if TEST_TOKEN and hmac.compare_digest(token, TEST_TOKEN):
         _tls.auth = "test"
@@ -503,8 +562,8 @@ def _dashboard_owns_gateway(token):
 
 
 def _dashboard_identify(token, h):
-    if not DASHBOARD_AUTH or len(token) < 16:
-        return ""
+    if not DASHBOARD_AUTH or AUTH_MODE == "token" or len(token) < 16:
+        return ""        # with a gateway token the dashboard is never asked
     now = time.time()
     with _DASH_LOCK:
         hit = _DASH_CACHE.get(h)
@@ -1003,6 +1062,7 @@ def check_hpc_connection(username=""):
         account["workspace"] = _workspace(u)
     return {"connected": alive, "login_open": login_open, "cluster_reachable": alive,
             "shared": SHARED, "owner": GATEWAY_OWNER,
+            "auth": AUTH_MODE, "legacy_shared": SHARED and AUTH_MODE == "dashboard", "audit": True,
             "account": account, "site": _site_public(), "sites": [_site_public()],
             "note": ("Ready to run fits." if alive else
                      "Not signed in to the cluster. Sign in on the Connect tab of the "
@@ -12009,17 +12069,24 @@ if os.path.isfile(_PLUGINS_INIT):
         PLUGIN_STATUS = {"loaded": [], "errors": {"plugins": f"{type(e).__name__}: {e}"}}
 
 if SHARED:
+    _legacy_shared = AUTH_MODE == "dashboard"
     for _name, _spec in TOOLS.items():
         if _name != "node_diag":
             _spec["schema"].setdefault("properties", {})["username"] = {
                 "type": "string",
-                "description": "The JLab username to act as: the person who signed in on the panel. "
-                               "Shared gateway; without it the gateway acts as its owner."}
-    INSTRUCTIONS += (
+                "description": ("The JLab username to act as: the person who signed in on the panel. "
+                                "Shared gateway; without it the gateway acts as its owner." if _legacy_shared else
+                                "The JLab username this call acts as. It must be the user whose token the "
+                                "client sends; the gateway refuses any other.")}
+    INSTRUCTIONS += ((
         f"\nThis gateway is SHARED: it acts as the JLab user named in each call. First ask the user for "
         f"their JLab username and pass it as username in every tool call; without it, every call acts "
         f"as the gateway's owner ({GATEWAY_OWNER}). Each person signs in on the panel's Connect tab "
         "with their own username and credentials, and has their own workspace and campaigns.")
+        if _legacy_shared else (
+        "\nThis gateway is SHARED: each person has their own token, and every call acts as the token's "
+        "user; a username, when given, must be that user. Each person signs in on the panel's Connect tab "
+        "with their own credentials, and has their own workspace and campaigns."))
 
 # Content-Security-Policy for the browser panel: it talks only to this origin,
 # and it must not be framed elsewhere — it is where cluster credentials are typed.
@@ -12240,9 +12307,14 @@ class H(BaseHTTPRequestHandler):
                 elif asked and not re.fullmatch(USERNAME_RE, asked):
                     result = _tool_result({"status": "error", "code": "BAD_USERNAME", "message": "username: a JLab username"},
                                           is_error=True)
+                elif asked and asked != _tls.user and AUTH_MODE != "dashboard":
+                    # With per-person tokens the token says who acts; a username may only repeat it.
+                    result = _tool_result(_refuse("IDENTITY_MISMATCH",
+                                                  f"this token belongs to {_tls.user}; it cannot act as {asked}"),
+                                          is_error=True)
                 else:
                     if asked:
-                        _tls.user = asked
+                        _tls.user = asked   # legacy shared mode: the caller names the user (audited as acting != principal)
                     if spec.get("hidden") and _tls.user != GATEWAY_OWNER:
                         # The node shell is the owner's alone, shared mode or not.
                         result = _tool_result("unknown tool", is_error=True)
@@ -12305,8 +12377,11 @@ if __name__ == "__main__":
     _ensure_access_dir()
     server, port = _bind()
     _audit_open()
-    _audit("audit.start", pid=os.getpid(), port=port, gateway_sha256=_GATEWAY_SHA256,
-           auth_mode="test" if TEST_TOKEN else "dashboard")
+    _audit("audit.start", pid=os.getpid(), port=port, gateway_sha256=_GATEWAY_SHA256, auth_mode=AUTH_MODE)
+    print(f"auth: {AUTH_MODE}" + (f" ({len(USERS_SHA256)} user tokens)" if USERS_SHA256 else "")
+          + (" (LEGACY: the dashboard accepts any token, so anyone reaching this gateway can use it; "
+             "relaunch with the current redeploy_jam.py to get a gateway token)" if AUTH_MODE == "dashboard" else ""),
+          flush=True)
     print(f"jam-gateway '{MCP_NAME}' (owner {GATEWAY_OWNER}, site {SITE['id']}) "
           f"listening on {port}, host {socket.getfqdn()}", flush=True)
     if PLUGIN_STATUS["loaded"] or PLUGIN_STATUS["errors"]:

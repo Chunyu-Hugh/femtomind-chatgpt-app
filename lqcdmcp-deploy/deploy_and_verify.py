@@ -12,6 +12,7 @@ import importlib.util
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import time
@@ -39,14 +40,16 @@ def say(*a):
 
 def scrub(text):
     text = str(text)
-    for tok in {TOKEN, gw_auth.token()}:
+    for tok in {TOKEN, gw_auth.token(), gw_auth.admin_token()} - {""}:
         text = text.replace(tok, "***")
     return text
 
 
-def gateway(method, params=None, with_token=True, timeout=60):
+def gateway(method, params=None, with_token=True, timeout=60, token=None):
     h = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
-    if with_token:
+    if token is not None:
+        h["Authorization"] = "Bearer " + token      # a made-up token, for the access check
+    elif with_token:
         h.update(gw_auth.auth_headers())
     body = {"jsonrpc": "2.0", "id": 1, "method": method}
     if params is not None:
@@ -162,8 +165,13 @@ if not info:
     sys.exit("the gateway is not up yet: you have no gateway job queued or running. Start one with"
              " python3 deploy_and_verify.py (without --check).")
 
-say("\n3. the dashboard knows this token's gateways")
-say("   " + run(["check_dashboard_token.py"])[1].replace("\n", "\n   ")[-1500:])
+conn = tool("check_hpc_connection")
+auth_mode = conn.get("auth") or "dashboard"
+if auth_mode == "dashboard":
+    say("\n3. the dashboard knows this token's gateways")
+    say("   " + run(["check_dashboard_token.py"])[1].replace("\n", "\n   ")[-1500:])
+else:
+    say(f"\n3. access: {auth_mode} mode (the gateway checks its own token; the dashboard is not asked)")
 
 say("\n4. access control")
 anon = gateway("tools/call", {"name": "ping", "arguments": {}}, with_token=False)["result"]
@@ -174,9 +182,20 @@ if not anon.get("isError"):
 ok = gateway("tools/call", {"name": "ping", "arguments": {}})["result"]
 say(f"   your token   -> {'accepted (good)' if not ok.get('isError') else 'REFUSED: ' + scrub(json.dumps(ok))[:300]}")
 if ok.get("isError"):
-    sys.exit("stop: the gateway does not accept this token. Most likely it expired: sign in to the dashboard "
-             "again (https://lqcdmcp.jlab.org:8000/jlab/lqcd/mcp/dashboard/), export the new LQCDMCP_TOKEN "
-             "and run this again. Step 3 above shows what the dashboard says about the token.")
+    sys.exit("stop: the gateway does not accept this token. A gateway launched with this redeploy_jam.py takes "
+             "its own token (python3 redeploy_jam.py token; export JAM_GW_TOKEN). An older one takes the "
+             "dashboard token, which may have expired: sign in to the dashboard again "
+             "(https://lqcdmcp.jlab.org:8000/jlab/lqcd/mcp/dashboard/), export the new LQCDMCP_TOKEN and run this again.")
+forged = gateway("tools/call", {"name": "ping", "arguments": {}}, token="forged-" + secrets.token_hex(16))["result"]
+if forged.get("isError"):
+    say("   forged token -> refused (good)")
+elif auth_mode == "dashboard":
+    say("   forged token -> ALLOWED: this gateway predates gateway tokens and trusts the dashboard, which accepts "
+        "any token, so anyone reaching it can use your cluster session. Relaunch it with this folder's "
+        "redeploy_jam.py (python3 redeploy_jam.py cancel; python3 deploy_and_verify.py) to fix that.")
+else:
+    sys.exit("stop: the gateway accepts a made-up token although it runs in token mode: stop it now with "
+             "python3 redeploy_jam.py cancel, and send this report.")
 
 say("\n5. tools on the deployed gateway")
 names = [t["name"] for t in gateway("tools/list")["result"]["tools"]]
@@ -221,5 +240,5 @@ if c.get("connected"):
     lc = tool("list_campaigns")
     say(f"   campaigns: {lc.get('count')}"
         + (f"; your jobs in the Slurm queue: {len(lc['queue'])}" if isinstance(lc.get("queue"), list) else ""))
-say(f"\n6. panel: {gw_auth.URL}  (open it in a browser; it asks for the dashboard token)")
+say(f"\n6. panel: {gw_auth.URL}  (open it in a browser; it asks for the gateway token)")
 say("\nDONE")

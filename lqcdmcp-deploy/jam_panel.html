@@ -229,14 +229,15 @@
     </div>
   </header>
 
-  <!-- Dashboard token: only on the gateway's own page. Inside a chat client the
+  <!-- Gateway token: only on the gateway's own page. Inside a chat client the
        client sends the token itself. -->
   <div class="card" id="tokenGate" style="display:none">
-    <h3>Dashboard token</h3>
-    <p class="sub">This page acts as you on the cluster, so it needs your LQCDMCP dashboard token — the one
-      you launched this gateway with. It is kept in this browser tab only and forgotten when you close the
-      tab; when the dashboard login expires, sign in again and paste the new one.</p>
-    <input type="password" id="tokenIn" placeholder="dashboard token" autocomplete="off" spellcheck="false">
+    <h3>Gateway token</h3>
+    <p class="sub">This page acts as you on the cluster, so it needs this gateway's token: the owner gets it with
+      <code>python3 redeploy_jam.py token</code> (on a shared gateway, the token the owner gave you; an older
+      gateway still takes the dashboard token). It is kept in this browser tab only and forgotten when you
+      close the tab.</p>
+    <input type="password" id="tokenIn" placeholder="gateway token" autocomplete="off" spellcheck="false">
     <div class="actions">
       <button class="btn primary" id="tokenSave">Use this token</button>
       <button class="btn" id="tokenForget">Forget token</button>
@@ -262,7 +263,7 @@
         <div class="field" style="margin-bottom:12px">
           <div class="label" style="font-weight:500;font-size:11.5px">Cluster username</div>
           <input type="text" id="connUser" value="" readonly spellcheck="false" autocomplete="off">
-          <div class="hint" id="connUserHint">Set by your dashboard token.</div>
+          <div class="hint" id="connUserHint">Set by your token.</div>
         </div>
         <div class="note" id="loginOpenNote" style="display:none;margin:0 0 12px"></div>
         <div class="grid2">
@@ -681,7 +682,7 @@
       onToolOutput(){},
     };
   }
-  function authError(){ const e = new Error("A dashboard token is needed."); e.auth = true; return e; }
+  function authError(){ const e = new Error("A gateway token is needed."); e.auth = true; return e; }
 
   // Hosts differ in what a tool call resolves to: the bare structured result,
   // or a CallToolResult wrapper ({structuredContent}, {content:[{text}]},
@@ -839,10 +840,16 @@
     $("connUser").value = acct.username || "";
     // A shared gateway: the username field is the user's own, and switching it
     // switches whose chain and workspace every tab shows.
-    if (c.shared){
+    if (c.shared && c.legacy_shared){
       $("connUser").readOnly = false;
       $("connUserHint").textContent = "This gateway is shared: type your own JLab username, then sign in. "
         + "Everything on every tab is then yours (your chain, workspace and campaigns).";
+      $("connectForm").style.display = (!ok && page) ? "block" : "none";
+    } else if (c.shared){
+      // Per-person tokens: the token says who you are; the field only shows it.
+      $("connUser").readOnly = true;
+      $("connUserHint").textContent = "This gateway is shared: your token says who you are, and everything on "
+        + "every tab is yours (your chain, workspace and campaigns).";
       $("connectForm").style.display = (!ok && page) ? "block" : "none";
     }
     showLoginOpen(!ok && !!c.login_open);
@@ -850,7 +857,7 @@
   }
   // On the gateway's page with no token, or one the gateway refused, nothing can
   // be checked: the Connect card says what to do instead of "Checking…".
-  const NO_TOKEN = {connected: false, status: "unauthorized", note: "Paste your dashboard token above to continue."};
+  const NO_TOKEN = {connected: false, status: "unauthorized", note: "Paste your gateway token above to continue."};
   let wasConnected = null;
   async function recheck(){
     $("recheckBtn").disabled = true; $("connPillTxt").textContent = "checking…";

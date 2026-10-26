@@ -10,6 +10,12 @@ Usage:
   export JAM_GW_USER=<your JLab username>
   python3 redeploy_jam.py launch | cancel | status
   python3 redeploy_jam.py script     # write the job script, to paste into the dashboard page
+  python3 redeploy_jam.py token [--show]            # your gateway token (what clients send)
+  python3 redeploy_jam.py user-token add|revoke|list <name>   # shared gateway: one token per person
+  python3 redeploy_jam.py rotate token|admin        # new secret; relaunch for it to take effect
+
+The gateway accepts its own token, not the dashboard token: the job script
+carries only the sha256 of the secrets in ~/.config/jam_gateway (mode 600).
 
 Optional: JAM_GW_RESERVATION (default chen_mcp_daily; "" for none),
 JAM_GW_SHARED=1 (the gateway then acts as the user named in each call: see
@@ -26,6 +32,7 @@ import os
 import re
 import socket
 import ssl
+import secrets
 import sys
 import time
 import urllib.error
@@ -35,8 +42,9 @@ import zlib
 import gw_auth
 from jamai import analysis_catalog, analysis_results
 
+LOCAL_CMDS = ("script", "token", "user-token", "rotate")     # need no dashboard token
 T = gw_auth.dashboard_token()
-if not T and (sys.argv[1:2] or [""])[0] != "script":
+if not T and (sys.argv[1:2] or [""])[0] not in LOCAL_CMDS:
     raise SystemExit("set LQCDMCP_TOKEN (dashboard Bearer token from the LQCDMCP UI)")
 B = "https://lqcdmcp.jlab.org:8000/jlab/"
 USER = gw_auth.USER
@@ -165,10 +173,20 @@ def _payload():
             for k, v in files.items()}
 
 
+def _auth_exports():
+    """The gateway's token and admin hashes for the job script. The secrets
+    themselves stay in gw_auth.SECRETS_DIR (mode 600) and never travel; the
+    gateway compares sha256(bearer) with the hash and never asks the dashboard."""
+    return (f"export JAM_GW_TOKEN_SHA256={gw_auth.sha256(gw_auth.ensure_secret('token'))}\n"
+            f"export JAM_GW_ADMIN_SHA256={gw_auth.sha256(gw_auth.ensure_secret('admin'))}\n"
+            "export JAM_GW_DASHBOARD_AUTH=0\n")
+
+
 def build_slurm():
     """Job script that boots the CURRENT gateway with its panel and campaign
-    package, under the launching user's account. It carries no credential: the
-    gateway checks callers' dashboard tokens with the dashboard."""
+    package, under the launching user's account. It carries no credential, only
+    the sha256 of the gateway's token and admin secret (and, for a shared
+    gateway, of each person's token), which the gateway compares bearers with."""
     # No --nodes=1: Jie Chen (2026-10-22) pointed to it as what kept gateways
     # from sharing the mcp node; --ntasks=1 already keeps the job on one node.
     sbatch = [f"#SBATCH --time={HOURS:02d}:00:00",
@@ -192,9 +210,24 @@ def build_slurm():
             f"for rel, b in json.loads({json.dumps(json.dumps(_payload()))}).items():\n"
             "    os.makedirs(os.path.dirname(os.path.join(app, rel)), exist_ok=True)\n"
             "    open(os.path.join(app, rel), 'wb').write(zlib.decompress(base64.b64decode(b)))\n"
+            # A shared gateway's per-person token hashes go into site.json "users".
+            f"users = json.loads({json.dumps(json.dumps(gw_auth.load_users() if SHARED else {}))})\n"
+            "if users:\n"
+            "    sp = os.path.join(d, 'site.json')\n"
+            "    try:\n"
+            "        site = json.load(open(sp))\n"
+            "    except Exception:\n"
+            "        site = {}\n"
+            "    site = site if isinstance(site, dict) else {}\n"
+            "    site['users'] = users\n"
+            "    fd = os.open(sp + '.tmp', os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)\n"
+            "    with os.fdopen(fd, 'w') as fh:\n"
+            "        json.dump(site, fh, indent=1)\n"
+            "    os.replace(sp + '.tmp', sp)\n"
             "PYDEC\n"
             f"cd {APP_DIR}\n"
             f"export JAM_GW_NAME={MCP_NAME}\n{'export JAM_GW_SHARED=1' + chr(10) if SHARED else ''}"
+            + _auth_exports() +
             "# supervisor: keep the JOB alive for the whole window; the gateway\n"
             "# may crash or be hot-redeployed inside it while the setsid'd\n"
             "# ControlMasters (in ~/fm-cm) persist and get reused without OTP\n"
@@ -205,7 +238,40 @@ def build_slurm():
 
 
 def main():
-    if (sys.argv[1:2] or [""])[0] == "script":
+    cmd0 = (sys.argv[1:2] or [""])[0]
+    if cmd0 == "token":
+        tok, path = gw_auth.ensure_secret("token"), gw_auth.secret_path("token")
+        print(f"gateway token of {MCP_NAME}: {path} (mode 600; sha256 {gw_auth.sha256(tok)[:12]}...)\n"
+              f"  export JAM_GW_TOKEN=\"$(cat {path})\"\n"
+              + (f"  {tok}" if "--show" in sys.argv else "(--show prints the token itself)"))
+        return
+    if cmd0 == "user-token":
+        sub, name = (sys.argv[2:3] or [""])[0], (sys.argv[3:4] or [""])[0].strip().lower()
+        users = gw_auth.load_users()
+        if sub == "list":
+            print("\n".join(sorted(users)) or "(no user tokens)")
+        elif sub == "add" and re.fullmatch(r"[a-z0-9._-]{1,32}", name):
+            tok = secrets.token_urlsafe(32)
+            users[name] = gw_auth.sha256(tok)
+            gw_auth.save_users(users)
+            print(f"token for {name} (hand it over privately; only its sha256 is stored):\n  {tok}\n"
+                  "It takes effect at the next launch with JAM_GW_SHARED=1.")
+        elif sub == "revoke" and name in users:
+            del users[name]
+            gw_auth.save_users(users)
+            print(f"revoked {name}; it takes effect at the next launch.")
+        else:
+            raise SystemExit("usage: redeploy_jam.py user-token add|revoke|list <name>")
+        return
+    if cmd0 == "rotate":
+        kind = (sys.argv[2:3] or [""])[0]
+        if kind not in ("token", "admin"):
+            raise SystemExit("usage: redeploy_jam.py rotate token|admin")
+        gw_auth.rotate_secret(kind)
+        print(f"new {kind} secret in {gw_auth.secret_path(kind)}. Relaunch the gateway for it to take effect "
+              "(python3 redeploy_jam.py cancel, then python3 deploy_and_verify.py).")
+        return
+    if cmd0 == "script":
         # For the dashboard page: paste this file's content as the submission
         # script and use the same MCP name.
         path = f"{MCP_NAME}.slurm"
