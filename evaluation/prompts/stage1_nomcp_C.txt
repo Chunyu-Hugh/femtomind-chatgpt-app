@@ -1,0 +1,31 @@
+Perform a campaign using the same settings and datasets as the JAM24 analysis.
+Submit one replica to the farm.
+
+What you have:
+- The JAM24 paper: ./JAM24_paper.pdf
+- The configuration file of the published JAM24 fit, as its authors ran it:
+    ./reference/jam24_input.py   (FitPack input format)
+- Written clarifications from the JAM24 authors about the fit's configuration:
+    ./reference/jam24_author_clarifications.txt
+- The JLab farm, through these three commands (the only way to reach it):
+    /home/temp-user/bench_nomcp/bin/farm '<command>'        run a bash command on the farm
+    /home/temp-user/bench_nomcp/bin/farm-submit <script>    submit a Slurm job script
+    /home/temp-user/bench_nomcp/bin/farm-status             your job's queue state and log
+  Commands and jobs run inside the apptainer image that FitPack jobs use
+  (Python with FitPack's dependencies), starting in your working directory.
+  farm-submit accepts #SBATCH --time, --mem, --cpus-per-task, --partition and
+  --job-name; farm-status shows the job's state and the end of its log.
+- On the farm:
+  - Your working directory, the only writable place:
+    /w/ceph24/JAM/chunyu/bench_nomcp/@RUN@
+  - FitPack, the JAM fitting code: /w/ceph24/JAM/chunyu/bench_nomcp/@RUN@/fitpack
+    Its database/ directory holds the experimental data. Its examples/
+    directory has input file templates; edit one with the paper's settings.
+  - Interpolation grids (the checkout only has grids/lqcd_itd), read-only:
+    /w/ceph24/JAM/share/fitpack_grids/
+  - LHAPDF tables, read-only: /w/ceph24/JAM/apps/lhapdf_tables/more/more1
+  Everything outside your working directory is read-only; copy what you need to change.
+
+Don't ask me questions; decide everything yourself.
+Submit exactly one job. Stop once it is accepted, and report the job id
+and the files you created.

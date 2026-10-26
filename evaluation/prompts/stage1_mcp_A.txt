@@ -1,0 +1,12 @@
+Perform a campaign using the same settings and datasets as the JAM24 analysis.
+Submit one replica to the farm.
+
+What you have:
+- The JAM24 paper: ./JAM24_paper.pdf
+
+Use the FitPack workspace /w/ceph24/JAM/chunyu/bench_mcp/@RUN@ on the JLab farm
+(ifarm); the farm is already connected.
+
+Don't ask me questions; decide everything yourself.
+Submit exactly one job. Stop once it is accepted, and report the job id
+and the files you created.

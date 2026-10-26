@@ -1,0 +1,15 @@
+{
+ "generated_at": "2026-10-26T14:18:52Z",
+ "pilot": {
+  "mcp": "59723c36df7a42c7de39b1d78701a6cab74e8e738dc42a1c84a3416d375d9747",
+  "nomcp": "887ceb232a96192d0d857b00bc92529bb5dce1407fdd6b68fe64bdadc52c01f2"
+ },
+ "prompts": {
+  "stage1_mcp_A.txt": "d075c33485ccb62af108be073683036dfa2cb4fb1f140d343c2e6aec7c072d68",
+  "stage1_mcp_B.txt": "1ec44694012cb709a82558e082e827840defb62112dd548b78ee1dc7f62bd2c1",
+  "stage1_mcp_C.txt": "d973184809c4636df76adabe94e2b47bfc909eafeafad65afaf72a2008e83d68",
+  "stage1_nomcp_A.txt": "887ceb232a96192d0d857b00bc92529bb5dce1407fdd6b68fe64bdadc52c01f2",
+  "stage1_nomcp_B.txt": "ae96ed9c6464fc142c11e2e50868ec300d4b3d390f585d7ba725eb2abe8eb2f9",
+  "stage1_nomcp_C.txt": "9f418811089aeab2dbab0189a1e08b5bc22529cfc2aa811f7fc967d3248f66a8"
+ }
+}
