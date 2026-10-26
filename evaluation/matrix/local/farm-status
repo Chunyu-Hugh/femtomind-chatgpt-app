@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# The agent's way to see its job's queue state and log.
+set -euo pipefail
+here=$(dirname "$(readlink -f "$0")")
+ssh -S "$(cat "$here/SOCK")" -o BatchMode=yes ifarm-tunnel \
+  "/w/ceph24/JAM/chunyu/bench_eval/bin/status.sh $(cat "$here/RUN")" </dev/null 2> >(grep -v syscshrc >&2)

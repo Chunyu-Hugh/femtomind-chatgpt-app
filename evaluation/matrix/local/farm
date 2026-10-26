@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# The agent's way to run a command on the farm: inside the sandbox of the
+# current run (named in RUN next to this file). The command travels base64-
+# encoded, so the farm's login shell never parses it. SOCK next to this file
+# names the ControlMaster socket (written by box.sh install).
+set -euo pipefail
+here=$(dirname "$(readlink -f "$0")")
+[ $# -eq 1 ] || { echo "usage: farm '<command>'" >&2; exit 2; }
+printf %s "$1" | base64 -w0 | ssh -S "$(cat "$here/SOCK")" -o BatchMode=yes ifarm-tunnel \
+  "/w/ceph24/JAM/chunyu/bench_eval/bin/exec.sh $(cat "$here/RUN")" 2> >(grep -v syscshrc >&2)
