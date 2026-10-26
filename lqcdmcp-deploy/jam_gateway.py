@@ -2906,9 +2906,10 @@ apptainer exec {binds} \\
   --env JAMAI_FITPACK_COMMIT="$FITPACK_COMMIT" --env JAMAI_FITPACK_CHANGED_FILES="$FITPACK_CHANGED" \\
   --env JAMAI_IMAGE={_shq(c["image"])} --env JAMAI_IMAGE_REALPATH="$IMAGE_REAL" \\
   --env JAMAI_MAX_NFEV={norm["job"]["maxIterations"]} --env JAMAI_METHOD={norm["job"]["optimizer"]} \\
+  --env PYTHONUNBUFFERED=1 \\
   {lhapdf_env}{checkpoint_env}--env MPLCONFIGDIR={qs}/.matplotlib \\
   {c["image"]} \\
-  python3 -m modules.jam.jamai.run_replica --manifest {qs}/manifest.resolved.yaml \\
+  python3 -u -m modules.jam.jamai.run_replica --manifest {qs}/manifest.resolved.yaml \\
     --output {qo}/replica_${{REPLICA_ID}} --replica "${{REPLICA_ID}}" -n {sl["cpus"]}{resume_arg}
 """
 
@@ -4402,7 +4403,11 @@ def _submit_campaign(u, card, confirm):
               "partition": norm["slurm"]["partition_effective"], "campaign_folder": croot,
               "log_path": f"{log_prefix}_{m.group(1)}_<replica>.out",
               "error_log_path": f"{_campaign_error_log_prefix(u, folder)}_{m.group(1)}_<replica>.err", "summary": v["summary"],
-              "reproduce_file": f"{croot}/reproduce.json", **_reproduce_note(why)}
+              "reproduce_file": f"{croot}/reproduce.json",
+              "next": "campaign_status(collection_id, wait_for='fitting') waits up to 40 s and says whether a "
+                      "replica is loading, optimizing or failed before the fit; FitPack loads data and grids "
+                      "for several minutes first, so call it again while condition_met is false.",
+              **_reproduce_note(why)}
     _remember(u, "SUBMIT", v["confirmation_phrase"], result)
     return result
 
@@ -4659,7 +4664,49 @@ QUEUE_UNKNOWN_REFUSED = "Could not read the Slurm queue, so nothing was changed.
 # Any other status, or a summary that cannot be read, is 'failed' too. The
 # status, postprocess and log snippets all start with it, so they always agree.
 _REPLICA_STATE = r'''
-import json, os
+import json, os, subprocess, time
+STALL_S = 900           # a running replica whose progress file is older than this is 'stalled'
+ENDED_HINT = {
+    'OUT_OF_MEMORY': 'Slurm ended the task: out of memory. rerun_replicas with a larger mem (e.g. mem=16G) runs it again.',
+    'TIMEOUT': 'Slurm ended the task: time limit. rerun_replicas(resume=true) continues it from its checkpoint.',
+    'CANCELLED': 'The task was cancelled (scancel).',
+    'FAILED': 'Slurm reports the task failed (non-zero exit); its log says why.',
+    'NODE_FAIL': 'The node failed; rerun_replicas runs the replica again.',
+}
+def progress(stage, i, slurm_state):
+    # What a running replica is doing, from checkpoints/replica_<i>/current_progress.json,
+    # which the runtime rewrites every few seconds: loading (no file yet: FitPack
+    # reads data and grids for minutes), optimizing (evaluations, objective) or
+    # stalled (nothing written for STALL_S). None unless Slurm runs the task.
+    if slurm_state not in ('RUNNING', 'COMPLETING'):
+        return None
+    path = os.path.join(stage, 'checkpoints', 'replica_%d' % i, 'current_progress.json')
+    try:
+        with open(path) as fh:
+            p = json.load(fh)
+        age = time.time() - float(p.get('updated_at') or os.path.getmtime(path))
+    except (OSError, ValueError, TypeError):
+        return {'phase': 'loading', 'evaluations': None, 'objective': None, 'age_s': None,
+                'note': 'no progress file yet: FitPack is still loading data and grids (several minutes)'}
+    phase = 'stalled' if age > STALL_S else ('optimizing' if p.get('status') in (None, 'optimizing') else str(p.get('status')))
+    return {'phase': phase, 'evaluations': p.get('evaluations'), 'objective': p.get('objective'), 'age_s': round(age)}
+def sacct_states(job_ids):
+    # {(job, task): {state, exit, elapsed}} of the array tasks Slurm has ended; {} when sacct is unavailable.
+    out = {}
+    if not job_ids:
+        return out
+    try:
+        r = subprocess.run(['sacct', '-n', '-P', '-X', '-j', ','.join(sorted(job_ids)), '-o', 'JobID,State,ExitCode,Elapsed'],
+                           capture_output=True, text=True, timeout=30)
+        for line in r.stdout.splitlines():
+            f = (line.strip().split('|') + ['', '', ''])[:4]
+            if '_' in f[0]:
+                job, task = f[0].split('_', 1)
+                if task.isdigit() and f[1]:
+                    out[(job, int(task))] = {'state': f[1].split()[0], 'exit': f[2], 'elapsed': f[3]}
+    except Exception:
+        pass
+    return out
 def no_data(s):
     # FitPack's 'success' for a fit over zero points: no chi2 at all.
     return s.get('status') == 'success' and s.get('chi2_total') is None
@@ -4701,22 +4748,40 @@ for i in range(1, total + 1):
 # ended are left out.
 ended = {'COMPLETED', 'CANCELLED', 'FAILED', 'TIMEOUT', 'PREEMPTED', 'BOOT_FAIL', 'NODE_FAIL',
          'DEADLINE', 'OUT_OF_MEMORY', 'REVOKED', 'SPECIAL_EXIT'}
-states, queued_jobs = {}, set()
+states, queued_jobs, tasks = {}, set(), {}
 ids = {str(j['job_id']) for j in jobs}
+main_ids = {str(j['job_id']) for j in jobs if not j.get('reproduce')}   # reproductions write elsewhere
 try:
-    q = subprocess.run(['squeue', '-h', '-r', '-u', __USER__, '-o', '%F|%T'], capture_output=True,
+    q = subprocess.run(['squeue', '-h', '-r', '-u', __USER__, '-o', '%F|%K|%T'], capture_output=True,
                        text=True, timeout=30) if ids else None
     if q and q.returncode != 0:
         raise RuntimeError(q.stderr)
     for line in (q.stdout if q else '').splitlines():
-        job, _, s = line.strip().partition('|')
+        job, task, s = (line.strip().split('|') + ['', ''])[:3]
         if job in ids and s and s not in ended:
             states[s] = states.get(s, 0) + 1
             queued_jobs.add(job)
+            if job in main_ids and task.isdigit():
+                tasks[int(task)] = s
 except Exception:
-    states, queued_jobs = None, set()
+    states, queued_jobs, tasks = None, set(), None
+# What the running replicas are doing, and how Slurm ended those that left no result.
+phases, running = {}, []
+for i, s in sorted((tasks or {}).items()):
+    p = progress(stage, i, s)
+    if p:
+        phases[p['phase']] = phases.get(p['phase'], 0) + 1
+        if len(running) < 5:
+            running.append(dict(p, replica=i))
+ended_without_result = {}
+if states is not None and done + len(tasks or {}) < total:
+    for (job, task), rec in sacct_states(main_ids).items():
+        if 1 <= task <= total and task not in (tasks or {}) and not os.path.isfile(
+                os.path.join(stage, 'current', 'replica_%d' % task, 'fit_summary.json')):
+            ended_without_result[rec['state']] = ended_without_result.get(rec['state'], 0) + 1
 print(json.dumps({'finished': done, 'succeeded': ok, 'not_fitted': not_fitted, 'failed': done - ok - not_fitted,
-                  'queue': states, 'queued_jobs': sorted(queued_jobs)}))
+                  'queue': states, 'queued_jobs': sorted(queued_jobs), 'phases': phases,
+                  'running_replicas': running, 'ended_without_result': ended_without_result}))
 '''
 
 
@@ -4787,7 +4852,31 @@ def list_campaigns(username=""):
     return res
 
 
-def campaign_status(collection_id="", username=""):
+def _campaign_verdict(prog, total):
+    """One word for where a campaign stands, from _campaign_progress's answer."""
+    queue, phases = prog.get("queue"), prog.get("phases") or {}
+    queued = None if queue is None else sum(queue.values())
+    if phases.get("optimizing"):
+        return "fitting"
+    if prog.get("ended_without_result"):
+        return "failed_before_fit"
+    if queued == 0 and prog.get("finished") is not None and prog["finished"] >= total:
+        return "finished"
+    if phases.get("stalled"):
+        return "stalled"
+    if phases.get("loading"):
+        return "loading"
+    if queued:
+        return "queued"
+    return "unknown" if queued is None else ("finished" if prog.get("finished") else "no_output")
+
+
+def campaign_status(collection_id="", username="", wait_for="", timeout=None):
+    """One campaign's state. wait_for='fitting' waits (up to timeout s, at most
+    JOB_WAIT) until a replica is optimizing or something failed before the fit;
+    'finished' until nothing of it is queued; 'change' until the state changes.
+    One call instead of a polling loop: FitPack loads data and grids for
+    several minutes before the first optimizer step."""
     u, err = _need_user(username)
     if err:
         return err
@@ -4795,14 +4884,42 @@ def campaign_status(collection_id="", username=""):
     if not e:
         return {"status": "error", "code": "NOT_FOUND", "message": f"No campaign {collection_id!r}."}
     collection_id = e["collection_id"]      # a campaign name resolves to its id
-    prog = _campaign_progress(u, e)
+    want = str(wait_for or "").strip().lower()
+    if want not in ("", "fitting", "finished", "change"):
+        return _refuse("BAD_ARGUMENT", "wait_for: 'fitting', 'finished', 'change', or nothing")
+    try:
+        limit = min(max(float(JOB_WAIT if timeout in (None, "") else timeout), 0.0), float(JOB_WAIT))
+    except (TypeError, ValueError):
+        return _refuse("BAD_ARGUMENT", f"timeout: seconds, at most {JOB_WAIT}")
+    total = int(e.get("replicas") or 0)
+    t0 = time.monotonic()
+    first = None
+    while True:
+        prog = _campaign_progress(u, e)
+        verdict = _campaign_verdict(prog, total)
+        snapshot = json.dumps({k: prog.get(k) for k in ("finished", "queue", "phases", "ended_without_result")}, sort_keys=True)
+        first = first or snapshot
+        met = ((want == "fitting" and verdict in ("fitting", "failed_before_fit", "finished", "stalled"))
+               or (want == "finished" and verdict in ("finished", "failed_before_fit", "no_output"))
+               or (want == "change" and snapshot != first))
+        if not want or met or time.monotonic() - t0 + 5 > limit:
+            break
+        time.sleep(5)
     log_patterns = _campaign_log_patterns(u, e)
     # A replica's log is under the job whose first-last range holds the replica.
     out = {"status": "ok", "collection_id": collection_id, "replicas": e["replicas"],
-           "jobs": e.get("jobs"), **prog,
+           "jobs": e.get("jobs"), **prog, "verdict": verdict,
            "campaign_folder": f"{_workspace(u)}/{CAMPAIGNS_DIR}/{e['campaign_folder']}",
            "log_pattern": log_patterns["stdout"], "error_log_pattern": log_patterns["stderr"],
            "summary": _card_summary(e["input_card"])}
+    if want:
+        out.update(waited_for=want, condition_met=bool(met), waited_s=round(time.monotonic() - t0))
+        if not met:
+            out["message"] = (f"Waited {out['waited_s']} s; the campaign is {verdict}. Call again with the same "
+                              "wait_for to keep waiting (FitPack loads for several minutes before it optimizes).")
+    if verdict == "failed_before_fit":
+        out["message"] = ("Slurm ended some tasks before FitPack wrote a result (ended_without_result says how); "
+                          "campaign_logs shows each one's error and what helps.")
     if prog.get("queue") is None:
         out["note"] = QUEUE_UNKNOWN
     return out
@@ -11313,6 +11430,7 @@ try:
             queue[int(task)] = s
 except Exception:
     queue, queue_read = {}, False
+ended_tasks = sacct_states({str(j.get('job_id')) for j in jobs if not j.get('reproduce')}) if queue_read else {}
 
 def clip(line):
     return line if len(line) <= WIDTH else line[:WIDTH] + ' ...'
@@ -11431,6 +11549,16 @@ def row_of(i, scan):
            'log_exists': bool(existing_logs), 'has_traceback': False}
     if state in ('running', 'queued'):
         row['slurm_state'] = queue[i]
+    if state == 'running':
+        p = progress(stage, i, queue.get(i))
+        if p:
+            row['phase'], row['progress'] = p['phase'], p
+    if state == 'no_output' and job and (job, i) in ended_tasks:
+        # Slurm ended the task before FitPack wrote a result: say how, and what helps.
+        rec = ended_tasks[(job, i)]
+        state = row['state'] = 'failed'
+        row['slurm_state'], row['elapsed'] = rec['state'], rec.get('elapsed')
+        row['error'] = ENDED_HINT.get(rec['state'], 'Slurm ended the task: ' + rec['state'])
     if row['log_exists']:
         row['has_traceback'] = None
         if scan and time.time() < deadline:
@@ -11499,8 +11627,11 @@ _LOG_MEANING = {
     "not_fitted": "The optimization failed, so FitPack only computed chi2 at the starting values: this "
                   "replica has no fitted parameters.",
     "failed": "The replica ended without success: its fit_summary.json reports a failure, has no chi2 (no "
-              "data point entered the fit) or cannot be read.",
-    "running": "The replica is running.",
+              "data point entered the fit) or cannot be read; or Slurm ended the task before any result "
+              "(slurm_state: OUT_OF_MEMORY, TIMEOUT, CANCELLED, FAILED), in which case error says what helps.",
+    "running": "The replica is running; phase says whether it is still loading data and grids (several "
+               "minutes), optimizing (evaluations and objective in progress) or stalled (no progress "
+               "written for 15 minutes).",
     "queued": "The replica is waiting in the Slurm queue.",
     "no_output": "The replica wrote no fit_summary.json and nothing of it is queued: it stopped before "
                  "writing results (an error, the time limit, or it was cancelled).",
@@ -12037,12 +12168,22 @@ TOOLS = {
     "campaign_status": {
         "desc": "One campaign's Slurm state and replica progress: finished, succeeded (really fitted), "
                 "not_fitted (the optimization failed, so only chi2 at the starting values was computed) "
-                "and failed (queue is null when squeue cannot be read), its folder, and log_pattern: the "
-                "stdout path and error_log_pattern: the separate stderr path. campaign_logs reads both "
-                "streams and shows why replicas did not fit or failed.",
-        "schema": {"type": "object", "properties": {"collection_id": {"type": "string", "description": COLLECTION_ARG}},
+                "and failed (queue is null when squeue cannot be read); phases of the running replicas "
+                "(loading: FitPack reads data and grids for several minutes; optimizing: evaluations and "
+                "objective; stalled); ended_without_result: how Slurm ended tasks that left nothing "
+                "(OUT_OF_MEMORY, TIMEOUT, ...); a one-word verdict (queued, loading, fitting, stalled, "
+                "failed_before_fit, finished); its folder; log_pattern (stdout) and error_log_pattern "
+                "(stderr). To know whether a submitted campaign really fits, call once with "
+                "wait_for='fitting': it waits up to 40 s and answers when a replica optimizes or something "
+                "failed before the fit; call again with the same wait_for while condition_met is false "
+                "instead of polling other tools. wait_for='finished' waits until nothing is queued. "
+                "campaign_logs shows each replica's phase, error and what helps.",
+        "schema": {"type": "object", "properties": {"collection_id": {"type": "string", "description": COLLECTION_ARG},
+                                                    "wait_for": {"type": "string", "enum": ["", "fitting", "finished", "change"],
+                                                                 "description": "wait (at most timeout s, 40 by default) until a replica is optimizing or a task failed before the fit; until nothing is queued; or until the state changes"},
+                                                    "timeout": {"type": "number", "description": "seconds to wait, at most 40"}},
                    "required": ["collection_id"]},
-        "fn": lambda a: campaign_status(a.get("collection_id", ""))},
+        "fn": lambda a: campaign_status(a.get("collection_id", ""), wait_for=a.get("wait_for", ""), timeout=a.get("timeout"))},
     "postprocess_campaign": {
         "desc": "Postprocess: aggregate the finished replicas into the campaign fit summary. Only the "
                 "replicas that really fitted enter the statistics; the ones that did not fit (only chi2 "
