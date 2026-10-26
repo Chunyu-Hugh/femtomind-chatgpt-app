@@ -12812,97 +12812,263 @@ _CATALOG_PARAGRAPH = (
     "are opt-in. Follow pagination; use current requirements rather than historical unresolved notes. "
     "Only follow the campaign workflow below when the user requests a fitting campaign.\n"
     if _CATALOG_TOOLS_AVAILABLE else "")      # a gateway without the catalog tools never mentions them
+# ── procedures and conventions (the knowledge layer) ────────────────────────
+#
+# The step-by-step procedures and the JAM conventions live here, not in the
+# instructions every session reads: a client fetches the one it needs with
+# jam_guide(topic), and MCP prompts of the same names exist for hosts that
+# offer prompts. INSTRUCTIONS stays short: identity, credentials, the rules
+# every call obeys, and where to find the rest.
+
+_OBJECTS_SENTENCE = ("Unpolarized PDF, Pion PDF and the fragmentation functions (pion, kaon, total hadron), alone or "
+                     "combined, as campaign_options lists them." if FF_EXECUTION_ENABLED else
+                     "Unpolarized PDF, Pion PDF, or both.")
+_REVIEW_SENTENCE = ("SIDIS (PDFs plus FFs) and SIA (FFs only) campaigns are fitted like the others." if FF_EXECUTION_ENABLED else
+                    "SIDIS/SIA datasets are configuration-only: validate_campaign returns an input fragment, "
+                    "configuration_valid and fit_ready=false; do not attempt submission or claim FF fits are implemented.")
+
+PROCEDURES = {
+    "new_campaign": {
+        "description": "Compose, validate and submit a fitting campaign with the user, one question at a time.",
+        "arguments": [],
+        "text": (
+            "Go one question at a time, in this order. Every setting shows its library value; the user keeps or "
+            "changes it. Never preselect reactions or datasets; never pick a value for the user.\n"
+            "1. HPC: check_hpc_connection; ask which HPC (its 'sites'). If not connected, the user signs in on the "
+            "panel's Connect tab: give the link (get_console tab=connect) and wait. Never ask for credentials in chat.\n"
+            "2. Workspace: check_project lists the folders in the user's area and what the workspace has; ask which "
+            "to use (use_workspace) or create a new one (setup_workspace; it clones the FitPack ai branch). A clone "
+            "that needs a GitHub token: send the user to the panel's Project tab (the link in the result), never ask "
+            "for a token in chat. Campaign runner or template marked missing with fix: use_ai_branch means the "
+            "checkout is not on the ai branch: offer use_ai_branch or a new workspace. A missing item without a fix "
+            "(a folder that no longer exists, an ai-branch checkout without examples/input02.py): give the user its "
+            "action.\n"
+            f"3. Non-perturbative objects and parameters: {_OBJECTS_SENTENCE} campaign_options returns each object's "
+            "library (section='parameters', object_type=<object> for the full table): FREE/FIXED/tied, value, min, max. "
+            "Pion follows its final-fit reference with strictly one shape; never add second-shape pion parameters. "
+            "Fitted pion temporarily selects DIS 0, including combined campaigns; otherwise 1. Use "
+            "objects:[{type,parameters},...] (legacy object is still accepted). Leading neutron adds the fitted "
+            "p->pi,n companion and a fixed proton pdf unless pdf is selected. Ask which to change; only changed "
+            "rows are written into the card. A parameter switched to FREE needs a min and max from the user; "
+            "equal_to makes a parameter follow another of the same object. The composer enables only the first "
+            "FF shape by default; the published JAM24 fit uses both (campaign_card_from_catalog gives that card).\n"
+            "4. Reactions: offer the enabled, compatible choices from campaign_options for the selected objects; ask "
+            "which to include.\n"
+            "5. Datasets and cuts: campaign_datasets per reaction, grouped by experiment; ask which ids. A dataset "
+            "listed with a 'normalization' has a normalization parameter: offer to keep it, change its value or "
+            "range, set it FREE or FIXED, or make it equal to another selected dataset's (normalizations in the "
+            "card). Show the reaction's cuts (e.g. Q2>1.69, W2>10) and ask whether to keep them; preserve "
+            "dataset-specific cut mappings, including distinct H1 and ZEUS thresholds.\n"
+            "6. QCD settings: order, Q20, TMC, higher twist, DGLAP mode, alphaS mode, positivity (pdf, ffpion, ffkaon, "
+            "ffhadron), betaVersion and siaVersion.\n"
+            "7. Job config: campaign name, replicas, parameter initialization (library values or random within "
+            "bounds; priorSource for replica starts, see jam_guide priors_and_checkpoints), inference (ensemble of "
+            "pseudo-data replicas or central values), tolerance, max iterations, optimizer, and the Slurm resources "
+            "per replica (time, memory, cpus, partition or auto): slurm_partitions explains the choice and "
+            "validate_campaign's slurm_recommendation sizes them for the fit (jam_guide slurm_sizing).\n"
+            f"8. Review: {_REVIEW_SENTENCE} validate_campaign; show the summary, its warnings (they never block; a "
+            "card that keeps no data point at all is refused: change the cuts or datasets with the user) and the "
+            "Slurm array script exactly as returned (not shortened); submit with submit_campaign(card, "
+            "confirm=<phrase>) only after the user agrees. Then campaign_status(collection_id, wait_for='fitting').")},
+    "reproduce_published": {
+        "description": "Run a published analysis from the catalog (JAM24) as a campaign, without copying values by hand.",
+        "arguments": [{"name": "analysis_id", "description": "JAM24.final (the published configuration) or JAM24.current", "required": False}],
+        "text": (
+            "1. list_analysis_catalog. JAM24.final is the published configuration (the paper's fit, author-confirmed); "
+            "JAM24.current is the same fit on the updated COMPASS SIDIS workbooks (the 1105-series datasets). 'The "
+            "JAM24 analysis' means .final; say which one you use.\n"
+            "2. campaign_card_from_catalog(analysis_id, replicas, overrides) gives the complete card: every parameter "
+            "with bounds and ties, both FF shapes (215 free parameters), the 98 datasets with normalizations and "
+            "cuts, the author-confirmed QCD settings and positivity, Slurm resources sized for the fit. Never copy "
+            "values from get_analysis_catalog into a card by hand. overrides changes job, slurm, qcd, parameters, "
+            "datasets or reactions; say what you changed.\n"
+            "3. validate_campaign(card). Read catalog_comparison: verdict matches means the card is the published "
+            "configuration up to what the composer cannot express (the card's notes list it, e.g. the jet x<1 "
+            "filter, which removes nothing); differences lists anything else. Show the user the summary, the "
+            "slurm_recommendation and the script.\n"
+            "4. submit_campaign(card, confirm=<phrase>) only after the user agrees; then campaign_status(collection_id, "
+            "wait_for='fitting') until condition_met (FitPack loads data and grids for several minutes).\n"
+            "5. Afterwards compare with the archive: get_analysis_fit_statistics(analysis_id) gives the published "
+            "per-dataset chi2 (chi2 of the mean prediction, see jam_guide chi2_conventions); analyze_by_experiment "
+            "gives the campaign's. {analysis_id}")},
+    "diagnose_replicas": {
+        "description": "Find out why replicas did not fit, failed or stalled, and what to do about it.",
+        "arguments": [{"name": "collection_id", "description": "the campaign (name or id)", "required": False}],
+        "text": (
+            "1. campaign_status(collection_id): verdict (queued, loading, fitting, stalled, failed_before_fit, "
+            "finished), phases of the running replicas, ended_without_result (how Slurm ended tasks that left "
+            "nothing). Loading takes several minutes; stalled means no progress written for 15 minutes.\n"
+            "2. campaign_logs(collection_id): the overview counts fitted, not_fitted (the optimizer failed, chi2 at "
+            "the starting values only), failed, running, queued, no_output; replica_detail has the first problem "
+            "replica's Python error and log tail. campaign_logs(collection_id, replica=N) for one replica.\n"
+            "3. Decide from the error: 'No data point entered the fit' (NO_DATA): change the cuts or datasets, "
+            "rerunning does not help. OUT_OF_MEMORY: rerun_replicas(replicas, mem='16G'). TIMEOUT: "
+            "rerun_replicas(replicas, resume=true) continues from the checkpoint. not_fitted with an optimizer "
+            "message: consider initialization random_within_bounds, more iterations or a looser tolerance, and say "
+            "so to the user. A traceback: read it; a missing data column or file is a workspace problem "
+            "(check_project). Every rerun needs its phrase; afterwards postprocess_campaign.\n"
+            "4. Explain the error to the user in plain words, and what you propose. {collection_id}")},
+    "analyze_campaign": {
+        "description": "Fit summary, chi2 tables, data vs theory and PDF/FF plots of a campaign.",
+        "arguments": [{"name": "collection_id", "description": "the campaign (name or id)", "required": False}],
+        "text": (
+            "1. postprocess_campaign(collection_id) once replicas finish (campaign_summary's note says when it is "
+            "stale). 2. campaign_summary: the fit summary; see jam_guide chi2_conventions for what the numbers are "
+            "(point-only chi2 of the mean prediction; penalties separate). 3. analyze_by_experiment: the per-dataset "
+            "table (npts, chi2, chi2_red, z_score, normalizations) and data vs theory charts; pass the user's words "
+            "as datasets and experiments. 4. Figures: get_thesis_plot(plot_type experimental|pdf|ff) for native PNGs "
+            "in the conversation; campaign_pdf_plots / campaign_ff_plots / analyze_by_experiment(plot=true) for the "
+            "interactive app. 5. replicas selects fitted replicas for statistics (best N, chi2_max, sigma outlier "
+            "cut, exclude, only); say how many were kept and why. 6. Interpret with jam_guide "
+            "interpretation_thresholds, and compare with the published JAM24 values "
+            "(get_analysis_fit_statistics) before calling a difference a problem. A reply with status running "
+            "carries a job_id: analysis_result(job_id) until done, never restart the analysis. {collection_id}")},
+    "verify_campaign": {
+        "description": "How a fit was made (reproduce.json) and how to run it again exactly.",
+        "arguments": [{"name": "collection_id", "description": "the campaign (name or id)", "required": False}],
+        "text": (
+            "Each campaign folder holds reproduce.json (per submission: the FitPack commit and any uncommitted "
+            "changes, the image, the JAMAI files, input hashes and every replica's seeds, with how_to_reproduce) and "
+            "each replica folder replica_provenance.json (the commit it actually ran with, the node's CPU); fs_read "
+            "them when the user asks how a fit was made. reproduce_campaign(collection_id, replicas) runs the "
+            "recorded replicas again: in the live workspace when it still is the recorded state, else in a rebuilt "
+            "clone at the recorded commit, on the original node type (results are bit-identical only there). It "
+            "returns a plan and a phrase; the confirmed run may take minutes (poll analysis_result). Later "
+            "reproduce_campaign(collection_id, check='latest') says per replica identical or differs (with the "
+            "differing keys and both hosts). A replica produced by a checkpoint restart (rerun resume=true) differs "
+            "by design, since it did not run from its seeds. {collection_id}")},
+    "slurm_job": {
+        "description": "Any other cluster job: draft, test, confirm, submit.",
+        "arguments": [],
+        "text": (
+            "slurm_partitions for the resources; draft_slurm_job with the resources agreed with the user (it runs "
+            "sbatch --test-only, nothing is queued); show the returned script exactly as written; ask the user; then "
+            "submit_slurm_job with the phrase.")},
+}
+
+GUIDE = {
+    "chi2_conventions": (
+        "Reported chi2 is the point term only: residual = (central data - prediction)/alpha, with prediction = "
+        "theory/normalization + shift, the correlated systematics profiled against the central data. The "
+        "correlated-nuisance and normalization penalties are reported separately and never inside chi2; their sum "
+        "with the point term is the 'objective', a diagnostic. The ensemble chi2 (campaign_summary "
+        "ensemble_central_chi2, analyze_by_experiment chi2 and chi2_red) first averages the predictions over the "
+        "selected replicas point by point, then sums the squared residuals; it is not the mean of per-replica chi2 "
+        "(that is mean_total_chi2, chi2_basis=central_data_point_residuals). The archived JAM24 statistics follow "
+        "the same convention (chi2_data is the chi2 of the mean prediction; mean_replica_data_chi2_diagnostic the "
+        "mean over replicas). chi2_red = chi2/npts: no parameter subtraction, no penalties. z_score is the chi2 of "
+        "npts points as a standard normal deviate (negative below the expected chi2, positive above). "
+        "bootstrap_diagnostic holds the optimizer's own pseudo-data scores. Replica selections (best N, chi2_max, "
+        "sigma) use the central point scores; by default every fitted replica is kept."),
+    "interpretation_thresholds": (
+        "There is no automatic goodness threshold: good_fraction is null unless the user supplies chi2_max or sigma "
+        "cuts. The panel colours chi2_red and |Z| in bands <1 good, 1-2, 2-3 caution, 3-5 bad, >=5 critical, and "
+        "counts datasets with |Z|>3 as 'in tension'. Use the same words: a dataset with |Z|>3 is in tension with the "
+        "fit, chi2_red near 1 is consistent. Always state npts with a chi2: a small dataset with a large chi2_red may "
+        "have a modest |Z|. Compare a campaign's per-dataset values with the published JAM24 ones "
+        "(get_analysis_fit_statistics) before calling a difference a problem; with few replicas the ensemble "
+        "numbers fluctuate."),
+    "dataset_ids": (
+        "A card lists datasets per reaction as strings: {\"idis\": [\"10010\", ...]}. Analysis tools (analyze_by_experiment, "
+        "campaign_logs) take reaction-qualified ids such as idis:10010 or bare ids; the catalog and reference-results "
+        "tools need reaction-qualified ids. SIA ids: 1xxx pion, 2xxx kaon, 4xxx charged hadrons; SIDIS 1xxx pion, "
+        "2xxx kaon, 3xxx hadrons. JAM24.current replaces the SIDIS COMPASS workbooks 1005, 1006, 2005, 2006, 3000, "
+        "3001 by 1105, 1106, 2105, 2106, 3100, 3101. SIA 1012 and 2012 keep no points under the configured cuts and "
+        "are refused without an explicit cut."),
+    "jam24": (
+        "JAM24 (arXiv:2501.00665, Anderson, Melnitchouk, Sato): the simultaneous global fit of unpolarized proton PDFs "
+        "and pion, kaon and residual-hadron fragmentation functions, with the W+charm and SIDIS data that probe the "
+        "strange quark. The catalog's JAM24.final is the published configuration: NLO, Q20 = 1.6129 GeV2, all four "
+        "positivity flags off, 215 free parameters (35 PDF, 60 per FF with both shapes), 98 datasets over idis, dy, "
+        "wzrv, wasym, zrap, jet, wc, sia and sidis, 5853 points after cuts, ftol 1e-3, Gaussian starting values "
+        "(flat par). Its 791-replica ensemble is archived; get_analysis_fit_statistics gives its per-dataset chi2. "
+        "campaign_card_from_catalog builds its card; the composer's defaults (first FF shape only, library "
+        "normalization bounds) are not JAM24."),
+    "slurm_sizing": (
+        "FitPack loads data and grids for several minutes before the first optimizer step. A full JAM24-size fit "
+        "(215 free parameters, 5853 points) takes 21-29 s per chi2 evaluation and about an hour per optimizer "
+        "iteration: ask for 24:00:00 and 8G per replica (the farm's limit is 24 h; a task that hits it continues with "
+        "rerun_replicas(resume=true)). A fit of 60-150 free parameters: 08:00:00 and 6G. A proton-only DIS fit (35 "
+        "parameters, 2700 points, 0.6 s per evaluation): 02:00:00 and 4G. The composer's default of 00:30:00 and 4G "
+        "fits only the smallest tests. validate_campaign's slurm_recommendation applies these rules; cpus stays 1."),
+    "priors_and_checkpoints": (
+        "parameters.priorSource starts the replicas from an existing ensemble: kind archive (analysis_id, the "
+        "published JAM24 replicas; not available on a gateway that leaves the reference-results tools out), file "
+        "(a replicas file on the cluster, path; step when it has several) or campaign (collection_id of a "
+        "postprocessed campaign); preview_prior_replicas shows the mapping before validating. Otherwise "
+        "initialization is default (library values) or random_within_bounds; the FF library carries Gaussian "
+        "metadata. Each running replica writes checkpoints/replica_N/current_progress.json (phase, evaluations, "
+        "objective) and latest.json; rerun_replicas(resume=true) restarts from the checkpoint, mem raises the memory "
+        "of the rerun. Checkpoint-resumed replicas do not reproduce from seeds."),
+    "answer_templates": (
+        "Validation: object(s), free/fixed parameters (and the catalog's count when the card names a published "
+        "analysis), reactions with dataset counts, cuts, QCD settings, replicas and Slurm resources, warnings, then "
+        "the script verbatim and the question whether to submit. Submission: collection_id, job_id, where the logs "
+        "are, and that you will check with campaign_status(wait_for='fitting'). Status: the verdict in one word, "
+        "counts, and the next step. chi2 table: dataset, npts, chi2, chi2_red, z_score, normalization; name the "
+        "convention once. Replica selection: how many kept of how many fitted, and why. Never claim a fit converged "
+        "or is good without a criterion the user gave."),
+    "restart_recovery": (
+        "After a gateway restart the background jobs are gone (analysis_result says so): do not resubmit a campaign "
+        "blindly; list_campaigns shows what is queued, and a confirmed request repeated within 6 h is answered with "
+        "its earlier result anyway. The cluster sign-in survives a restart of the gateway process but not of its "
+        "job: check_hpc_connection; if disconnected, send the user to the panel's Connect tab."),
+}
+CATALOG_DENIED = bool(TOOLS_DENY & set(CATALOG_TOOLS))
+
+
+def jam_guide(topic=""):
+    """A procedure (new_campaign, reproduce_published, diagnose_replicas, analyze_campaign,
+    verify_campaign, slurm_job) or a convention (chi2_conventions, interpretation_thresholds,
+    dataset_ids, jam24, slurm_sizing, priors_and_checkpoints, answer_templates,
+    restart_recovery); empty: the index."""
+    hidden = {"reproduce_published", "jam24"} if CATALOG_DENIED else set()
+    name = str(topic or "").strip().lower().removeprefix("jam_")
+    procedures = {k: v for k, v in PROCEDURES.items() if k not in hidden}
+    topics = {k: v for k, v in GUIDE.items() if k not in hidden}
+    if not name:
+        return {"status": "ok", "procedures": {k: v["description"] for k, v in procedures.items()},
+                "topics": sorted(topics), "usage": "jam_guide(topic=<name>)"}
+    if name in procedures:
+        return {"status": "ok", "topic": name, "kind": "procedure", "text": procedures[name]["text"].replace(" {collection_id}", "").replace(" {analysis_id}", "")}
+    if name in topics:
+        return {"status": "ok", "topic": name, "kind": "convention", "text": topics[name]}
+    return _refuse("NOT_FOUND", "topics: " + ", ".join(sorted(list(procedures) + list(topics))))
+
+
+def _prompt_messages(name, arguments):
+    """An MCP prompt: the procedure's text with its arguments filled in."""
+    spec = PROCEDURES[name]
+    text = spec["text"]
+    for arg in spec["arguments"]:
+        value = str((arguments or {}).get(arg["name"]) or "").strip()
+        marker = " {%s}" % arg["name"]
+        text = text.replace(marker, f" The {arg['name'].replace('_', ' ')} is {value}." if value else "")
+    return {"description": spec["description"], "messages": [{"role": "user", "content": {"type": "text", "text": text}}]}
+
+
 INSTRUCTIONS = (
     _CATALOG_PARAGRAPH +
-    f"JAM global-analysis gateway for {SITE['label']}: the FemtoMind JAM app's fitting "
-    "campaign, as a conversation. Every call acts as the gateway's owner (the user whose "
-    "dashboard token the client sends); never ask for or pass another username. Go one "
-    "question at a time, in this order:\n"
-    "1. HPC: check_hpc_connection; ask which HPC (its 'sites'). If not connected, the user "
-    f"signs in ({SITE['login_secret']} for {SITE['login_host']}, {SITE['compute_secret']} for "
-    f"{SITE['compute_host']}) on the panel's Connect tab — give the link (get_console "
-    "tab=connect) and wait. Never ask for these in chat.\n"
-    "2. Workspace: check_project lists the folders in the user's area and what the workspace "
-    "has; ask which to use (use_workspace) or create a new one (setup_workspace; it clones the "
-    "FitPack ai branch). If a clone needs a GitHub token, send the user to the panel's Project "
-    "tab (the link in the result) — never ask for a token in chat. If the campaign runner or "
-    "the campaign template is marked missing with fix: use_ai_branch, the checkout is not on the "
-    "FitPack ai branch: offer use_ai_branch or a new workspace. A missing item without a fix (for "
-    "example a workspace folder that no longer exists, or an ai-branch checkout without "
-    "examples/input02.py): give the user its action; use_ai_branch does not help there.\n"
-    + ("3. Non-perturbative objects and parameters: Unpolarized PDF, Pion PDF and the fragmentation functions "
-       "(pion, kaon, total hadron), alone or combined, as campaign_options lists them. "
-       if FF_EXECUTION_ENABLED else
-       "3. Non-perturbative objects and parameters: Unpolarized PDF, Pion PDF, or both. ") +
-    "campaign_options returns each object's library: FREE/FIXED/tied, value, min, max. "
-    "Pion follows its final-fit reference with strictly one shape; never add second-shape pion "
-    "parameters. Fitted pion temporarily selects DIS 0, including combined campaigns; otherwise 1. "
-    "Use objects:[{type,parameters},...] (legacy object is still accepted). Leading neutron adds "
-    "the fitted p->pi,n companion and a fixed proton pdf unless pdf is selected. Ask which to change; "
-    "only changed rows are written into the card. A parameter switched to FREE needs a min "
-    "and max from the user. A parameter can also be set equal to another parameter in the same object "
-    "(equal_to): it then follows that parameter's value and is not fitted on its own.\n"
-    "4. Reactions: offer the enabled, compatible choices from campaign_options for the selected "
-    "objects; ask the user which to include. Never preselect reactions or datasets.\n"
-    "5. Datasets and cuts: campaign_datasets per reaction, grouped by experiment; ask which "
-    "ids. A dataset listed with a 'normalization' has a normalization parameter in the library: "
-    "offer to keep it, change its value or range, set it FREE or FIXED, or make it equal to "
-    "another selected dataset's normalization (normalizations in the card). Show the "
-    "reaction's cuts (e.g. Q2>1.69, W2>10) and ask whether to keep them. "
-    "Preserve dataset-specific cut mappings, including distinct H1 and ZEUS thresholds.\n"
-    "6. QCD settings: order, Q20, TMC, higher twist, DGLAP mode, alphaS mode.\n"
-    "7. Job config: campaign name, replicas, parameter initialization (library values or "
-    "random within bounds), inference (ensemble of pseudo-data replicas or central values), "
-    "tolerance, max iterations, optimizer — and the Slurm resources per replica (time, "
-    "memory, cpus, partition or auto), using slurm_partitions to explain the choice.\n"
-    "Every setting shows its library value; the user keeps or changes it. Reactions and "
-    "datasets are never preselected; never pick a value for the user.\n"
-    + ("8. Review: SIDIS (PDFs plus FFs) and SIA (FFs only) campaigns are fitted like the others. For every fit, "
-       if FF_EXECUTION_ENABLED else
-       "8. Review: SIDIS/SIA datasets are configuration-only: validate_campaign returns an input "
-       "fragment, configuration_valid and fit_ready=false. Do not attempt submission or claim FF fits "
-       "are implemented. SIDIS needs PDFs plus FFs; SIA needs FFs only. For supported fits, ") +
-    "validate_campaign; show the summary, its warnings (they never block "
-    "submission; a card that keeps no data point at all is refused: then change the cuts or "
-    "datasets with the user) and the Slurm array script exactly as returned (not shortened); submit with "
-    "submit_campaign(card, confirm=<phrase>) only after the user agrees.\n"
-    "9. Collections and analysis: list_campaigns (it also returns the user's Slurm queue), "
-    "campaign_status, postprocess_campaign, campaign_summary (fit summary), campaign_pdf_plots "
-    "(PDF curves as an interactive chart), analyze_by_experiment (per-dataset chi2 table and data vs "
-    "theory charts), campaign_logs (each replica's state and log), append_replicas (always "
-    "confirmed with its phrase), cancel_campaign (stops its queued and running tasks) and "
-    "delete_campaign (only when nothing of it is queued) — both also confirmed with their "
-    "phrase. rerun_replicas runs failed or unfitted replicas again under their own numbers (also "
-    "confirmed with its phrase). Each campaign folder holds reproduce.json (per submission: the "
-    "FitPack commit and any uncommitted changes, the image, the JAMAI files, input hashes and every "
-    "replica's seeds, with how_to_reproduce) and each replica folder replica_provenance.json; read "
-    "them with fs_read when the user asks how a fit was made. When the user asks to reproduce, re-derive "
-    "or verify a campaign's results, use reproduce_campaign: it runs the recorded replicas again (in the live "
-    "workspace when it is still the recorded state, else in a rebuilt clone at the recorded commit), confirmed "
-    "with its phrase, and reproduce_campaign(check='latest') then says per replica whether the results are "
-    "identical. The analysis tools (campaign_summary, analyze_by_experiment, "
-    "campaign_pdf_plots, campaign_ff_plots) take replicas, a selection of the fitted replicas "
-    "(best N, chi2_max, sigma outlier cut, exclude, only), when the user wants statistics over some "
-    "replicas only; say how many were kept and why the others were left out. "
-    "A replica counts as fitted only when its optimization ran: succeeded counts those, "
-    "not_fitted counts replicas whose optimization failed (FitPack then only computed chi2 at "
-    "the starting values). When replicas did not fit or failed, call campaign_logs and explain "
-    "the error to the user in plain words. The panel's Collections and Analysis tabs show the "
-    "same (Analysis has a Logs button).\n"
-    "Results and plots: when the user names a campaign, datasets or experiments, call the analysis "
-    "tool directly with those names as said (collection_id takes the campaign name; datasets and "
-    "experiments take the user's words) — do not look them up first with list_campaigns or "
-    "campaign_summary. Existing interactive analysis tools with status running return a job_id: "
-    "call analysis_result(job_id) until done; never restart the analysis. get_thesis_plot instead "
-    "always polls through get_thesis_plot itself. status no_match lists what the campaign "
-    "has: pick from it. For natural-language plot/figure requests, prefer get_thesis_plot: native PNGs "
-    "displayed independently in the conversation, without opening the app. Select experimental, pdf "
-    "or ff and reuse the user's scientific settings. If running, poll get_thesis_plot with only job_id; "
-    "do not switch to analysis_result or open_panel. For explicit interactive-app requests, preserve "
-    "the existing open_panel, campaign_pdf_plots, campaign_ff_plots and analyze_by_experiment workflow.\n"
-    "10. Any other cluster job: draft_slurm_job with the resources agreed with the user (it "
-    "runs sbatch --test-only), show the returned script exactly as written, ask the user, "
-    "then submit_slurm_job with the phrase.")
+    f"JAM global-analysis gateway for {SITE['label']}: FitPack fits on {SITE['compute_host']}, as a conversation. "
+    "Every call acts as the user whose token the client sends; never ask for or pass another username. The cluster "
+    f"sign-in ({SITE['login_secret']} for {SITE['login_host']}, {SITE['compute_secret']} for {SITE['compute_host']}) and "
+    "GitHub tokens are typed on the panel page only (get_console gives the link): never ask for them in chat.\n"
+    "Procedures: call jam_guide(topic) before you start one and follow it: new_campaign (compose with the user, one "
+    "question at a time), " + ("" if CATALOG_DENIED else
+    "reproduce_published (a published analysis such as JAM24 as a campaign: campaign_card_from_catalog, never copy "
+    "values by hand), ") +
+    "diagnose_replicas (why replicas did not fit, failed or stalled), analyze_campaign (summaries, chi2 tables, "
+    "plots), verify_campaign (how a fit was made; run it again exactly), slurm_job (any other cluster job); and the "
+    "conventions chi2_conventions, interpretation_thresholds, dataset_ids, " + ("" if CATALOG_DENIED else "jam24, ") +
+    "slurm_sizing, priors_and_checkpoints, answer_templates, restart_recovery. The same procedures exist as MCP prompts.\n"
+    "Rules: never preselect reactions or datasets and never pick a value for the user; every setting shows its "
+    "library value and the user keeps or changes it. A write (submit, append, rerun, reproduce, cancel, delete, "
+    "submit_slurm_job) first returns a plan and a confirmation phrase: show the plan (a Slurm script exactly as "
+    "returned, never shortened) and call again with confirm=<phrase> only after the user agrees"
+    + (", and on this gateway the phrase is shown only on the panel page: ask the user to read it to you" if HUMAN_GATE else "")
+    + ". A reply with status running carries a job_id: poll analysis_result (get_thesis_plot polls itself) and never "
+    "restart the work. After a submission call campaign_status(collection_id, wait_for='fitting') instead of polling "
+    "logs. When replicas did not fit or failed, campaign_logs says why; explain it in plain words.")
 
 # ── plugins ─────────────────────────────────────────────────────────────────
 # Other physics tasks (plugins/<name>/, see plugins/__init__.py) add their own
@@ -12943,6 +13109,15 @@ if os.path.isfile(_PLUGINS_INIT):
     except Exception as e:
         PLUGIN_STATUS = {"loaded": [], "errors": {"plugins": f"{type(e).__name__}: {e}"}}
 
+TOOLS["jam_guide"] = {
+    "desc": "The step-by-step procedure for a task (new_campaign, reproduce_published, diagnose_replicas, "
+            "analyze_campaign, verify_campaign, slurm_job) or a JAM convention (chi2_conventions, "
+            "interpretation_thresholds, dataset_ids, jam24, slurm_sizing, priors_and_checkpoints, answer_templates, "
+            "restart_recovery). Call it before starting a procedure and follow it; no topic returns the index. "
+            "Read-only, needs no cluster.",
+    "schema": {"type": "object", "properties": {"topic": {"type": "string"}}},
+    "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+    "fn": lambda a: jam_guide(a.get("topic", ""))}
 TOOLS["campaign_card_from_catalog"] = {
     "desc": "A complete, validate-ready campaign card for a published analysis in the catalog (default "
             "JAM24.final: the published configuration; JAM24.current: the updated workbooks), built from the "
@@ -13194,11 +13369,23 @@ class H(BaseHTTPRequestHandler):
         result = None
         if method == "initialize":
             result = {"protocolVersion": params.get("protocolVersion", "2025-03-26"),
-                      "capabilities": {"tools": {}, "resources": {}},
+                      "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
                       "serverInfo": {"name": MCP_NAME, "version": "0.9.0"},
                       "instructions": INSTRUCTIONS}
         elif method == "ping":
             result = {}
+        elif method == "prompts/list":
+            hidden = {"reproduce_published"} if CATALOG_DENIED else set()
+            result = {"prompts": [{"name": "jam_" + k, "description": v["description"],
+                                   "arguments": [{"name": a["name"], "description": a.get("description", ""),
+                                                  "required": bool(a.get("required"))} for a in v["arguments"]]}
+                                  for k, v in PROCEDURES.items() if k not in hidden]}
+        elif method == "prompts/get":
+            name = str(params.get("name") or "").removeprefix("jam_")
+            if name not in PROCEDURES or (CATALOG_DENIED and name == "reproduce_published"):
+                error = {"code": -32602, "message": f"prompt not found: {params.get('name')}"}
+            else:
+                result = _prompt_messages(name, params.get("arguments") or {})
         elif method == "tools/list":
             # Hidden tools (deploy, for hot_redeploy.py) stay callable by name.
             result = {"tools": [_tool_entry(k, v) for k, v in TOOLS.items() if not v.get("hidden") and not v.get("denied")]}
