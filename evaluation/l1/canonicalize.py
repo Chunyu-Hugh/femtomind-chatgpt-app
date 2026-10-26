@@ -16,9 +16,11 @@ import re
 
 from evaluation.l1 import expected
 
-# Keys FitPack adds to conf while it runs, so a conf read back from a run
-# differs from the input by them. Frozen by the calibration against
-# replicas_cut['conf'] (l1/calibrate.py); overridable for an experiment.
+# Keys FitPack would add to conf while it runs, so that a conf read back from
+# a run differs from the input by them. Calibrated against replicas_cut['conf']
+# of the JAM24 archive on 2026-10-26 (l1/calibration/2026-10-26/runtime_keys.json):
+# the saved conf equals the official input key for key, so the set is empty.
+# FEMTOMIND_RUNTIME_KEYS overrides it for an experiment.
 RUNTIME_KEYS = frozenset(k for k in os.environ.get("FEMTOMIND_RUNTIME_KEYS", "").split(",") if k)
 
 # Site-specific paths: compared as present/absent, never by value.
@@ -67,6 +69,8 @@ def tier1_normalize(conf):
     c = copy.deepcopy(conf)
     for key in ENVIRONMENT_KEYS:
         c.pop(key, None)
+    # a chained input's step table has been applied by the dumper's projection
+    c.pop("steps", None)
     for key, default in DEFAULT_EQUIVALENTS.items():
         if key not in c:
             c[key] = default
@@ -171,4 +175,5 @@ def tier1(target, candidate):
             "environment": environment_view(target, candidate),
             "rules": ["runtime keys removed", "xlsx paths as reaction/basename",
                       "filter numbers as repr(float), spaces removed, 'and' split", "numbers compared as floats",
-                      "site paths (grid folders) set aside", "explicit defaults equal to absent"]}
+                      "site paths (grid folders) set aside", "explicit defaults equal to absent",
+                      "conf['steps'] dropped once projected"]}

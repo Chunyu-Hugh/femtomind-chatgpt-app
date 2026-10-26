@@ -35,8 +35,16 @@ def overlay_view(targets, candidate):
     # exactly as the reproduction does
     vs_literal = {d["path"] for d in expected.differences(t["literal"], candidate)}
     vs_reproduction = {d["path"] for d in expected.differences(t["reproduction"], candidate)}
-    matched = len([p for p in paths if p in vs_literal and p not in vs_reproduction])
-    return {"of": len(paths), "matched": matched}
+    matched = [p for p in paths if p in vs_literal and p not in vs_reproduction]
+    # by leaf: the Gaussian-initialization flag is in the paper, the 430 means
+    # and widths are not, so a paper-only run can match the flags and not the numbers
+    by_leaf, of_leaf = {}, {}
+    for p in paths:
+        of_leaf[p.rsplit("/", 1)[-1]] = of_leaf.get(p.rsplit("/", 1)[-1], 0) + 1
+    for p in matched:
+        by_leaf[p.rsplit("/", 1)[-1]] = by_leaf.get(p.rsplit("/", 1)[-1], 0) + 1
+    return {"of": len(paths), "matched": len(matched),
+            "by_leaf": {leaf: {"of": of_leaf[leaf], "matched": by_leaf.get(leaf, 0)} for leaf in sorted(of_leaf)}}
 
 
 def grade(dump, condition="A", requested_target="JAM24.final", targets=None):

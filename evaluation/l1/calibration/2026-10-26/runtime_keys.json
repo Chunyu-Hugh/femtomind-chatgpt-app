@@ -1,0 +1,6 @@
+{
+ "runtime_keys": [],
+ "source": "/w/ceph24/JAM/treyand/femtomind-chatgpt-app/reference_results/JAM24/data/97a675d1e7880ece/original_parameter_bundle.npy.gz",
+ "bundle_sha256": "c80db2bbd1ef553e7bef73a3289591d64fcfb521da90310f8f546bc57baede31",
+ "note": "top-level keys of replicas_cut['conf'] absent from the official input; FitPack adds them at run time"
+}

@@ -1,0 +1,4173 @@
+{
+ "candidate": {
+  "chain_length": 1,
+  "coercions": [],
+  "environment": {
+   "cwd": "/",
+   "fitpack_root": "/w/ceph24/JAM/chunyu/bench_mcp/run3",
+   "numpy": "2.0.2",
+   "python": "3.11.9"
+  },
+  "graded": "/w/ceph24/JAM/chunyu/bench_mcp/run3/campaigns/jam24_run3_20261024_231619/stages/pdf_stage/input.py",
+  "inputs": [
+   {
+    "bytes": 100654,
+    "loaded": true,
+    "path": "/w/ceph24/JAM/chunyu/bench_mcp/run3/campaigns/jam24_run3_20261024_231619/stages/pdf_stage/input.py",
+    "sha256": "8c8abb130d444acfdd16702b276c6b73a08334b8fddf0ab4207131265e6a3c5f"
+   }
+  ],
+  "loader": "tools.config._load_python (exec with __file__)",
+  "step_projection": null
+ },
+ "condition": "B",
+ "current_vs_final": {
+  "n": 18,
+  "paths": [
+   "/datasets/jet/filters",
+   "/datasets/sidis/filters",
+   "/datasets/sidis/xlsx/1005",
+   "/datasets/sidis/xlsx/1006",
+   "/datasets/sidis/xlsx/1105",
+   "/datasets/sidis/xlsx/1106",
+   "/datasets/sidis/xlsx/2005",
+   "/datasets/sidis/xlsx/2006",
+   "/datasets/sidis/xlsx/2105",
+   "/datasets/sidis/xlsx/2106",
+   "/datasets/sidis/xlsx/3000",
+   "/datasets/sidis/xlsx/3001",
+   "/datasets/sidis/xlsx/3100",
+   "/datasets/sidis/xlsx/3101",
+   "/grid-8 path",
+   "/s_veto",
+   "/sea_type",
+   "/strange off"
+  ]
+ },
+ "graded_at": "2026-10-26T14:08:24Z",
+ "reproduction_overlay_view": {
+  "by_leaf": {
+   "ffhadron positivity": {
+    "matched": 1,
+    "of": 1
+   },
+   "ffkaon positivity": {
+    "matched": 1,
+    "of": 1
+   },
+   "ffpion positivity": {
+    "matched": 1,
+    "of": 1
+   },
+   "flat par": {
+    "matched": 0,
+    "of": 1
+   },
+   "gaussian": {
+    "matched": 97,
+    "of": 215
+   },
+   "mean": {
+    "matched": 97,
+    "of": 215
+   },
+   "pdf positivity": {
+    "matched": 1,
+    "of": 1
+   },
+   "std": {
+    "matched": 97,
+    "of": 215
+   }
+  },
+  "matched": 295,
+  "of": 650
+ },
+ "requested_target": "JAM24.current",
+ "runtime_keys_removed": [],
+ "schema": "femtomind.l1_grade.v1",
+ "target_kind": "literal",
+ "targets": {
+  "JAM24.current": {
+   "analysis_id": "JAM24.current",
+   "catalog_ref": "catalog:JAM24.current@a8d90dc67340dd2e034f11f5ec8ac18d9bffb6c9c000e4b48b18cb083bc67b3b",
+   "compiled_ref": "compiled:JAM24.current@796bfdbf9a7e9c704292c08ee09fa382c7363634ee3a72a72e4739feacdc0d1b",
+   "configuration_ref": "configuration:JAM24.current@bb1ca17497d425f46de30519bdbab584904bc688093aa68ce454a20524a50e19",
+   "parity_passed": true
+  },
+  "JAM24.final": {
+   "analysis_id": "JAM24.final",
+   "catalog_ref": "catalog:JAM24.final@1a32cc3875ac55914f5eb7b419a26114d77dd200706b0a1292c482099e94c650",
+   "compiled_ref": "compiled:JAM24.final@0368fe077cbdfada90fd8e3b6dbf1ff6efa7e871e191da33e0707284b5dca581",
+   "configuration_ref": "configuration:JAM24.final@8fddab6ed794b2299b012268c4c8140b86fb3b2ac5702ea5e9b62e2eaadf689a",
+   "parity_passed": true
+  }
+ },
+ "tier0": {
+  "JAM24.current": {
+   "differences": [
+    {
+     "path": "/datasets/dy/norm/10001/value",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/dy/norm/20001/value",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/dy/norm/20002/value",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/idis/filters",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/jet/filters",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/filters/1004",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/1007",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/1008",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/1012",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/1023",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/1024",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/2004",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/2007",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/2012",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/2023",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/2024",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/2031",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/4005",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/4006",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/4011",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/norm/1001/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/1002/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/1003/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/1005/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/1006/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/1029/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/2001/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/2002/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/2003/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/2005/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/2029/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/xlsx/1012",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/zrap/norm/1000/value",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/dis version",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/ffhadron positivity",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/ffkaon positivity",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/ffpion positivity",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/grid path",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/jamai base seed",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/jamai bootstrap seed offset",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/jamai parameter initialization",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/jamai parameter random seed",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/jamai parameter sectors",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/jamai per replica seed",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 c/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 c/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 c/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 d/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 d/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 d/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 c/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 c/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 c/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 d/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 d/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 d/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 c/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 c/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 c/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 d/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 d/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 d/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c2 N",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c2 a",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c2 b",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c2 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c2 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 c/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 c/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 c/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 d/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 d/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 d/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb2 N",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb2 a",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb2 b",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb2 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb2 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d2 N",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d2 a",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d2 b",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d2 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d2 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 N/fixed",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 a/fixed",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 b/fixed",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db2 N",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db2 a",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db2 b",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db2 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db2 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 c/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 c/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 c/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 d/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 d/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 d/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g2 N",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g2 a",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g2 b",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g2 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g2 d",
+     "reason": "field presence changed"
+    }
+   ],
+   "n": 785,
+   "passed": false
+  },
+  "JAM24.final": {
+   "differences": [
+    {
+     "path": "/datasets/dy/norm/10001/value",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/dy/norm/20001/value",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/dy/norm/20002/value",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/idis/filters",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/jet/filters",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/filters/1004",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/1007",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/1008",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/1012",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/1023",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/1024",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/2004",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/2007",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/2012",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/2023",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/2024",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/2031",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/4005",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/4006",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/4011",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/norm/1001/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/1002/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/1003/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/1005/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/1006/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/1029/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/2001/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/2002/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/2003/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/2005/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/2029/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/xlsx/1012",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/filters",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/1005",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/1006",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/1105",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/1106",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/2005",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/2006",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/2105",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/2106",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/3000",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/3001",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/3100",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/3101",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/zrap/norm/1000/value",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/dis version",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/ffhadron positivity",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/ffkaon positivity",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/ffpion positivity",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/grid path",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/grid-8 path",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/jamai base seed",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/jamai bootstrap seed offset",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/jamai parameter initialization",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/jamai parameter random seed",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/jamai parameter sectors",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/jamai per replica seed",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 c/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 c/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 c/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 d/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 d/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 d/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 c/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 c/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 c/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 d/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 d/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 d/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 c/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 c/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 c/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 d/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 d/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 d/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c2 N",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c2 a",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c2 b",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c2 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c2 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 c/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 c/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 c/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 d/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 d/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 d/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb2 N",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb2 a",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb2 b",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb2 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb2 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d2 N",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d2 a",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d2 b",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d2 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d2 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 N/fixed",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 a/fixed",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 b/fixed",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db2 N",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db2 a",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db2 b",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db2 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db2 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 b/gaussian",
+     "reason": "field presence changed"
+    }
+   ],
+   "n": 802,
+   "passed": false
+  }
+ },
+ "tier1": {
+  "JAM24.current": {
+   "differences": [
+    {
+     "path": "/datasets/sia/filters/1004",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/1007",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/1008",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/1012",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/1023",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/1024",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/2004",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/2007",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/2012",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/2023",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/2024",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/2031",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/4005",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/4006",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/4011",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/norm/1001/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/1002/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/1003/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/1005/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/1006/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/1029/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/2001/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/2002/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/2003/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/2005/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/2029/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/xlsx/1012",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/dis version",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/jamai base seed",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/jamai bootstrap seed offset",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/jamai parameter initialization",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/jamai parameter random seed",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/jamai parameter sectors",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/jamai per replica seed",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 c/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 c/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 c/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 d/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 d/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 d/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 c/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 c/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 c/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 d/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 d/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 d/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 c/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 c/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 c/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 d/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 d/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 d/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c2 N",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c2 a",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c2 b",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c2 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c2 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 c/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 c/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 c/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 d/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 d/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 d/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb2 N",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb2 a",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb2 b",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb2 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb2 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d2 N",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d2 a",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d2 b",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d2 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d2 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 N/fixed",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 a/fixed",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 b/fixed",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db2 N",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db2 a",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db2 b",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db2 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db2 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 c/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 c/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 c/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 d/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 d/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 d/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g2 N",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g2 a",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g2 b",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g2 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g2 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/s1 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/s1 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/s1 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/s1 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/s1 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/s1 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/s1 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/s1 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/s1 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/s1 b/std",
+     "reason": "field presence changed"
+    }
+   ],
+   "environment": {
+    "candidate": [
+     "grid path"
+    ],
+    "target": [
+     "grid path"
+    ]
+   },
+   "n": 774,
+   "passed": false,
+   "rules": [
+    "runtime keys removed",
+    "xlsx paths as reaction/basename",
+    "filter numbers as repr(float), spaces removed, 'and' split",
+    "numbers compared as floats",
+    "site paths (grid folders) set aside",
+    "explicit defaults equal to absent",
+    "conf['steps'] dropped once projected"
+   ]
+  },
+  "JAM24.final": {
+   "differences": [
+    {
+     "path": "/datasets/jet/filters",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/filters/1004",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/1007",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/1008",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/1012",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/1023",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/1024",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/2004",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/2007",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/2012",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/2023",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/2024",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/2031",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/4005",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/4006",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/filters/4011",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sia/norm/1001/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/1002/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/1003/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/1005/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/1006/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/1029/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/2001/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/2002/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/2003/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/2005/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/norm/2029/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sia/xlsx/1012",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/filters",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/1005",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/1006",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/1105",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/1106",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/2005",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/2006",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/2105",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/2106",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/3000",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/3001",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/3100",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/3101",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/dis version",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/jamai base seed",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/jamai bootstrap seed offset",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/jamai parameter initialization",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/jamai parameter random seed",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/jamai parameter sectors",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/jamai per replica seed",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 c/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 c/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 c/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 d/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 d/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b1 d/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/b2 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 c/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 c/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 c/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 d/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 d/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb1 d/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/bb2 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 c/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 c/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 c/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 d/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 d/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c1 d/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c2 N",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c2 a",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c2 b",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c2 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/c2 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 c/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 c/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 c/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 d/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 d/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb1 d/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb2 N",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb2 a",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb2 b",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb2 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/cb2 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d1 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d2 N",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d2 a",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d2 b",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d2 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/d2 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 N/fixed",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 a/fixed",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 b/fixed",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db1 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db2 N",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db2 a",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db2 b",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db2 c",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/db2 d",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 N/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 N/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 N/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 a/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 a/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 a/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 b/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 b/max",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 b/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 b/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 c/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 c/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 c/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 d/gaussian",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 d/mean",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g1 d/std",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/params/ffhadron/g2 N",
+     "reason": "field presence changed"
+    }
+   ],
+   "environment": {
+    "candidate": [
+     "grid path"
+    ],
+    "target": [
+     "grid path",
+     "grid-8 path"
+    ]
+   },
+   "n": 791,
+   "passed": false,
+   "rules": [
+    "runtime keys removed",
+    "xlsx paths as reaction/basename",
+    "filter numbers as repr(float), spaces removed, 'and' split",
+    "numbers compared as floats",
+    "site paths (grid folders) set aside",
+    "explicit defaults equal to absent",
+    "conf['steps'] dropped once projected"
+   ]
+  }
+ },
+ "tier2": {
+  "JAM24.current": {
+   "checks": 58,
+   "datasets": {
+    "dy": {
+     "expected": 3,
+     "extra": [],
+     "filters_match": true,
+     "found": 3,
+     "missing": [],
+     "normalizations_expected": 3,
+     "normalizations_found": 3,
+     "normalizations_missing": []
+    },
+    "idis": {
+     "expected": 13,
+     "extra": [],
+     "filters_match": true,
+     "found": 13,
+     "missing": [],
+     "normalizations_expected": 6,
+     "normalizations_found": 6,
+     "normalizations_missing": []
+    },
+    "jet": {
+     "expected": 4,
+     "extra": [],
+     "filters_match": true,
+     "found": 4,
+     "missing": [],
+     "normalizations_expected": 4,
+     "normalizations_found": 4,
+     "normalizations_missing": []
+    },
+    "sia": {
+     "expected": 55,
+     "extra": [],
+     "filters_match": false,
+     "found": 54,
+     "missing": [
+      "1012"
+     ],
+     "normalizations_expected": 35,
+     "normalizations_found": 35,
+     "normalizations_missing": []
+    },
+    "sidis": {
+     "expected": 6,
+     "extra": [],
+     "filters_match": true,
+     "found": 6,
+     "missing": [],
+     "normalizations_expected": 0,
+     "normalizations_found": 0,
+     "normalizations_missing": []
+    },
+    "wasym": {
+     "expected": 2,
+     "extra": [],
+     "filters_match": true,
+     "found": 2,
+     "missing": [],
+     "normalizations_expected": 0,
+     "normalizations_found": 0,
+     "normalizations_missing": []
+    },
+    "wc": {
+     "expected": 5,
+     "extra": [],
+     "filters_match": true,
+     "found": 5,
+     "missing": [],
+     "normalizations_expected": 3,
+     "normalizations_found": 3,
+     "normalizations_missing": []
+    },
+    "wzrv": {
+     "expected": 8,
+     "extra": [],
+     "filters_match": true,
+     "found": 8,
+     "missing": [],
+     "normalizations_expected": 0,
+     "normalizations_found": 0,
+     "normalizations_missing": []
+    },
+    "zrap": {
+     "expected": 2,
+     "extra": [],
+     "filters_match": true,
+     "found": 2,
+     "missing": [],
+     "normalizations_expected": 1,
+     "normalizations_found": 1,
+     "normalizations_missing": []
+    }
+   },
+   "fraction": 0.8275862068965517,
+   "matched": 48,
+   "parameters": {
+    "ffhadron": {
+     "fixed_status_mismatch": [
+      "ub1 N",
+      "ub1 a",
+      "ub1 b"
+     ],
+     "free_expected": 60,
+     "free_extra": [
+      "ub1 N",
+      "ub1 a",
+      "ub1 b"
+     ],
+     "free_found": 30,
+     "free_missing": [
+      "b2 c",
+      "b2 d",
+      "c2 N",
+      "c2 a",
+      "c2 b",
+      "c2 c",
+      "c2 d",
+      "d1 c",
+      "d1 d",
+      "d2 N",
+      "d2 a",
+      "d2 b",
+      "d2 c",
+      "d2 d",
+      "g2 N",
+      "g2 a",
+      "g2 b",
+      "g2 c",
+      "g2 d",
+      "s1 c"
+     ],
+     "link_mismatch": [
+      "db1 N",
+      "db1 a",
+      "db1 b",
+      "ub1 N",
+      "ub1 a",
+      "ub1 b"
+     ],
+     "names_expected": 110,
+     "names_extra": [],
+     "names_found": 49,
+     "names_missing": [
+      "b2 c",
+      "b2 d",
+      "bb2 c",
+      "bb2 d",
+      "c2 N",
+      "c2 a",
+      "c2 b",
+      "c2 c",
+      "c2 d",
+      "cb2 N",
+      "cb2 a",
+      "cb2 b",
+      "cb2 c",
+      "cb2 d",
+      "d1 c",
+      "d1 d",
+      "d2 N",
+      "d2 a",
+      "d2 b",
+      "d2 c"
+     ],
+     "present": true
+    },
+    "ffkaon": {
+     "fixed_status_mismatch": [
+      "s1 N",
+      "s1 a",
+      "s1 b",
+      "s1 c",
+      "s1 d"
+     ],
+     "free_expected": 60,
+     "free_extra": [
+      "s1 N",
+      "s1 a",
+      "s1 b",
+      "s1 c",
+      "s1 d"
+     ],
+     "free_found": 40,
+     "free_missing": [
+      "c2 N",
+      "c2 a",
+      "c2 b",
+      "c2 c",
+      "c2 d",
+      "d2 N",
+      "d2 a",
+      "d2 b",
+      "d2 c",
+      "d2 d",
+      "g2 N",
+      "g2 a",
+      "g2 b",
+      "g2 c",
+      "g2 d",
+      "sb2 N",
+      "sb2 a",
+      "sb2 b",
+      "sb2 c",
+      "sb2 d"
+     ],
+     "link_mismatch": [
+      "s1 N",
+      "s1 a",
+      "s1 b",
+      "s1 c",
+      "s1 d"
+     ],
+     "names_expected": 110,
+     "names_extra": [],
+     "names_found": 65,
+     "names_missing": [
+      "c2 N",
+      "c2 a",
+      "c2 b",
+      "c2 c",
+      "c2 d",
+      "cb2 N",
+      "cb2 a",
+      "cb2 b",
+      "cb2 c",
+      "cb2 d",
+      "d2 N",
+      "d2 a",
+      "d2 b",
+      "d2 c",
+      "d2 d",
+      "db2 N",
+      "db2 a",
+      "db2 b",
+      "db2 c",
+      "db2 d"
+     ],
+     "present": true
+    },
+    "ffpion": {
+     "fixed_status_mismatch": [],
+     "free_expected": 60,
+     "free_extra": [],
+     "free_found": 35,
+     "free_missing": [
+      "c2 N",
+      "c2 a",
+      "c2 b",
+      "c2 c",
+      "c2 d",
+      "d2 N",
+      "d2 a",
+      "d2 b",
+      "d2 c",
+      "d2 d",
+      "g2 N",
+      "g2 a",
+      "g2 b",
+      "g2 c",
+      "g2 d",
+      "s2 N",
+      "s2 a",
+      "s2 b",
+      "s2 c",
+      "s2 d"
+     ],
+     "link_mismatch": [],
+     "names_expected": 110,
+     "names_extra": [],
+     "names_found": 65,
+     "names_missing": [
+      "c2 N",
+      "c2 a",
+      "c2 b",
+      "c2 c",
+      "c2 d",
+      "cb2 N",
+      "cb2 a",
+      "cb2 b",
+      "cb2 c",
+      "cb2 d",
+      "d2 N",
+      "d2 a",
+      "d2 b",
+      "d2 c",
+      "d2 d",
+      "db2 N",
+      "db2 a",
+      "db2 b",
+      "db2 c",
+      "db2 d"
+     ],
+     "present": true
+    },
+    "pdf": {
+     "fixed_status_mismatch": [],
+     "free_expected": 35,
+     "free_extra": [],
+     "free_found": 35,
+     "free_missing": [],
+     "link_mismatch": [],
+     "names_expected": 39,
+     "names_extra": [],
+     "names_found": 39,
+     "names_missing": [],
+     "present": true
+    }
+   },
+   "settings": {
+    "Q20": {
+     "expected": 1.6129,
+     "found": 1.6129,
+     "match": true
+    },
+    "alphaSmode": {
+     "expected": "backward",
+     "found": "backward",
+     "match": true
+    },
+    "beta version": {
+     "expected": 1.0,
+     "found": 1.0,
+     "match": true
+    },
+    "bootstrap": {
+     "expected": true,
+     "found": true,
+     "match": true
+    },
+    "dglap mode": {
+     "expected": "truncated",
+     "found": "truncated",
+     "match": true
+    },
+    "ffhadron positivity": {
+     "expected": false,
+     "found": false,
+     "match": true
+    },
+    "ffkaon positivity": {
+     "expected": false,
+     "found": false,
+     "match": true
+    },
+    "ffpion positivity": {
+     "expected": false,
+     "found": false,
+     "match": true
+    },
+    "flat par": {
+     "expected": false,
+     "found": false,
+     "match": true
+    },
+    "ftol": {
+     "expected": 0.001,
+     "found": 0.001,
+     "match": true
+    },
+    "ht": {
+     "expected": false,
+     "found": false,
+     "match": true
+    },
+    "order": {
+     "expected": "NLO",
+     "found": "NLO",
+     "match": true
+    },
+    "pdf positivity": {
+     "expected": false,
+     "found": false,
+     "match": true
+    },
+    "sia version": {
+     "expected": 1.0,
+     "found": 1.0,
+     "match": true
+    },
+    "tmc": {
+     "expected": "AOT",
+     "found": "AOT",
+     "match": true
+    }
+   }
+  },
+  "JAM24.final": {
+   "checks": 58,
+   "datasets": {
+    "dy": {
+     "expected": 3,
+     "extra": [],
+     "filters_match": true,
+     "found": 3,
+     "missing": [],
+     "normalizations_expected": 3,
+     "normalizations_found": 3,
+     "normalizations_missing": []
+    },
+    "idis": {
+     "expected": 13,
+     "extra": [],
+     "filters_match": true,
+     "found": 13,
+     "missing": [],
+     "normalizations_expected": 6,
+     "normalizations_found": 6,
+     "normalizations_missing": []
+    },
+    "jet": {
+     "expected": 4,
+     "extra": [],
+     "filters_match": false,
+     "found": 4,
+     "missing": [],
+     "normalizations_expected": 4,
+     "normalizations_found": 4,
+     "normalizations_missing": []
+    },
+    "sia": {
+     "expected": 55,
+     "extra": [],
+     "filters_match": false,
+     "found": 54,
+     "missing": [
+      "1012"
+     ],
+     "normalizations_expected": 35,
+     "normalizations_found": 35,
+     "normalizations_missing": []
+    },
+    "sidis": {
+     "expected": 6,
+     "extra": [
+      "1105",
+      "1106",
+      "2105",
+      "2106",
+      "3100",
+      "3101"
+     ],
+     "filters_match": false,
+     "found": 6,
+     "missing": [
+      "1005",
+      "1006",
+      "2005",
+      "2006",
+      "3000",
+      "3001"
+     ],
+     "normalizations_expected": 0,
+     "normalizations_found": 0,
+     "normalizations_missing": []
+    },
+    "wasym": {
+     "expected": 2,
+     "extra": [],
+     "filters_match": true,
+     "found": 2,
+     "missing": [],
+     "normalizations_expected": 0,
+     "normalizations_found": 0,
+     "normalizations_missing": []
+    },
+    "wc": {
+     "expected": 5,
+     "extra": [],
+     "filters_match": true,
+     "found": 5,
+     "missing": [],
+     "normalizations_expected": 3,
+     "normalizations_found": 3,
+     "normalizations_missing": []
+    },
+    "wzrv": {
+     "expected": 8,
+     "extra": [],
+     "filters_match": true,
+     "found": 8,
+     "missing": [],
+     "normalizations_expected": 0,
+     "normalizations_found": 0,
+     "normalizations_missing": []
+    },
+    "zrap": {
+     "expected": 2,
+     "extra": [],
+     "filters_match": true,
+     "found": 2,
+     "missing": [],
+     "normalizations_expected": 1,
+     "normalizations_found": 1,
+     "normalizations_missing": []
+    }
+   },
+   "fraction": 0.7758620689655172,
+   "matched": 45,
+   "parameters": {
+    "ffhadron": {
+     "fixed_status_mismatch": [
+      "ub1 N",
+      "ub1 a",
+      "ub1 b"
+     ],
+     "free_expected": 60,
+     "free_extra": [
+      "ub1 N",
+      "ub1 a",
+      "ub1 b"
+     ],
+     "free_found": 30,
+     "free_missing": [
+      "b2 c",
+      "b2 d",
+      "c2 N",
+      "c2 a",
+      "c2 b",
+      "c2 c",
+      "c2 d",
+      "d1 c",
+      "d1 d",
+      "d2 N",
+      "d2 a",
+      "d2 b",
+      "d2 c",
+      "d2 d",
+      "g2 N",
+      "g2 a",
+      "g2 b",
+      "g2 c",
+      "g2 d",
+      "s1 c"
+     ],
+     "link_mismatch": [
+      "db1 N",
+      "db1 a",
+      "db1 b",
+      "ub1 N",
+      "ub1 a",
+      "ub1 b"
+     ],
+     "names_expected": 110,
+     "names_extra": [],
+     "names_found": 49,
+     "names_missing": [
+      "b2 c",
+      "b2 d",
+      "bb2 c",
+      "bb2 d",
+      "c2 N",
+      "c2 a",
+      "c2 b",
+      "c2 c",
+      "c2 d",
+      "cb2 N",
+      "cb2 a",
+      "cb2 b",
+      "cb2 c",
+      "cb2 d",
+      "d1 c",
+      "d1 d",
+      "d2 N",
+      "d2 a",
+      "d2 b",
+      "d2 c"
+     ],
+     "present": true
+    },
+    "ffkaon": {
+     "fixed_status_mismatch": [
+      "s1 N",
+      "s1 a",
+      "s1 b",
+      "s1 c",
+      "s1 d"
+     ],
+     "free_expected": 60,
+     "free_extra": [
+      "s1 N",
+      "s1 a",
+      "s1 b",
+      "s1 c",
+      "s1 d"
+     ],
+     "free_found": 40,
+     "free_missing": [
+      "c2 N",
+      "c2 a",
+      "c2 b",
+      "c2 c",
+      "c2 d",
+      "d2 N",
+      "d2 a",
+      "d2 b",
+      "d2 c",
+      "d2 d",
+      "g2 N",
+      "g2 a",
+      "g2 b",
+      "g2 c",
+      "g2 d",
+      "sb2 N",
+      "sb2 a",
+      "sb2 b",
+      "sb2 c",
+      "sb2 d"
+     ],
+     "link_mismatch": [
+      "s1 N",
+      "s1 a",
+      "s1 b",
+      "s1 c",
+      "s1 d"
+     ],
+     "names_expected": 110,
+     "names_extra": [],
+     "names_found": 65,
+     "names_missing": [
+      "c2 N",
+      "c2 a",
+      "c2 b",
+      "c2 c",
+      "c2 d",
+      "cb2 N",
+      "cb2 a",
+      "cb2 b",
+      "cb2 c",
+      "cb2 d",
+      "d2 N",
+      "d2 a",
+      "d2 b",
+      "d2 c",
+      "d2 d",
+      "db2 N",
+      "db2 a",
+      "db2 b",
+      "db2 c",
+      "db2 d"
+     ],
+     "present": true
+    },
+    "ffpion": {
+     "fixed_status_mismatch": [],
+     "free_expected": 60,
+     "free_extra": [],
+     "free_found": 35,
+     "free_missing": [
+      "c2 N",
+      "c2 a",
+      "c2 b",
+      "c2 c",
+      "c2 d",
+      "d2 N",
+      "d2 a",
+      "d2 b",
+      "d2 c",
+      "d2 d",
+      "g2 N",
+      "g2 a",
+      "g2 b",
+      "g2 c",
+      "g2 d",
+      "s2 N",
+      "s2 a",
+      "s2 b",
+      "s2 c",
+      "s2 d"
+     ],
+     "link_mismatch": [],
+     "names_expected": 110,
+     "names_extra": [],
+     "names_found": 65,
+     "names_missing": [
+      "c2 N",
+      "c2 a",
+      "c2 b",
+      "c2 c",
+      "c2 d",
+      "cb2 N",
+      "cb2 a",
+      "cb2 b",
+      "cb2 c",
+      "cb2 d",
+      "d2 N",
+      "d2 a",
+      "d2 b",
+      "d2 c",
+      "d2 d",
+      "db2 N",
+      "db2 a",
+      "db2 b",
+      "db2 c",
+      "db2 d"
+     ],
+     "present": true
+    },
+    "pdf": {
+     "fixed_status_mismatch": [],
+     "free_expected": 35,
+     "free_extra": [],
+     "free_found": 35,
+     "free_missing": [],
+     "link_mismatch": [],
+     "names_expected": 39,
+     "names_extra": [],
+     "names_found": 39,
+     "names_missing": [],
+     "present": true
+    }
+   },
+   "settings": {
+    "Q20": {
+     "expected": 1.6129,
+     "found": 1.6129,
+     "match": true
+    },
+    "alphaSmode": {
+     "expected": "backward",
+     "found": "backward",
+     "match": true
+    },
+    "beta version": {
+     "expected": 1.0,
+     "found": 1.0,
+     "match": true
+    },
+    "bootstrap": {
+     "expected": true,
+     "found": true,
+     "match": true
+    },
+    "dglap mode": {
+     "expected": "truncated",
+     "found": "truncated",
+     "match": true
+    },
+    "ffhadron positivity": {
+     "expected": false,
+     "found": false,
+     "match": true
+    },
+    "ffkaon positivity": {
+     "expected": false,
+     "found": false,
+     "match": true
+    },
+    "ffpion positivity": {
+     "expected": false,
+     "found": false,
+     "match": true
+    },
+    "flat par": {
+     "expected": false,
+     "found": false,
+     "match": true
+    },
+    "ftol": {
+     "expected": 0.001,
+     "found": 0.001,
+     "match": true
+    },
+    "ht": {
+     "expected": false,
+     "found": false,
+     "match": true
+    },
+    "order": {
+     "expected": "NLO",
+     "found": "NLO",
+     "match": true
+    },
+    "pdf positivity": {
+     "expected": false,
+     "found": false,
+     "match": true
+    },
+    "sia version": {
+     "expected": 1.0,
+     "found": 1.0,
+     "match": true
+    },
+    "tmc": {
+     "expected": "AOT",
+     "found": "AOT",
+     "match": true
+    }
+   }
+  }
+ },
+ "verdict": {
+  "free_parameters": {
+   "expected": 215,
+   "found": 140
+  },
+  "requested_target": "JAM24.current",
+  "tier0": false,
+  "tier1": false,
+  "tier2_fraction": 0.8275862068965517
+ }
+}

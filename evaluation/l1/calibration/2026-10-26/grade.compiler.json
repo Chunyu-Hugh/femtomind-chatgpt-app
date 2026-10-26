@@ -1,0 +1,791 @@
+{
+ "candidate": {
+  "chain_length": 1,
+  "coercions": [],
+  "environment": {
+   "cwd": "/home/temp-user/femtomind-chatgpt-app",
+   "fitpack_root": null,
+   "numpy": "2.4.2",
+   "python": "3.13.12"
+  },
+  "graded": "/tmp/tmp96h0p_wg/compiled_final.py",
+  "inputs": [
+   {
+    "bytes": 82541,
+    "loaded": true,
+    "path": "/tmp/tmp96h0p_wg/compiled_final.py",
+    "sha256": "efd9c33611891eeae616c8422ce5c56de8ae5cd9076d3c28036f96377bde354e"
+   }
+  ],
+  "loader": "tools.config._load_python (exec with __file__)",
+  "step_projection": null
+ },
+ "condition": "C",
+ "current_vs_final": {
+  "n": 18,
+  "paths": [
+   "/datasets/jet/filters",
+   "/datasets/sidis/filters",
+   "/datasets/sidis/xlsx/1005",
+   "/datasets/sidis/xlsx/1006",
+   "/datasets/sidis/xlsx/1105",
+   "/datasets/sidis/xlsx/1106",
+   "/datasets/sidis/xlsx/2005",
+   "/datasets/sidis/xlsx/2006",
+   "/datasets/sidis/xlsx/2105",
+   "/datasets/sidis/xlsx/2106",
+   "/datasets/sidis/xlsx/3000",
+   "/datasets/sidis/xlsx/3001",
+   "/datasets/sidis/xlsx/3100",
+   "/datasets/sidis/xlsx/3101",
+   "/grid-8 path",
+   "/s_veto",
+   "/sea_type",
+   "/strange off"
+  ]
+ },
+ "graded_at": "2026-10-26T14:08:22Z",
+ "reproduction_overlay_view": {
+  "by_leaf": {
+   "ffhadron positivity": {
+    "matched": 1,
+    "of": 1
+   },
+   "ffkaon positivity": {
+    "matched": 1,
+    "of": 1
+   },
+   "ffpion positivity": {
+    "matched": 1,
+    "of": 1
+   },
+   "flat par": {
+    "matched": 1,
+    "of": 1
+   },
+   "gaussian": {
+    "matched": 215,
+    "of": 215
+   },
+   "mean": {
+    "matched": 215,
+    "of": 215
+   },
+   "pdf positivity": {
+    "matched": 1,
+    "of": 1
+   },
+   "std": {
+    "matched": 215,
+    "of": 215
+   }
+  },
+  "matched": 650,
+  "of": 650
+ },
+ "requested_target": "JAM24.final",
+ "runtime_keys_removed": [],
+ "schema": "femtomind.l1_grade.v1",
+ "target_kind": "reproduction",
+ "targets": {
+  "JAM24.current": {
+   "analysis_id": "JAM24.current",
+   "catalog_ref": "catalog:JAM24.current@a8d90dc67340dd2e034f11f5ec8ac18d9bffb6c9c000e4b48b18cb083bc67b3b",
+   "compiled_ref": "compiled:JAM24.current@796bfdbf9a7e9c704292c08ee09fa382c7363634ee3a72a72e4739feacdc0d1b",
+   "configuration_ref": "configuration:JAM24.current@bb1ca17497d425f46de30519bdbab584904bc688093aa68ce454a20524a50e19",
+   "parity_passed": true
+  },
+  "JAM24.final": {
+   "analysis_id": "JAM24.final",
+   "catalog_ref": "catalog:JAM24.final@1a32cc3875ac55914f5eb7b419a26114d77dd200706b0a1292c482099e94c650",
+   "compiled_ref": "compiled:JAM24.final@0368fe077cbdfada90fd8e3b6dbf1ff6efa7e871e191da33e0707284b5dca581",
+   "configuration_ref": "configuration:JAM24.final@8fddab6ed794b2299b012268c4c8140b86fb3b2ac5702ea5e9b62e2eaadf689a",
+   "parity_passed": true
+  }
+ },
+ "tier0": {
+  "JAM24.current": {
+   "differences": [
+    {
+     "path": "/datasets/jet/filters",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sidis/filters",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/1005",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/1006",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/1105",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/1106",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/2005",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/2006",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/2105",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/2106",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/3000",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/3001",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/3100",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/3101",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/grid-8 path",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/s_veto",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/sea_type",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/strange off",
+     "reason": "field presence changed"
+    }
+   ],
+   "n": 18,
+   "passed": false
+  },
+  "JAM24.final": {
+   "differences": [],
+   "n": 0,
+   "passed": true
+  }
+ },
+ "tier1": {
+  "JAM24.current": {
+   "differences": [
+    {
+     "path": "/datasets/jet/filters",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sidis/filters",
+     "reason": "literal value/type/order changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/1005",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/1006",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/1105",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/1106",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/2005",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/2006",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/2105",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/2106",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/3000",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/3001",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/3100",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/datasets/sidis/xlsx/3101",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/s_veto",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/sea_type",
+     "reason": "field presence changed"
+    },
+    {
+     "path": "/strange off",
+     "reason": "field presence changed"
+    }
+   ],
+   "environment": {
+    "candidate": [
+     "grid path",
+     "grid-8 path"
+    ],
+    "target": [
+     "grid path"
+    ]
+   },
+   "n": 17,
+   "passed": false,
+   "rules": [
+    "runtime keys removed",
+    "xlsx paths as reaction/basename",
+    "filter numbers as repr(float), spaces removed, 'and' split",
+    "numbers compared as floats",
+    "site paths (grid folders) set aside",
+    "explicit defaults equal to absent",
+    "conf['steps'] dropped once projected"
+   ]
+  },
+  "JAM24.final": {
+   "differences": [],
+   "environment": {
+    "candidate": [
+     "grid path",
+     "grid-8 path"
+    ],
+    "target": [
+     "grid path",
+     "grid-8 path"
+    ]
+   },
+   "n": 0,
+   "passed": true,
+   "rules": [
+    "runtime keys removed",
+    "xlsx paths as reaction/basename",
+    "filter numbers as repr(float), spaces removed, 'and' split",
+    "numbers compared as floats",
+    "site paths (grid folders) set aside",
+    "explicit defaults equal to absent",
+    "conf['steps'] dropped once projected"
+   ]
+  }
+ },
+ "tier2": {
+  "JAM24.current": {
+   "checks": 58,
+   "datasets": {
+    "dy": {
+     "expected": 3,
+     "extra": [],
+     "filters_match": true,
+     "found": 3,
+     "missing": [],
+     "normalizations_expected": 3,
+     "normalizations_found": 3,
+     "normalizations_missing": []
+    },
+    "idis": {
+     "expected": 13,
+     "extra": [],
+     "filters_match": true,
+     "found": 13,
+     "missing": [],
+     "normalizations_expected": 6,
+     "normalizations_found": 6,
+     "normalizations_missing": []
+    },
+    "jet": {
+     "expected": 4,
+     "extra": [],
+     "filters_match": false,
+     "found": 4,
+     "missing": [],
+     "normalizations_expected": 4,
+     "normalizations_found": 4,
+     "normalizations_missing": []
+    },
+    "sia": {
+     "expected": 55,
+     "extra": [],
+     "filters_match": true,
+     "found": 55,
+     "missing": [],
+     "normalizations_expected": 35,
+     "normalizations_found": 35,
+     "normalizations_missing": []
+    },
+    "sidis": {
+     "expected": 6,
+     "extra": [
+      "1005",
+      "1006",
+      "2005",
+      "2006",
+      "3000",
+      "3001"
+     ],
+     "filters_match": false,
+     "found": 6,
+     "missing": [
+      "1105",
+      "1106",
+      "2105",
+      "2106",
+      "3100",
+      "3101"
+     ],
+     "normalizations_expected": 0,
+     "normalizations_found": 0,
+     "normalizations_missing": []
+    },
+    "wasym": {
+     "expected": 2,
+     "extra": [],
+     "filters_match": true,
+     "found": 2,
+     "missing": [],
+     "normalizations_expected": 0,
+     "normalizations_found": 0,
+     "normalizations_missing": []
+    },
+    "wc": {
+     "expected": 5,
+     "extra": [],
+     "filters_match": true,
+     "found": 5,
+     "missing": [],
+     "normalizations_expected": 3,
+     "normalizations_found": 3,
+     "normalizations_missing": []
+    },
+    "wzrv": {
+     "expected": 8,
+     "extra": [],
+     "filters_match": true,
+     "found": 8,
+     "missing": [],
+     "normalizations_expected": 0,
+     "normalizations_found": 0,
+     "normalizations_missing": []
+    },
+    "zrap": {
+     "expected": 2,
+     "extra": [],
+     "filters_match": true,
+     "found": 2,
+     "missing": [],
+     "normalizations_expected": 1,
+     "normalizations_found": 1,
+     "normalizations_missing": []
+    }
+   },
+   "fraction": 0.9482758620689655,
+   "matched": 55,
+   "parameters": {
+    "ffhadron": {
+     "fixed_status_mismatch": [],
+     "free_expected": 60,
+     "free_extra": [],
+     "free_found": 60,
+     "free_missing": [],
+     "link_mismatch": [],
+     "names_expected": 110,
+     "names_extra": [],
+     "names_found": 110,
+     "names_missing": [],
+     "present": true
+    },
+    "ffkaon": {
+     "fixed_status_mismatch": [],
+     "free_expected": 60,
+     "free_extra": [],
+     "free_found": 60,
+     "free_missing": [],
+     "link_mismatch": [],
+     "names_expected": 110,
+     "names_extra": [],
+     "names_found": 110,
+     "names_missing": [],
+     "present": true
+    },
+    "ffpion": {
+     "fixed_status_mismatch": [],
+     "free_expected": 60,
+     "free_extra": [],
+     "free_found": 60,
+     "free_missing": [],
+     "link_mismatch": [],
+     "names_expected": 110,
+     "names_extra": [],
+     "names_found": 110,
+     "names_missing": [],
+     "present": true
+    },
+    "pdf": {
+     "fixed_status_mismatch": [],
+     "free_expected": 35,
+     "free_extra": [],
+     "free_found": 35,
+     "free_missing": [],
+     "link_mismatch": [],
+     "names_expected": 39,
+     "names_extra": [],
+     "names_found": 39,
+     "names_missing": [],
+     "present": true
+    }
+   },
+   "settings": {
+    "Q20": {
+     "expected": 1.6129,
+     "found": 1.6129,
+     "match": true
+    },
+    "alphaSmode": {
+     "expected": "backward",
+     "found": "backward",
+     "match": true
+    },
+    "beta version": {
+     "expected": 1.0,
+     "found": 1.0,
+     "match": true
+    },
+    "bootstrap": {
+     "expected": true,
+     "found": true,
+     "match": true
+    },
+    "dglap mode": {
+     "expected": "truncated",
+     "found": "truncated",
+     "match": true
+    },
+    "ffhadron positivity": {
+     "expected": false,
+     "found": false,
+     "match": true
+    },
+    "ffkaon positivity": {
+     "expected": false,
+     "found": false,
+     "match": true
+    },
+    "ffpion positivity": {
+     "expected": false,
+     "found": false,
+     "match": true
+    },
+    "flat par": {
+     "expected": true,
+     "found": true,
+     "match": true
+    },
+    "ftol": {
+     "expected": 0.001,
+     "found": 0.001,
+     "match": true
+    },
+    "ht": {
+     "expected": false,
+     "found": false,
+     "match": true
+    },
+    "order": {
+     "expected": "NLO",
+     "found": "NLO",
+     "match": true
+    },
+    "pdf positivity": {
+     "expected": false,
+     "found": false,
+     "match": true
+    },
+    "sia version": {
+     "expected": 1.0,
+     "found": 1.0,
+     "match": true
+    },
+    "tmc": {
+     "expected": "AOT",
+     "found": "AOT",
+     "match": true
+    }
+   }
+  },
+  "JAM24.final": {
+   "checks": 58,
+   "datasets": {
+    "dy": {
+     "expected": 3,
+     "extra": [],
+     "filters_match": true,
+     "found": 3,
+     "missing": [],
+     "normalizations_expected": 3,
+     "normalizations_found": 3,
+     "normalizations_missing": []
+    },
+    "idis": {
+     "expected": 13,
+     "extra": [],
+     "filters_match": true,
+     "found": 13,
+     "missing": [],
+     "normalizations_expected": 6,
+     "normalizations_found": 6,
+     "normalizations_missing": []
+    },
+    "jet": {
+     "expected": 4,
+     "extra": [],
+     "filters_match": true,
+     "found": 4,
+     "missing": [],
+     "normalizations_expected": 4,
+     "normalizations_found": 4,
+     "normalizations_missing": []
+    },
+    "sia": {
+     "expected": 55,
+     "extra": [],
+     "filters_match": true,
+     "found": 55,
+     "missing": [],
+     "normalizations_expected": 35,
+     "normalizations_found": 35,
+     "normalizations_missing": []
+    },
+    "sidis": {
+     "expected": 6,
+     "extra": [],
+     "filters_match": true,
+     "found": 6,
+     "missing": [],
+     "normalizations_expected": 0,
+     "normalizations_found": 0,
+     "normalizations_missing": []
+    },
+    "wasym": {
+     "expected": 2,
+     "extra": [],
+     "filters_match": true,
+     "found": 2,
+     "missing": [],
+     "normalizations_expected": 0,
+     "normalizations_found": 0,
+     "normalizations_missing": []
+    },
+    "wc": {
+     "expected": 5,
+     "extra": [],
+     "filters_match": true,
+     "found": 5,
+     "missing": [],
+     "normalizations_expected": 3,
+     "normalizations_found": 3,
+     "normalizations_missing": []
+    },
+    "wzrv": {
+     "expected": 8,
+     "extra": [],
+     "filters_match": true,
+     "found": 8,
+     "missing": [],
+     "normalizations_expected": 0,
+     "normalizations_found": 0,
+     "normalizations_missing": []
+    },
+    "zrap": {
+     "expected": 2,
+     "extra": [],
+     "filters_match": true,
+     "found": 2,
+     "missing": [],
+     "normalizations_expected": 1,
+     "normalizations_found": 1,
+     "normalizations_missing": []
+    }
+   },
+   "fraction": 1.0,
+   "matched": 58,
+   "parameters": {
+    "ffhadron": {
+     "fixed_status_mismatch": [],
+     "free_expected": 60,
+     "free_extra": [],
+     "free_found": 60,
+     "free_missing": [],
+     "link_mismatch": [],
+     "names_expected": 110,
+     "names_extra": [],
+     "names_found": 110,
+     "names_missing": [],
+     "present": true
+    },
+    "ffkaon": {
+     "fixed_status_mismatch": [],
+     "free_expected": 60,
+     "free_extra": [],
+     "free_found": 60,
+     "free_missing": [],
+     "link_mismatch": [],
+     "names_expected": 110,
+     "names_extra": [],
+     "names_found": 110,
+     "names_missing": [],
+     "present": true
+    },
+    "ffpion": {
+     "fixed_status_mismatch": [],
+     "free_expected": 60,
+     "free_extra": [],
+     "free_found": 60,
+     "free_missing": [],
+     "link_mismatch": [],
+     "names_expected": 110,
+     "names_extra": [],
+     "names_found": 110,
+     "names_missing": [],
+     "present": true
+    },
+    "pdf": {
+     "fixed_status_mismatch": [],
+     "free_expected": 35,
+     "free_extra": [],
+     "free_found": 35,
+     "free_missing": [],
+     "link_mismatch": [],
+     "names_expected": 39,
+     "names_extra": [],
+     "names_found": 39,
+     "names_missing": [],
+     "present": true
+    }
+   },
+   "settings": {
+    "Q20": {
+     "expected": 1.6129,
+     "found": 1.6129,
+     "match": true
+    },
+    "alphaSmode": {
+     "expected": "backward",
+     "found": "backward",
+     "match": true
+    },
+    "beta version": {
+     "expected": 1.0,
+     "found": 1.0,
+     "match": true
+    },
+    "bootstrap": {
+     "expected": true,
+     "found": true,
+     "match": true
+    },
+    "dglap mode": {
+     "expected": "truncated",
+     "found": "truncated",
+     "match": true
+    },
+    "ffhadron positivity": {
+     "expected": false,
+     "found": false,
+     "match": true
+    },
+    "ffkaon positivity": {
+     "expected": false,
+     "found": false,
+     "match": true
+    },
+    "ffpion positivity": {
+     "expected": false,
+     "found": false,
+     "match": true
+    },
+    "flat par": {
+     "expected": true,
+     "found": true,
+     "match": true
+    },
+    "ftol": {
+     "expected": 0.001,
+     "found": 0.001,
+     "match": true
+    },
+    "ht": {
+     "expected": false,
+     "found": false,
+     "match": true
+    },
+    "order": {
+     "expected": "NLO",
+     "found": "NLO",
+     "match": true
+    },
+    "pdf positivity": {
+     "expected": false,
+     "found": false,
+     "match": true
+    },
+    "sia version": {
+     "expected": 1.0,
+     "found": 1.0,
+     "match": true
+    },
+    "tmc": {
+     "expected": "AOT",
+     "found": "AOT",
+     "match": true
+    }
+   }
+  }
+ },
+ "verdict": {
+  "free_parameters": {
+   "expected": 215,
+   "found": 215
+  },
+  "requested_target": "JAM24.final",
+  "tier0": true,
+  "tier1": true,
+  "tier2_fraction": 1.0
+ }
+}

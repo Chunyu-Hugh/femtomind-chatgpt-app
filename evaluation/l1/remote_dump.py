@@ -6,6 +6,8 @@ run as `python3 -B -I -` with REQUEST filled in:
 
     REQUEST = {"inputs": [paths in execution order], "fitpack_root": path,
                "cwd": path or null}
+    REQUEST = {"bundle": path of a parameter bundle (replicas_cut.npy[.gz]),
+               "fitpack_root": path}      # grades its saved conf instead
 
 Loading is exactly FitPack's tools.config._load_python: exec the file with
 __file__ set and take its `conf`. A job script that runs several inputs in a
@@ -91,30 +93,69 @@ def _load(path):
 
 
 def _project_steps(conf):
-    """fitlib.maxlike.get_conf for the last step, without an optimizer: drop the
-    distributions the step neither fits nor keeps passive, fix the passive ones.
-    Prior values a real chain would carry over between steps are not known."""
+    """fitlib.maxlike.MAXLIKE.get_conf for the last step, without an optimizer:
+    distributions the step neither fits nor keeps passive are removed (with
+    their parametrization key), passive and 'fix parameters' entries are
+    fixed, and the datasets are narrowed to the step's lists, reaction by
+    reaction. The prior values a real chain copies in from the steps it
+    depends on are unknown here, so parameter values stay as written."""
     steps = conf.get("steps")
     if not isinstance(steps, dict) or not steps:
         return conf, None
-    last = steps[max(steps, key=lambda k: int(k) if str(k).isdigit() else k)]
-    active = set(last.get("active distributions", []))
-    passive = set(last.get("passive distributions", []))
-    removed, fixed = [], []
+    key = max(steps, key=lambda k: (int(k) if str(k).isdigit() else -1, str(k)))
+    step = steps[key]
+    notes = []
+    active = list(step.get("active distributions", []))
+    passive = list(step.get("passive distributions", []))
+    if "active distributions" not in step:
+        notes.append("step has no 'active distributions': FitPack would raise KeyError")
+    removed = []
     for dist in list(conf.get("params", {})):
         if dist in active or dist in passive:
             continue
         removed.append(dist)
         conf["params"].pop(dist, None)
         conf.pop("%s parametrization" % dist, None)
+    fixed = []
     for dist in passive:
         for name, par in (conf.get("params", {}).get(dist) or {}).items():
-            if isinstance(par, dict) and par.get("fixed") is False:
+            if isinstance(par, dict):
+                if "fixed" not in par:
+                    notes.append("%s/%s has no 'fixed': FitPack would raise KeyError" % (dist, name))
+                elif par["fixed"] is False:
+                    par["fixed"] = True
+                    fixed.append(dist + "/" + name)
+    for dist, names in (step.get("fix parameters") or {}).items():
+        for name in names:
+            par = (conf.get("params", {}).get(dist) or {}).get(name)
+            if isinstance(par, dict):
                 par["fixed"] = True
                 fixed.append(dist + "/" + name)
-    return conf, {"method": "reimplemented", "steps": sorted(steps, key=str), "last_step": str(max(steps, key=str)),
-                  "active": sorted(active), "passive": sorted(passive), "removed_distributions": removed,
-                  "fixed_passive_parameters": len(fixed)}
+            else:
+                notes.append("fix parameters names %s/%s, which the conf lacks: FitPack would raise KeyError" % (dist, name))
+    dropped_reactions, dropped_ids = [], {}
+    if "datasets" not in step:
+        notes.append("step has no 'datasets': FitPack would raise KeyError; datasets left as written")
+    else:
+        for reaction in list(conf.get("datasets", {})):
+            if reaction not in step["datasets"]:
+                dropped_reactions.append(reaction)
+                del conf["datasets"][reaction]
+                continue
+            keep = step["datasets"][reaction]
+            for table in ("xlsx", "norm"):
+                entries = conf["datasets"][reaction].get(table)
+                if not isinstance(entries, dict):
+                    continue
+                for idx in list(entries):
+                    if idx not in keep:
+                        del entries[idx]
+                        dropped_ids.setdefault(reaction, []).append(str(idx))
+    return conf, {"method": "reimplemented from fitlib.maxlike.MAXLIKE.get_conf", "steps": sorted(str(k) for k in steps),
+                  "last_step": str(key), "active": active, "passive": passive, "removed_distributions": removed,
+                  "fixed_parameters": len(fixed), "dropped_reactions": dropped_reactions,
+                  "dropped_dataset_ids": {k: len(v) for k, v in dropped_ids.items()},
+                  "prior_values": "not applied (no optimizer history)", "notes": notes}
 
 
 def main():
@@ -128,7 +169,24 @@ def main():
     out = {"schema": "femtomind.l1_dump.v1", "inputs": [], "loader": "tools.config._load_python (exec with __file__)",
            "environment": {"python": sys.version.split()[0], "fitpack_root": root, "cwd": os.getcwd()}}
     conf = None
-    for path in req["inputs"]:
+    if req.get("bundle"):
+        rec = {"path": req["bundle"], "kind": "bundle"}
+        try:
+            import gzip
+            import numpy as np
+            opener = gzip.open if req["bundle"].endswith(".gz") else open
+            with opener(req["bundle"], "rb") as fh:
+                data = fh.read()
+            rec.update(sha256=hashlib.sha256(data).hexdigest(), bytes=len(data))
+            import io
+            loaded = np.load(io.BytesIO(data), allow_pickle=True, encoding="latin1").item()
+            conf = loaded["conf"]
+            rec.update(loaded=True, keys=sorted(str(k) for k in loaded), numpy=np.__version__)
+            out["loader"] = "np.load(allow_pickle=True, encoding='latin1').item()['conf']"
+        except BaseException as exc:  # noqa: BLE001
+            rec.update(loaded=False, error="%s: %s" % (type(exc).__name__, exc), traceback=traceback.format_exc()[-2000:])
+        out["inputs"].append(rec)
+    for path in req.get("inputs") or []:
         rec = {"path": path}
         try:
             with open(path, "rb") as fh:
