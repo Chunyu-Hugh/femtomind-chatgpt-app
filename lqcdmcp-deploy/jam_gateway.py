@@ -311,6 +311,62 @@ AUTH_HELP = ("This gateway needs your LQCDMCP dashboard token (the one from the 
              "'Authorization: Bearer <token>', or paste it into the panel page when it asks for "
              "one. When the dashboard login expires, log in again and update the token.")
 
+# ── refusal codes ───────────────────────────────────────────────────────────
+#
+# Every refusal a tool returns carries a stable "code" beside its message, and
+# the audit log records the same code, so refusals can be counted by kind
+# (the failure table of the paper) without parsing message text. The message
+# stays the human explanation and may change; the code does not.
+REFUSAL_CODES = (
+    # transport and identity
+    "AUTH_REQUIRED", "IDENTITY_MISMATCH", "NOT_SHARED", "BAD_USERNAME", "UNKNOWN_TOOL", "TOOL_DENIED",
+    "HIDDEN_TOOL", "ADMIN_REQUIRED", "ADMIN_DISABLED", "CHAIN_DOWN",
+    # the campaign card and the workspace
+    "CARD_INVALID", "LIBRARY_UNREADABLE", "WORKSPACE_NOT_READY", "WORKSPACE_MISSING", "DATA_FILE_MISSING",
+    "PRIOR_SOURCE_INVALID", "PRIOR_ARCHIVE_DENIED", "NO_DATA", "CONFIG_ONLY_UNSUPPORTED", "DIRTY_CHECKOUT",
+    "OUTSIDE_AREA", "OUTSIDE_READ_ROOTS", "BAD_ARGUMENT",
+    # submission and the queue
+    "MATERIALIZE_FAILED", "SBATCH_REFUSED", "SCANCEL_FAILED", "CONFIRM_REQUIRED", "IDEMPOTENT_REPLAY",
+    "NOT_FOUND", "QUEUE_UNKNOWN", "STILL_QUEUED",
+    # reproduction records
+    "RECORD_MISSING", "RECORD_UNREADABLE", "RECORD_INCOMPLETE", "WORKSPACE_DRIFT", "REBUILD_FAILED",
+    "CHECKPOINT_INVALID",
+    # the gateway's own code path
+    "NOT_A_JOB", "BAD_STAGE", "BAD_PATH", "HASH_MISMATCH", "VERIFY_FAILED", "INSTALL_FAILED",
+    "INTERNAL_ERROR", "ERROR_UNCODED",
+)
+
+
+def _refuse(code, message, status="error", **extra):
+    """A refusal: status, code and message, plus whatever else the caller adds."""
+    assert code in REFUSAL_CODES, code
+    return {"status": status, "code": code, "message": message, **extra}
+
+
+def _outcome(result):
+    """(status, code, is_error) of a tool's reply, for the audit log. A dict
+    reply is read by its status and code; a refusal that predates the codes
+    is ERROR_UNCODED, so it can be found and given one."""
+    if isinstance(result, dict) and "content" in result and "isError" in result:
+        body = result.get("structuredContent")
+        if body is None:
+            # A bare string reply ("unknown tool", "error: ...").
+            text = (result.get("content") or [{}])[0].get("text", "") if result.get("content") else ""
+            if text == "unknown tool":
+                return "error", "UNKNOWN_TOOL", True
+            return ("error", "INTERNAL_ERROR", True) if result.get("isError") else ("ok", None, False)
+        is_error = bool(result.get("isError"))
+    else:
+        body, is_error = result, False
+    if not isinstance(body, dict):
+        return "ok", None, is_error
+    status = str(body.get("status") or "ok")
+    code = body.get("code")
+    if code is None:
+        code = {"unauthorized": "AUTH_REQUIRED", "disconnected": "CHAIN_DOWN", "needs_confirmation": "CONFIRM_REQUIRED",
+                "invalid": "CARD_INVALID", "error": "ERROR_UNCODED"}.get(status)
+    return status, code, is_error or status in ("error", "unauthorized", "disconnected", "invalid")
+
 
 def _req_sid(hdrs):
     sid = (hdrs.get("Mcp-Session-Id") or hdrs.get("mcp-session-id") or "").strip()
@@ -468,10 +524,10 @@ def _resolve_user(username):
     """The user this request acts as — always the token's user."""
     bound = getattr(_tls, "user", "")
     if not bound:
-        return "", {"status": "unauthorized", "message": AUTH_HELP}
+        return "", {"status": "unauthorized", "code": "AUTH_REQUIRED", "message": AUTH_HELP}
     asked = (username or "").strip()
     if asked and asked != bound:
-        return "", {"status": "error",
+        return "", {"status": "error", "code": "IDENTITY_MISMATCH",
                     "message": f"this token belongs to {bound}; it cannot act as {asked}"}
     return bound, None
 
@@ -493,7 +549,7 @@ def _need_user(username):
     if err:
         return u, err
     if not _chain_alive(u):
-        return u, {"status": "disconnected", "username": u,
+        return u, {"status": "disconnected", "code": "CHAIN_DOWN", "username": u,
                    "message": f"no live chain for {u}; call connect_hpc first"}
     return u, None
 
@@ -607,7 +663,7 @@ def _outside_read_roots(p, user=""):
         roots.append(f"{SITE.get('slurm_log_root', '/farm_out').rstrip('/')}/{user}")
     if any(p == r or p.startswith(r.rstrip("/") + "/") for r in roots):
         return None
-    return {"status": "error", "message": "path must be under " + " or ".join(roots)}
+    return _refuse("OUTSIDE_READ_ROOTS", "path must be under " + " or ".join(roots))
 
 
 def fs_list(path="", username=""):
@@ -887,7 +943,7 @@ def use_workspace(path="", username=""):
     root = _area(u)
     p = os.path.normpath((path or "").strip())
     if not p.startswith(root + "/"):
-        return {"ok": False, "message": f"The workspace must be inside your own area ({root})."}
+        return {"ok": False, "code": "OUTSIDE_AREA", "message": f"The workspace must be inside your own area ({root})."}
     if not re.fullmatch(WORKSPACE_PATH_RE, p):
         return {"ok": False, "message": f"{p} has characters other than letters, numbers, '.', '_', '-' "
                                         "and '/'. Rename the folder, or choose another one."}
@@ -2437,7 +2493,7 @@ def use_ai_branch(username=""):
     if "NOWS" in (r.get("out") or "").split():
         return {"status": "error", "workspace": ws, "message": WORKSPACE_GONE.format(ws)}
     if "DIRTY" in out:
-        return {"status": "error", "workspace": ws,
+        return {"status": "error", "code": "DIRTY_CHECKOUT", "workspace": ws,
                 "message": "This checkout has uncommitted changes to tracked files, so it is not "
                            "switched. Create a new workspace instead (it clones the ai branch)."}
     if "SWITCHED" not in out:
@@ -3026,7 +3082,7 @@ def reproduce_campaign(collection_id="", replicas="all", check="", confirm="", u
 def _reproduce_campaign(u, collection_id, replicas, check, confirm, node_constraint):
     e = _collection(u, collection_id)
     if not e:
-        return {"status": "error", "message": f"No campaign {collection_id!r}; list_campaigns shows them."}
+        return {"status": "error", "code": "NOT_FOUND", "message": f"No campaign {collection_id!r}; list_campaigns shows them."}
     collection_id = e["collection_id"]
     total = int(e.get("replicas") or 0)
     ws, stage = _workspace(u), _stage_root(u, e)
@@ -3036,9 +3092,9 @@ def _reproduce_campaign(u, collection_id, replicas, check, confirm, node_constra
                           timeout=180, cap=2000000)
         d = _last_json(r)
         if not d:
-            return {"status": "error", "message": "Could not read the reproduction.", "detail": (r.get("err") or "")[-400:]}
+            return _refuse("RECORD_UNREADABLE", "Could not read the reproduction.", detail=(r.get("err") or "")[-400:])
         if not d.get("ok"):
-            return {"status": "error", "collection_id": collection_id, **d}
+            return {"status": "error", "code": "NOT_FOUND", "collection_id": collection_id, **d}
         d.pop("ok")
         c = d["counts"]
         d["message"] = (f"{c.get('identical', 0)} of {len(d['replicas'])} replicas reproduced identically"
@@ -3053,25 +3109,27 @@ def _reproduce_campaign(u, collection_id, replicas, check, confirm, node_constra
         try:
             wanted = sorted(set(_numbers(replicas)))
         except ValueError:
-            return {"status": "error", "message": "replicas: 'all' or replica numbers such as 3,7 or 10-12."}
+            return _refuse("BAD_ARGUMENT", "replicas: 'all' or replica numbers such as 3,7 or 10-12.")
         outside = [i for i in wanted if not 1 <= i <= total]
         if outside:
-            return {"status": "error", "message": f"This campaign has replicas 1-{total}; no replica {outside}."}
+            return _refuse("BAD_ARGUMENT", f"This campaign has replicas 1-{total}; no replica {outside}.")
     if not wanted:
-        return {"status": "error", "message": "This campaign has no replicas."}
+        return _refuse("BAD_ARGUMENT", "This campaign has no replicas.")
     r = _run_ifarm_py(u, _fill(_REPRODUCE_PLAN, WS=ws, CROOT=croot, STAGE=stage,
                                PKG=f"{ws}/{JAMAI_REMOTE}/modules/jam/jamai", REPLICAS=wanted,
                                IMAGE=SITE["container"]["image"], EXCLUDE=_STATE_EXCLUDE), timeout=300, cap=400000)
     p = _last_json(r)
     if not p:
-        return {"status": "error", "message": "Could not read the campaign's record.", "detail": (r.get("err") or "")[-400:]}
+        return _refuse("RECORD_UNREADABLE", "Could not read the campaign's record.", detail=(r.get("err") or "")[-400:])
     if not p.get("ok"):
-        return {"status": "error", "collection_id": collection_id, **{k: v for k, v in p.items() if k != "ok"}}
+        code = {"no_record": "RECORD_MISSING", "not_recorded": "RECORD_MISSING",
+                "mixed_states": "RECORD_INCOMPLETE"}.get(p.get("error"), "RECORD_UNREADABLE")
+        return {"status": "error", "code": code, "collection_id": collection_id, **{k: v for k, v in p.items() if k != "ok"}}
     if p["missing_replicas"]:
-        return {"status": "error", "collection_id": collection_id,
+        return {"status": "error", "code": "RECORD_INCOMPLETE", "collection_id": collection_id,
                 "message": f"Replicas {p['missing_replicas']} have no recorded submission.", "plan": p}
     if p["mode"] == "clone" and not p["diff_available"]:
-        return {"status": "error", "collection_id": collection_id,
+        return {"status": "error", "code": "WORKSPACE_DRIFT", "collection_id": collection_id,
                 "message": "The live workspace is not the recorded state, and the recorded changes were not "
                            "saved (the diff was larger than 50 MB), so the workspace cannot be rebuilt exactly.",
                 "plan": p}
@@ -3083,7 +3141,7 @@ def _reproduce_campaign(u, collection_id, replicas, check, confirm, node_constra
     elif re.fullmatch(r"[a-z0-9_]{1,32}", want):
         constraint = want
     else:
-        return {"status": "error", "message": "node_constraint: 'auto', 'none' or a Slurm node feature such as farm18."}
+        return _refuse("BAD_ARGUMENT", "node_constraint: 'auto', 'none' or a Slurm node feature such as farm18.")
     stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime())
     dest = f"{_area(u)}/reproductions/{e['campaign_folder']}/{stamp}/fitpack"
     plan = {"collection_id": collection_id, "replicas": wanted, "count": len(wanted), "mode": p["mode"],
@@ -3118,7 +3176,7 @@ def _reproduce_campaign(u, collection_id, replicas, check, confirm, node_constra
                if p["mode"] == "in_place" else
                "the live workspace differs from the record, so a clone at the recorded commit with the recorded "
                "changes applied is built first and the replicas run in that")
-        return {"status": "needs_confirmation", "plan": plan, "confirmation_phrase": phrase,
+        return {"status": "needs_confirmation", "code": "CONFIRM_REQUIRED", "plan": plan, "confirmation_phrase": phrase,
                 "message": f"Nothing is queued yet. {how}. Results go to a new reproduce/<stamp>/ folder; the "
                            "current results are not touched. Show the user the plan and submit with confirm=<phrase> "
                            "only after they agree."}
@@ -3132,7 +3190,7 @@ def _reproduce_campaign(u, collection_id, replicas, check, confirm, node_constra
                                    EXCLUDE=_STATE_EXCLUDE, IMAGE=SITE["container"]["image"]), timeout=900, cap=400000)
         built = _last_json(r)
         if not built or not built.get("ok"):
-            return {"status": "error", "collection_id": collection_id, "message": "The recorded workspace could not be rebuilt.",
+            return {"status": "error", "code": "REBUILD_FAILED", "collection_id": collection_id, "message": "The recorded workspace could not be rebuilt.",
                     "detail": built or (r.get("err") or r.get("out") or "")[-600:]}
         code_ws = dest
         _upload_jamai(u, dest)
@@ -3160,7 +3218,7 @@ def _reproduce_campaign(u, collection_id, replicas, check, confirm, node_constra
                    f"{{ sbatch {script} || {{ rmdir {qo} 2>/dev/null; rm -f {script}; false; }}; }}", timeout=90)
     m = re.search(r"Submitted batch job (\d+)", (r.get("out") or "") + (r.get("err") or ""))
     if not m:
-        return {"status": "error", "message": "sbatch refused the job.", "detail": (r.get("err") or r.get("out"))[-400:],
+        return {"status": "error", "code": "SBATCH_REFUSED", "message": "sbatch refused the job.", "detail": (r.get("err") or r.get("out"))[-400:],
                 **({"rebuilt_workspace": dest} if built else {})}
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     # The reproduction is a job of the campaign too: the queue counts it, cancel
@@ -3204,7 +3262,8 @@ def _checked_card(u, card):
             keys = list(dict.fromkeys(keys + get_required_objects(_card_reactions(card), datasets=(card or {}).get("datasets") or {})))
         library = _object_libraries(u, keys)
     except (RuntimeError, ValueError) as e:
-        return None, {"status": "error", "valid": False, "message": str(e)}
+        code = "LIBRARY_UNREADABLE" if str(e).startswith("Could not read object libraries") else "CARD_INVALID"
+        return None, _refuse(code, str(e), valid=False)
     norm, errors = _normalize_card(card, library)
     if not errors:
         ws = _workspace(u)
@@ -3252,8 +3311,21 @@ def _checked_card(u, card):
         except (ValueError, RuntimeError) as exc:
             errors.append(str(exc))
     if errors:
-        return None, {"status": "invalid", "valid": False, "errors": errors}
+        return None, {"status": "invalid", "code": _card_error_code(errors), "valid": False, "errors": errors}
     return norm, None
+
+
+def _card_error_code(errors):
+    """The refusal code of an invalid card: the first error names the kind
+    (the workspace, a data file, the prior source), else the card itself."""
+    first = (errors or [""])[0]
+    if first.startswith("No data file"):
+        return "DATA_FILE_MISSING"
+    if first.startswith("The workspace") or first.startswith("Could not check workspace"):
+        return "WORKSPACE_NOT_READY"
+    if "prior" in first.lower() or "archive" in first.lower():
+        return "PRIOR_SOURCE_INVALID"
+    return "CARD_INVALID"
 
 
 def _prepare_prior_replicas(u, norm):
@@ -3503,7 +3575,7 @@ def _no_data_refusal(norm, points):
     check could not count every dataset."""
     if not points or len(points) < sum(len(ids) for ids in norm["datasets"].values()) or any(points.values()):
         return None
-    return {"status": "error", "valid": False, "points_after_cuts": points,
+    return {"status": "error", "code": "NO_DATA", "valid": False, "points_after_cuts": points,
             "message": "No selected dataset keeps a data point after the cuts, so the fit would have nothing "
                        "to fit. Change the cuts or the datasets and validate again."}
 
@@ -3524,7 +3596,7 @@ def _configuration_reactions(card):
 
 
 def _unsupported_configuration_fit(card):
-    return {"status": "unsupported", "valid": False, "fit_ready": False,
+    return {"status": "unsupported", "code": "CONFIG_ONLY_UNSUPPORTED", "valid": False, "fit_ready": False,
             "message": "Configuration only: FF fitting is not implemented for "
                        + ", ".join(sorted(_configuration_reactions(card))) + ". No campaign was submitted."}
 
@@ -3630,7 +3702,7 @@ def _campaign_task(u, kind, card, fn, confirm=""):
     try:
         encoded = json.dumps(card, separators=(',', ':'), allow_nan=False)
     except (TypeError, ValueError) as exc:
-        return {'status': 'invalid', 'valid': False, 'errors': ['Invalid campaign card: ' + str(exc)]}
+        return {'status': 'invalid', 'code': 'CARD_INVALID', 'valid': False, 'errors': ['Invalid campaign card: ' + str(exc)]}
     snapshot = json.loads(encoded)
     canonical = json.dumps(snapshot, sort_keys=True, separators=(',', ':'), allow_nan=False)
     params = {'card_sha256': hashlib.sha256(canonical.encode()).hexdigest(),
@@ -3685,7 +3757,7 @@ def _submit_campaign(u, card, confirm):
         return refused
     v = _validated(u, norm)
     if (confirm or "").strip() != v["confirmation_phrase"]:
-        return {"status": "needs_confirmation", "confirmation_phrase": v["confirmation_phrase"],
+        return {"status": "needs_confirmation", "code": "CONFIRM_REQUIRED", "confirmation_phrase": v["confirmation_phrase"],
                 "summary": v["summary"], "slurm_script": v["slurm_script"],
                 "message": "Not submitted. Show the user the summary and Slurm script; when they "
                            "confirm, call again with confirm set to the phrase."}
@@ -3713,7 +3785,7 @@ def _submit_campaign(u, card, confirm):
     m = re.search(r"Submitted batch job (\d+)", out)
     if not m:
         tail = _remote(u, f"tail -c 1500 {qc}/materialize.json 2>/dev/null", timeout=30).get("out")
-        return {"status": "error", "message": "The campaign was not submitted.",
+        return {"status": "error", "code": "MATERIALIZE_FAILED", "message": "The campaign was not submitted.",
                 "detail": out[-600:], "materialize_log": (tail or "")[-1500:]}
     log_prefix = _campaign_log_prefix(u, folder)
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -3740,14 +3812,14 @@ def append_replicas(collection_id="", count=0, confirm="", username=""):
         return err
     e = _collection(u, collection_id)
     if not e:
-        return {"status": "error", "message": f"No campaign {collection_id!r}; list_campaigns shows them."}
+        return {"status": "error", "code": "NOT_FOUND", "message": f"No campaign {collection_id!r}; list_campaigns shows them."}
     collection_id = e["collection_id"]      # a campaign name resolves to its id
     try:
         count = int(count)
         if not 1 <= count <= 2000:
             raise ValueError
     except (TypeError, ValueError):
-        return {"status": "error", "message": "count must be between 1 and 2000."}
+        return _refuse("BAD_ARGUMENT", "count must be between 1 and 2000.")
     if e.get('input_card',{}).get('parameters',{}).get('priorSnapshot'):
         return {'status':'error','message':'Appending requires a new explicit prior assignment; create a new validated campaign instead of silently reusing replicas.'}
     first, last = int(e["replicas"]) + 1, int(e["replicas"]) + count
@@ -3756,7 +3828,7 @@ def append_replicas(collection_id="", count=0, confirm="", username=""):
             "partition": e["input_card"]["slurm"]["partition_effective"]}
     phrase = _confirm_phrase("APPEND", plan)
     if (confirm or "").strip() != phrase:
-        return {"status": "needs_confirmation", "plan": plan, "confirmation_phrase": phrase,
+        return {"status": "needs_confirmation", "code": "CONFIRM_REQUIRED", "plan": plan, "confirmation_phrase": phrase,
                 "message": "Validated and launch-ready. Ask the user to confirm with the phrase; "
                            "nothing is queued until then."}
     ws = _workspace(u)
@@ -3770,7 +3842,7 @@ def append_replicas(collection_id="", count=0, confirm="", username=""):
                    f"sbatch {qs}/slurm/array_{first}_{last}.sh", timeout=60)
     m = re.search(r"Submitted batch job (\d+)", (r.get("out") or "") + (r.get("err") or ""))
     if not m:
-        return {"status": "error", "message": "sbatch refused the job.", "detail": (r.get("err") or r.get("out"))[-400:]}
+        return {"status": "error", "code": "SBATCH_REFUSED", "message": "sbatch refused the job.", "detail": (r.get("err") or r.get("out"))[-400:]}
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     e["jobs"] = list(e.get("jobs") or []) + [{"job_id": m.group(1), "first": first, "last": last,
                                                 "submitted_at": now, "log_prefix": _campaign_log_prefix(u, e["campaign_folder"]),
@@ -3818,17 +3890,17 @@ def rerun_replicas(collection_id="", replicas="failed", confirm="", username="",
     resubmitted; earlier results are moved to stages/<stage>/previous/, not
     deleted. Always asks for the confirmation phrase first."""
     if type(resume) is not bool:
-        return {"status": "error", "message": "resume must be a boolean."}
+        return _refuse("BAD_ARGUMENT", "resume must be a boolean.")
     if mem is not None:
         if not isinstance(mem, str) or not re.fullmatch(r"[1-9]\d{0,3}[MG]", mem.strip()):
-            return {"status": "error", "message": "mem must be a positive Slurm memory request such as 6G or 500M."}
+            return _refuse("BAD_ARGUMENT", "mem must be a positive Slurm memory request such as 6G or 500M.")
         mem = mem.strip()
     u, err = _need_user(username)
     if err:
         return err
     e = _collection(u, collection_id)
     if not e:
-        return {"status": "error", "message": f"No campaign {collection_id!r}; list_campaigns shows them."}
+        return {"status": "error", "code": "NOT_FOUND", "message": f"No campaign {collection_id!r}; list_campaigns shows them."}
     collection_id = e["collection_id"]      # a campaign name resolves to its id
     # Only the new job uses this resource card. Keep the historical scientific
     # card (including a potentially large pinned prior snapshot) untouched.
@@ -3849,7 +3921,7 @@ def rerun_replicas(collection_id="", replicas="failed", confirm="", username="",
     if not d:
         return {"status": "error", "message": "Could not read the replicas' state.", "detail": (r.get("err") or "")[-400:]}
     if not d["queue_read"]:
-        return {"status": "error", "message": QUEUE_UNKNOWN_REFUSED}
+        return {"status": "error", "code": "QUEUE_UNKNOWN", "message": QUEUE_UNKNOWN_REFUSED}
     states = {int(k): v for k, v in d["states"].items()}
     spec = str(replicas or "failed").strip().lower()
     if spec in ("failed", "problems", "not_fitted", "all_failed"):
@@ -3858,10 +3930,10 @@ def rerun_replicas(collection_id="", replicas="failed", confirm="", username="",
         try:
             wanted = sorted(set(_numbers(replicas)))
         except ValueError:
-            return {"status": "error", "message": "replicas: 'failed' or replica numbers such as 3,7 or 10-12."}
+            return _refuse("BAD_ARGUMENT", "replicas: 'failed' or replica numbers such as 3,7 or 10-12.")
         outside = [i for i in wanted if not 1 <= i <= total]
         if outside:
-            return {"status": "error", "message": f"This campaign has replicas 1-{total}; no replica {outside}."}
+            return _refuse("BAD_ARGUMENT", f"This campaign has replicas 1-{total}; no replica {outside}.")
     busy = [i for i in wanted if states.get(i) == "queued"]
     wanted = [i for i in wanted if states.get(i) != "queued"]
     if not wanted:
@@ -3893,7 +3965,7 @@ def rerun_replicas(collection_id="", replicas="failed", confirm="", username="",
         binding['checkpoints'] = {k: v['sha256'] for k, v in resume_data['records'].items()}
     phrase = _confirm_phrase("RERUN", binding)
     if (confirm or "").strip() != phrase:
-        return {"status": "needs_confirmation", "plan": plan, "confirmation_phrase": phrase,
+        return {"status": "needs_confirmation", "code": "CONFIRM_REQUIRED", "plan": plan, "confirmation_phrase": phrase,
                 "message": "Nothing is queued yet. Show the user which replicas run again (their earlier "
                            "results are kept in previous/) and ask them to confirm with the phrase."}
     ws = _workspace(u)
@@ -3932,7 +4004,7 @@ def rerun_replicas(collection_id="", replicas="failed", confirm="", username="",
     r = _remote(u, 'bash -s', stdin=command, timeout=90)
     m = re.search(r"Submitted batch job (\d+)", (r.get("out") or "") + (r.get("err") or ""))
     if not m:
-        return {"status": "error", "message": "sbatch refused the job.", "detail": (r.get("err") or r.get("out"))[-400:]}
+        return {"status": "error", "code": "SBATCH_REFUSED", "message": "sbatch refused the job.", "detail": (r.get("err") or r.get("out"))[-400:]}
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     e = dict(e)
     e["jobs"] = list(e.get("jobs") or []) + [{"job_id": m.group(1), "first": min(wanted), "last": max(wanted),
@@ -4108,7 +4180,7 @@ def campaign_status(collection_id="", username=""):
         return err
     e = _collection(u, collection_id)
     if not e:
-        return {"status": "error", "message": f"No campaign {collection_id!r}."}
+        return {"status": "error", "code": "NOT_FOUND", "message": f"No campaign {collection_id!r}."}
     collection_id = e["collection_id"]      # a campaign name resolves to its id
     prog = _campaign_progress(u, e)
     log_patterns = _campaign_log_patterns(u, e)
@@ -4131,26 +4203,26 @@ def cancel_campaign(collection_id="", confirm="", username=""):
         return err
     e = _collection(u, collection_id)
     if not e:
-        return {"status": "error", "message": f"No campaign {collection_id!r}."}
+        return {"status": "error", "code": "NOT_FOUND", "message": f"No campaign {collection_id!r}."}
     collection_id = e["collection_id"]      # a campaign name resolves to its id
     ids = [str(j["job_id"]) for j in e.get("jobs") or []]
     prog = _campaign_progress(u, e)
     if prog.get("queue") is None:
-        return {"status": "error", "message": QUEUE_UNKNOWN_REFUSED}
+        return {"status": "error", "code": "QUEUE_UNKNOWN", "message": QUEUE_UNKNOWN_REFUSED}
     queued = sum(prog["queue"].values())
     if not queued:
         return {"status": "ok", "cancelled": [], "message": "Nothing of this campaign is queued or running."}
     plan = {"collection_id": collection_id, "job_ids": ids, "queued_tasks": queued}
     phrase = _confirm_phrase("CANCEL", {"collection_id": collection_id, "job_ids": ids})
     if (confirm or "").strip() != phrase:
-        return {"status": "needs_confirmation", "plan": plan, "confirmation_phrase": phrase,
+        return {"status": "needs_confirmation", "code": "CONFIRM_REQUIRED", "plan": plan, "confirmation_phrase": phrase,
                 "message": "Nothing is cancelled yet. Ask the user to confirm with the phrase."}
     # Only the jobs that still have tasks in the queue, so an error from
     # scancel is a real one and not about a job that has already ended.
     live = [j for j in prog["queued_jobs"] if j in ids] or ids
     r = _remote(u, "scancel " + " ".join(_shq(j) for j in live), timeout=60)
     if r.get("rc") != 0:
-        return {"status": "error", "message": "scancel refused to stop the campaign.",
+        return {"status": "error", "code": "SCANCEL_FAILED", "message": "scancel refused to stop the campaign.",
                 "detail": ((r.get("err") or "") + (r.get("out") or ""))[-400:]}
     e.update(status="cancelled", updated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     _registry(u, {"kind": "upsert", "entry": e})
@@ -4166,22 +4238,22 @@ def delete_campaign(collection_id="", delete_folder=False, confirm="", username=
     if isinstance(delete_folder, str):
         delete_folder = {"true": True, "false": False}.get(delete_folder.strip().lower(), delete_folder)
     if not isinstance(delete_folder, bool):
-        return {"status": "error", "message": "delete_folder must be true or false."}
+        return _refuse("BAD_ARGUMENT", "delete_folder must be true or false.")
     e = _collection(u, collection_id)
     if not e:
-        return {"status": "error", "message": f"No campaign {collection_id!r}."}
+        return {"status": "error", "code": "NOT_FOUND", "message": f"No campaign {collection_id!r}."}
     collection_id = e["collection_id"]      # a campaign name resolves to its id
     q = _campaign_progress(u, e).get("queue")
     if q is None:
-        return {"status": "error", "message": QUEUE_UNKNOWN_REFUSED}
+        return {"status": "error", "code": "QUEUE_UNKNOWN", "message": QUEUE_UNKNOWN_REFUSED}
     queued = sum(q.values())
     if queued:
-        return {"status": "error", "message": f"This campaign still has {queued} task(s) in the Slurm "
-                                              "queue. Stop it first (cancel_campaign), then delete it."}
+        return _refuse("STILL_QUEUED", f"This campaign still has {queued} task(s) in the Slurm "
+                                       "queue. Stop it first (cancel_campaign), then delete it.")
     plan = {"collection_id": collection_id, "delete_folder": bool(delete_folder)}
     phrase = _confirm_phrase("DELETE", plan)
     if (confirm or "").strip() != phrase:
-        return {"status": "needs_confirmation", "plan": plan, "confirmation_phrase": phrase}
+        return {"status": "needs_confirmation", "code": "CONFIRM_REQUIRED", "plan": plan, "confirmation_phrase": phrase}
     _registry(u, {"kind": "delete", "id": collection_id})
     removed = False
     if delete_folder:
@@ -4343,7 +4415,7 @@ def postprocess_campaign(collection_id="", username=""):
         return err
     e = _collection(u, collection_id)
     if not e:
-        return {"status": "error", "message": f"No campaign {collection_id!r}."}
+        return {"status": "error", "code": "NOT_FOUND", "message": f"No campaign {collection_id!r}."}
     collection_id = e["collection_id"]      # a campaign name resolves to its id
     ready = _ensure_central_metrics(u, e)
     if ready.get('status') not in ('success','missing_inputs'): return ready
@@ -4374,7 +4446,7 @@ def campaign_summary(collection_id="", username="", replicas=None):
         return err
     e = _collection(u, collection_id)
     if not e:
-        return {"status": "error", "message": f"No campaign {collection_id!r}."}
+        return {"status": "error", "code": "NOT_FOUND", "message": f"No campaign {collection_id!r}."}
     collection_id = e["collection_id"]      # a campaign name resolves to its id
     try:
         selection = _replica_selection(replicas)
@@ -4739,7 +4811,7 @@ def campaign_pdf_plots(collection_id="", flavors="", q2=10.0, mean_overlay=None,
         return err
     e = _collection(u, collection_id)
     if not e:
-        return {"status": "error", "message": f"No campaign {collection_id!r}."}
+        return {"status": "error", "code": "NOT_FOUND", "message": f"No campaign {collection_id!r}."}
     collection_id = e["collection_id"]      # a campaign name resolves to its id
     selected = [o["type"] for o in e["input_card"].get("objects", [e["input_card"].get("object", {"type": "pdf"})])]
     object_key = object_key or ("pdf" if "pdf" in selected else selected[0])
@@ -4760,7 +4832,7 @@ def campaign_pdf_plots(collection_id="", flavors="", q2=10.0, mean_overlay=None,
         q2 = float(q2)
         assert math.isfinite(q2) and q2 > 0
     except Exception:
-        return {"status": "error", "message": "q2 must be a positive number"}
+        return _refuse("BAD_ARGUMENT", "q2 must be a positive number")
     if object_key == "pdf":
         try:
             display = pdf_plotting.validate_pdf_display(x_min, x_max, band_color, band_alpha)
@@ -4975,7 +5047,7 @@ def campaign_ff_plots(collection_id="", flavors="", q2=100.0, mean_overlay=False
         return error
     entry = _collection(u, collection_id)
     if not entry:
-        return {"status":"error", "message":f"No campaign {collection_id!r}."}
+        return {"status":"error", "code": "NOT_FOUND", "message":f"No campaign {collection_id!r}."}
     collection_id = entry["collection_id"]      # a campaign name resolves to its id
     objects = [obj.get("type") for obj in entry['input_card'].get('objects',[])]
     if not set(objects).intersection(ff_registry.FF_OBJECTS):
@@ -10536,7 +10608,7 @@ def analyze_by_experiment(collection_id="", experiments="", plot=True, username=
         return err
     e = _collection(u, collection_id)
     if not e:
-        return {"status": "error", "message": f"No campaign {collection_id!r}."}
+        return {"status": "error", "code": "NOT_FOUND", "message": f"No campaign {collection_id!r}."}
     collection_id = e["collection_id"]      # a campaign name resolves to its id
     try:
         selection = _replica_selection(replicas)
@@ -10803,13 +10875,13 @@ def campaign_logs(collection_id="", replica=0, lines=80, username=""):
         return err
     e = _collection(u, collection_id)
     if not e:
-        return {"status": "error", "message": f"No campaign {collection_id!r}."}
+        return {"status": "error", "code": "NOT_FOUND", "message": f"No campaign {collection_id!r}."}
     collection_id = e["collection_id"]      # a campaign name resolves to its id
     total = int(e.get("replicas") or 0)
     try:
         replica, lines = int(replica or 0), int(lines or 80)
     except (TypeError, ValueError):
-        return {"status": "error", "message": "replica and lines must be whole numbers."}
+        return _refuse("BAD_ARGUMENT", "replica and lines must be whole numbers.")
     if not 0 <= replica <= total:
         return {"status": "error", "message": f"Campaign {collection_id!r} has replicas 1 to {total}; "
                                               f"there is no replica {replica}."}
@@ -10895,7 +10967,7 @@ def draft_slurm_job(name="", command="", time_limit="01:00:00", cpus=1, mem="4G"
         cpus = int(cpus)
         assert 1 <= cpus <= 64
     except Exception:
-        return {"status": "error", "message": "cpus must be between 1 and 64"}
+        return _refuse("BAD_ARGUMENT", "cpus must be between 1 and 64")
     if not re.fullmatch(r"\d{1,4}[MG]", str(mem)):
         return {"status": "error", "message": "mem must look like 4G or 500M"}
     if array and not re.fullmatch(r"\d{1,5}(-\d{1,5})?(%\d{1,4})?", array):
@@ -10906,7 +10978,7 @@ def draft_slurm_job(name="", command="", time_limit="01:00:00", cpus=1, mem="4G"
     ws, area = _workspace(u), _area(u)
     wd = os.path.normpath((workdir or ws).strip())
     if not (wd == area or wd.startswith(area + "/")):
-        return {"status": "error", "message": f"workdir must be inside your own area ({area})"}
+        return _refuse("OUTSIDE_AREA", f"workdir must be inside your own area ({area})")
     sdir = f"{ws}/slurm"
     c = SITE["container"]
     body = command.strip()
@@ -10951,12 +11023,12 @@ def submit_slurm_job(name="", confirm="", username=""):
     script = r.get("out") or ""
     phrase = _confirm_phrase("SLURM", {"name": name, "script": script})
     if (confirm or "").strip() != phrase:
-        return {"status": "needs_confirmation", "confirmation_phrase": phrase, "script": script}
+        return {"status": "needs_confirmation", "code": "CONFIRM_REQUIRED", "confirmation_phrase": phrase, "script": script}
     log_dir = _shq(_slurm_log_dir(u))
     s = _remote(u, f"mkdir -p {log_dir} && sbatch {_shq(path)}", timeout=60)
     m = re.search(r"Submitted batch job (\d+)", (s.get("out") or "") + (s.get("err") or ""))
     if not m:
-        return {"status": "error", "message": "sbatch refused the job", "detail": (s.get("err") or s.get("out"))[-400:]}
+        return {"status": "error", "code": "SBATCH_REFUSED", "message": "sbatch refused the job", "detail": (s.get("err") or s.get("out"))[-400:]}
     return {"status": "submitted", "job_id": m.group(1), "script_path": path}
 
 
@@ -11956,16 +12028,16 @@ class H(BaseHTTPRequestHandler):
             if spec is None:
                 result = _tool_result("unknown tool", is_error=True)
             elif not getattr(_tls, "user", ""):
-                result = _tool_result({"status": "unauthorized", "message": AUTH_HELP},
+                result = _tool_result({"status": "unauthorized", "code": "AUTH_REQUIRED", "message": AUTH_HELP},
                                       is_error=True)
             else:
                 asked = str(args.get("username") or "").strip().lower() if isinstance(args, dict) else ""
                 if asked and asked != _tls.user and not SHARED:
-                    result = _tool_result({"status": "error", "message":
+                    result = _tool_result({"status": "error", "code": "NOT_SHARED", "message":
                                            f"This gateway is not shared: it acts only as {GATEWAY_OWNER}."},
                                           is_error=True)
                 elif asked and not re.fullmatch(USERNAME_RE, asked):
-                    result = _tool_result({"status": "error", "message": "username: a JLab username"},
+                    result = _tool_result({"status": "error", "code": "BAD_USERNAME", "message": "username: a JLab username"},
                                           is_error=True)
                 else:
                     if asked:
