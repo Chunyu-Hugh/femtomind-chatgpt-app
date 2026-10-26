@@ -337,7 +337,15 @@ start and stop independently, four at a time.
   `reproduce_campaign(collection_id, check='latest')` (or a run stamp)
   compares each replica's `fit_summary.json` (paths aside) and `msr` files
   with the current ones: `identical`, `differs` (with the differing keys and
-  both values), `running`, `no_output`.
+  both values), `running`, `no_output`, each with the hosts of both runs.
+  **Node type matters:** on 2026-10-26 the same replica reproduced byte for
+  byte three times on `farm18` nodes and differed at the 2e-6 level on a
+  `farm19` node (same code, image, seeds and libraries: different CPU, so
+  different vectorised arithmetic). `reproduce_campaign` therefore asks Slurm
+  for the original node type (`#SBATCH --constraint=farm18`, from the host in
+  `replica_provenance.json`; `node_constraint='none'` lifts it, a feature name
+  sets it), the check names the node types when a differing pair ran on
+  different ones, and `replica_provenance.json` records the CPU model.
 - **Confirmation phrases.** `submit_campaign`, `append_replicas`,
   `cancel_campaign`, `delete_campaign` and `submit_slurm_job` act only when
   called again with the phrase from a first call (`CONFIRM JAM <kind>

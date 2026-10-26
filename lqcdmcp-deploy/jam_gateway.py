@@ -2215,12 +2215,15 @@ def _campaign_log_patterns(user, entry):
     return {"stdout": legacy, "stderr": None}
 
 
-def _array_script(ws, folder, norm, first, last, indices=None, resume_plan=None, code_ws=None, out_dir=None, tag=""):
+def _array_script(ws, folder, norm, first, last, indices=None, resume_plan=None, code_ws=None, out_dir=None, tag="",
+                  constraint=None):
     """The Slurm job array: one replica per task, inside the site's image
     (replicas first-last, or exactly the replica numbers in indices). code_ws:
     the FitPack the tasks run (default: the workspace that holds the campaign;
     a rebuilt one for a reproduction); out_dir: where replica_<n> folders go
-    (default: the stage's current/); tag: a word in the job and log names."""
+    (default: the stage's current/); tag: a word in the job and log names;
+    constraint: a Slurm node feature the tasks must run on (a reproduction asks
+    for the original node type, since results are bit-identical only there)."""
     sl, c = norm["slurm"], SITE["container"]
     stage = f"{ws}/{CAMPAIGNS_DIR}/{folder}/stages/{STAGE}"
     code_ws = code_ws or ws
@@ -2239,6 +2242,7 @@ def _array_script(ws, folder, norm, first, last, indices=None, resume_plan=None,
 #SBATCH --mem={sl["mem"]}
 #SBATCH --cpus-per-task={sl["cpus"]}
 #SBATCH --array={_array_ranges(indices) if indices else f"{first}-{last}"}
+{f"#SBATCH --constraint={constraint}" if constraint else "#"}
 #SBATCH --output={log_root}/%u/{folder}/out/{log_name}_%A_%a.out
 #SBATCH --error={log_root}/%u/{folder}/err/{log_name}_%A_%a.err
 set -euo pipefail
@@ -2614,6 +2618,18 @@ def parse_ranges(spec):
         out.extend(range(int(a), int(b or a) + 1))
     return out
 
+def node_type(host):
+    # Slurm feature of the node a host name belongs to (farm180123 -> farm18); results are
+    # bit-identical only on the same CPU type, so a reproduction asks for it.
+    m = re.match(r'^(farm\d{2})', (host or '').split('.')[0])
+    return m.group(1) if m else None
+
+def replica_host(stage, i, run_dir=None):
+    try:
+        return json.load(open(os.path.join(run_dir or os.path.join(stage, 'current'), 'replica_%d' % i, 'replica_provenance.json'))).get('host')
+    except (OSError, ValueError):
+        return None
+
 def load_record(croot):
     try:
         rec = json.load(open(os.path.join(croot, 'reproduce.json')))
@@ -2795,7 +2811,10 @@ matches = {'commit': live_fp['commit'] is not None and live_fp['commit'] == rfp.
            'jamai': live_jamai == s.get('jamai_sha256')}
 diff_available = (not rdiff) or bool(rdiff.get('file') and os.path.exists(os.path.join(croot, rdiff['file'])))
 in_place = matches['commit'] and matches['changes']
+hosts = dict((str(i), replica_host(stage, i)) for i in replicas)
+features = sorted(set(f for f in (node_type(h) for h in hosts.values()) if f))
 print(json.dumps({'ok': True, 'mode': 'in_place' if in_place else 'clone', 'matches': matches,
+                  'hosts': hosts, 'node_types': features,
                   'diff_available': diff_available, 'missing_replicas': missing,
                   'submission': {'kind': s.get('kind'), 'job_id': s.get('job_id'), 'replicas': s.get('replicas'),
                                  'submitted_at': s.get('submitted_at')},
@@ -2923,8 +2942,14 @@ def compare(i):
         names = sorted(set(os.listdir(msr_old)) | set(os.listdir(msr_new)))
         msr = all(sha(os.path.join(msr_old, n)) == sha(os.path.join(msr_new, n)) for n in names) if names else None
     state = 'identical' if not keys and msr is not False else 'differs'
+    h0, h1 = replica_host(stage, i), replica_host(stage, i, out_dir)
     r = {'replica': i, 'state': state, 'differing_keys': keys, 'msr_identical': msr,
-         'chi2': {'original': a.get('chi2_total'), 'reproduced': b.get('chi2_total')}}
+         'chi2': {'original': a.get('chi2_total'), 'reproduced': b.get('chi2_total')},
+         'hosts': {'original': h0, 'reproduced': h1}}
+    if state == 'differs' and node_type(h0) and node_type(h1) and node_type(h0) != node_type(h1):
+        r['note'] = ('The two runs were on different node types (%s and %s); floating-point results are '
+                     'bit-identical only on the same CPU type. Reproduce again with node_constraint=%s.'
+                     % (node_type(h0), node_type(h1), node_type(h0)))
     for k in keys[:12]:
         r.setdefault('differences', {})[k] = {'original': a.get(k), 'reproduced': b.get(k)}
     return r
@@ -2941,13 +2966,15 @@ print(json.dumps({'ok': True, 'run': run_name, 'output': out_dir, 'runs': runs, 
 '''
 
 
-def reproduce_campaign(collection_id="", replicas="all", check="", confirm="", username=""):
+def reproduce_campaign(collection_id="", replicas="all", check="", confirm="", username="", node_constraint="auto"):
     """Run replicas of a campaign again exactly as recorded in reproduce.json,
     into stages/<stage>/reproduce/<stamp>/ (the current results stay). The
     live workspace is used when it still is the recorded state; otherwise a
     clone at the recorded commit with the recorded diff applied is built under
     <area>/reproductions/ and used. check='latest' or a run name compares a
-    reproduction with the current results instead."""
+    reproduction with the current results instead. node_constraint: 'auto'
+    asks Slurm for the node type the replicas ran on (results are bit-identical
+    only on the same CPU type), 'none' lets them run anywhere, or a feature."""
     u, err = _need_user(username)
     if err:
         return err
@@ -3002,13 +3029,34 @@ def reproduce_campaign(collection_id="", replicas="all", check="", confirm="", u
                 "message": "The live workspace is not the recorded state, and the recorded changes were not "
                            "saved (the diff was larger than 50 MB), so the workspace cannot be rebuilt exactly.",
                 "plan": p}
+    want = str(node_constraint or "auto").strip().lower()
+    if want == "auto":
+        constraint = p["node_types"][0] if len(p["node_types"]) == 1 else None
+    elif want in ("none", ""):
+        constraint = None
+    elif re.fullmatch(r"[a-z0-9_]{1,32}", want):
+        constraint = want
+    else:
+        return {"status": "error", "message": "node_constraint: 'auto', 'none' or a Slurm node feature such as farm18."}
     stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime())
     dest = f"{_area(u)}/reproductions/{e['campaign_folder']}/{stamp}/fitpack"
     plan = {"collection_id": collection_id, "replicas": wanted, "count": len(wanted), "mode": p["mode"],
             "matches": p["matches"], "reproduces": p["submission"], "record": p["record"], "live": p["live"],
             "results_to": f"{stage}/reproduce/<stamp>/replica_<n>",
             "workspace": ws if p["mode"] == "in_place" else f"{_area(u)}/reproductions/{e['campaign_folder']}/<stamp>/fitpack",
-            "partition": (e["input_card"].get("slurm") or {}).get("partition_effective")}
+            "partition": (e["input_card"].get("slurm") or {}).get("partition_effective"),
+            "original_hosts": p["hosts"], "node_constraint": constraint}
+    if constraint:
+        plan["note_node"] = (f"The replicas ran on {constraint} nodes; the reproduction asks Slurm for the same node "
+                             "type (--constraint), since floating-point results are bit-identical only on the same CPU "
+                             "type. node_constraint='none' lifts this.")
+    elif want == "auto" and len(p["node_types"]) > 1:
+        plan["warning_node"] = (f"The replicas ran on several node types ({', '.join(p['node_types'])}), so no node "
+                                "constraint is set; results may differ in the last digits across node types. "
+                                "Reproduce the replicas of one node type at a time with node_constraint=<type>.")
+    elif want == "auto":
+        plan["warning_node"] = ("The node type of the original run is not recorded, so no node constraint is set; "
+                                "results may differ in the last digits across node types.")
     if not p["matches"]["image"]:
         plan["warning_image"] = (("The record has no checksum of the container image (it predates that part of the "
                                   "record), so whether the image is still the same cannot be told; ")
@@ -3044,7 +3092,8 @@ def reproduce_campaign(collection_id="", replicas="all", check="", confirm="", u
         _upload_jamai(u, dest)
     out_dir = f"{stage}/reproduce/{stamp}"
     sb = base64.b64encode(_array_script(ws, e["campaign_folder"], e["input_card"], min(wanted), max(wanted),
-                                        indices=wanted, code_ws=code_ws, out_dir=out_dir, tag="repro").encode()).decode()
+                                        indices=wanted, code_ws=code_ws, out_dir=out_dir, tag="repro",
+                                        constraint=constraint).encode()).decode()
     qs, qo, log_dir = _shq(stage), _shq(out_dir), _shq(_slurm_log_dir(u))
     r = _remote(u, f"mkdir -p {qo} {qs}/slurm {log_dir} && echo {sb} | base64 -d > {qs}/slurm/reproduce_{stamp}.sh && "
                    f"sbatch {qs}/slurm/reproduce_{stamp}.sh", timeout=90)
@@ -3053,7 +3102,8 @@ def reproduce_campaign(collection_id="", replicas="all", check="", confirm="", u
         return {"status": "error", "message": "sbatch refused the job.", "detail": (r.get("err") or r.get("out"))[-400:],
                 **({"rebuilt_workspace": dest} if built else {})}
     extra = {"reproduces_job_id": p["submission"]["job_id"], "mode": p["mode"], "workspace_used": code_ws,
-             "output": out_dir, "matches": p["matches"], "run": stamp}
+             "output": out_dir, "matches": p["matches"], "run": stamp, "node_constraint": constraint,
+             "original_hosts": p["hosts"]}
     why = _record_submission(u, croot, stage, "reproduce", m.group(1), wanted, e["input_card"], ws=code_ws, extra=extra)
     return {"status": "submitted", "job_id": m.group(1), "run": stamp, **plan, "workspace": code_ws, "results_to": out_dir,
             **({"rebuilt": built} if built else {}),
@@ -11343,15 +11393,18 @@ TOOLS = {
                 "not touched. Without confirm it returns the plan (recorded vs live state, in place or clone) and "
                 "a confirmation phrase; submit with confirm=<phrase> only after the user agrees. "
                 "check='latest' (or a run stamp) compares a finished reproduction with the current results per "
-                "replica: identical, differs (with the differing keys), running, no_output. Use it when the user "
-                "asks to reproduce, re-derive or verify a campaign's results.",
+                "replica: identical, differs (with the differing keys and both hosts), running, no_output. Results "
+                "are bit-identical only on the same node type, so the reproduction asks Slurm for the original one "
+                "(node_constraint='auto'). Use it when the user asks to reproduce, re-derive or verify a campaign's "
+                "results.",
         "schema": {"type": "object", "properties": {"collection_id": {"type": "string", "description": COLLECTION_ARG},
                                                     "replicas": {"type": "string", "default": "all"},
                                                     "check": {"type": "string", "description": "'latest' or a run stamp: compare instead of submitting"},
+                                                    "node_constraint": {"type": "string", "default": "auto", "description": "'auto' (the node type the replicas ran on, since results are bit-identical only on the same CPU type), 'none', or a Slurm feature such as farm18"},
                                                     "confirm": {"type": "string"}},
                    "required": ["collection_id"]},
         "fn": lambda a: reproduce_campaign(a.get("collection_id", ""), a.get("replicas", "all"), a.get("check", ""),
-                                           a.get("confirm", ""))},
+                                           a.get("confirm", ""), node_constraint=a.get("node_constraint", "auto"))},
     "campaign_logs": {
         "desc": "Logs of a campaign: each replica's state (fitted, not fitted, failed, running, no "
                 "output) and, for a replica that did not fit, the Python error and ends of its Slurm "

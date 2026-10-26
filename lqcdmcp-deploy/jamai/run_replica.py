@@ -95,6 +95,18 @@ def _version(package: str) -> str | None:
         return None
 
 
+def _cpu_model() -> str | None:
+    # Floating-point results are bit-identical only on the same CPU type.
+    try:
+        with open('/proc/cpuinfo', encoding='utf-8', errors='replace') as fh:
+            for line in fh:
+                if line.lower().startswith('model name'):
+                    return line.split(':', 1)[1].strip()
+    except OSError:
+        pass
+    return None
+
+
 def _write_provenance(argv: list[str], max_nfev: int | None, method: str | None) -> None:
     # A record that cannot be written is one printed line, never a failed fit.
     try:
@@ -113,6 +125,7 @@ def _write_provenance(argv: list[str], max_nfev: int | None, method: str | None)
             'replica': _arg(argv, '--replica'),
             'started_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
             'host': socket.gethostname(),
+            'cpu': _cpu_model(),
             'slurm': {'job_id': os.environ.get('SLURM_JOB_ID'),
                       'array_job_id': os.environ.get('SLURM_ARRAY_JOB_ID'),
                       'array_task_id': os.environ.get('SLURM_ARRAY_TASK_ID')},
