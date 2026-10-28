@@ -354,10 +354,23 @@ start and stop independently, four at a time.
   `replica_provenance.json`; `node_constraint='none'` lifts it, a feature name
   sets it), the check names the node types when a differing pair ran on
   different ones, and `replica_provenance.json` records the CPU model.
+- **Registry merges.** An upsert of `campaigns/collections.json` merges with
+  the stored entry: the union of both job lists (by job id, the newer record
+  of a repeated id) and the larger replica count, so an append and a rerun
+  that read the entry before either wrote both keep their jobs (one such
+  lost update happened on 2026-10-25).
 - **Confirmation phrases.** `submit_campaign`, `append_replicas`,
-  `cancel_campaign`, `delete_campaign` and `submit_slurm_job` act only when
-  called again with the phrase from a first call (`CONFIRM JAM <kind>
-  <hash>`), which ties it to exactly that card or plan.
+  `rerun_replicas`, `reproduce_campaign`, `cancel_campaign`,
+  `delete_campaign` and `submit_slurm_job` act only when called again with
+  the phrase from a first call (`CONFIRM JAM <kind> <hash>`), which ties it
+  to exactly that card or plan. The gateway remembers when it first showed
+  each phrase and refuses a confirm that comes within 20 seconds of that
+  (`CONFIRM_TOO_SOON`), or carries a phrase it never showed
+  (`CONFIRM_NOT_SHOWN`, after a restart): on 2026-10-26 Claude Code, asked in
+  one message to reproduce a campaign, confirmed its own plan in the same
+  turn without the user seeing it. Every `needs_confirmation` answer also
+  carries the rule in its message. `JAM_GW_HUMAN_GATE=1` goes further and
+  keeps the phrase off AI clients altogether (the panel shows it).
 - **Other Slurm jobs.** `draft_slurm_job` writes `<workspace>/slurm/<name>.sh`
   and checks it with `sbatch --test-only`; `submit_slurm_job` submits it.
   Their stdout and stderr go to separate, unique files under `/farm_out/<user>/`.
@@ -431,6 +444,15 @@ call it, what a call may do, who may change its code, and records all of it.
   The phrase is a check that the confirmed plan is the plan that runs; it is
   not a credential and not, by itself, proof that a person agreed (an AI
   client receives it and can send it back).
+- **A published analysis is reproduced from its catalog entry, or not at
+  all.** A campaign whose name claims a catalog analysis (`JAM24...`) but whose
+  card was not built with `campaign_card_from_catalog` is refused
+  (`CATALOG_REQUIRED`): the library defaults are another model (140 free FF
+  parameters, not JAM24's 215). A catalog-built card may differ from the
+  catalog only where the user declared the change in `overrides`, which the
+  card records; any other difference withholds the confirmation phrase and
+  refuses submission (`CATALOG_MISMATCH`). On a deployment where the catalog
+  tools are denied there is no catalog to claim, so neither rule applies.
 - **Human gate.** `JAM_GW_HUMAN_GATE=1` (or `site.json` `"human_gate"`) keeps
   the phrase away from AI clients: a reply that needs confirmation says a
   person must read the phrase off the panel page, whose "Pending

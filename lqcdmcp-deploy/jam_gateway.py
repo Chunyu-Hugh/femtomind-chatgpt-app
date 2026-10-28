@@ -412,7 +412,7 @@ REFUSAL_CODES = (
     "AUTH_REQUIRED", "IDENTITY_MISMATCH", "NOT_SHARED", "BAD_USERNAME", "UNKNOWN_TOOL", "TOOL_DENIED",
     "HIDDEN_TOOL", "ADMIN_REQUIRED", "ADMIN_DISABLED", "CHAIN_DOWN",
     # the campaign card and the workspace
-    "CARD_INVALID", "LIBRARY_UNREADABLE", "WORKSPACE_NOT_READY", "WORKSPACE_MISSING", "DATA_FILE_MISSING",
+    "CARD_INVALID", "CATALOG_REQUIRED", "CATALOG_MISMATCH", "LIBRARY_UNREADABLE", "WORKSPACE_NOT_READY", "WORKSPACE_MISSING", "DATA_FILE_MISSING",
     "PRIOR_SOURCE_INVALID", "PRIOR_ARCHIVE_DENIED", "NO_DATA", "CONFIG_ONLY_UNSUPPORTED", "DIRTY_CHECKOUT",
     "OUTSIDE_AREA", "OUTSIDE_READ_ROOTS", "BAD_ARGUMENT",
     # submission and the queue
@@ -1916,9 +1916,46 @@ CAMPAIGN_CHOICES = {
 }
 
 
+CONFIRM_WAIT = 20          # seconds between showing a plan and accepting its phrase
+CONFIRM_RULE = ("Stop here and show the user the plan; the phrase is accepted only after they answer. "
+                "The request that led to this plan is not their confirmation, and a confirm sent in the same "
+                f"turn, or within {CONFIRM_WAIT} seconds of the plan, is refused.")
+_PHRASES = {}              # phrase -> when it was first shown (monotonic seconds)
+_PHRASES_LOCK = threading.Lock()
+
+
 def _confirm_phrase(kind, payload):
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()[:10]
-    return f"CONFIRM JAM {kind} {digest}"
+    phrase = f"CONFIRM JAM {kind} {digest}"
+    with _PHRASES_LOCK:
+        now = time.monotonic()
+        if len(_PHRASES) > 2000:
+            for k in [k for k, t in _PHRASES.items() if now - t > 86400]:
+                del _PHRASES[k]
+        _PHRASES.setdefault(phrase, now)      # the first showing counts, a repeat does not reset it
+    return phrase
+
+
+def _confirm_gate(args):
+    """Refuse a confirmation phrase this gateway never showed, or showed less
+    than CONFIRM_WAIT seconds ago: an assistant that confirms its own plan in
+    the same turn never gives the user the chance to say no."""
+    phrase = str(args.get("confirm") or "").strip() if isinstance(args, dict) else ""
+    if not re.fullmatch(r"CONFIRM JAM [A-Z]+ [0-9a-f]{10}", phrase):
+        return None
+    with _PHRASES_LOCK:
+        shown = _PHRASES.get(phrase)
+    if shown is None:
+        return {"status": "error", "code": "CONFIRM_NOT_SHOWN",
+                "message": "This phrase was not issued by this gateway (it may have restarted). Call the tool "
+                           "without confirm to get the plan and its phrase again, show the plan to the user, and "
+                           "confirm only after they agree."}
+    age = time.monotonic() - shown
+    if age < CONFIRM_WAIT:
+        return {"status": "error", "code": "CONFIRM_TOO_SOON", "seconds_since_plan": round(age, 1),
+                "message": f"The plan was shown {age:.0f} seconds ago. Nothing was submitted. Show the user the plan "
+                           "and wait for their answer; confirm only after they have agreed in their own message."}
+    return None
 
 
 # ---- the same confirmed request is carried out once ------------------------------
@@ -3001,6 +3038,15 @@ try:
                 raise ValueError('Stored prior snapshot reference no longer matches the campaign')
             entry = {**entry, 'input_card': {**entry['input_card'],
                                           'parameters': {**params, 'priorSnapshot': original}}}
+        stored = next((e for e in items if e.get('collection_id') == entry['collection_id']), None)
+        if stored:
+            # Two tools may have read the entry before either wrote (an append and a
+            # rerun together): keep every job both know, and the larger replica count.
+            jobs = {}
+            for j in list(stored.get('jobs') or []) + list(entry.get('jobs') or []):
+                jobs[str(j.get('job_id'))] = j
+            entry = {**entry, 'jobs': sorted(jobs.values(), key=lambda j: (str(j.get('submitted_at') or ''), str(j.get('job_id')))),
+                     'replicas': max(int(entry.get('replicas') or 0), int(stored.get('replicas') or 0))}
         items = [e for e in items if e.get('collection_id') != entry['collection_id']] + [entry]
     elif op['kind'] == 'delete':
         items = [e for e in items if e.get('collection_id') != op['id']]
@@ -3912,6 +3958,19 @@ def _checked_card(u, card):
         # validate_campaign compares the two, and the registry keeps the provenance.
         norm["source"] = {k: card["source"][k] for k in ("analysis_id", "configuration_ref", "compiled_ref", "catalog_ref")
                           if isinstance(card["source"].get(k), str)}
+        if isinstance(card["source"].get("overrides"), dict):
+            norm["source"]["overrides"] = card["source"]["overrides"]
+    if not errors and not norm.get("source"):
+        # A campaign that names a published analysis must be built from its
+        # catalog entry: the library defaults are another model (140 free FF
+        # parameters, not 215), and a name is a claim the user will trust.
+        claim = _catalog_name_claim((norm.get("job") or {}).get("campaignName", ""))
+        if claim and not CATALOG_DENIED:
+            return None, _refuse("CATALOG_REQUIRED",
+                                 f"The campaign is named after the published analysis {claim}, but the card was not built from "
+                                 f"its catalog entry, so its settings are library defaults, not the published ones. Build the card "
+                                 f"with campaign_card_from_catalog({claim!r}) and declare any change in overrides, or give the "
+                                 f"campaign a name that does not claim to reproduce {claim}.", valid=False)
     if not errors:
         ws = _workspace(u)
         for key, lib in library.items():
@@ -4224,6 +4283,14 @@ def _card_from_conf(conf, source, overrides=None, replicas=10):
         card["datasets"].update({str(r): [str(x) for x in v] for r, v in overrides["datasets"].items()})
     if isinstance(overrides.get("reactions"), list):
         card["reactions"] = [str(r) for r in overrides["reactions"]]
+    # What the user changed is part of the card's provenance: validate_campaign
+    # permits a difference from the catalog only where it was declared here.
+    declared = {section: sorted(str(k) for k in overrides[section]) for section in ("job", "slurm", "qcd", "parameters", "datasets")
+                if isinstance(overrides.get(section), dict) and overrides[section]}
+    if isinstance(overrides.get("reactions"), list):
+        declared["reactions"] = True
+    if declared:
+        card["source"]["overrides"] = declared
     if conf.get("flat par") or any(d.get("gaussian") for t in conf["params"].values() for d in t.values()):
         notes.append("The published fit drew its starting values from Gaussian priors (flat par); the FF library "
                      "carries that metadata, the PDF starts from the catalog values (initialization 'default').")
@@ -4270,6 +4337,54 @@ def campaign_card_from_catalog(analysis_id="JAM24.final", replicas=10, overrides
                        f"{sum(expected['datasets'].values())} datasets. Call validate_campaign(card) next: it checks the "
                        "card against the workspace and its catalog_comparison says where it still differs from the "
                        "published fit. The confirmation phrase comes from that validation."}
+
+
+_CATALOG_CLAIMS = None
+
+
+def _catalog_name_claim(name):
+    """The catalog analysis a campaign name claims (JAM24 in 'JAM24_reproduction'), or None."""
+    global _CATALOG_CLAIMS
+    if _CATALOG_CLAIMS is None:
+        try:
+            store = analysis_catalog.Catalog(analysis_catalog.catalog_root(HERE))
+            claims = {}
+            for aid, entry in store.entries.items():
+                for token in (entry.get("folder", ""), aid.split(".")[0]):
+                    if token:
+                        claims[re.sub(r"[^a-z0-9]", "", token.lower())] = token
+            _CATALOG_CLAIMS = claims
+        except Exception:
+            _CATALOG_CLAIMS = {}
+    flat = re.sub(r"[^a-z0-9]", "", str(name or "").lower())
+    for key, token in _CATALOG_CLAIMS.items():
+        if key and key in flat:
+            return token
+    return None
+
+
+def _undeclared_differences(norm, comparison):
+    """The catalog_comparison differences that no override in the card explains."""
+    declared = (norm.get("source") or {}).get("overrides") or {}
+    datasets = set(declared.get("datasets") or [])
+    qcd = set(declared.get("qcd") or [])
+    reactions = bool(declared.get("reactions"))
+    out = []
+    for d in comparison.get("differences") or []:
+        head = d.split(":")[0].strip()
+        if d.endswith("datasets differ") or "datasets differ (" in d or d.endswith("not part of the published fit") or d.endswith("cuts differ"):
+            if reactions or head in datasets:
+                continue
+        elif d.startswith("normalization parameters:"):
+            if reactions or datasets:
+                continue
+        elif d.startswith("free parameters:"):
+            if declared.get("parameters"):
+                continue
+        elif head in qcd:
+            continue
+        out.append(d)
+    return out
 
 
 def _catalog_comparison(norm):
@@ -4374,8 +4489,20 @@ def _validated(u, norm):
     if comparison:
         out["catalog_comparison"] = comparison
         if comparison.get("verdict") == "differs":
-            out["next"] = ("The card differs from the published analysis it names (catalog_comparison.differences). "
-                           "Show the user the differences with the summary; submit only after they agree to them.")
+            undeclared = _undeclared_differences(norm, comparison)
+            if undeclared:
+                # Fail closed: a card that names a published analysis may differ
+                # from it only where the user declared the change (overrides).
+                out.update(status="error", valid=False, code="CATALOG_MISMATCH", undeclared_differences=undeclared,
+                           message="The card differs from the published analysis it names in ways no override declares; "
+                                   "it cannot be submitted as that analysis.")
+                out.pop("confirmation_phrase", None)
+                out["next"] = ("Rebuild the card with campaign_card_from_catalog, passing each intended change in overrides "
+                               "(then the difference is recorded as the user's), or drop card.source to run it as a new study.")
+            else:
+                out["next"] = ("The card differs from the published analysis it names only by the declared overrides "
+                               "(catalog_comparison.differences). Show the user the differences with the summary; "
+                               "submit only after they confirm.")
     return out
 
 
@@ -4712,6 +4839,8 @@ def _submit_campaign(u, card, confirm):
     if refused:
         return refused
     v = _validated(u, norm)
+    if not v.get("valid", True):
+        return v
     if (confirm or "").strip() != v["confirmation_phrase"]:
         return {"status": "needs_confirmation", "code": "CONFIRM_REQUIRED", "confirmation_phrase": v["confirmation_phrase"],
                 "summary": v["summary"], "slurm_script": v["slurm_script"],
@@ -12482,7 +12611,9 @@ TOOLS = {
         "schema": {"type": "object", "properties": {}},
         "fn": lambda a: use_ai_branch()},
     "validate_campaign": {
-        "desc": ("SIDIS needs the proton PDF plus the FFs of its hadrons; SIA needs FFs only. "
+        "desc": ("A card named after a published analysis must come from campaign_card_from_catalog (else CATALOG_REQUIRED), "
+                 "and may differ from the catalog only by the overrides it declares (else CATALOG_MISMATCH: no phrase, no submit). "
+                 "SIDIS needs the proton PDF plus the FFs of its hadrons; SIA needs FFs only. "
                  if FF_EXECUTION_ENABLED else
                  "SIDIS/SIA selections return a dataset-only input fragment with configuration_valid and "
                  "fit_ready=false, never a runnable fit or submission confirmation. ") +
@@ -13285,6 +13416,8 @@ def _tool_result(out, is_error=False, compact=False):
         # widget only (chart data, PNG data URLs): it goes in _meta, which
         # hosts hand to the widget and keep out of the model's context.
         out = dict(out)
+        if out.get("status") == "needs_confirmation":
+            out["message"] = (str(out.get("message") or "") + " " + CONFIRM_RULE).strip()
         images = out.pop("_images", None) or []
         ui = out.pop("_ui", None)
         if "_panel_plots" in out:           # the older spelling of _ui's panel_plots
@@ -13504,6 +13637,8 @@ class H(BaseHTTPRequestHandler):
                         result = _tool_result(_refuse("ADMIN_REQUIRED", "deploy needs the admin secret in the "
                                                       "X-JAM-Admin header (or _meta jam/admin)", status="unauthorized"),
                                               is_error=True)
+                    elif _confirm_gate(args):
+                        result = _tool_result(_confirm_gate(args), is_error=True)
                     else:
                         try:
                             out = _apply_human_gate(spec["fn"](args))
