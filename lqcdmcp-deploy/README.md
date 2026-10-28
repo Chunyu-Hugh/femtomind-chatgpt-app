@@ -695,6 +695,51 @@ existing renderer reports this explicitly and returns no image. The delivery
 tool does not silently choose a different layout, substitute a saved figure or
 change styling. A separately requested six-flavor layout passed validation.
 
+## Looking inside datasets, and campaign reports
+
+**`inspect_datasets`** (read-only) answers "what does this dataset hold and
+what do my cuts keep" from the data files, read the way the fit reads them.
+`_DATA_LOAD` is the loader the validation's data check (`_DATA_CHECK`)
+already used: the reaction's FitPack reader in the site container, then each
+cut in order with `tab.query`, a cut that cannot be evaluated skipped as
+`tools/reader.py` skips it. `_DATA_INSPECT` adds, per dataset: the points in
+the file, the points each cut keeps in turn, cuts FitPack would skip
+silently, kinematic ranges before and after the cuts, labels, and the
+uncertainties as `tools/residuals.py` reads the columns (a `%` column is a
+percentage of `value` and becomes absolute; `_u` columns add in quadrature
+to alpha; `_c` columns without `norm` are correlated; the one `_c` column
+with `norm` gives dN = column / value at the first nonzero point, and two
+such columns are reported because FitPack stops on them), with `rows` the
+first points. Input: `reaction` + `datasets` (cuts: structured
+`{variable, op, value}` only, as cards; default the library's cuts; SIDIS
+and SIA always use the catalog's filters), or `collection_id` for a
+campaign's own datasets and cuts. At most 40 datasets per call.
+
+**`campaign_report`** writes `report/campaign_report.md` (and
+`campaign_report.json`, the record it is made from) in the campaign folder:
+configuration (`_card_summary`), data after the cuts (`_data_warnings`, the
+validation's own count), results (`campaign_summary`: chi2 per replica and of
+the mean prediction, per dataset with the replica range), the submissions in
+`reproduce.json` with their FitPack commits, warnings (a stale summary, mixed
+gateway versions, uncommitted FitPack changes), and Sources: the sha256 of the
+card's canonical JSON, of the replicas' `fit_summary.json` listing, of the
+central-metrics cache and of `reproduce.json`. Every number is read, none is
+written by the model; the reply tells the client to show it as returned.
+`write=false` returns it without saving. The write is atomic (temporary file,
+then `mv`) and recorded as an audit effect; the tool is marked not read-only,
+not destructive, idempotent.
+
+Both run as background jobs under the 25 s reply limit (`analysis_result`).
+
+**Clients that drop the MCP instructions** (HEP-Genesis-Agent, for one) still
+get each rule where it applies: `campaign_options` says never to preselect;
+`connect_hpc` that the sign-in is typed on the panel; `jam_guide` to read a
+procedure first; a confirmation reply carries `CONFIRM_RULE`; the campaign and
+Slurm drafts say to show the script exactly as returned; submit, append and
+rerun replies name `campaign_status(wait_for='fitting')` as the next step; a
+running reply names `analysis_result`. The confirmation and catalog rules are
+enforced by the gateway in any case.
+
 ## Verified
 
 | Date | Where | What | Result |
@@ -702,6 +747,7 @@ change styling. A separately requested six-flavor layout passed validation.
 | 2026-10-08 | ifarm, through a local test instance (commit `0ad83c4`) | library table (39 rows), a card that differs from `input02.py` only in the changed row, stop and delete (delete refused while tasks are queued), postprocess, fit summary, a PDF plot, the analysis by experiment, an append plan; the panel in headless Chromium; Codex 0.161.0 and Claude Code 2.x connected (the guide's `${LQCDMCP_TOKEN}` header expanded) | all passed |
 | 2026-10-09 | the platform, `jam-gateway-chunyu` (launched with `deploy_and_verify.py`, then updated in place with `hot_redeploy.py`; the cluster sign-in survived) | launch and `--check` through the proxy (token accepted, no token refused, 28 tools, `node_diag` hidden); a campaign with idis 10005 and 10006 really fitted (`mode: fit`, 35 fitted parameters, an `.msr` per replica); replica states, the data check, `campaign_logs`, the panel's Logs and warnings; a campaign from before the status-report guard shows as not fitted with its `KeyError: 'col'` traceback | all passed |
 | 2026-10-14 | the platform, the owner's workspace (commits `ac1c95f`, `c7de6eb`) | `campaign_datasets` lists the normalizations of 10010 and 10016 from `input02.py` and none for 10005; a card with `g1 a` equal to `uv1 a` and normalization 10010 equal to 10016 wrote `'fixed': 'uv1 a'` and `'fixed': 10016` into `input.py`, the replica really fitted, 35 free parameters (35 − 1 tied + 1 free normalization); a self-reference refused | all passed |
+| 2026-10-28 | ifarm, through the owner's chain from a local gateway (branch `evidence/report-datasets`) | `inspect_datasets` on idis, dy, sidis, ln and jet with the library cuts (idis 10010: 661 points, `Q2>1.69` keeps 564, `W2>10` 218), custom cuts, a campaign's cuts, seven refusals (SIA 1012 among them); `_DATA_CHECK` after the split gives output identical to the previous snippet on 13 datasets of seven reactions, both DIS versions, a missing file and an unevaluable cut; `campaign_report` on a campaign with seven recorded submissions (written, read back with the same sha256) and on one from before `reproduce.json` whose replicas all failed (the report shows why: both datasets keep no point with `W2>10`); both tools over MCP HTTP with a 1 s reply wait (running, then `analysis_result`) | all passed |
 | 2026-10-14 | offline only (commits `a26aac1`, `8d2ec2b`: pion PDF objects, per-dataset cuts, credible intervals) | the gateway's remote snippets and `jamai` run locally against a stand-in workspace and a stand-in pion reference: the proton path's generated `input.py` is unchanged except `conf['dis version'] = 1` (FitPack's default) and the override block's form; the older single `object` card gives the same confirmation phrase as `objects[]`; the pion path drops the second shape, fits `p->pi,n`, freezes the reference's proton PDF, writes per-dataset `ln` filters and `dis version` 0; the panel (jsdom) | all passed |
 
 The offline suites are not part of this repository.
