@@ -195,7 +195,13 @@ CONFIGURATION_DATASETS = {'sia': {'filters': {1001: ['z < 0.9 and z > 0.15'],
                   4016: 'sia/expdata_V1/4016.xlsx',
                   4017: 'sia/expdata_V1/4017.xlsx'}},
  'sidis': {'norm': {},
-           'xlsx': {1105: 'sidis/expdata/1105.xlsx',
+           'xlsx': {1005: 'sidis/expdata/1005.xlsx',
+                    1006: 'sidis/expdata/1006.xlsx',
+                    2005: 'sidis/expdata/2005.xlsx',
+                    2006: 'sidis/expdata/2006.xlsx',
+                    3000: 'sidis/expdata/3000.xlsx',
+                    3001: 'sidis/expdata/3001.xlsx',
+                    1105: 'sidis/expdata/1105.xlsx',
                     1106: 'sidis/expdata/1106.xlsx',
                     1115: 'sidis/expdata/1115.xlsx',
                     1116: 'sidis/expdata/1116.xlsx',
@@ -296,7 +302,25 @@ CONFIGURATION_METADATA = {'sia': {1001: {'experiment': 'TASSO (12 GeV)', 'label'
          4017: {'experiment': 'DELPHI(uds)',
                 'label': 'DELPHI(uds) — unidentified hadron',
                 'not_normally_used': False}},
- 'sidis': {1105: {'experiment': 'COMPASS',
+ 'sidis': {1005: {'experiment': 'COMPASS',
+                  'label': 'deuteron , mult , pi+ , COMPASS (workbook of the published JAM24 fit)',
+                  'not_normally_used': True},
+           1006: {'experiment': 'COMPASS',
+                  'label': 'deuteron , mult , pi- , COMPASS (workbook of the published JAM24 fit)',
+                  'not_normally_used': True},
+           2005: {'experiment': 'COMPASS',
+                  'label': 'deuteron , mult , K+  , COMPASS (workbook of the published JAM24 fit)',
+                  'not_normally_used': True},
+           2006: {'experiment': 'COMPASS',
+                  'label': 'deuteron , mult , K-  , COMPASS (workbook of the published JAM24 fit)',
+                  'not_normally_used': True},
+           3000: {'experiment': 'COMPASS',
+                  'label': 'deuteron , mult , h+  , COMPASS (workbook of the published JAM24 fit)',
+                  'not_normally_used': True},
+           3001: {'experiment': 'COMPASS',
+                  'label': 'deuteron , mult , h-  , COMPASS (workbook of the published JAM24 fit)',
+                  'not_normally_used': True},
+           1105: {'experiment': 'COMPASS',
                   'label': 'deuteron , mult , pi+ , COMPASS',
                   'not_normally_used': False},
            1106: {'experiment': 'COMPASS',
@@ -356,6 +380,11 @@ def sidis_dis_cut_values(cuts):
     return tuple(values)
 
 
+# The COMPASS SIDIS workbooks the published JAM24 fit read (JAM24.final); the
+# updated campaign defaults (JAM24.current) use 1105-3101 instead.
+PUBLISHED_SIDIS_WORKBOOKS = frozenset({1005, 1006, 2005, 2006, 3000, 3001})
+
+
 def configuration_dataset_block(reaction: str, dataset_ids, q2cut=None, w2cut=10.0,
                                 normalizations=None, filters=None) -> dict:
     """Select exact dataset configuration without enabling FF execution.
@@ -397,7 +426,17 @@ def configuration_dataset_block(reaction: str, dataset_ids, q2cut=None, w2cut=10
             raise ValueError('sidis: provide a positive finite DIS W2 cutoff')
         # FitPack derives W2/Z, then applies these reader filters once. Its
         # SIDIS reader does not inherit the IDIS filter list automatically.
-        block['filters'] = ['Q2>%f' % cutoff, 'W2>%f' % float(w2cut), 'Z>=0.2 and Z<=0.8']
+        # The filters belong to the workbook generation: the published JAM24
+        # fit read 1005-3001 with W2SIDIS>0 and 0.2<Z<0.8 (its input.py), the
+        # updated workbooks 1105-3111 are read with 0.2<=Z<=0.8.
+        published = selected & PUBLISHED_SIDIS_WORKBOOKS
+        if published and published != selected:
+            raise ValueError('sidis: do not mix the published JAM24 workbooks %s with the updated ones %s'
+                             % (sorted(published), sorted(selected - published)))
+        if published:
+            block['filters'] = ['Q2>%f' % cutoff, 'W2>%f' % float(w2cut), 'W2SIDIS>0.000000', 'Z>0.2 and Z<0.8']
+        else:
+            block['filters'] = ['Q2>%f' % cutoff, 'W2>%f' % float(w2cut), 'Z>=0.2 and Z<=0.8']
     if filters is not None:
         if reaction != 'sia' or not isinstance(filters, dict):
             raise ValueError('Only SIA accepts explicit dataset filter mappings')

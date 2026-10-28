@@ -141,6 +141,9 @@ def _render_stage_override_block(stage: ResolvedStage, prior_reference=None) -> 
                 # numerical value to that parameter; preserve it instead of
                 # coercing every non-empty value to True.
                 'fixed': parameter.get('fixed', False),
+                # Gaussian starting-value settings (FitPack's parman.gen_flat
+                # draws from them when conf['flat par'] is set).
+                **{field: parameter[field] for field in ('gaussian', 'mean', 'std') if field in parameter},
             }
 
     lines = [

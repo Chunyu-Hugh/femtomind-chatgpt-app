@@ -1055,7 +1055,21 @@ the catalog. Two rules then fail closed:
   `undeclared_differences`, and gives no confirmation phrase.
 
 `catalog_comparison` in the validation result lists datasets, free parameters,
-normalizations, QCD settings and cuts against the published fit.
+normalizations, QCD settings, cuts and the initialization against the published
+fit.
+
+`JAM24.final` runs as published: the COMPASS SIDIS workbooks the paper read
+(1005, 1006, 2005, 2006, 3000, 3001) are selectable, and the gateway reads them
+with the published filters (`W2SIDIS>0`, `0.2<Z<0.8`); the updated workbooks
+(1105-3111, `JAM24.current`) keep `0.2<=Z<=0.8`; the two cannot be mixed. With
+the cuts the published card keeps exactly the paper's 5853 points. A catalog
+card starts as the authors did: `initialization: random_within_bounds`
+(FitPack's `flat par`) with each free parameter's Gaussian mean and std; linked
+and fixed parameters are not drawn. Card parameter rows accept `gaussian`,
+`mean` and `std` for the PDF too.
+
+Cancelling or deleting a campaign forgets its replay: the same confirmed
+request may then queue it again.
 
 #### Read-only compiled-input MCP preview
 
