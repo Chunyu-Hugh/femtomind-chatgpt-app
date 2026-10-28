@@ -4847,7 +4847,12 @@ def _configuration_preview(u, card):
             "dataset_configuration": blocks, "input_preview": fragment if not errors else ""}
 
 
-CAMPAIGN_WAIT = 30  # a validate, submit or clone answers within this many seconds or hands out a job id to poll
+# The LQCDMCP proxy closes a request that has not answered within 30 s (measured
+# 2026-10-28: a 28 s server-side wait passes, a 35 s one gets HTTP 504), so no call
+# waits longer than REPLY_WAIT before it answers with a job id to poll.
+# JAM_GW_REPLY_WAIT overrides it for a gateway reached without that proxy.
+REPLY_WAIT = int(os.environ.get("JAM_GW_REPLY_WAIT", "25") or 25)
+CAMPAIGN_WAIT = REPLY_WAIT  # a validate, submit or clone answers within this many seconds or hands out a job id to poll
 
 
 def _campaign_task(u, kind, card, fn, confirm=""):
@@ -4962,7 +4967,7 @@ def _submit_campaign(u, card, confirm):
               "log_path": f"{log_prefix}_{m.group(1)}_<replica>.out",
               "error_log_path": f"{_campaign_error_log_prefix(u, folder)}_{m.group(1)}_<replica>.err", "summary": v["summary"],
               "reproduce_file": f"{croot}/reproduce.json",
-              "next": "campaign_status(collection_id, wait_for='fitting') waits up to 40 s and says whether a "
+              "next": f"campaign_status(collection_id, wait_for='fitting') waits up to {JOB_WAIT} s and says whether a "
                       "replica is loading, optimizing or failed before the fit; FitPack loads data and grids "
                       "for several minutes first, so call it again while condition_met is false.",
               **_reproduce_note(why)}
@@ -5572,7 +5577,7 @@ def delete_campaign(collection_id="", delete_folder=False, confirm="", username=
 # a second. Jobs live in this process only; their results also land in the
 # campaign's cache, so a restarted gateway answers the next call from there.
 
-JOB_WAIT = 40                       # seconds a call waits before answering with a job id
+JOB_WAIT = REPLY_WAIT               # seconds a call waits before answering with a job id
 JOB_KEEP = 2 * 3600                 # a finished job is forgotten after this
 _JOBS = {}
 _CACHE_PROGRESS = {}
@@ -12560,7 +12565,7 @@ def submit_slurm_job(name="", confirm="", username=""):
 WIDGET_META = {"ui": {"resourceUri": PANEL_URI}, "openai/outputTemplate": PANEL_URI_SKYBRIDGE,
                "openai/widgetAccessible": True}
 COLLECTION_ARG = "The collection id, or the campaign name as the user says it (its newest submission)."
-ASYNC_NOTE = ("A call answers within about 40 s: when the work takes longer it returns status running with "
+ASYNC_NOTE = (f"A call answers within about {JOB_WAIT} s: when the work takes longer it returns status running with "
               "a job_id; then call analysis_result(job_id) until it is done.")
 
 def _analysis_catalog_store():
@@ -12925,14 +12930,14 @@ TOOLS = {
                 "(OUT_OF_MEMORY, TIMEOUT, ...); a one-word verdict (queued, loading, fitting, stalled, "
                 "failed_before_fit, finished); its folder; log_pattern (stdout) and error_log_pattern "
                 "(stderr). To know whether a submitted campaign really fits, call once with "
-                "wait_for='fitting': it waits up to 40 s and answers when a replica optimizes or something "
+                f"wait_for='fitting': it waits up to {JOB_WAIT} s and answers when a replica optimizes or something "
                 "failed before the fit; call again with the same wait_for while condition_met is false "
                 "instead of polling other tools. wait_for='finished' waits until nothing is queued. "
                 "campaign_logs shows each replica's phase, error and what helps.",
         "schema": {"type": "object", "properties": {"collection_id": {"type": "string", "description": COLLECTION_ARG},
                                                     "wait_for": {"type": "string", "enum": ["", "fitting", "finished", "change"],
-                                                                 "description": "wait (at most timeout s, 40 by default) until a replica is optimizing or a task failed before the fit; until nothing is queued; or until the state changes"},
-                                                    "timeout": {"type": "number", "description": "seconds to wait, at most 40"}},
+                                                                 "description": f"wait (at most timeout s, {JOB_WAIT} by default) until a replica is optimizing or a task failed before the fit; until nothing is queued; or until the state changes"},
+                                                    "timeout": {"type": "number", "description": f"seconds to wait, at most {JOB_WAIT}"}},
                    "required": ["collection_id"]},
         "fn": lambda a: campaign_status(a.get("collection_id", ""), wait_for=a.get("wait_for", ""), timeout=a.get("timeout"))},
     "postprocess_campaign": {
@@ -13058,9 +13063,9 @@ TOOLS = {
                                               replicas=a.get("replicas"))},
     "analysis_result": {
         "desc": "Wait for a long analysis or campaign preparation that answered status running. "
-                "validate_campaign, preview_prior_replicas and submit_campaign results use about 5-second polls. "
+                f"validate_campaign, preview_prior_replicas and submit_campaign results answer within about {CAMPAIGN_WAIT} s. "
                 "Other analyses (analyze_by_experiment, "
-                "campaign_pdf_plots): returns its result when done, or running again after about 40 s. "
+                f"campaign_pdf_plots): returns its result when done, or running again after about {JOB_WAIT} s. "
                 "Call it again with the same job_id until it is done; never restart the analysis.",
         "schema": {"type": "object", "properties": {"job_id": {"type": "string"}}, "required": ["job_id"]},
         "meta": WIDGET_META,
