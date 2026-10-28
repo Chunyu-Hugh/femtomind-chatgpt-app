@@ -563,6 +563,12 @@ connection."* If the token is not exported, Codex reports
   Python error in plain words.
 - *"Write a Slurm job that …"* — it drafts the script with you, checks it
   with `sbatch --test-only`, and submits only after you confirm.
+- *"What is in dataset 10010, and what do my cuts remove?"* · *"What does
+  W2 > 12 do to the HERA data?"* — it reads the data files as FitPack does:
+  points per cut, kinematic ranges, uncertainties.
+- *"Write a report of my campaign."* — one Markdown file in the campaign
+  folder (`report/campaign_report.md`) with the configuration, data, results
+  and how the fit was made, every number taken from the files it names.
 
 ### 4.4 ChatGPT in the browser
 

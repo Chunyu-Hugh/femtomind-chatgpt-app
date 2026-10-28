@@ -4610,7 +4610,7 @@ def _validated(u, norm):
     out = {"status": "ok", "valid": True, "summary": summary,
            "slurm_script": _array_script(_workspace(u), "<campaign-folder>", norm, 1, norm["job"]["replicas"]),
            "confirmation_phrase": _confirm_phrase("SUBMIT", norm),
-           "next": "Show the user this summary and the Slurm script. Submit with "
+           "next": "Show the user this summary and the Slurm script exactly as returned, never shortened. Submit with "
                    "submit_campaign(card, confirm=<the phrase>) only after they confirm."}
     comparison = _catalog_comparison(norm)
     if comparison:
@@ -4639,13 +4639,13 @@ def _validated(u, norm):
 # W2 = M^2 + Q2/X - Q2; dy as obslib/dy/reader.py: tau, S, Y and Q2 = tau S
 # from Rtau, RS and xF), then tools/reader.py applies each cut with
 # tab.query and silently skips one that cannot be evaluated; a dataset with
-# no points left is dropped from the fit. report holds the columns FitPack's
-# status report reads for each reaction.
-_DATA_CHECK = r'''
+# no points left is dropped from the fit. _DATA_LOAD reads one dataset that
+# way (load, before the cuts); _DATA_CHECK and _DATA_INSPECT share it.
+_DATA_LOAD = r'''
 import json, os
 import numpy as np
 import pandas as pd
-ws = __WS__; datasets = __DATASETS__; cuts = __CUTS__; report = __REPORT__; dis_version = __DIS_VERSION__; sia_version = __SIA_VERSION__
+ws = __WS__; datasets = __DATASETS__; cuts = __CUTS__; dis_version = __DIS_VERSION__; sia_version = __SIA_VERSION__
 paths = __PATHS__
 M = 0.93891897                      # the nucleon mass of qcdlib/aux.py
 M2 = M * M
@@ -4685,40 +4685,169 @@ def dy(t):
     except Exception: pass
     try: t['Q2'] = t['tau'] * t['S']
     except Exception: pass
+def relative_path(r, x):
+    return paths.get(r, {}).get(str(x), '%s/expdata/%s.xlsx' % (r, x))
+def load(r, x):
+    """One dataset's table as FitPack's reader builds it, before any cut."""
+    t = pd.read_excel(os.path.join(ws, 'database', relative_path(r, x)))
+    if r in ('dy-pion', 'ln', 'sidis', 'sia') or (r == 'idis' and dis_version == 0):
+        from tools.config import conf
+        from qcdlib.aux import AUX
+        from importlib import import_module
+        conf['aux'] = AUX()
+        conf['datasets'] = {r: {'filters': []}}
+        module = {'dy-pion': 'obslib.dypion.reader', 'ln': 'obslib.LeadingBaryon.reader',
+                  'idis': 'obslib.idis_V0.reader', 'sidis': 'obslib.sidis.reader',
+                  'sia': 'obslib.sia_V0.reader' if sia_version == 0 else 'obslib.sia.reader'}[r]
+        reader = import_module(module).READER()
+        reader.reaction, reader.cut_by_dataset = r, int(x)
+        t = reader.modify_table(t)
+    return t
+def load_error(e):
+    return ' '.join(('%s: %s' % (type(e).__name__, e)).split())[:300]
+def dataset_cuts(r, x):
+    reaction_cuts = cuts.get(r, [])
+    return reaction_cuts.get(str(x), []) if isinstance(reaction_cuts, dict) else reaction_cuts
+def cut_error(e):
+    return ' '.join(str(e).split())[:200] or type(e).__name__
+'''
+# report holds the columns FitPack's status report reads for each reaction.
+_DATA_CHECK = _DATA_LOAD + r'''
+report = __REPORT__
 out = []
 for r, ids in datasets.items():
     for x in ids:
         d = {'reaction': r, 'id': x}
         out.append(d)
         try:
-            relative = paths.get(r, {}).get(str(x), '%s/expdata/%s.xlsx' % (r, x))
-            t = pd.read_excel(os.path.join(ws, 'database', relative))
-            if r in ('dy-pion', 'ln', 'sidis', 'sia') or (r == 'idis' and dis_version == 0):
-                from tools.config import conf
-                from qcdlib.aux import AUX
-                from importlib import import_module
-                conf['aux'] = AUX()
-                conf['datasets'] = {r: {'filters': []}}
-                module = {'dy-pion': 'obslib.dypion.reader', 'ln': 'obslib.LeadingBaryon.reader',
-                          'idis': 'obslib.idis_V0.reader', 'sidis': 'obslib.sidis.reader',
-                          'sia': 'obslib.sia_V0.reader' if sia_version == 0 else 'obslib.sia.reader'}[r]
-                reader = import_module(module).READER()
-                reader.reaction, reader.cut_by_dataset = r, int(x)
-                t = reader.modify_table(t)
+            t = load(r, x)
         except Exception as e:
-            d['error'] = ' '.join(('%s: %s' % (type(e).__name__, e)).split())[:300]
+            d['error'] = load_error(e)
             continue
         {'idis': idis, 'dy': dy}.get(r, lambda t: None)(t)
         applied, skipped = [], []
-        reaction_cuts = cuts.get(r, [])
-        for f in (reaction_cuts.get(str(x), []) if isinstance(reaction_cuts, dict) else reaction_cuts):
+        for f in dataset_cuts(r, x):
             try:
                 t = t.query(f)
                 applied.append(f)
             except Exception as e:
-                skipped.append([f, ' '.join(str(e).split())[:200] or type(e).__name__])
+                skipped.append([f, cut_error(e)])
         d.update(points=int(len(t.index)), applied=applied, skipped=skipped,
                  missing=[c for c in report.get(r, ()) if c not in t.columns])
+print(json.dumps(out))
+'''
+# The same datasets in detail, for inspect_datasets: what the file holds, what
+# each cut removes in turn, the kinematic ranges that remain, and the
+# uncertainties as tools/residuals.py reads them: a column whose name has '%'
+# is a percentage of value and becomes absolute under the name without '%';
+# the '_u' columns add in quadrature to alpha (the uncorrelated uncertainty),
+# the '_c' columns without 'norm' are correlated systematics, and the one '_c'
+# column with 'norm' is the normalization uncertainty (FitPack stops on two);
+# dN is that column over value at the first nonzero point, as FitPack takes it.
+_DATA_INSPECT = _DATA_LOAD + r'''
+want_rows = __ROWS__
+KINEMATICS = ['X', 'x', 'Q2', 'W2', 'Y', 'y', 'Z', 'z', 'pT', 'qT', 'xF', 'tau', 'eta', 'xL', 'M2', 'RS', 'cms',
+              'Elab', 'E', 'Ebeam']
+LABELS = ['col', 'obs', 'target', 'hadron', 'boson', 'reaction', 'units']
+def number(v):
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return None
+    return float('%.4g' % v) if np.isfinite(v) else None
+def numeric(t, c):
+    return pd.to_numeric(t[c], errors='coerce')
+def kinematics(t):
+    out = {}
+    for c in KINEMATICS:
+        if c in t.columns and len(out) < 6:
+            v = numeric(t, c).dropna()
+            if len(v):
+                out[c] = [number(v.min()), number(v.max())]
+    return out
+def labels(t):
+    out = {}
+    for c in LABELS:
+        if c in t.columns:
+            v = sorted({str(x).strip() for x in t[c].dropna()} - {''})
+            if v:
+                out[c] = v[:3] + (['+%d more' % (len(v) - 3)] if len(v) > 3 else [])
+    return out
+def spread(rel):
+    rel = rel.replace([np.inf, -np.inf], np.nan).dropna()
+    return {'median': number(rel.median()), 'max': number(rel.max())} if len(rel) else None
+def uncertainties(t):
+    value = numeric(t, 'value') if 'value' in t.columns else None
+    cols = {str(c): numeric(t, c) for c in t.columns if '%' not in str(c)}
+    for c in t.columns:
+        c = str(c)
+        if '%' in c and ('_u' in c or '_c' in c):
+            cols[c.replace('%', '')] = (value if value is not None else np.nan) * numeric(t, c) / 100.0
+    ucorr = sorted(c for c in cols if '_u' in c)
+    corr = sorted(c for c in cols if '_c' in c and 'norm' not in c)
+    norm = sorted(c for c in cols if '_c' in c and 'norm' in c)
+    percent = sorted(str(c) for c in t.columns if '%' in str(c) and ('_u' in str(c) or '_c' in str(c)))
+    out = {'uncorrelated': ucorr, 'correlated': corr if len(corr) <= 6 else '%d columns' % len(corr)}
+    if percent:
+        out['percent_columns'] = percent if len(percent) <= 6 else '%d columns' % len(percent)
+    alpha = None
+    if ucorr:
+        alpha = sum(cols[c] ** 2 for c in ucorr) ** 0.5
+        missing = int(alpha.isna().sum())
+        if missing:
+            out['points_without_alpha'] = missing
+    if value is not None and len(t.index):
+        size = value.abs().where(value != 0)
+        if alpha is not None:
+            out['alpha_relative'] = spread(alpha / size)
+        if corr:
+            out['correlated_relative'] = spread(sum(cols[c] ** 2 for c in corr) ** 0.5 / size)
+    if len(norm) > 1:
+        out['normalization'] = {'columns': norm, 'problem': 'more than one normalization column: FitPack stops'}
+    elif norm and value is not None:
+        nonzero = [i for i, v in enumerate(value.tolist()) if v == v and v != 0]
+        out['normalization'] = {'column': norm[0],
+                                'dN': number(cols[norm[0]].iloc[nonzero[0]] / value.iloc[nonzero[0]]) if nonzero else None}
+    matrices = sorted(c for c in cols if any(k in c for k in ('_S', '_C', '_V')))
+    if matrices:
+        out['covariance_columns'] = len(matrices)
+    return out, alpha
+out = []
+for r, ids in datasets.items():
+    for x in ids:
+        d = {'dataset': '%s:%s' % (r, x), 'file': relative_path(r, x)}
+        out.append(d)
+        try:
+            t = load(r, x)
+        except Exception as e:
+            d['error'] = load_error(e)
+            continue
+        {'idis': idis, 'dy': dy}.get(r, lambda t: None)(t)
+        d['labels'] = labels(t)
+        d['points_in_file'] = int(len(t.index))
+        d['kinematics_in_file'] = kinematics(t)
+        steps, skipped = [], []
+        for f in dataset_cuts(r, x):
+            try:
+                t = t.query(f)
+                steps.append({'cut': f, 'kept': int(len(t.index))})
+            except Exception as e:
+                skipped.append({'cut': f, 'why': cut_error(e)})
+        d['cuts'] = steps
+        if skipped:
+            d['skipped_cuts'] = skipped
+        d['points_after_cuts'] = int(len(t.index))
+        d['kinematics_after_cuts'] = kinematics(t)
+        d['uncertainties'], alpha = uncertainties(t)
+        if want_rows and len(t.index):
+            shown = [c for c in d['kinematics_after_cuts'] if c in t.columns] + ['value']
+            rows = []
+            for i, (_, row) in enumerate(t.head(want_rows).iterrows()):
+                rec = {c: number(row[c]) for c in shown if c in t.columns}
+                if alpha is not None:
+                    rec['alpha'] = number(alpha.iloc[i])
+                rows.append(rec)
+            d['rows'] = rows
 print(json.dumps(out))
 '''
 # What FitPack's status report reads from each data table, and what it names.
@@ -4788,6 +4917,137 @@ def _no_data_refusal(norm, points):
     return {"status": "error", "code": "NO_DATA", "valid": False, "points_after_cuts": points,
             "message": "No selected dataset keeps a data point after the cuts, so the fit would have nothing "
                        "to fit. Change the cuts or the datasets and validate again."}
+
+
+INSPECT_MAX_DATASETS = 40
+INSPECT_MAX_ROWS = 20
+
+
+def _dataset_ids(value):
+    items = value if isinstance(value, (list, tuple)) else re.split(r"[\s,]+", str(value or "").strip())
+    return list(dict.fromkeys(str(x).strip() for x in items if str(x).strip()))
+
+
+def _inspection_request(u, reaction, datasets, cuts, collection_id):
+    """What inspect_datasets reads: {reaction: [ids]}, the filters FitPack
+    applies to each, the DIS and SIA reader versions and where the cuts come
+    from; or a refusal."""
+    reaction = str(reaction or "").strip().lower()
+    wanted = _dataset_ids(datasets)
+    if collection_id:
+        e = _collection(u, collection_id)
+        if not e:
+            return _refuse("NOT_FOUND", f"No campaign {collection_id!r}; list_campaigns shows them.")
+        norm = e["input_card"]
+        selected = {r: [str(x) for x in ids if not wanted or str(x) in wanted]
+                    for r, ids in norm["datasets"].items() if not reaction or r == reaction}
+        selected = {r: ids for r, ids in selected.items() if ids}
+        if not selected:
+            return _refuse("BAD_ARGUMENT", "The campaign selects none of these datasets.",
+                           campaign_datasets=norm["datasets"])
+        filters = {r: (cs if r == "sia" else object_registry.cut_filters(cs))
+                   for r, cs in norm["cuts"].items() if r in selected}
+        return {"datasets": selected, "filters": filters,
+                "dis_version": object_registry.dis_version_for(norm.get("fit_objects", ["pdf"])),
+                "sia_version": norm["qcd"].get("siaVersion", 1),
+                "source": f"the datasets and cuts of campaign {e['collection_id']}"}
+    if reaction not in CATALOG_REACTIONS:
+        return _refuse("BAD_ARGUMENT", f"reaction: one of {sorted(CATALOG_REACTIONS)}; or give a collection_id.")
+    bad = [x for x in wanted if not re.fullmatch(r"\d{1,8}", x)]
+    if not wanted or bad:
+        return _refuse("BAD_ARGUMENT", "datasets: the numeric dataset ids to read (campaign_datasets lists them)"
+                       + (f"; not numbers: {bad}." if bad else "."))
+    if reaction in CONFIGURATION_ONLY_REACTIONS:
+        if cuts:
+            return _refuse("BAD_ARGUMENT", f"{reaction} datasets are read with the catalog's own filters; for other "
+                                           "cuts validate a card and inspect it with collection_id.")
+        try:
+            q2, w2 = (sidis_dis_cut_values(CAMPAIGN_DEFAULTS["cuts"]["idis"]) if reaction == "sidis"
+                      else (None, 10.0))
+            filters = configuration_dataset_block(reaction, wanted, q2cut=q2, w2cut=w2).get("filters", [])
+        except (ValueError, TypeError, KeyError) as exc:
+            return _refuse("BAD_ARGUMENT", str(exc))
+        filters = ({str(k): list(v) for k, v in filters.items()} if isinstance(filters, dict) else list(filters))
+        source = "the catalog's dataset filters (the ones a campaign uses)"
+    else:
+        if cuts is None:
+            if reaction in PION_DATASETS:
+                try:
+                    library = _object_libraries(u, ["pdf-pion"])["pdf-pion"]
+                except RuntimeError as exc:
+                    return {"status": "error", "message": str(exc)}
+                cuts = object_registry.library_cuts(library["datasets"].get(reaction, {}).get("filters", []))
+            else:
+                cuts = CAMPAIGN_DEFAULTS["cuts"].get(reaction, [])
+            source = "the library's default cuts (campaign_options)"
+        else:
+            source = "the cuts given"
+        try:
+            if isinstance(cuts, dict):
+                filters = {str(k): object_registry.cut_filters(v) for k, v in cuts.items() if str(k) in wanted}
+            else:
+                filters = object_registry.cut_filters(list(cuts))
+        except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as exc:
+            return _refuse("BAD_ARGUMENT", "cuts: a list of {variable, op (> >= < <=), value}, or such lists by "
+                                           f"dataset id ({exc}).")
+    return {"datasets": {reaction: wanted}, "filters": {reaction: filters}, "dis_version": 1, "sia_version": 1,
+            "source": source}
+
+
+def inspect_datasets(reaction="", datasets="", cuts=None, collection_id="", rows=0, username=""):
+    """Read datasets as FitPack reads them and say what the fit would see:
+    points in the file, what each cut removes, kinematic ranges, the
+    uncertainty breakdown, optionally the first rows."""
+    u, err = _need_user(username)
+    if err:
+        return err
+    req = _inspection_request(u, reaction, datasets, cuts, collection_id)
+    if req.get("status") == "error":
+        return req
+    count = sum(len(ids) for ids in req["datasets"].values())
+    if count > INSPECT_MAX_DATASETS:
+        return _refuse("BAD_ARGUMENT", f"{count} datasets; inspect at most {INSPECT_MAX_DATASETS} per call.")
+    try:
+        rows = max(0, min(INSPECT_MAX_ROWS, int(rows or 0)))
+    except (TypeError, ValueError):
+        return _refuse("BAD_ARGUMENT", f"rows: a number from 0 to {INSPECT_MAX_ROWS}.")
+    code = _fill(_DATA_INSPECT, WS=_workspace(u), DATASETS=req["datasets"], CUTS=req["filters"],
+                 DIS_VERSION=req["dis_version"], SIA_VERSION=req["sia_version"], ROWS=rows,
+                 PATHS={r: {str(idx): path for idx, path in block["xlsx"].items()}
+                        for r, block in CONFIGURATION_DATASETS.items()})
+
+    def run():
+        r = _run_ifarm_py(u, code, apptainer=True, timeout=240, cap=2000000)
+        found = _last_json(r)
+        if not isinstance(found, list):
+            why = " ".join(l.strip() for l in ((r.get("err") or "") + "\n" + (r.get("out") or "")).splitlines()
+                           if l.strip() and "syscshrc" not in l)
+            return {"status": "error", "code": "READ_FAILED", "message": "Could not read the data files.",
+                    "detail": why[-400:]}
+        notes = []
+        for d in found:
+            if d.get("error"):
+                notes.append(f"{d['dataset']}: could not read {d['file']} ({d['error']}).")
+                continue
+            for s in d.get("skipped_cuts", []):
+                notes.append(f"{d['dataset']}: the cut {s['cut']} cannot be evaluated ({s['why']}); FitPack skips "
+                             "it without a message.")
+            if not d["points_after_cuts"]:
+                notes.append(f"{d['dataset']}: no point is left after the cuts, so FitPack drops it from the fit.")
+            normalization = d["uncertainties"].get("normalization") or {}
+            if normalization.get("problem"):
+                notes.append(f"{d['dataset']}: {normalization['problem']} ({', '.join(normalization['columns'])}).")
+            if d["uncertainties"].get("points_without_alpha"):
+                notes.append(f"{d['dataset']}: {d['uncertainties']['points_without_alpha']} points have no "
+                             "uncorrelated uncertainty (an empty cell in a '_u' column).")
+        return {"status": "ok", "source": req["source"], "datasets": found,
+                "points_after_cuts": sum(d.get("points_after_cuts", 0) for d in found), "notes": notes,
+                "read_as": "FitPack's own readers in the site container, cuts applied in order with pandas "
+                           "query as tools/reader.py applies them; uncertainties as tools/residuals.py reads "
+                           "the columns (alpha_relative = uncorrelated uncertainty / |value|)."}
+
+    return _background(u, "inspect_datasets", {"datasets": req["datasets"], "filters": req["filters"], "rows": rows},
+                       run)
 
 
 def _card_reactions(card):
@@ -4908,6 +5168,11 @@ def _configuration_preview(u, card):
 # JAM_GW_REPLY_WAIT overrides it for a gateway reached without that proxy.
 REPLY_WAIT = int(os.environ.get("JAM_GW_REPLY_WAIT", "25") or 25)
 CAMPAIGN_WAIT = REPLY_WAIT  # a validate, submit or clone answers within this many seconds or hands out a job id to poll
+# The step after replicas are queued, in the reply itself: clients that do not
+# pass the MCP instructions to the model still follow it.
+_FOLLOW_SUBMISSION = (f"campaign_status(collection_id, wait_for='fitting') waits up to {REPLY_WAIT} s and says "
+                      "whether a replica is loading, optimizing or failed; call it again while condition_met is "
+                      "false, instead of reading logs.")
 
 
 def _campaign_task(u, kind, card, fn, confirm=""):
@@ -5080,7 +5345,7 @@ def append_replicas(collection_id="", count=0, confirm="", username=""):
     _registry(u, {"kind": "upsert", "entry": e})
     why = _record_submission(u, os.path.dirname(os.path.dirname(stage)), stage, "append", m.group(1),
                              range(first, last + 1), e["input_card"])
-    result = {"status": "submitted", "job_id": m.group(1), **plan, **_reproduce_note(why)}
+    result = {"status": "submitted", "job_id": m.group(1), **plan, "next": _FOLLOW_SUBMISSION, **_reproduce_note(why)}
     _remember(u, "APPEND", phrase, result)
     return result
 
@@ -5259,7 +5524,7 @@ def rerun_replicas(collection_id="", replicas="failed", confirm="", username="",
               "request_manifest": request_path,
               "previous_results": f"{stage}/previous/replica_<n>_{stamp}",
               "message": "Queued. Run postprocess_campaign once they finish to update the fit summary.",
-              **_reproduce_note(why)}
+              "next": _FOLLOW_SUBMISSION, **_reproduce_note(why)}
     _remember(u, "RERUN", phrase, result)
     return result
 
@@ -5674,6 +5939,9 @@ def _job_reply(job, wait):
     elif campaign:
         message = ("Campaign preparation is still running; no confirmation requirement is skipped. "
                    "Poll analysis_result with this job_id until complete; do not repeat the original call.")
+    elif job['kind'] in ('inspect_datasets', 'campaign_report'):
+        message = ("Reading the data and campaign files on the cluster (seconds to a minute). Poll analysis_result "
+                   "with this job_id until complete; do not repeat the original call.")
     else:
         message = ("Still computing on the cluster (the first evaluation of these replicas takes "
                    "minutes; later ones read the cache). Call analysis_result with this job_id to wait "
@@ -5904,6 +6172,264 @@ def campaign_summary(collection_id="", username="", replicas=None):
     if notes:
         out["note"] = " ".join(notes)
     return _cohort_reply(out, ready)
+
+
+# ---- campaign report --------------------------------------------------------------
+#
+# One Markdown file a person can keep or send: the campaign's configuration,
+# the data its cuts keep, the fit results and how it was made. Every number
+# is read from the card, FitPack's readers, the fit summary or reproduce.json,
+# and the Sources section names each with its sha256; none is written by a
+# language model. campaign_report.json beside it holds the same record.
+
+_REPORT_SOURCES = r'''
+import glob, hashlib, json, os
+croot = __CROOT__; stage = __STAGE__
+def sha(path):
+    return hashlib.sha256(open(path, 'rb').read()).hexdigest() if os.path.isfile(path) else None
+out = {'reproduce_path': os.path.join(croot, 'reproduce.json')}
+out['reproduce_sha256'] = sha(out['reproduce_path'])
+if out['reproduce_sha256']:
+    try:
+        d = json.load(open(out['reproduce_path']))
+        out['schema'] = d.get('schema')
+        out['submissions'] = [{'kind': s.get('kind'), 'job_id': s.get('job_id'), 'replicas': s.get('replicas'),
+                               'submitted_at': s.get('submitted_at'),
+                               'fitpack_commit': (s.get('fitpack') or {}).get('commit'),
+                               'fitpack_branch': (s.get('fitpack') or {}).get('branch'),
+                               'fitpack_clean': (s.get('fitpack') or {}).get('clean'),
+                               'container': (s.get('container') or {}).get('image'),
+                               'gateway_sha256': s.get('gateway_sha256')} for s in d.get('submissions', [])]
+    except ValueError as e:
+        out['reproduce_error'] = 'not JSON: %s' % e
+# campaign_summary computes the results from each replica's fit_summary.json
+# and the central-data cache: one digest over the replica files (sha256 of the
+# sorted "<replica folder> <sha256>" lines) and the cache's metrics file.
+replicas = sorted(glob.glob(os.path.join(stage, 'current', 'replica_*', 'fit_summary.json')))
+out['replica_summaries'] = len(replicas)
+if replicas:
+    listing = ''.join('%s %s\n' % (os.path.basename(os.path.dirname(p)), sha(p)) for p in replicas)
+    out['replica_summaries_sha256'] = hashlib.sha256(listing.encode()).hexdigest()
+out['metrics_path'] = os.path.join(croot, 'analysis', 'cache', 'central_metrics.json')
+out['metrics_sha256'] = sha(out['metrics_path'])
+print(json.dumps(out))
+'''
+
+
+def _num(v, digits=4):
+    if isinstance(v, bool) or v is None:
+        return "–" if v is None else str(v)
+    if isinstance(v, int):
+        return str(v)
+    try:
+        return f"{float(v):.{digits}g}"
+    except (TypeError, ValueError):
+        return str(v)
+
+
+def _md_table(header, rows):
+    cell = lambda x: str(x).replace("|", "\\|").replace("\n", " ")
+    return "\n".join(["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
+                     + ["| " + " | ".join(cell(x) for x in row) + " |" for row in rows])
+
+
+def _report_markdown(rec):
+    """The report's Markdown from its record (campaign_report builds the
+    record; this only lays it out)."""
+    c, card = rec["campaign"], rec["configuration"]
+    lines = [f"# Campaign report: {c['name'] or c['collection_id']}", "",
+             f"Collection `{c['collection_id']}`, generated {rec['generated_at']} by the JAM gateway "
+             f"(gateway sha256 `{rec['gateway_sha256'][:12]}`). Every number below is read from the files listed "
+             "under Sources; none was written by a language model.", ""]
+    if rec["warnings"]:
+        lines += ["**Read first:**", ""] + [f"- {w}" for w in rec["warnings"]] + [""]
+    lines += ["## Campaign", "",
+              f"- {c['replicas']} replicas; created {c['created_at']}; first Slurm job {c['slurm_job_id']}; status in "
+              f"the registry: {c['status']}",
+              f"- Folder: `{c['folder']}`"]
+    source = card.get("catalog_source")
+    if source:
+        overrides = source.get("overrides") or {}
+        lines.append(f"- Built from the catalog analysis {source.get('analysis_id')} with campaign_card_from_catalog; "
+                     + ("declared overrides: " + ", ".join(f"{k} ({', '.join(map(str, v)) if isinstance(v, list) else v})"
+                                                           for k, v in sorted(overrides.items()))
+                        if overrides else "no overrides"))
+    lines += ["", "## Configuration", "",
+              f"- Objects: {card['object']}; fitted: {', '.join(card['fit_objects'])}"
+              + (f"; frozen: {', '.join(card['frozen_objects'])}" if card.get("frozen_objects") else ""),
+              f"- Parameters: {card['free_parameters']} free, {card['fixed_parameters']} fixed"
+              + (f"; changed from the library: {', '.join(card['changed_parameters'])}" if card["changed_parameters"] else
+                 "; none changed from the library"),
+              "- QCD: " + ", ".join(f"{k} {v}" for k, v in sorted(card["qcd"].items())),
+              f"- Inference: {card['inference']}; initialization {card['initialization']}; optimizer {card['optimizer']}, "
+              f"tolerance {card['tolerance']}, at most {card['max_iterations']} iterations",
+              "- Slurm per replica: " + ", ".join(f"{k} {v}" for k, v in card["slurm"].items()), ""]
+    lines.append(_md_table(["Reaction", "Datasets", "Normalization parameters", "Cuts"],
+                           [[r, card["datasets"].get(r, 0), card["normalization_parameters"].get(r, 0),
+                             "; ".join(card["cuts"].get(r) or []) or "none"] for r in card["reactions"]]))
+    data = rec["data"]
+    lines += ["", "## Data after the cuts", ""]
+    if data.get("points"):
+        lines += [f"{data['total_points']} points in {len(data['points'])} datasets, read with FitPack's own readers "
+                  "and cuts.", ""]
+        lines.append(_md_table(["Dataset", "Label", "Points"],
+                               [[k, data["labels"].get(k, ""), v] for k, v in sorted(data["points"].items())]))
+    else:
+        lines.append("Not available: " + (data.get("why") or "the data files could not be read."))
+    for w in data.get("warnings") or []:
+        lines.append(f"- {w}")
+    res = rec["results"]
+    lines += ["", "## Results", ""]
+    if res.get("summary"):
+        s = res["summary"]
+        lines.append(f"- Replicas: {s.get('completed_replicas')} fitted, {s.get('not_fitted_replicas')} did not fit, "
+                     f"{s.get('failed_replicas')} failed, of {s.get('total_replicas')}")
+        if s.get("mean_total_chi2") is None:
+            lines.append("- No replica fitted, so there are no chi2 statistics; campaign_logs says why they failed.")
+        else:
+            lines.append(f"- chi2 per replica (central data, point term only): mean {_num(s.get('mean_total_chi2'))}, "
+                         f"median {_num(s.get('median_total_chi2'))}, range {_num(s.get('min_total_chi2'))}–"
+                         f"{_num(s.get('max_total_chi2'))}")
+        ens = s.get("ensemble_central_chi2") or {}
+        if ens.get("chi2_reported") is not None:
+            lines.append(f"- chi2 of the mean prediction: {_num(ens.get('chi2_reported'))} for {ens.get('npts')} points "
+                         f"(chi2/npts {_num(ens.get('chi2_per_point'))}); penalties are reported apart, never inside chi2")
+        best = s.get("best_replica") or {}
+        if best:
+            lines.append(f"- Best replica: {best.get('replica')} with chi2 {_num(best.get('chi2_total'))} for "
+                         f"{best.get('npts')} points")
+        rows = res.get("datasets") or []
+        if rows:
+            lines += ["", "Per dataset, highest chi2/npts first (chi2 of the mean prediction; the range is over replicas):", ""]
+            lines.append(_md_table(["Dataset", "Label", "npts", "chi2", "chi2/npts", "Replica range"],
+                                   [[f"{d['reaction']}:{d['dataset_id']}",
+                                     data["labels"].get(f"{d['reaction']}:{d['dataset_id']}", ""), d.get("npts"),
+                                     _num(d.get("chi2")), _num(d.get("chi2_per_npt"), 3),
+                                     f"{_num(d.get('chi2_min'))}–{_num(d.get('chi2_max'))}"] for d in rows]))
+        if res.get("note"):
+            lines += ["", f"Note: {res['note']}"]
+    else:
+        lines.append("Not available: " + (res.get("why") or "no fit summary yet; run postprocess_campaign."))
+    prov = rec["provenance"]
+    lines += ["", "## How it was made", ""]
+    subs = prov.get("submissions") or []
+    if subs:
+        lines.append(f"reproduce.json ({prov.get('schema')}) records {len(subs)} submissions:")
+        lines += ["", _md_table(["Kind", "Slurm job", "Replicas", "Submitted", "FitPack commit", "Clean", "Container"],
+                                [[s["kind"], s["job_id"], s["replicas"], s["submitted_at"],
+                                  f"{(s.get('fitpack_commit') or '')[:12]} ({s.get('fitpack_branch')})",
+                                  s.get("fitpack_clean"), s.get("container")] for s in subs])]
+        lines += ["", f"To run it again exactly: reproduce_campaign(collection_id='{c['collection_id']}'), which "
+                      "rebuilds the recorded FitPack state and compares the new replicas with these."]
+    else:
+        lines.append(prov.get("why") or "This campaign has no reproduce.json: it was submitted before the record "
+                                        "existed, so the FitPack commit it ran with is not recorded.")
+    lines += ["", "## Sources", ""]
+    lines += [f"- {name}: `{path}`" + (f", sha256 `{digest}`" if digest else "")
+              for name, path, digest in rec["sources"]]
+    lines += ["", "## Not in this report", "",
+              "- Figures: campaign_pdf_plots, campaign_ff_plots, analyze_by_experiment(plot=true) and get_thesis_plot "
+              "draw them from the same replicas.",
+              "- Per-experiment data vs theory: analyze_by_experiment.", ""]
+    return "\n".join(lines)
+
+
+def _campaign_report(u, cid, write):
+    e = _collection(u, cid)
+    if not e:
+        return _refuse("NOT_FOUND", f"No campaign {cid!r}.")
+    # A card from before objects[] has no fit_objects: it fitted the proton PDF.
+    norm = dict(e["input_card"], fit_objects=e["input_card"].get("fit_objects") or ["pdf"])
+    stage = _stage_root(u, e)
+    croot = os.path.dirname(os.path.dirname(stage))
+    warnings = []
+    try:
+        card = _card_summary(norm)
+    except (KeyError, TypeError, ValueError) as exc:
+        return _refuse("RECORD_UNREADABLE", f"This campaign's card cannot be summarized ({type(exc).__name__}: {exc}); "
+                                            "campaign_status and campaign_summary still answer for it.")
+    if norm.get("source"):
+        card["catalog_source"] = norm["source"]
+    labels = {f"{r}:{x}": DATASET_LABELS.get(r, {}).get(str(x), "") for r, ids in norm["datasets"].items() for x in ids}
+    try:
+        data_warnings, points = _data_warnings(u, norm)
+    except (KeyError, TypeError, ValueError) as exc:
+        data_warnings, points = [f"The data check could not run on this card ({type(exc).__name__}: {exc})."], {}
+    data = {"points": points, "total_points": sum(points.values()), "labels": labels, "warnings": data_warnings}
+    if not points:
+        data["why"] = "the data files could not be read."
+    summary = campaign_summary(cid, username=u)
+    results = {}
+    if summary.get("status") == "ok" and summary.get("summary"):
+        results = {"summary": summary["summary"], "datasets": summary.get("datasets") or [],
+                   "note": summary.get("note")}
+        if summary.get("stale"):
+            warnings.append("The fit summary is older than the replicas: run postprocess_campaign, then make the "
+                            "report again.")
+    else:
+        results["why"] = summary.get("message") or f"campaign_summary answered {summary.get('status')}."
+    found = _last_json(_run_ifarm_py(u, _fill(_REPORT_SOURCES, CROOT=croot, STAGE=stage),
+                                     timeout=60, cap=400000)) or {}
+    provenance = {"schema": found.get("schema"), "submissions": found.get("submissions") or []}
+    if found.get("reproduce_error"):
+        provenance["why"] = f"reproduce.json could not be read: {found['reproduce_error']}."
+    gateways = {s.get("gateway_sha256") for s in provenance["submissions"]} - {None}
+    if len(gateways) > 1:
+        warnings.append(f"The submissions ran under {len(gateways)} different gateway versions (reproduce.json).")
+    if any(s.get("fitpack_clean") is False for s in provenance["submissions"]):
+        warnings.append("Some submissions ran with uncommitted FitPack changes; reproduce.json keeps them as a diff.")
+    card_sha = _canonical_sha256(norm)
+    sources = [("Campaign card (its input_card in the registry; sha256 of the canonical JSON)",
+                f"{_workspace(u)}/{CAMPAIGNS_DIR}/collections.json", card_sha),
+               (f"Replica fit summaries ({found.get('replica_summaries', 0)} files; sha256 of the sorted "
+                "'<replica> <sha256>' listing)", f"{stage}/current/replica_*/fit_summary.json",
+                found.get("replica_summaries_sha256")),
+               ("Central-data metrics cache", found.get("metrics_path") or f"{croot}/analysis/cache/central_metrics.json",
+                found.get("metrics_sha256")),
+               ("reproduce.json", found.get("reproduce_path") or f"{croot}/reproduce.json", found.get("reproduce_sha256"))]
+    if not found:
+        warnings.append("The campaign folder could not be read for the Sources hashes.")
+    rec = {"report_version": 1, "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+           "gateway_sha256": _GATEWAY_SHA256, "warnings": warnings,
+           "campaign": {"collection_id": cid, "name": e.get("campaign_name"), "status": e.get("status"),
+                        "replicas": e.get("replicas"), "created_at": e.get("created_at"),
+                        "slurm_job_id": e.get("slurm_job_id"), "folder": croot},
+           "configuration": card, "data": data, "results": results, "provenance": provenance,
+           "sources": sources}
+    text = _report_markdown(rec)
+    digest = hashlib.sha256(text.encode()).hexdigest()
+    out = {"status": "ok", "collection_id": cid, "markdown": text, "sha256": digest,
+           "warnings": warnings, "written": False}
+    if write:
+        rdir = f"{croot}/report"
+        for name, body in (("campaign_report.md", text),
+                           ("campaign_report.json", json.dumps(rec, indent=1, sort_keys=True, default=str))):
+            tmp, final = f"{rdir}/.{name}.tmp", f"{rdir}/{name}"
+            r = _remote(u, f"mkdir -p {_shq(rdir)} && cat > {_shq(tmp)} && mv -f {_shq(tmp)} {_shq(final)}",
+                        timeout=60, stdin=body)
+            if r["rc"] != 0:
+                return {**out, "status": "error", "code": "WRITE_FAILED",
+                        "message": f"The report was made but could not be written to {final}.",
+                        "detail": (r.get("err") or "")[-300:]}
+        _effect("campaign_report", u, campaign_folder=os.path.basename(croot), report_sha256=digest)
+        out.update(written=True, report_path=f"{rdir}/campaign_report.md", record_path=f"{rdir}/campaign_report.json")
+    out["next"] = ("Show the user the report as it is (its numbers are the backend's); do not recompute or round "
+                   "them. Figures come from campaign_pdf_plots, campaign_ff_plots or get_thesis_plot.")
+    return out
+
+
+def campaign_report(collection_id="", write=True, username=""):
+    """A Markdown report of one campaign (configuration, data after cuts,
+    results, provenance, sources with sha256), saved in its folder."""
+    u, err = _need_user(username)
+    if err:
+        return err
+    e = _collection(u, collection_id)
+    if not e:
+        return _refuse("NOT_FOUND", f"No campaign {collection_id!r}; list_campaigns shows them.")
+    cid = e["collection_id"]
+    return _background(u, "campaign_report", {"collection_id": cid, "write": bool(write)},
+                       lambda: _campaign_report(u, cid, bool(write)))
 
 
 _PDF_PLOTS = _REPLICA_STATE + r'''
@@ -12588,7 +13114,7 @@ def draft_slurm_job(name="", command="", time_limit="01:00:00", cpus=1, mem="4G"
     phrase = _confirm_phrase("SLURM", {"name": name, "script": script})
     return {"status": "ok" if ok else "rejected", "script_path": f"{sdir}/{name}.sh", "script": script,
             "test_only": test[-400:], "partition": part, "confirmation_phrase": phrase,
-            "next": "Show the user the script and the sbatch --test-only result. Submit with "
+            "next": "Show the user the script exactly as returned, never shortened, and the sbatch --test-only result. Submit with "
                     "submit_slurm_job(name, confirm=<phrase>) only after they confirm."}
 
 
@@ -12904,7 +13430,9 @@ TOOLS = {
                 "Slurm partitions. Pion metadata also supplies its QCD/job defaults. Temporary "
                 "compatibility selects DIS 0 for fitted pion (including combined), otherwise 1. "
                 "Needs the cluster chain and a workspace. Call it first and walk "
-                "the user through each step. The default answer is the summary, with the parameter tables "
+                "the user through each step: never preselect a reaction or dataset or choose a value for the "
+                "user; show each setting with its library value and let them keep or change it. The default "
+                "answer is the summary, with the parameter tables "
                 "counted per object; section='parameters' with object_type (pdf, pdf-pion, ffpion, ffkaon, "
                 "ffhadron) returns one object's full table, and section=<name> one other section "
                 "(objects, reactions, defaults, choices, partitions).",
@@ -12919,6 +13447,23 @@ TOOLS = {
                                                     "search": {"type": "string"}},
                    "required": ["reaction"]},
         "fn": lambda a: campaign_datasets(a.get("reaction", "idis"), a.get("search", ""))},
+    "inspect_datasets": {
+        "desc": "Look inside datasets before or after a fit, read as FitPack reads them (its readers, its cut "
+                "order, its uncertainty conventions): points in the file, how many each cut keeps in turn (and "
+                "cuts FitPack would skip silently), kinematic ranges before and after the cuts, the "
+                "uncertainty columns (uncorrelated, correlated, normalization dN, median and max of "
+                "uncorrelated/|value|) and, with rows, the first data points. Either reaction + datasets "
+                "(cuts: a list of {variable, op, value} or such lists by dataset id; default the library's "
+                "cuts; SIDIS and SIA use the catalog's filters) or collection_id (that campaign's datasets "
+                "and cuts; reaction/datasets narrow it). Read-only. If running, poll analysis_result(job_id).",
+        "schema": {"type": "object", "properties": {
+            "reaction": {"type": "string", "enum": sorted(CATALOG_REACTIONS)},
+            "datasets": {"type": "array", "items": {"type": "string"}},
+            "cuts": {"type": ["array", "object"]},
+            "collection_id": {"type": "string", "description": COLLECTION_ARG},
+            "rows": {"type": "integer", "minimum": 0, "maximum": INSPECT_MAX_ROWS, "default": 0}}},
+        "fn": lambda a: inspect_datasets(a.get("reaction", ""), a.get("datasets", ""), a.get("cuts"),
+                                         a.get("collection_id", ""), a.get("rows", 0))},
     "use_ai_branch": {
         "desc": "Switch the workspace to the FitPack ai branch (fitlib/ai.py runs campaigns). "
                 "Refuses if tracked files have uncommitted changes.",
@@ -13019,6 +13564,18 @@ TOOLS = {
                                                     "replicas": REPLICAS_ARG},
                    "required": ["collection_id"]},
         "fn": lambda a: _metrics_request("campaign_summary", {"collection_id": a.get("collection_id", ""), "replicas": a.get("replicas")})},
+    "campaign_report": {
+        "desc": "A Markdown report of one campaign to keep or send: configuration, data points after the cuts, "
+                "fit results (chi2 per replica and of the mean prediction, per dataset), how it was made "
+                "(reproduce.json submissions with the FitPack commit) and Sources with each input's sha256. Every "
+                "number comes from the card, FitPack's readers, the fit summary or reproduce.json; show the "
+                "markdown as returned, never recompute or round it. Saved as report/campaign_report.md (and "
+                ".json) in the campaign folder unless write=false. Run postprocess_campaign first when the "
+                "summary is out of date. If running, poll analysis_result(job_id).",
+        "schema": {"type": "object", "properties": {"collection_id": {"type": "string", "description": COLLECTION_ARG},
+                                                    "write": {"type": "boolean", "default": True}},
+                   "required": ["collection_id"]},
+        "fn": lambda a: campaign_report(a.get("collection_id", ""), a.get("write", True) is not False)},
     "campaign_pdf_plots": {
         "desc": "View PDF Plots: x f(x, Q2) of the fitted replicas at q2 (GeV^2). Proton (object_key pdf) flavors, "
                 "in the requested order: u,d,g,s,ub,db,sb,uv,dv,d/u,db+ub,db-ub,sp,sm,Rs,up,dp; sums are xPDFs, "
@@ -13358,7 +13915,8 @@ PROCEDURES = {
             "listed with a 'normalization' has a normalization parameter: offer to keep it, change its value or "
             "range, set it FREE or FIXED, or make it equal to another selected dataset's (normalizations in the "
             "card). Show the reaction's cuts (e.g. Q2>1.69, W2>10) and ask whether to keep them; preserve "
-            "dataset-specific cut mappings, including distinct H1 and ZEUS thresholds.\n"
+            "dataset-specific cut mappings, including distinct H1 and ZEUS thresholds. When the user asks what a "
+            "dataset holds or what a cut removes, inspect_datasets answers from the data files.\n"
             "6. QCD settings: order, Q20, TMC, higher twist, DGLAP mode, alphaS mode, positivity (pdf, ffpion, ffkaon, "
             "ffhadron), betaVersion and siaVersion.\n"
             "7. Job config: campaign name, replicas, parameter initialization (library values or random within "
@@ -13421,7 +13979,9 @@ PROCEDURES = {
             "interactive app. 5. replicas selects fitted replicas for statistics (best N, chi2_max, sigma outlier "
             "cut, exclude, only); say how many were kept and why. 6. Interpret with jam_guide "
             "interpretation_thresholds, and compare with the published JAM24 values "
-            "(get_analysis_fit_statistics) before calling a difference a problem. A reply with status running "
+            "(get_analysis_fit_statistics) before calling a difference a problem. 7. campaign_report: the whole "
+            "campaign as a Markdown file to keep or send (configuration, data after cuts, results, provenance, "
+            "sources with sha256); show it as returned. A reply with status running "
             "carries a job_id: analysis_result(job_id) until done, never restart the analysis. {collection_id}")},
     "verify_campaign": {
         "description": "How a fit was made (reproduce.json) and how to run it again exactly.",
@@ -13650,7 +14210,7 @@ def _default_annotations():
     submits = {"submit_campaign", "append_replicas", "rerun_replicas", "reproduce_campaign"}
     destructive = {"cancel_campaign", "delete_campaign"}
     mutating = {"setup_workspace", "use_workspace", "use_ai_branch", "connect_hpc", "postprocess_campaign",
-                "draft_slurm_job"}
+                "draft_slurm_job", "campaign_report"}
     for name, spec in TOOLS.items():
         if spec.get("annotations"):
             continue
