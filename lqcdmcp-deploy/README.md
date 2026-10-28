@@ -430,6 +430,11 @@ call it, what a call may do, who may change its code, and records all of it.
 
 ### What a call may do
 
+- A call answers within `JAM_GW_REPLY_WAIT` seconds (25): the LQCDMCP proxy
+  closes a request after 30 s (HTTP 504). Longer work answers `status:
+  running` with a job id for `analysis_result`, and `campaign_status(wait_for=)`
+  waits at most that long per call.
+
 - `tools/list` is the contract. A hidden tool (`deploy`) does not exist for
   anyone but the owner; a denied tool (`JAM_GW_TOOLS_DENY="a,b"` or
   `site.json` `"tools_deny"`) does not exist on that deployment: absent from
@@ -468,8 +473,9 @@ call it, what a call may do, who may change its code, and records all of it.
 ### Who may change the gateway's code
 
 `deploy`: the owner's token AND a second secret, the admin secret
-(`JAM_GW_ADMIN_SHA256`; `X-JAM-Admin` header, or `_meta` `jam/admin` when a
-proxy strips headers). Eight fixed operations: stage a file in chunks, seal
+(`JAM_GW_ADMIN_SHA256`; the `X-JAM-Admin` header, or `_meta` `jam/admin` for
+a proxy that strips headers; the LQCDMCP proxy passes the header and drops
+`_meta`, measured 2026-10-28). Eight fixed operations: stage a file in chunks, seal
 it with its sha256, verify the complete staged application in a fresh
 interpreter, install with rollback, clean, restart, status, node_info. Paths
 are confined to the application package; stage names to timestamps. There is
@@ -494,7 +500,8 @@ user's own chain (`JAM_GW_AUDIT_MIRROR=0` keeps the log local).
 
 Anyone holding the gateway token; the owner's own account (the same uid can
 rewrite the local log, hence the mirror and the anchor); a proxy that strips
-headers (the admin secret then travels in `_meta`); and everything on the
+headers (the admin secret could then travel in `_meta`, which the LQCDMCP
+proxy, as it happens, drops while passing the header); and everything on the
 cluster side (Slurm, filesystems), which is unchanged. The proxy registers a
 gateway's route without authentication, and the gateway listens on
 `0.0.0.0`; both are the platform's to change.
