@@ -48,7 +48,10 @@ def atomic_json(path, data):
 
 
 def checkpoint_root(stage, replica):
-    return Path(stage) / 'checkpoints' / ('replica_%d' % int(replica))
+    # A reproduction runs beside the original replicas and must not touch their
+    # checkpoints: its array script points JAMAI_CHECKPOINT_ROOT at its own folder.
+    root = os.environ.get('JAMAI_CHECKPOINT_ROOT') or (Path(stage) / 'checkpoints')
+    return Path(root) / ('replica_%d' % int(replica))
 
 
 def campaign_identity(stage):

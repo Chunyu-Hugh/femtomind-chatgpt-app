@@ -39,6 +39,7 @@ cluster chain · tools · campaigns · tool registry · http · boot.
 """
 
 import base64
+import binascii
 import getpass
 import hashlib
 import hmac
@@ -50,6 +51,9 @@ import os
 import posixpath
 import re
 import secrets
+import py_compile
+import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -162,14 +166,95 @@ SITE = _load_site()
 SHARED = os.environ.get("JAM_GW_SHARED", "").strip() == "1" or bool(SITE.get("shared"))
 USERNAME_RE = r"[a-z0-9._-]{1,32}"
 
+# Tools a deployment leaves out: JAM_GW_TOOLS_DENY="a,b" (or "none"), else
+# site.json "tools_deny". A denied tool is absent from tools/list and
+# "unknown tool" when called, and the instructions do not mention it. Used by
+# the evaluation's knowledge conditions (a gateway that cannot reach the
+# published catalog or the reference archive) and by cautious deployments.
+ARCHIVE_TOOLS = ("list_analysis_results", "get_analysis_fit_statistics", "get_analysis_theory_predictions",
+                 "compare_with_reference")
+CATALOG_TOOLS = ("list_analysis_catalog", "get_analysis_catalog", "get_analysis_requirements",
+                 "preview_analysis_configuration", "preview_compiled_input", "campaign_card_from_catalog")
+
+
+def _tools_deny():
+    raw = os.environ.get("JAM_GW_TOOLS_DENY")
+    names = ([x.strip() for x in raw.split(",")] if raw is not None and raw.strip().lower() != "none"
+             else (SITE.get("tools_deny") if raw is None and isinstance(SITE.get("tools_deny"), list) else []))
+    good = set()
+    for n in names:
+        if isinstance(n, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", n):
+            good.add(n)
+        elif n:
+            print(f"ignoring tools_deny entry {n!r}", flush=True)
+    return frozenset(good)
+
+
+TOOLS_DENY = _tools_deny()
+ARCHIVE_DENIED = bool(TOOLS_DENY & set(ARCHIVE_TOOLS))
+
+# Write controls. The confirmation phrase of a submit/append/rerun/reproduce is
+# a digest of the request, so a repeat with the same phrase is the same request:
+# for IDEMPOTENT_HOURS it is answered with the earlier result instead of queued
+# again (0 turns this off). JAM_GW_HUMAN_GATE=1 keeps the phrase away from AI
+# clients altogether: it is shown only on the panel page a person opened (which
+# carries this process's nonce), so every write needs a person to read it off
+# the panel and tell the assistant.
+IDEMPOTENT_HOURS = float(os.environ.get("JAM_GW_IDEMPOTENT_HOURS", "6") or 0)
+HUMAN_GATE = os.environ.get("JAM_GW_HUMAN_GATE", "").strip() == "1" or bool(SITE.get("human_gate"))
+PANEL_NONCE = secrets.token_urlsafe(24)
+
 
 def _area(user):
     return SITE["area"].format(user=user)
 
-# Access: the owner's LQCDMCP dashboard token is the only credential (see
-# "dashboard tokens" below). JAM_GW_TEST_TOKEN is for a test instance that runs
-# off the proxy and so is unknown to the dashboard; it is never set in a launch.
+# Access. The gateway has a token of its own: redeploy_jam.py makes a secret
+# per gateway and puts only its sha256 into the job script
+# (JAM_GW_TOKEN_SHA256); the owner sends the secret as the bearer. A shared
+# gateway has one secret per person (site.json "users": {name: sha256}). The
+# dashboard is then never asked, because in October 2026 it answered yes for
+# any token (README, Access). Without a hash the gateway falls back to that
+# dashboard check (legacy) and says so at start-up. JAM_GW_TEST_TOKEN is the
+# plain secret of a test instance; it is never set in a launch.
 TEST_TOKEN = os.environ.get("JAM_GW_TEST_TOKEN", "")
+
+
+def _hash_setting(env, filename):
+    """A sha256 from the environment, else from ACCESS_DIR/<filename> (mode
+    600; a file others can read is ignored), else ''."""
+    value = os.environ.get(env, "").strip().lower()
+    if not value:
+        path = os.path.join(ACCESS_DIR, filename)
+        try:
+            if os.stat(path).st_mode & 0o077:
+                print(f"ignoring {path}: readable by others", flush=True)
+            else:
+                with open(path) as fh:
+                    value = fh.read().strip().lower()
+        except OSError:
+            value = ""
+    if value and not re.fullmatch(r"[0-9a-f]{64}", value):
+        print(f"ignoring {env}: not a sha256", flush=True)
+        value = ""
+    return value
+
+
+def _load_users(table):
+    """site.json "users": {name: sha256}; entries that are not that are dropped."""
+    users = {}
+    for name, h in (table.items() if isinstance(table, dict) else []):
+        if isinstance(name, str) and re.fullmatch(USERNAME_RE, name) and isinstance(h, str) \
+                and re.fullmatch(r"[0-9a-f]{64}", h.lower()):
+            users[name] = h.lower()
+        else:
+            print(f"ignoring site.json user entry {name!r}", flush=True)
+    return users
+
+
+TOKEN_SHA256 = _hash_setting("JAM_GW_TOKEN_SHA256", "token.sha256")
+ADMIN_SHA256 = _hash_setting("JAM_GW_ADMIN_SHA256", "admin.sha256")
+USERS_SHA256 = _load_users(SITE.get("users"))
+AUTH_MODE = "token" if (TOKEN_SHA256 or USERS_SHA256) else ("test" if TEST_TOKEN else "dashboard")
 
 # The operations panel. One HTML file, served as a browser page on GET and as
 # an MCP Apps resource. Two URIs because ChatGPT still keys its widget on the
@@ -311,10 +396,71 @@ def _fill(template, **values):
 # serves calls between them, and _resolve_user refuses any other name.
 
 _tls = threading.local()
-AUTH_HELP = ("This gateway needs your LQCDMCP dashboard token (the one from the dashboard "
-             "login you launched the gateway with). Configure the MCP client to send the header "
-             "'Authorization: Bearer <token>', or paste it into the panel page when it asks for "
-             "one. When the dashboard login expires, log in again and update the token.")
+AUTH_HELP = (("This gateway takes its own token, not the dashboard token: the owner gets it with "
+              "`python3 redeploy_jam.py token` and exports it as JAM_GW_TOKEN. Configure the MCP client to "
+              "send the header 'Authorization: Bearer <that token>', or paste it into the panel page when it "
+              "asks for one. On a shared gateway, use the token its owner gave you.")
+             if AUTH_MODE == "token" else
+             ("This gateway needs your LQCDMCP dashboard token (the one from the dashboard "
+              "login you launched the gateway with). Configure the MCP client to send the header "
+              "'Authorization: Bearer <token>', or paste it into the panel page when it asks for "
+              "one. When the dashboard login expires, log in again and update the token."))
+
+# ── refusal codes ───────────────────────────────────────────────────────────
+#
+# Every refusal a tool returns carries a stable "code" beside its message, and
+# the audit log records the same code, so refusals can be counted by kind
+# (the failure table of the paper) without parsing message text. The message
+# stays the human explanation and may change; the code does not.
+REFUSAL_CODES = (
+    # transport and identity
+    "AUTH_REQUIRED", "IDENTITY_MISMATCH", "NOT_SHARED", "BAD_USERNAME", "UNKNOWN_TOOL", "TOOL_DENIED",
+    "HIDDEN_TOOL", "ADMIN_REQUIRED", "ADMIN_DISABLED", "CHAIN_DOWN",
+    # the campaign card and the workspace
+    "CARD_INVALID", "CATALOG_REQUIRED", "CATALOG_MISMATCH", "CONFIRM_TOO_SOON", "CONFIRM_NOT_SHOWN", "LIBRARY_UNREADABLE", "WORKSPACE_NOT_READY", "WORKSPACE_MISSING", "DATA_FILE_MISSING",
+    "PRIOR_SOURCE_INVALID", "PRIOR_ARCHIVE_DENIED", "NO_DATA", "CONFIG_ONLY_UNSUPPORTED", "DIRTY_CHECKOUT",
+    "OUTSIDE_AREA", "OUTSIDE_READ_ROOTS", "BAD_ARGUMENT",
+    # submission and the queue
+    "MATERIALIZE_FAILED", "SBATCH_REFUSED", "SCANCEL_FAILED", "CONFIRM_REQUIRED", "IDEMPOTENT_REPLAY",
+    "NOT_FOUND", "QUEUE_UNKNOWN", "STILL_QUEUED",
+    # reproduction records
+    "RECORD_MISSING", "RECORD_UNREADABLE", "RECORD_INCOMPLETE", "WORKSPACE_DRIFT", "REBUILD_FAILED",
+    "CHECKPOINT_INVALID",
+    # the gateway's own code path
+    "NOT_A_JOB", "BAD_STAGE", "BAD_PATH", "HASH_MISMATCH", "VERIFY_FAILED", "INSTALL_FAILED",
+    "PANEL_ONLY", "INTERNAL_ERROR", "ERROR_UNCODED",
+)
+
+
+def _refuse(code, message, status="error", **extra):
+    """A refusal: status, code and message, plus whatever else the caller adds."""
+    assert code in REFUSAL_CODES, code
+    return {"status": status, "code": code, "message": message, **extra}
+
+
+def _outcome(result):
+    """(status, code, is_error) of a tool's reply, for the audit log. A dict
+    reply is read by its status and code; a refusal that predates the codes
+    is ERROR_UNCODED, so it can be found and given one."""
+    if isinstance(result, dict) and "content" in result and "isError" in result:
+        body = result.get("structuredContent")
+        if body is None:
+            # A bare string reply ("unknown tool", "error: ...").
+            text = (result.get("content") or [{}])[0].get("text", "") if result.get("content") else ""
+            if text == "unknown tool":
+                return "error", "UNKNOWN_TOOL", True
+            return ("error", "INTERNAL_ERROR", True) if result.get("isError") else ("ok", None, False)
+        is_error = bool(result.get("isError"))
+    else:
+        body, is_error = result, False
+    if not isinstance(body, dict):
+        return "ok", None, is_error
+    status = str(body.get("status") or "ok")
+    code = body.get("code")
+    if code is None:
+        code = {"unauthorized": "AUTH_REQUIRED", "disconnected": "CHAIN_DOWN", "needs_confirmation": "CONFIRM_REQUIRED",
+                "invalid": "CARD_INVALID", "error": "ERROR_UNCODED"}.get(status)
+    return status, code, is_error or status in ("error", "unauthorized", "disconnected", "invalid")
 
 
 def _req_sid(hdrs):
@@ -339,11 +485,25 @@ def _identify(auth_header):
     if token[:7].lower() == "bearer ":
         # A client that was given "Bearer <token>" as the token sends it twice.
         token = token[7:].strip()
-    if not token:
+    if not token or len(token) > 1024:
+        return ""
+    if AUTH_MODE == "token":
+        h = _sha(token)
+        if TOKEN_SHA256 and hmac.compare_digest(h, TOKEN_SHA256):
+            _tls.auth = "token"
+            return GATEWAY_OWNER
+        # Every entry is compared (no early exit) and exactly one must match.
+        hits = [name for name, hh in USERS_SHA256.items() if hmac.compare_digest(h, hh)]
+        if len(hits) == 1:
+            _tls.auth = "user"
+            return hits[0]
         return ""
     if TEST_TOKEN and hmac.compare_digest(token, TEST_TOKEN):
+        _tls.auth = "test"
         return GATEWAY_OWNER
-    return _dashboard_identify(token, _sha(token))
+    user = _dashboard_identify(token, _sha(token))
+    _tls.auth = "dashboard" if user else "none"      # which check accepted the token, for the audit log
+    return user
 
 
 # ── dashboard tokens ─────────────────────────────────────────────────────────
@@ -449,8 +609,8 @@ def _dashboard_owns_gateway(token):
 
 
 def _dashboard_identify(token, h):
-    if not DASHBOARD_AUTH or len(token) < 16:
-        return ""
+    if not DASHBOARD_AUTH or AUTH_MODE == "token" or len(token) < 16:
+        return ""        # with a gateway token the dashboard is never asked
     now = time.time()
     with _DASH_LOCK:
         hit = _DASH_CACHE.get(h)
@@ -473,10 +633,10 @@ def _resolve_user(username):
     """The user this request acts as — always the token's user."""
     bound = getattr(_tls, "user", "")
     if not bound:
-        return "", {"status": "unauthorized", "message": AUTH_HELP}
+        return "", {"status": "unauthorized", "code": "AUTH_REQUIRED", "message": AUTH_HELP}
     asked = (username or "").strip()
     if asked and asked != bound:
-        return "", {"status": "error",
+        return "", {"status": "error", "code": "IDENTITY_MISMATCH",
                     "message": f"this token belongs to {bound}; it cannot act as {asked}"}
     return bound, None
 
@@ -498,9 +658,160 @@ def _need_user(username):
     if err:
         return u, err
     if not _chain_alive(u):
-        return u, {"status": "disconnected", "username": u,
+        return u, {"status": "disconnected", "code": "CHAIN_DOWN", "username": u,
                    "message": f"no live chain for {u}; call connect_hpc first"}
     return u, None
+
+
+# ── audit ───────────────────────────────────────────────────────────────────
+#
+# Every tools/call, every background job and every write effect leaves one
+# JSON line in ACCESS_DIR/audit.jsonl (mode 600). The lines are chained: each
+# carries the sha256 of the previous line, so a removed or edited line breaks
+# the chain, which audit_verify.py checks. A record says who acted (the
+# token's user, and the user acted as), the tool, the argument KEYS and a
+# digest of the arguments, the outcome's status and code, and the duration.
+# Argument values are never written: the PIN, passwords, GitHub tokens and
+# campaign cards stay out of the log.
+
+AUDIT_FILE = os.path.join(ACCESS_DIR, "audit.jsonl")
+SECRET_ARGS = {"pin_otp", "password", "github_token", "token", "confirm"}
+_AUDIT_LOCK = threading.Lock()
+_AUDIT = {"fd": None, "prev": "0" * 64, "seq": 0}
+
+
+def _canonical_sha256(obj):
+    return hashlib.sha256(json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+
+
+def _printable(s, limit=64):
+    return "".join(ch for ch in str(s or "") if 32 <= ord(ch) < 127)[:limit]
+
+
+def _audit_open():
+    """Open the log for appending and continue its chain from its last line.
+    Called at start-up, never at import (deploy_and_verify imports this module)."""
+    _ensure_access_dir()
+    broken = False
+    with _AUDIT_LOCK:
+        if _AUDIT["fd"] is not None:
+            return
+        fd = os.open(AUDIT_FILE, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        os.fchmod(fd, 0o600)
+        prev, seq = "0" * 64, 0
+        try:
+            with open(AUDIT_FILE, "rb") as fh:
+                fh.seek(0, os.SEEK_END)
+                size = fh.tell()
+                fh.seek(max(0, size - 65536))
+                lines = [ln for ln in fh.read().split(b"\n") if ln.strip()]
+            if lines:
+                try:
+                    seq = int(json.loads(lines[-1])["seq"])
+                    prev = hashlib.sha256(lines[-1]).hexdigest()
+                except (ValueError, KeyError, TypeError):
+                    broken = True
+        except OSError:
+            pass
+        _AUDIT.update(fd=fd, prev=prev, seq=seq)
+    if broken:
+        _audit("audit.recover", note="the last line of the log could not be parsed; the chain restarts here")
+
+
+def _audit(kind, **fields):
+    """Append one record. Returns its sha256 (the next record's prev), or None
+    when nothing could be written; a failure to log never fails the call."""
+    try:
+        if _AUDIT["fd"] is None:
+            _audit_open()
+        now = time.time()
+        rec = {"v": 1, "kind": kind, "ts": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(now)) + f".{int(now * 1000) % 1000:03d}Z",
+               "gateway": MCP_NAME, "owner": GATEWAY_OWNER, "job": os.environ.get("SLURM_JOB_ID"), **fields}
+        with _AUDIT_LOCK:
+            rec["seq"] = _AUDIT["seq"] + 1
+            rec["prev"] = _AUDIT["prev"]
+            line = json.dumps(rec, sort_keys=True, separators=(",", ":"), default=str)
+            digest = hashlib.sha256(line.encode()).hexdigest()
+            os.write(_AUDIT["fd"], (line + "\n").encode())
+            _AUDIT["seq"], _AUDIT["prev"] = rec["seq"], digest
+        _audit_queue(fields.get("acting") or fields.get("user") or "", line)
+        return digest
+    except Exception:
+        return None
+
+
+def _audit_call(name, args, result, t0, rid):
+    """The record of one tools/call, whatever its outcome."""
+    try:
+        status, code, is_error = _outcome(result)
+        if code == "UNKNOWN_TOOL" and TOOLS.get(name, {}).get("denied"):
+            code = "TOOL_DENIED"
+        a = args if isinstance(args, dict) else {}
+        public = {k: v for k, v in a.items() if k not in SECRET_ARGS}
+        _audit("call", principal=getattr(_tls, "principal", ""), acting=getattr(_tls, "user", ""),
+               auth=getattr(_tls, "auth", ""), sid=_printable(getattr(_tls, "sid", "")), rid=_printable(rid),
+               client=_printable(getattr(_tls, "client", ""), 40), tool=str(name)[:80],
+               arg_keys=sorted(str(k) for k in a)[:40], args_sha256=_canonical_sha256(public) if public else None,
+               confirmation_sha256=_sha(str(a["confirm"]).strip()) if a.get("confirm") else None,
+               outcome={"status": status, "code": code, "is_error": is_error},
+               duration_ms=int((time.monotonic() - t0) * 1000))
+    except Exception:
+        pass
+
+
+# The ifarm mirror. Records about a user are also appended to
+# <area>/.jam_audit.jsonl through that user's own chain, so a copy exists where
+# the gateway (same uid, same node) cannot quietly rewrite it. Lines wait while
+# the chain is down; a flush follows every write effect and runs every 30 s.
+AUDIT_MIRROR = os.environ.get("JAM_GW_AUDIT_MIRROR", "1") != "0"
+_AUDIT_PENDING = {}
+_AUDIT_PENDING_CAP = 2000
+
+
+def _audit_queue(user, line):
+    if not AUDIT_MIRROR or not user or not re.fullmatch(USERNAME_RE, user):
+        return
+    with _AUDIT_LOCK:
+        q = _AUDIT_PENDING.setdefault(user, [])
+        q.append(line)
+        dropped = max(0, len(q) - _AUDIT_PENDING_CAP)
+        del q[:dropped]
+    if dropped:
+        _audit("audit.mirror_dropped", user=user, n=dropped)
+
+
+def _audit_mirror_flush(user):
+    """Append the user's pending lines to the mirror, when the chain is up."""
+    with _AUDIT_LOCK:
+        lines = list(_AUDIT_PENDING.get(user) or [])
+    if not lines:
+        return
+    try:
+        if not _chain_alive(user):
+            return
+        area = _area(user)
+        r = _remote(user, f"umask 077; mkdir -p {_shq(area)} && cat >> {_shq(area + '/.jam_audit.jsonl')}",
+                    stdin="".join(ln + "\n" for ln in lines), timeout=30)
+        if r.get("rc") == 0:
+            with _AUDIT_LOCK:
+                del (_AUDIT_PENDING.get(user) or [])[:len(lines)]
+    except Exception:
+        pass
+
+
+def _audit_mirror_loop():
+    while True:
+        time.sleep(30)
+        for user in list(_AUDIT_PENDING):
+            _audit_mirror_flush(user)
+
+
+def _effect(effect, user, **fields):
+    """The record of one write effect (a submission, a cancel, a delete, a
+    workspace change, a sign-in), flushed to the mirror right away."""
+    _audit("effect", effect=effect, user=user, principal=getattr(_tls, "principal", ""),
+           sid=_printable(getattr(_tls, "sid", "")), **fields)
+    threading.Thread(target=_audit_mirror_flush, args=(user,), daemon=True).start()
 
 
 # ── chain ───────────────────────────────────────────────────────────────────
@@ -517,6 +828,16 @@ def _close_master(sock, dest, opts=None):
 
 
 def connect_hpc(username="", pin_otp="", password=""):
+    out = _connect_hpc(username, pin_otp, password)
+    # The sign-in is a write effect (it opens the chain every cluster tool
+    # uses); only its outcome is recorded, never the credentials.
+    if out.get("username"):
+        _effect("connect_hpc", out["username"], status=out.get("status"), step=out.get("step"),
+                connected=bool(out.get("connected")))
+    return out
+
+
+def _connect_hpc(username, pin_otp, password):
     u, err = _resolve_user(username)
     if err:
         return dict(err, connected=False)
@@ -600,10 +921,217 @@ def get_console(tab="connect"):
                     "chat. The page asks once for the user's LQCDMCP dashboard token."}
 
 
-def node_diag(cmd="id; hostname"):
-    """Shell ON THE GATEWAY NODE (hot-redeploy + diagnostics)."""
-    r = _run(["bash", "-lc", cmd], timeout=30)
-    return {"rc": r["rc"], "out": r["out"], "err": r["err"]}
+# ── deploy (hot upgrade) ─────────────────────────────────────────────────────
+#
+# hot_redeploy.py replaces the running gateway's code inside the same Slurm
+# job through the hidden tool `deploy`: eight fixed operations, never a shell.
+# Files are staged under APP_DIR/.hot_redeploy.stage-<stage>, hashed and
+# import-checked in a fresh interpreter (verify) before install swaps them in,
+# and restart stops this process so the job's supervisor loop starts the new
+# one. The tool needs the owner's token AND the admin secret (X-JAM-Admin, or
+# _meta "jam/admin" when a proxy strips the header); without ADMIN_SHA256 it
+# is off, and the gateway is upgraded by relaunching the job.
+
+APP_DIR = os.path.realpath(os.environ.get("JAM_GW_APP_DIR") or HERE)
+_STARTED = time.time()
+_DEPLOY_LOCK = threading.Lock()
+_DEPLOY_CHUNKS = {}                  # (stage, rel) -> next chunk index expected
+DEPLOY_COMPONENTS = ("jamai", "plugins", "analyses", "jam_panel.html", "jam_gateway.py")
+DEPLOY_CHUNK_B64_MAX = 400_000       # about 300 KB per chunk
+
+# Runs in a fresh python3 -B inside the stage: the staged gateway must import,
+# with its complete package, from the stage alone.
+_STAGE_CHECK_PROGRAM = r"""
+import hashlib, importlib, json, os, pathlib, sys
+args = json.load(sys.stdin)
+stage = pathlib.Path(args['stage']).resolve()
+os.chdir(stage)
+sys.path.insert(0, str(stage))
+for rel, expected in args['hashes'].items():
+    path = stage / rel
+    if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+        raise RuntimeError('staged hash mismatch: ' + rel)
+    if path.suffix == '.py':
+        compile(path.read_bytes(), str(path), 'exec')
+gateway = importlib.import_module('jam_gateway')
+catalog_root = gateway.analysis_catalog.catalog_root(stage)
+if catalog_root.resolve() != (stage / 'analyses').resolve():
+    raise RuntimeError('catalog escaped staged application')
+if not gateway.analysis_catalog.Catalog(catalog_root).deployment_files():
+    raise RuntimeError('no validated scientific catalog entries were staged')
+results_root = gateway.analysis_results.results_root(stage)
+if results_root.resolve() != (stage / 'analyses').resolve():
+    raise RuntimeError('results manifests escaped staged application')
+if not gateway.analysis_results.Results(results_root).deployment_files():
+    raise RuntimeError('no validated reference-results manifests were staged')
+for name, module in list(sys.modules.items()):
+    if (name == 'jam_gateway' or name == 'jamai' or name.startswith('jamai.')
+            or name == 'jam_plugins' or name.startswith('jam_plugin_')):
+        path = pathlib.Path(module.__file__).resolve()
+        if stage not in path.parents:
+            raise RuntimeError('import escaped staged application: ' + name)
+errors = getattr(gateway, 'PLUGIN_STATUS', {}).get('errors') or {}
+if errors:
+    raise RuntimeError('plugin failed to load: ' + '; '.join(n + ': ' + w for n, w in errors.items()))
+print('IMPORT-OK')
+"""
+
+
+def _deploy_stage_dir(stage):
+    if not re.fullmatch(r"\d{10,20}", str(stage or "")):
+        raise ValueError("BAD_STAGE")
+    return os.path.join(APP_DIR, f".hot_redeploy.stage-{stage}")
+
+
+def _deploy_rel(rel):
+    """A relative path inside the application package, or ValueError."""
+    rel = str(rel or "")
+    norm = os.path.normpath(rel).replace(os.sep, "/")
+    parts = norm.split("/")
+    if (not rel or rel.startswith("/") or norm != rel.rstrip("/") or ".." in parts or "" in parts
+            or not (norm in ("jam_gateway.py", "jam_panel.html") or norm.startswith(("jamai/", "plugins/", "analyses/")))):
+        raise ValueError("BAD_PATH")
+    return norm
+
+
+def _deploy_result(ok, **fields):
+    return {"ok": ok, **fields}
+
+
+def deploy(args):
+    """The hot-upgrade operations; see the section comment."""
+    op = str(args.get("op") or "")
+    u = GATEWAY_OWNER
+    try:
+        if op == "status":
+            with _DEPLOY_LOCK:
+                stages = sorted(d[len(".hot_redeploy.stage-"):] for d in os.listdir(APP_DIR)
+                                if d.startswith(".hot_redeploy.stage-")) if os.path.isdir(APP_DIR) else []
+            return _deploy_result(True, slurm_job_id=os.environ.get("SLURM_JOB_ID"), app_dir=APP_DIR,
+                                  cwd=os.path.realpath(os.getcwd()), gateway_sha256=_GATEWAY_SHA256,
+                                  started_at=_STARTED, uptime_s=round(time.time() - _STARTED), version="0.9.0",
+                                  auth_mode=AUTH_MODE, admin_via=getattr(_tls, "admin_via", None), stages=stages,
+                                  audit_seq=_AUDIT["seq"])
+        if op == "node_info":
+            try:
+                load1 = os.getloadavg()[0]
+            except OSError:
+                load1 = None
+            st = os.statvfs(os.path.expanduser("~"))
+            socks = sorted(os.listdir(CM_DIR)) if os.path.isdir(CM_DIR) else []
+            return _deploy_result(True, hostname=socket.gethostname(), user=GATEWAY_OWNER, python=sys.version.split()[0],
+                                  load1=load1, home_free_mb=round(st.f_bavail * st.f_frsize / 2**20), cm_sockets=socks)
+        if op == "restart":
+            if not os.environ.get("SLURM_JOB_ID"):
+                return _refuse("NOT_A_JOB", "this gateway is not a Slurm job, so nothing would start it again")
+            if os.path.realpath(os.getcwd()) != APP_DIR:
+                return _refuse("NOT_A_JOB", f"this gateway does not run from {APP_DIR}")
+            _effect("deploy.restart", u, pid=os.getpid())
+            threading.Timer(1.0, os.kill, (os.getpid(), signal.SIGTERM)).start()
+            return _deploy_result(True, pid=os.getpid(), in_s=1)
+        stage_dir = _deploy_stage_dir(args.get("stage"))
+        if op == "stage_chunk":
+            rel = _deploy_rel(args.get("rel"))
+            index = args.get("index")
+            data = str(args.get("data_b64") or "")
+            if type(index) is not int or index < 0 or len(data) > DEPLOY_CHUNK_B64_MAX:
+                return _refuse("BAD_ARGUMENT", "index: a chunk number from 0; data_b64: at most %d characters"
+                               % DEPLOY_CHUNK_B64_MAX)
+            try:
+                chunk = base64.b64decode(data, validate=True)
+            except (ValueError, binascii.Error):
+                return _refuse("BAD_ARGUMENT", "data_b64 is not base64")
+            part = os.path.join(stage_dir, rel + ".part")
+            with _DEPLOY_LOCK:
+                expected = _DEPLOY_CHUNKS.get((stage_dir, rel), 0)
+                if index != expected:
+                    return _refuse("BAD_ARGUMENT", f"chunk {index} out of order; {expected} is next")
+                os.makedirs(os.path.dirname(part), mode=0o700, exist_ok=True)
+                if index == 0:
+                    fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                else:
+                    fd = os.open(part, os.O_WRONLY | os.O_APPEND)
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(chunk)
+                _DEPLOY_CHUNKS[(stage_dir, rel)] = index + 1
+            return _deploy_result(True, rel=rel, index=index, bytes=len(chunk))
+        if op == "stage_finish":
+            rel = _deploy_rel(args.get("rel"))
+            part, final = os.path.join(stage_dir, rel + ".part"), os.path.join(stage_dir, rel)
+            with open(part, "rb") as fh:
+                content = fh.read()
+            if hashlib.sha256(content).hexdigest() != str(args.get("sha256") or "").lower():
+                os.remove(part)
+                return _refuse("HASH_MISMATCH", f"{rel}: the staged bytes do not match sha256")
+            compiled = False
+            if rel.endswith(".py"):
+                compile(content, rel, "exec")        # SyntaxError -> INTERNAL_ERROR below, nothing installed
+                compiled = True
+            os.replace(part, final)
+            with _DEPLOY_LOCK:
+                _DEPLOY_CHUNKS.pop((stage_dir, rel), None)
+            return _deploy_result(True, rel=rel, sha256=hashlib.sha256(content).hexdigest(), compiled=compiled)
+        if op == "verify":
+            hashes = args.get("hashes")
+            if not isinstance(hashes, dict) or not hashes:
+                return _refuse("BAD_ARGUMENT", "hashes: {relative path: sha256} of every staged file")
+            for rel in hashes:
+                _deploy_rel(rel)
+            p = subprocess.run([sys.executable, "-B", "-c", _STAGE_CHECK_PROGRAM],
+                               input=json.dumps({"stage": stage_dir, "hashes": hashes}),
+                               capture_output=True, text=True, cwd=stage_dir, timeout=120)
+            output = ((p.stdout or "") + (p.stderr or ""))[-2000:]
+            if p.returncode != 0 or "IMPORT-OK" not in (p.stdout or ""):
+                _effect("deploy.verify", u, stage=os.path.basename(stage_dir), ok=False)
+                return _refuse("VERIFY_FAILED", "the staged application does not load on the node", output=output)
+            with open(os.path.join(stage_dir, ".verified"), "w") as fh:
+                fh.write(_canonical_sha256(hashes) + "\n")
+            _effect("deploy.verify", u, stage=os.path.basename(stage_dir), files=len(hashes), ok=True)
+            return _deploy_result(True, files=len(hashes), output=output[-400:])
+        if op == "install":
+            if not os.path.exists(os.path.join(stage_dir, ".verified")):
+                return _refuse("VERIFY_FAILED", "verify this stage first")
+            backup = os.path.join(APP_DIR, ".hot_redeploy.previous")
+            saved, installed = [], []
+            with _DEPLOY_LOCK:
+                if os.path.exists(backup):
+                    shutil.rmtree(backup)
+                os.mkdir(backup, 0o700)
+                try:
+                    for name in DEPLOY_COMPONENTS:
+                        if os.path.exists(os.path.join(APP_DIR, name)):
+                            shutil.move(os.path.join(APP_DIR, name), os.path.join(backup, name))
+                            saved.append(name)
+                        if name == "plugins" and not os.path.exists(os.path.join(stage_dir, name)):
+                            continue                # an application without plugins
+                        shutil.move(os.path.join(stage_dir, name), os.path.join(APP_DIR, name))
+                        installed.append(name)
+                except BaseException:
+                    for name in reversed(installed):
+                        target = os.path.join(APP_DIR, name)
+                        shutil.rmtree(target) if os.path.isdir(target) else os.unlink(target)
+                    for name in reversed(saved):
+                        shutil.move(os.path.join(backup, name), os.path.join(APP_DIR, name))
+                    _effect("deploy.install", u, stage=os.path.basename(stage_dir), ok=False)
+                    raise
+            _effect("deploy.install", u, stage=os.path.basename(stage_dir), installed=installed, ok=True)
+            return _deploy_result(True, installed=installed, previous=backup)
+        if op == "clean":
+            removed = os.path.isdir(stage_dir)
+            if removed:
+                shutil.rmtree(stage_dir)
+            with _DEPLOY_LOCK:
+                for key in [k for k in _DEPLOY_CHUNKS if k[0] == stage_dir]:
+                    del _DEPLOY_CHUNKS[key]
+            return _deploy_result(True, removed=removed)
+        return _refuse("BAD_ARGUMENT", "op: status, node_info, stage_chunk, stage_finish, verify, install, clean or restart")
+    except ValueError as e:
+        if str(e) in ("BAD_STAGE", "BAD_PATH"):
+            return _refuse(str(e), {"BAD_STAGE": "stage: 10 to 20 digits (a timestamp)",
+                                    "BAD_PATH": "rel: a path inside the application package"}[str(e)])
+        raise
+    except FileNotFoundError as e:
+        return _refuse("BAD_PATH", f"nothing staged at {e.filename}")
 
 
 def _outside_read_roots(p, user=""):
@@ -612,7 +1140,7 @@ def _outside_read_roots(p, user=""):
         roots.append(f"{SITE.get('slurm_log_root', '/farm_out').rstrip('/')}/{user}")
     if any(p == r or p.startswith(r.rstrip("/") + "/") for r in roots):
         return None
-    return {"status": "error", "message": "path must be under " + " or ".join(roots)}
+    return _refuse("OUTSIDE_READ_ROOTS", "path must be under " + " or ".join(roots))
 
 
 def fs_list(path="", username=""):
@@ -656,10 +1184,18 @@ def setup_workspace(repo_url="", github_token="", target_dir="", username="",
 
     repo_url defaults to the JAM repository. folder_name is the panel's way of
     naming target_dir inside the user's own area; branch picks the branch to
-    clone."""
+    clone. The clone can take minutes, so this runs as a background job the
+    client polls with analysis_result (the token never enters the job's key)."""
     u, err = _need_user(username)
     if err:
         return dict(err, ok=False)
+    params = {"repo_url": repo_url, "target_dir": target_dir, "folder_name": folder_name, "branch": branch}
+    return _background(u, "setup_workspace", params,
+                       lambda: _setup_workspace(u, repo_url, github_token, target_dir, folder_name, branch),
+                       wait=CAMPAIGN_WAIT)
+
+
+def _setup_workspace(u, repo_url, github_token, target_dir, folder_name, branch):
     root = _area(u)
     folder = (folder_name or "").strip()
     if folder and not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", folder):
@@ -736,6 +1272,7 @@ def setup_workspace(repo_url="", github_token="", target_dir="", username="",
                     "detail": text.replace(tok, "***")[-400:] if tok else text[-400:]}
     out = _remote(u, f"printf '%s\\n' {_shq(target)} > {root}/.jam_workspace && echo DONE", timeout=60)
     steps.append("workspace marker: " + (out.get("out") or "").strip()[-60:])
+    _effect("setup_workspace", u, workspace=target)
     steps.append(_link_grids(u, target))
     _WS_CACHE.pop(u, None)
     message = (f"A folder named {os.path.relpath(target, root)} already exists in your area: it was "
@@ -789,6 +1326,8 @@ def check_hpc_connection(username=""):
         account["workspace"] = _workspace(u)
     return {"connected": alive, "login_open": login_open, "cluster_reachable": alive,
             "shared": SHARED, "owner": GATEWAY_OWNER,
+            "auth": AUTH_MODE, "legacy_shared": SHARED and AUTH_MODE == "dashboard", "audit": True,
+            "tools_denied": sorted(TOOLS_DENY), "human_gate": HUMAN_GATE,
             "account": account, "site": _site_public(), "sites": [_site_public()],
             "note": ("Ready to run fits." if alive else
                      "Not signed in to the cluster. Sign in on the Connect tab of the "
@@ -892,7 +1431,7 @@ def use_workspace(path="", username=""):
     root = _area(u)
     p = os.path.normpath((path or "").strip())
     if not p.startswith(root + "/"):
-        return {"ok": False, "message": f"The workspace must be inside your own area ({root})."}
+        return {"ok": False, "code": "OUTSIDE_AREA", "message": f"The workspace must be inside your own area ({root})."}
     if not re.fullmatch(WORKSPACE_PATH_RE, p):
         return {"ok": False, "message": f"{p} has characters other than letters, numbers, '.', '_', '-' "
                                         "and '/'. Rename the folder, or choose another one."}
@@ -902,6 +1441,7 @@ def use_workspace(path="", username=""):
         return {"ok": False, "message": f"{p} is not a fitpack checkout (no fitlib/ inside)."}
     _link_grids(u, p)
     _WS_CACHE.pop(u, None)
+    _effect("use_workspace", u, workspace=p)
     return {"ok": True, "workspace": p, "report": check_project(u)}
 
 
@@ -1376,12 +1916,15 @@ CAMPAIGN_CHOICES = {
     "order": ["LO", "NLO", "NNLO"], "tmc": ["off", "AOT"], "dglapMode": ["truncated", "iterated"],
     "asMode": ["backward", "forward"], "optimizer": ["trf", "dogbox"],
     "initialization": ["default", "random_within_bounds"],
-    "priorSource": {"kinds": ["archive", "file", "campaign"], "mapping": "exact count or explicit unique replica_ids", "native_msr": "order-bearing supported layouts; select step explicitly when multiple steps exist"},
+    "priorSource": {"kinds": [k for k in ("archive", "file", "campaign") if k != "archive" or not ARCHIVE_DENIED], "mapping": "exact count or explicit unique replica_ids", "native_msr": "order-bearing supported layouts; select step explicitly when multiple steps exist"},
     "betaVersion": [0, 1], "siaVersion": [0, 1],
 }
 
 
-CONFIRM_WAIT = 20          # seconds between showing a plan and accepting its phrase
+# Seconds between showing a plan and accepting its phrase. JAM_GW_CONFIRM_WAIT
+# overrides it (0 for a benchmark in which the assistant is, by instruction,
+# the only actor); production keeps the default.
+CONFIRM_WAIT = int(os.environ.get("JAM_GW_CONFIRM_WAIT", "20") or 0)
 CONFIRM_RULE = ("Stop here and show the user the plan; the phrase is accepted only after they answer. "
                 "The request that led to this plan is not their confirmation, and a confirm sent in the same "
                 f"turn, or within {CONFIRM_WAIT} seconds of the plan, is refused.")
@@ -1421,6 +1964,101 @@ def _confirm_gate(args):
                 "message": f"The plan was shown {age:.0f} seconds ago. Nothing was submitted. Show the user the plan "
                            "and wait for their answer; confirm only after they have agreed in their own message."}
     return None
+
+
+# ---- the same confirmed request is carried out once ------------------------------
+
+_IDEMP_FILE = os.path.join(ACCESS_DIR, "idempotency.json")
+_IDEMP_LOCK = threading.Lock()
+
+
+def _idemp_table():
+    """{key: {at, job_id, result}} of recent confirmed writes, pruned to IDEMPOTENT_HOURS."""
+    try:
+        with open(_IDEMP_FILE) as fh:
+            table = json.load(fh)
+    except (OSError, ValueError):
+        table = {}
+    cutoff = time.time() - IDEMPOTENT_HOURS * 3600
+    return {k: v for k, v in table.items() if isinstance(v, dict) and v.get("epoch", 0) > cutoff}
+
+
+def _idempotent(u, kind, phrase):
+    """The earlier result of this very request (user, kind, phrase), or None."""
+    if IDEMPOTENT_HOURS <= 0:
+        return None
+    with _IDEMP_LOCK:
+        hit = _idemp_table().get(_sha(f"{u}\n{kind}\n{phrase}"))
+    if not hit:
+        return None
+    return {**hit["result"], "status": "submitted", "replayed": True, "code": "IDEMPOTENT_REPLAY",
+            "message": f"This exact request (same confirmation phrase) was already carried out at {hit['at']} as job "
+                       f"{hit.get('job_id')}; nothing new was queued. Change the request (it gets a new phrase) to "
+                       f"queue it again, or wait {IDEMPOTENT_HOURS:g} h."}
+
+
+def _remember(u, kind, phrase, result):
+    if IDEMPOTENT_HOURS <= 0 or not isinstance(result, dict) or result.get("status") != "submitted":
+        return
+    with _IDEMP_LOCK:
+        table = _idemp_table()
+        table[_sha(f"{u}\n{kind}\n{phrase}")] = {"epoch": time.time(), "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                                 "job_id": result.get("job_id"),
+                                                 "result": {k: v for k, v in result.items() if k != "summary"}}
+        try:
+            _ensure_access_dir()
+            fd = os.open(_IDEMP_FILE + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as fh:
+                json.dump(table, fh, default=str)
+            os.replace(_IDEMP_FILE + ".tmp", _IDEMP_FILE)
+        except OSError:
+            pass
+
+
+# ---- a person approves writes (JAM_GW_HUMAN_GATE) ----------------------------------
+
+_PENDING = {}
+_PENDING_LOCK = threading.Lock()
+
+
+def _apply_human_gate(out):
+    """With JAM_GW_HUMAN_GATE the confirmation phrase never reaches an AI client.
+    The reply says a person must read it off the panel page, where
+    pending_confirmations lists it (the page carries this process's nonce)."""
+    if not HUMAN_GATE or getattr(_tls, "panel", False) or not isinstance(out, dict):
+        return out
+    phrase = out.get("confirmation_phrase")
+    if not isinstance(phrase, str) or not phrase.startswith("CONFIRM JAM "):
+        return out
+    now = time.time()
+    summary = {k: out[k] for k in ("plan", "summary", "collection_id", "script") if k in out}
+    with _PENDING_LOCK:
+        for key in [k for k, v in _PENDING.items() if now - v["created"] > 3600]:
+            del _PENDING[key]
+        _PENDING[_sha(phrase)] = {"kind": phrase.split()[2], "phrase": phrase, "user": getattr(_tls, "user", ""),
+                                  "created": now, "summary": json.dumps(summary, default=str)[:1500]}
+    out = dict(out)
+    out.pop("confirmation_phrase")
+    out["human_gate"] = True
+    out["how"] = ("This gateway requires a person to approve writes. Ask the user to open the panel page, read the "
+                  "confirmation phrase under 'Pending confirmations' and tell it to you; then call again with confirm "
+                  "set to that phrase. Never guess or derive the phrase.")
+    return out
+
+
+def pending_confirmations(username=""):
+    """The confirmations waiting for a person (human-gate mode); the panel page only."""
+    u, err = _resolve_user(username)
+    if err:
+        return err
+    if not HUMAN_GATE:
+        return {"status": "ok", "human_gate": False, "pending": []}
+    if not getattr(_tls, "panel", False):
+        return _refuse("PANEL_ONLY", "the confirmation phrases are shown only on the gateway's panel page",
+                       status="unauthorized")
+    with _PENDING_LOCK:
+        items = [dict(v, age_s=round(time.time() - v["created"])) for v in _PENDING.values() if v["user"] == u]
+    return {"status": "ok", "human_gate": True, "pending": sorted(items, key=lambda x: -x["created"])}
 
 
 def _parse_hms(text):
@@ -1467,8 +2105,12 @@ def _object_libraries(u, keys):
                            + (r.get("err") or r.get("out") or str(exc))[-600:]) from exc
 
 
-def campaign_options(username=""):
-    """Composer metadata from the proton library and one-shape pion reference."""
+def campaign_options(username="", section="", object_type=""):
+    """Composer metadata from the proton library and one-shape pion reference.
+    The default answer is the summary: every section but the parameter tables,
+    which are counted per object (the full tables ran to 125 kB and overflowed
+    the pilot's clients). section='parameters' with object_type gives one
+    object's table; any other section name gives that section alone."""
     u, err = _need_user(username)
     if err:
         return err
@@ -1508,7 +2150,7 @@ def campaign_options(username=""):
     parameters = {key: {k: v for k, v in lib.items() if k not in ("params", "datasets", "fixed_companions")}
                   for key, lib in libraries.items()}
     parameters["pdf"].update(parametrization=PDF_DETAILS["parametrization"], note=PDF_DETAILS["note"])
-    return {"status": "ok",
+    full = {"status": "ok",
             "steps": ["Non-perturbative object", "Reactions", "QCD settings", "Job config", "Review"],
             "objects": objects, "parameters": parameters,
             "companions": {"ln": {"fitted": ["p->pi,n"], "fixed_unless_selected": ["pdf"]}},
@@ -1519,6 +2161,30 @@ def campaign_options(username=""):
             "partition_auto": {"short": SITE.get("short_partition"),
                                "short_hours": SITE.get("short_hours"), "long": SITE["partition"]},
             "template": CAMPAIGN_TEMPLATE}
+    sec = str(section or "").strip().lower()
+    if sec == "parameters":
+        key = str(object_type or "pdf").strip()
+        if key not in parameters:
+            return _refuse("BAD_ARGUMENT", f"object_type: one of {sorted(parameters)}")
+        return {"status": "ok", "section": "parameters", "object_type": key, "parameters": parameters[key]}
+    if sec and sec != "summary":
+        if sec not in full:
+            return _refuse("BAD_ARGUMENT", "section: summary, parameters, " + ", ".join(k for k in full if k != "status"))
+        return {"status": "ok", "section": sec, sec: full[sec]}
+    # The summary: the parameter tables counted, not listed.
+    counts = {}
+    for key, lib in parameters.items():
+        rows = lib.get("rows") if isinstance(lib.get("rows"), list) else []
+        counts[key] = {"rows": len(rows),
+                       "free": sum(1 for r in rows if r.get("fixed") is False and r.get("enabled", True)),
+                       "fixed": sum(1 for r in rows if r.get("fixed") is True and r.get("enabled", True)),
+                       "tied": sum(1 for r in rows if isinstance(r.get("fixed"), str) or r.get("tied_to")),
+                       "optional_disabled": sum(1 for r in rows if r.get("enabled") is False),
+                       **{k: v for k, v in lib.items() if k in ("source", "sha256", "parametrization", "note")}}
+    return {**full, "parameters": counts,
+            "parameter_tables": "campaign_options(section='parameters', object_type=<object>) returns one object's full "
+                                "table (name, value, min, max, fixed/tied, enabled). Only rows the user changes go into "
+                                "the card; the rest keep these library values."}
 
 
 _IDIS_CATALOG = r'''
@@ -2143,7 +2809,18 @@ def _card_summary(norm):
         rendered = rows if reaction == "sia" else object_registry.cut_filters(rows)
         cuts[reaction] = ([f'{dataset_id}: {expression}' for dataset_id, expressions in rendered.items()
                            for expression in expressions] if isinstance(rendered, dict) else rendered)
-    return {"object": " + ".join(o["label"] for o in objects), "objects": objects,
+    # The composer enables only the first FF shape by default; the published
+    # JAM24 fit uses both (215 free parameters against the composer's 140).
+    ff_selected = [o.get("type") for o in objects if o.get("type") in ff_registry.FF_OBJECTS]
+    ff_second = {key: any(p.get("sector") == key and p["name"] in ff_registry.FF_OPTIONAL[key] and not p["fixed"]
+                          for p in norm["parameters_table"]) for key in ff_selected}
+    ff_note = {}
+    if ff_selected and not all(ff_second.values()):
+        ff_note = {"ff_second_shapes": {k: ("enabled" if v else "disabled") for k, v in ff_second.items()},
+                   "ff_note": "Only the first FF shape is enabled for " + ", ".join(k for k, v in ff_second.items() if not v)
+                              + " (the composer's default). The published JAM24 fit uses both shapes; "
+                                "campaign_card_from_catalog gives a card with both."}
+    return {"object": " + ".join(o["label"] for o in objects), "objects": objects, **ff_note,
             "fit_objects": norm.get("fit_objects", ["pdf"]),
             "frozen_objects": norm.get("frozen_objects", []),
             "library_sources": norm.get("library_sources", {}),
@@ -2235,12 +2912,19 @@ def _slurm_log_dir(user):
     return f"{SITE.get('slurm_log_root', '/farm_out').rstrip('/')}/{user}"
 
 
-def _campaign_log_prefix(user, folder):
-    return f"{_slurm_log_dir(user)}/{folder}/out/jam_{folder[:40]}"
+def _log_name(folder, tag=""):
+    """The job and log name of a campaign's array: jam_<folder>, or jam_<tag>_<folder>
+    for a reproduction. One place, so the registry's log prefixes and the Slurm
+    script's --output always agree."""
+    return f"jam_{tag + '_' if tag else ''}{folder[:40 - len(tag) - 1 if tag else 40]}"
 
 
-def _campaign_error_log_prefix(user, folder):
-    return f"{_slurm_log_dir(user)}/{folder}/err/jam_{folder[:40]}"
+def _campaign_log_prefix(user, folder, tag=""):
+    return f"{_slurm_log_dir(user)}/{folder}/out/{_log_name(folder, tag)}"
+
+
+def _campaign_error_log_prefix(user, folder, tag=""):
+    return f"{_slurm_log_dir(user)}/{folder}/err/{_log_name(folder, tag)}"
 
 
 def _campaign_log_dirs(user, folder):
@@ -2249,6 +2933,8 @@ def _campaign_log_dirs(user, folder):
 
 def _campaign_log_patterns(user, entry):
     for job in reversed(entry.get("jobs") or []):
+        if job.get("reproduce"):
+            continue    # a reproduction's logs belong to its own run, not to the replicas
         prefix = job.get("log_prefix")
         if prefix:
             return {"stdout": f"{prefix}_<job_id>_<replica>.out",
@@ -2269,12 +2955,16 @@ def _array_script(ws, folder, norm, first, last, indices=None, resume_plan=None,
     sl, c = norm["slurm"], SITE["container"]
     stage = f"{ws}/{CAMPAIGNS_DIR}/{folder}/stages/{STAGE}"
     code_ws = code_ws or ws
+    # A reproduction writes beside the original replicas and keeps its own
+    # checkpoints: the originals under current/ are what a later
+    # rerun_replicas(resume=true) restarts from, so they must stay untouched.
+    checkpoint_env = f"--env JAMAI_CHECKPOINT_ROOT={_shq(out_dir + '/checkpoints')} " if out_dir else ""
     out_dir = out_dir or f"{stage}/current"
     binds = " ".join(f"--bind {b}" for b in c.get("binds", []))
     lhapdf = ":".join(SITE.get("lhapdf_extra") or [])
     lhapdf_env = f"--env LHAPDF_DATA_PATH={lhapdf} " if lhapdf else ""
     qs, qo, pypath = _shq(stage), _shq(out_dir), _shq(f"{code_ws}:{code_ws}/{JAMAI_REMOTE}")
-    log_name = f"jam_{tag + '_' if tag else ''}{folder[:40 - len(tag) - 1 if tag else 40]}"
+    log_name = _log_name(folder, tag)
     log_root = SITE.get("slurm_log_root", "/farm_out").rstrip("/")
     resume_arg = f" --resume-plan {_shq(resume_plan)}" if resume_plan else ""
     return f"""#!/bin/bash
@@ -2308,9 +2998,10 @@ apptainer exec {binds} \\
   --env JAMAI_FITPACK_COMMIT="$FITPACK_COMMIT" --env JAMAI_FITPACK_CHANGED_FILES="$FITPACK_CHANGED" \\
   --env JAMAI_IMAGE={_shq(c["image"])} --env JAMAI_IMAGE_REALPATH="$IMAGE_REAL" \\
   --env JAMAI_MAX_NFEV={norm["job"]["maxIterations"]} --env JAMAI_METHOD={norm["job"]["optimizer"]} \\
-  {lhapdf_env}--env MPLCONFIGDIR={qs}/.matplotlib \\
+  --env PYTHONUNBUFFERED=1 \\
+  {lhapdf_env}{checkpoint_env}--env MPLCONFIGDIR={qs}/.matplotlib \\
   {c["image"]} \\
-  python3 -m modules.jam.jamai.run_replica --manifest {qs}/manifest.resolved.yaml \\
+  python3 -u -m modules.jam.jamai.run_replica --manifest {qs}/manifest.resolved.yaml \\
     --output {qo}/replica_${{REPLICA_ID}} --replica "${{REPLICA_ID}}" -n {sl["cpus"]}{resume_arg}
 """
 
@@ -2321,70 +3012,74 @@ _REGISTRY = r'''
 import json, os, sys, hashlib, fcntl
 path = os.path.join(__WS__, 'campaigns', 'collections.json')
 op = __OP__
-# One writer at a time (readers share): the lock lives as long as this process.
+# One writer at a time (readers share), released when the program ends or fails.
 os.makedirs(os.path.dirname(path), exist_ok=True)
 lock = open(path + '.lock', 'a')
 fcntl.flock(lock, fcntl.LOCK_EX if op.get('kind') in ('upsert', 'delete') else fcntl.LOCK_SH)
 try:
-    with open(path) as handle:
-        items = json.load(handle)
-    if not isinstance(items, list): items = []
-except (OSError, ValueError):
-    items = []
-reference_schema = 'femtomind.registry-prior-reference.v1'
-def projected(entry):
-    card = entry.get('input_card') or {}
-    params = card.get('parameters') or {}
-    prior = params.get('priorSnapshot')
-    if not isinstance(prior, dict) or prior.get('schema') != 'femtomind.prior-replicas.v1':
-        return entry
-    reference = {'schema': reference_schema, 'sha256': prior['sha256'], 'replicas': len(prior['replicas'])}
-    return {**entry, 'input_card': {**card, 'parameters': {**params, 'priorSnapshot': reference}}}
-if op['kind'] == 'upsert':
-    entry = op['entry']
-    params = entry.get('input_card', {}).get('parameters', {})
-    prior = params.get('priorSnapshot')
-    if isinstance(prior, dict) and prior.get('schema') == reference_schema:
-        previous = next((e for e in items if e.get('collection_id') == entry['collection_id']), {})
-        original = previous.get('input_card', {}).get('parameters', {}).get('priorSnapshot')
-        if (not isinstance(original, dict) or original.get('schema') != 'femtomind.prior-replicas.v1'
-                or original.get('sha256') != prior.get('sha256')
-                or len(original['replicas']) != prior.get('replicas')):
-            raise ValueError('Stored prior snapshot reference no longer matches the campaign')
-        entry = {**entry, 'input_card': {**entry['input_card'],
-                                      'parameters': {**params, 'priorSnapshot': original}}}
-    stored = next((e for e in items if e.get('collection_id') == entry['collection_id']), None)
-    if stored:
-        # Two tools may have read the entry before either wrote (an append and a
-        # rerun together): keep every job both know, and the larger replica count.
-        jobs = {}
-        for j in list(stored.get('jobs') or []) + list(entry.get('jobs') or []):
-            jobs[str(j.get('job_id'))] = j
-        entry = {**entry, 'jobs': sorted(jobs.values(), key=lambda j: (str(j.get('submitted_at') or ''), str(j.get('job_id')))),
-                 'replicas': max(int(entry.get('replicas') or 0), int(stored.get('replicas') or 0))}
-    items = [e for e in items if e.get('collection_id') != entry['collection_id']] + [entry]
-elif op['kind'] == 'delete':
-    items = [e for e in items if e.get('collection_id') != op['id']]
-elif op['kind'] != 'read':
-    raise ValueError('Unsupported registry operation')
-if op['kind'] in ('upsert', 'delete'):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + '.tmp'
-    with open(tmp, 'w') as handle:
-        json.dump(items, handle, indent=1)
-    os.replace(tmp, path)
-    print(json.dumps({'status': 'ok', 'operation': op['kind'],
-                      'collection_id': entry['collection_id'] if op['kind'] == 'upsert' else op['id']}))
-else:
-    selected = [e for e in items if op.get('collection_id') is None or e.get('collection_id') == op['collection_id']]
-    text = json.dumps([projected(e) for e in selected])
-    offset = op.get('offset', 0)
-    if type(offset) is not int or not 0 <= offset <= len(text):
-        raise ValueError('Invalid registry read offset')
-    end = min(len(text), offset + 200000)
-    print(json.dumps({'text': text[offset:end], 'offset': offset, 'total_characters': len(text),
-                      'revision': hashlib.sha256(text.encode()).hexdigest(),
-                      'next_offset': end if end < len(text) else None}))
+    try:
+        with open(path) as handle:
+            items = json.load(handle)
+        if not isinstance(items, list): items = []
+    except (OSError, ValueError):
+        items = []
+    reference_schema = 'femtomind.registry-prior-reference.v1'
+    def projected(entry):
+        card = entry.get('input_card') or {}
+        params = card.get('parameters') or {}
+        prior = params.get('priorSnapshot')
+        if not isinstance(prior, dict) or prior.get('schema') != 'femtomind.prior-replicas.v1':
+            return entry
+        reference = {'schema': reference_schema, 'sha256': prior['sha256'], 'replicas': len(prior['replicas'])}
+        return {**entry, 'input_card': {**card, 'parameters': {**params, 'priorSnapshot': reference}}}
+    if op['kind'] == 'upsert':
+        entry = op['entry']
+        params = entry.get('input_card', {}).get('parameters', {})
+        prior = params.get('priorSnapshot')
+        if isinstance(prior, dict) and prior.get('schema') == reference_schema:
+            previous = next((e for e in items if e.get('collection_id') == entry['collection_id']), {})
+            original = previous.get('input_card', {}).get('parameters', {}).get('priorSnapshot')
+            if (not isinstance(original, dict) or original.get('schema') != 'femtomind.prior-replicas.v1'
+                    or original.get('sha256') != prior.get('sha256')
+                    or len(original['replicas']) != prior.get('replicas')):
+                raise ValueError('Stored prior snapshot reference no longer matches the campaign')
+            entry = {**entry, 'input_card': {**entry['input_card'],
+                                          'parameters': {**params, 'priorSnapshot': original}}}
+        stored = next((e for e in items if e.get('collection_id') == entry['collection_id']), None)
+        if stored:
+            # Two tools may have read the entry before either wrote (an append and a
+            # rerun together): keep every job both know, and the larger replica count.
+            jobs = {}
+            for j in list(stored.get('jobs') or []) + list(entry.get('jobs') or []):
+                jobs[str(j.get('job_id'))] = j
+            entry = {**entry, 'jobs': sorted(jobs.values(), key=lambda j: (str(j.get('submitted_at') or ''), str(j.get('job_id')))),
+                     'replicas': max(int(entry.get('replicas') or 0), int(stored.get('replicas') or 0))}
+        items = [e for e in items if e.get('collection_id') != entry['collection_id']] + [entry]
+    elif op['kind'] == 'delete':
+        items = [e for e in items if e.get('collection_id') != op['id']]
+    elif op['kind'] != 'read':
+        raise ValueError('Unsupported registry operation')
+    if op['kind'] in ('upsert', 'delete'):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + '.tmp'
+        with open(tmp, 'w') as handle:
+            json.dump(items, handle, indent=1)
+        os.replace(tmp, path)
+        print(json.dumps({'status': 'ok', 'operation': op['kind'],
+                          'collection_id': entry['collection_id'] if op['kind'] == 'upsert' else op['id']}))
+    else:
+        selected = [e for e in items if op.get('collection_id') is None or e.get('collection_id') == op['collection_id']]
+        text = json.dumps([projected(e) for e in selected])
+        offset = op.get('offset', 0)
+        if type(offset) is not int or not 0 <= offset <= len(text):
+            raise ValueError('Invalid registry read offset')
+        end = min(len(text), offset + 200000)
+        print(json.dumps({'text': text[offset:end], 'offset': offset, 'total_characters': len(text),
+                          'revision': hashlib.sha256(text.encode()).hexdigest(),
+                          'next_offset': end if end < len(text) else None}))
+finally:
+    fcntl.flock(lock, fcntl.LOCK_UN)
+    lock.close()
 '''
 
 
@@ -2479,12 +3174,13 @@ def use_ai_branch(username=""):
     if "NOWS" in (r.get("out") or "").split():
         return {"status": "error", "workspace": ws, "message": WORKSPACE_GONE.format(ws)}
     if "DIRTY" in out:
-        return {"status": "error", "workspace": ws,
+        return {"status": "error", "code": "DIRTY_CHECKOUT", "workspace": ws,
                 "message": "This checkout has uncommitted changes to tracked files, so it is not "
                            "switched. Create a new workspace instead (it clones the ai branch)."}
     if "SWITCHED" not in out:
         return {"status": "error", "workspace": ws, "message": "Could not check out the ai branch.",
                 "detail": out[-400:]}
+    _effect("use_ai_branch", u, workspace=ws)
     return {"status": "ok", "workspace": ws, "message": "Switched the workspace to the FitPack ai branch."}
 
 
@@ -2757,14 +3453,23 @@ path = os.path.join(croot, 'reproduce.json')
 lock = open(path + '.lock', 'a')
 fcntl.flock(lock, fcntl.LOCK_EX)
 try:
-    rec = None
+    rec, note = None, None
+    stamp = sub['submitted_at'].replace(':', '')
     if os.path.exists(path):
         try:
             rec = json.load(open(path))
         except (OSError, ValueError):
             # An unreadable record is kept, never silently replaced.
-            os.replace(path, path + '.unreadable.' + sub['submitted_at'].replace(':', ''))
-    if not isinstance(rec, dict) or rec.get('schema') != SCHEMA:
+            os.replace(path, path + '.unreadable.' + stamp)
+            note = 'the earlier reproduce.json could not be parsed and was kept as reproduce.json.unreadable.' + stamp
+    if rec is not None and (not isinstance(rec, dict) or rec.get('schema') != SCHEMA):
+        # A readable record of another schema (or not a record at all) is kept too.
+        found = rec.get('schema') if isinstance(rec, dict) else type(rec).__name__
+        aside = path + '.schema-' + re.sub('[^A-Za-z0-9._-]', '_', str(found))[:40] + '.' + stamp
+        os.replace(path, aside)
+        note = 'the earlier reproduce.json had schema %r and was kept as %s' % (found, os.path.basename(aside))
+        rec = None
+    if rec is None:
         rec = {'schema': SCHEMA, 'campaign_root': croot, 'stage': stage, 'how_to_reproduce': HOW, 'submissions': []}
     rec['how_to_reproduce'] = HOW
     rec['submissions'].append(dict(sub, fitpack=fitpack, container=container, external=externals,
@@ -2778,7 +3483,7 @@ try:
 finally:
     fcntl.flock(lock, fcntl.LOCK_UN)
     lock.close()
-print(json.dumps({'ok': True, 'commit': fitpack['commit'], 'clean': fitpack['clean']}))
+print(json.dumps({'ok': True, 'commit': fitpack['commit'], 'clean': fitpack['clean'], 'note': note}))
 '''
 
 
@@ -2792,21 +3497,37 @@ def _record_submission(u, croot, stage, kind, job_id, replicas, card, ws=None, e
            "bootstrap": job.get("bootstrap"), "optimizer": job.get("optimizer"),
            "max_iterations": job.get("maxIterations"), "tolerance": job.get("tolerance")}
     ws = ws or _workspace(u)
+    extra = extra or {}
+    why, d = "", None
     try:
         r = _run_ifarm_py(u, _fill(_PROVENANCE, WS=ws, CROOT=croot, STAGE=stage,
                                    PKG=f"{ws}/{JAMAI_REMOTE}/modules/jam/jamai", SUB=sub,
                                    REPLICAS=sorted(replicas), IMAGE=SITE["container"]["image"],
                                    GATEWAY=_GATEWAY_SHA256, EXCLUDE=_STATE_EXCLUDE,
-                                   EXTERNAL=_external_roots(), EXTRA=extra or {}, SCHEMA=REPRODUCTION_SCHEMA),
+                                   EXTERNAL=_external_roots(), EXTRA=extra, SCHEMA=REPRODUCTION_SCHEMA),
                           timeout=300)
+        d = _last_json(r)
+        if not (d and d.get("ok")):
+            why = (r.get("err") or r.get("out") or "no answer").strip()[-300:]
     except Exception as e:
-        return f"{type(e).__name__}: {e}"
-    d = _last_json(r)
-    return "" if d and d.get("ok") else ((r.get("err") or r.get("out") or "no answer").strip()[-300:])
+        why = f"{type(e).__name__}: {e}"
+    # The audit record of the effect itself, whether or not reproduce.json took it.
+    _effect(kind, u, campaign_folder=os.path.basename(croot), slurm_job_id=str(job_id), replicas=sub["replicas"],
+            card_sha256=_canonical_sha256(card), recorded=not why,
+            **{k: extra[k] for k in ("mode", "run", "resume", "reproduces_job_id") if k in extra})
+    if why:
+        return why
+    return f"note: {d['note']}" if d.get("note") else ""
 
 
 def _reproduce_note(why):
-    return {"warning": f"The jobs are queued, but reproduce.json was not written: {why}"} if why else {}
+    """The caller's reply gets a warning when the record was not written, or a
+    note when it was written but an earlier record had to be set aside."""
+    if not why:
+        return {}
+    if why.startswith("note: "):
+        return {"note": f"reproduce.json: {why[6:]}"}
+    return {"warning": f"The jobs are queued, but reproduce.json was not written: {why}"}
 
 
 # Not part of a workspace's state: its campaigns, the uploaded JAMAI package and
@@ -2961,9 +3682,12 @@ entry = next((s for s in reversed(rec['submissions']) if s.get('kind') == 'repro
 queued = set()
 if entry and entry.get('job_id'):
     try:
-        q = subprocess.run(['squeue', '-h', '-u', user, '-j', str(entry['job_id']), '-o', '%i'],
+        # -r: one line per array task (without it pending tasks fold into id_[a-b]).
+        q = subprocess.run(['squeue', '-h', '-r', '-u', user, '-j', str(entry['job_id']), '-o', '%i'],
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
-        if q.returncode:
+        if q.returncode and 'Invalid job id' in (q.stderr or ''):
+            pass                # Slurm has forgotten the job: nothing of it is queued
+        elif q.returncode:
             queued.add('?')     # queue unknown: a missing result is not called failed
         for line in q.stdout.split():
             if '_' in line:
@@ -3033,9 +3757,22 @@ def reproduce_campaign(collection_id="", replicas="all", check="", confirm="", u
     u, err = _need_user(username)
     if err:
         return err
+    # Planning reads the workspace's git state and a confirmed run may rebuild a
+    # clone (minutes): like validate and submit this runs as a job the client
+    # polls, so no MCP call waits that long. The confirmation is part of the
+    # key, since the plan and the confirmed run are different requests.
+    params = {"collection_id": collection_id, "replicas": str(replicas or "all"), "check": str(check or ""),
+              "node_constraint": str(node_constraint or "auto"),
+              "confirmation_sha256": _sha((confirm or "").strip()) if (confirm or "").strip() else None}
+    return _background(u, "reproduce_campaign", params,
+                       lambda: _reproduce_campaign(u, collection_id, replicas, check, confirm, node_constraint),
+                       wait=CAMPAIGN_WAIT)
+
+
+def _reproduce_campaign(u, collection_id, replicas, check, confirm, node_constraint):
     e = _collection(u, collection_id)
     if not e:
-        return {"status": "error", "message": f"No campaign {collection_id!r}; list_campaigns shows them."}
+        return {"status": "error", "code": "NOT_FOUND", "message": f"No campaign {collection_id!r}; list_campaigns shows them."}
     collection_id = e["collection_id"]
     total = int(e.get("replicas") or 0)
     ws, stage = _workspace(u), _stage_root(u, e)
@@ -3045,9 +3782,9 @@ def reproduce_campaign(collection_id="", replicas="all", check="", confirm="", u
                           timeout=180, cap=2000000)
         d = _last_json(r)
         if not d:
-            return {"status": "error", "message": "Could not read the reproduction.", "detail": (r.get("err") or "")[-400:]}
+            return _refuse("RECORD_UNREADABLE", "Could not read the reproduction.", detail=(r.get("err") or "")[-400:])
         if not d.get("ok"):
-            return {"status": "error", "collection_id": collection_id, **d}
+            return {"status": "error", "code": "NOT_FOUND", "collection_id": collection_id, **d}
         d.pop("ok")
         c = d["counts"]
         d["message"] = (f"{c.get('identical', 0)} of {len(d['replicas'])} replicas reproduced identically"
@@ -3062,25 +3799,27 @@ def reproduce_campaign(collection_id="", replicas="all", check="", confirm="", u
         try:
             wanted = sorted(set(_numbers(replicas)))
         except ValueError:
-            return {"status": "error", "message": "replicas: 'all' or replica numbers such as 3,7 or 10-12."}
+            return _refuse("BAD_ARGUMENT", "replicas: 'all' or replica numbers such as 3,7 or 10-12.")
         outside = [i for i in wanted if not 1 <= i <= total]
         if outside:
-            return {"status": "error", "message": f"This campaign has replicas 1-{total}; no replica {outside}."}
+            return _refuse("BAD_ARGUMENT", f"This campaign has replicas 1-{total}; no replica {outside}.")
     if not wanted:
-        return {"status": "error", "message": "This campaign has no replicas."}
+        return _refuse("BAD_ARGUMENT", "This campaign has no replicas.")
     r = _run_ifarm_py(u, _fill(_REPRODUCE_PLAN, WS=ws, CROOT=croot, STAGE=stage,
                                PKG=f"{ws}/{JAMAI_REMOTE}/modules/jam/jamai", REPLICAS=wanted,
                                IMAGE=SITE["container"]["image"], EXCLUDE=_STATE_EXCLUDE), timeout=300, cap=400000)
     p = _last_json(r)
     if not p:
-        return {"status": "error", "message": "Could not read the campaign's record.", "detail": (r.get("err") or "")[-400:]}
+        return _refuse("RECORD_UNREADABLE", "Could not read the campaign's record.", detail=(r.get("err") or "")[-400:])
     if not p.get("ok"):
-        return {"status": "error", "collection_id": collection_id, **{k: v for k, v in p.items() if k != "ok"}}
+        code = {"no_record": "RECORD_MISSING", "not_recorded": "RECORD_MISSING",
+                "mixed_states": "RECORD_INCOMPLETE"}.get(p.get("error"), "RECORD_UNREADABLE")
+        return {"status": "error", "code": code, "collection_id": collection_id, **{k: v for k, v in p.items() if k != "ok"}}
     if p["missing_replicas"]:
-        return {"status": "error", "collection_id": collection_id,
+        return {"status": "error", "code": "RECORD_INCOMPLETE", "collection_id": collection_id,
                 "message": f"Replicas {p['missing_replicas']} have no recorded submission.", "plan": p}
     if p["mode"] == "clone" and not p["diff_available"]:
-        return {"status": "error", "collection_id": collection_id,
+        return {"status": "error", "code": "WORKSPACE_DRIFT", "collection_id": collection_id,
                 "message": "The live workspace is not the recorded state, and the recorded changes were not "
                            "saved (the diff was larger than 50 MB), so the workspace cannot be rebuilt exactly.",
                 "plan": p}
@@ -3092,7 +3831,7 @@ def reproduce_campaign(collection_id="", replicas="all", check="", confirm="", u
     elif re.fullmatch(r"[a-z0-9_]{1,32}", want):
         constraint = want
     else:
-        return {"status": "error", "message": "node_constraint: 'auto', 'none' or a Slurm node feature such as farm18."}
+        return _refuse("BAD_ARGUMENT", "node_constraint: 'auto', 'none' or a Slurm node feature such as farm18.")
     stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime())
     dest = f"{_area(u)}/reproductions/{e['campaign_folder']}/{stamp}/fitpack"
     plan = {"collection_id": collection_id, "replicas": wanted, "count": len(wanted), "mode": p["mode"],
@@ -3127,10 +3866,13 @@ def reproduce_campaign(collection_id="", replicas="all", check="", confirm="", u
                if p["mode"] == "in_place" else
                "the live workspace differs from the record, so a clone at the recorded commit with the recorded "
                "changes applied is built first and the replicas run in that")
-        return {"status": "needs_confirmation", "plan": plan, "confirmation_phrase": phrase,
+        return {"status": "needs_confirmation", "code": "CONFIRM_REQUIRED", "plan": plan, "confirmation_phrase": phrase,
                 "message": f"Nothing is queued yet. {how}. Results go to a new reproduce/<stamp>/ folder; the "
                            "current results are not touched. Show the user the plan and submit with confirm=<phrase> "
                            "only after they agree."}
+    replay = _idempotent(u, "REPRODUCE", phrase)
+    if replay:
+        return replay
     code_ws = ws
     built = None
     if p["mode"] == "clone":
@@ -3141,39 +3883,108 @@ def reproduce_campaign(collection_id="", replicas="all", check="", confirm="", u
                                    EXCLUDE=_STATE_EXCLUDE, IMAGE=SITE["container"]["image"]), timeout=900, cap=400000)
         built = _last_json(r)
         if not built or not built.get("ok"):
-            return {"status": "error", "collection_id": collection_id, "message": "The recorded workspace could not be rebuilt.",
+            return {"status": "error", "code": "REBUILD_FAILED", "collection_id": collection_id, "message": "The recorded workspace could not be rebuilt.",
                     "detail": built or (r.get("err") or r.get("out") or "")[-600:]}
         code_ws = dest
         _upload_jamai(u, dest)
+    else:
+        # In place, the workspace keeps the JAMAI it has (exactness). An older
+        # upload does not know JAMAI_CHECKPOINT_ROOT and would overwrite the
+        # original replicas' checkpoints, so such a workspace gets the current
+        # JAMAI first (the fit code itself is FitPack's and is not touched).
+        probe = _remote(u, f"grep -q JAMAI_CHECKPOINT_ROOT {_shq(ws)}/{JAMAI_REMOTE}/modules/jam/jamai/replica_checkpoint.py",
+                        timeout=30)
+        if probe.get("rc") != 0:
+            _upload_jamai(u, ws)
+            plan["note_jamai"] = ("The workspace's JAMAI wrapper predates reproduction-safe checkpoints and was "
+                                  "replaced by the current one before the run (the fit code itself is FitPack's).")
     out_dir = f"{stage}/reproduce/{stamp}"
-    sb = base64.b64encode(_array_script(ws, e["campaign_folder"], e["input_card"], min(wanted), max(wanted),
+    folder = e["campaign_folder"]
+    sb = base64.b64encode(_array_script(ws, folder, e["input_card"], min(wanted), max(wanted),
                                         indices=wanted, code_ws=code_ws, out_dir=out_dir, tag="repro",
                                         constraint=constraint).encode()).decode()
-    qs, qo, log_dir = _shq(stage), _shq(out_dir), _shq(_slurm_log_dir(u))
-    r = _remote(u, f"mkdir -p {qo} {qs}/slurm {log_dir} && echo {sb} | base64 -d > {qs}/slurm/reproduce_{stamp}.sh && "
-                   f"sbatch {qs}/slurm/reproduce_{stamp}.sh", timeout=90)
+    qs, qo = _shq(stage), _shq(out_dir)
+    script = f"{qs}/slurm/reproduce_{stamp}.sh"
+    # The log folders are the campaign's (Slurm does not create them), and a
+    # refused sbatch leaves no empty reproduce/<stamp>/ behind for check= to find.
+    r = _remote(u, f"mkdir -p {qo} {qs}/slurm {_campaign_log_dirs(u, folder)} && echo {sb} | base64 -d > {script} && "
+                   f"{{ sbatch {script} || {{ rmdir {qo} 2>/dev/null; rm -f {script}; false; }}; }}", timeout=90)
     m = re.search(r"Submitted batch job (\d+)", (r.get("out") or "") + (r.get("err") or ""))
     if not m:
-        return {"status": "error", "message": "sbatch refused the job.", "detail": (r.get("err") or r.get("out"))[-400:],
+        return {"status": "error", "code": "SBATCH_REFUSED", "message": "sbatch refused the job.", "detail": (r.get("err") or r.get("out"))[-400:],
                 **({"rebuilt_workspace": dest} if built else {})}
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    # The reproduction is a job of the campaign too: the queue counts it, cancel
+    # stops it and delete refuses while it runs. Replica states and logs keep
+    # reading the original jobs (entries marked reproduce are skipped there).
+    e = dict(e)
+    e["jobs"] = list(e.get("jobs") or []) + [{"job_id": m.group(1), "first": min(wanted), "last": max(wanted),
+                                              "replicas": wanted, "reproduce": True, "run": stamp, "output": out_dir,
+                                              "submitted_at": now,
+                                              "log_prefix": _campaign_log_prefix(u, folder, "repro"),
+                                              "error_log_prefix": _campaign_error_log_prefix(u, folder, "repro")}]
+    e["updated_at"] = now
+    _registry(u, {"kind": "upsert", "entry": e})
     extra = {"reproduces_job_id": p["submission"]["job_id"], "mode": p["mode"], "workspace_used": code_ws,
              "output": out_dir, "matches": p["matches"], "run": stamp, "node_constraint": constraint,
              "original_hosts": p["hosts"]}
     why = _record_submission(u, croot, stage, "reproduce", m.group(1), wanted, e["input_card"], ws=code_ws, extra=extra)
-    return {"status": "submitted", "job_id": m.group(1), "run": stamp, **plan, "workspace": code_ws, "results_to": out_dir,
-            **({"rebuilt": built} if built else {}),
-            "log_path": f"{_slurm_log_dir(u)}/jam_repro_{e['campaign_folder'][:34]}_{m.group(1)}_<replica>.out",
-            "message": f"Queued. When it finishes, reproduce_campaign(collection_id, check='{stamp}') compares the "
-                       "results with the current ones.", **_reproduce_note(why)}
+    result = {"status": "submitted", "job_id": m.group(1), "run": stamp, **plan, "workspace": code_ws, "results_to": out_dir,
+              **({"rebuilt": built} if built else {}),
+              "log_path": f"{_campaign_log_prefix(u, folder, 'repro')}_{m.group(1)}_<replica>.out",
+              "error_log_path": f"{_campaign_error_log_prefix(u, folder, 'repro')}_{m.group(1)}_<replica>.err",
+              "message": f"Queued. When it finishes, reproduce_campaign(collection_id, check='{stamp}') compares the "
+                         "results with the current ones.", **_reproduce_note(why)}
+    _remember(u, "REPRODUCE", phrase, result)
+    return result
 
 
 # ---- validate / submit / append ------------------------------------------------
+
+def _expanded_card(card):
+    """A card that names its catalog source and carries no objects is rebuilt
+    here from the catalog, as campaign_card_from_catalog would build it, with
+    the card's own job, slurm and overrides applied: a client need not echo
+    forty kilobytes of parameters to validate or submit what the gateway made."""
+    if not isinstance(card, dict) or card.get("objects"):
+        return card
+    src = card.get("source")
+    if not (isinstance(src, dict) and isinstance(src.get("analysis_id"), str)):
+        return card
+    try:
+        conf, refs = _catalog_conf(src["analysis_id"])
+    except Exception:
+        return card          # the ordinary path reports what is wrong with it
+    overrides = dict(card.get("overrides")) if isinstance(card.get("overrides"), dict) else {}
+    for section in ("job", "slurm", "qcd", "parameters"):
+        if isinstance(card.get(section), dict):
+            overrides[section] = {**(overrides.get(section) or {}), **card[section]}
+    for section in ("datasets", "reactions"):
+        if card.get(section) and section not in overrides:
+            overrides[section] = card[section]
+    replicas = (card.get("job") or {}).get("replicas", 10)
+    try:
+        for aid in (src["analysis_id"],):
+            retained = {}
+            entry = _analysis_catalog_store()._entry(aid)
+            for reaction, block in entry["config"]["source_verification"]["datasets"].items():
+                for row in block.get("entries", []):
+                    v = (row.get("current_reader_verification") or {}).get("retained_count")
+                    if isinstance(v, int):
+                        retained[f"{reaction}:{row['id']}"] = v
+            refs["retained_points"] = retained
+        expanded, _, _ = _card_from_conf(conf, refs, overrides, replicas)
+    except Exception:
+        return card
+    return expanded
+
 
 def _checked_card(u, card):
     """Normalize card against the workspace's library parameter table and check
     the workspace has what it needs: (norm, None), or (None, the result to
     return). validate_campaign and submit_campaign both use it, so the phrase
     and the submitted card come from one reading of the table."""
+    card = _expanded_card(card)
     if _configuration_reactions(card):
         return None, _unsupported_configuration_fit(card)
     try:
@@ -3185,8 +3996,28 @@ def _checked_card(u, card):
             keys = list(dict.fromkeys(keys + get_required_objects(_card_reactions(card), datasets=(card or {}).get("datasets") or {})))
         library = _object_libraries(u, keys)
     except (RuntimeError, ValueError) as e:
-        return None, {"status": "error", "valid": False, "message": str(e)}
+        code = "LIBRARY_UNREADABLE" if str(e).startswith("Could not read object libraries") else "CARD_INVALID"
+        return None, _refuse(code, str(e), valid=False)
     norm, errors = _normalize_card(card, library)
+    if not errors and isinstance(card.get("source"), dict):
+        # The published analysis the card was built from (campaign_card_from_catalog):
+        # validate_campaign compares the two, and the registry keeps the provenance.
+        norm["source"] = {k: card["source"][k] for k in ("analysis_id", "configuration_ref", "compiled_ref", "catalog_ref")
+                          if isinstance(card["source"].get(k), str)}
+        for key in ("overrides", "excluded_zero_point_datasets"):
+            if isinstance(card["source"].get(key), dict):
+                norm["source"][key] = card["source"][key]
+    if not errors and not norm.get("source"):
+        # A campaign that names a published analysis must be built from its
+        # catalog entry: the library defaults are another model (140 free FF
+        # parameters, not 215), and a name is a claim the user will trust.
+        claim = _catalog_name_claim((norm.get("job") or {}).get("campaignName", ""))
+        if claim and not CATALOG_DENIED:
+            return None, _refuse("CATALOG_REQUIRED",
+                                 f"The campaign is named after the published analysis {claim}, but the card was not built from "
+                                 f"its catalog entry, so its settings are library defaults, not the published ones. Build the card "
+                                 f"with campaign_card_from_catalog({claim!r}) and declare any change in overrides, or give the "
+                                 f"campaign a name that does not claim to reproduce {claim}.", valid=False)
     if not errors:
         ws = _workspace(u)
         for key, lib in library.items():
@@ -3233,8 +4064,23 @@ def _checked_card(u, card):
         except (ValueError, RuntimeError) as exc:
             errors.append(str(exc))
     if errors:
-        return None, {"status": "invalid", "valid": False, "errors": errors}
+        return None, {"status": "invalid", "code": _card_error_code(errors), "valid": False, "errors": errors}
     return norm, None
+
+
+def _card_error_code(errors):
+    """The refusal code of an invalid card: the first error names the kind
+    (the workspace, a data file, the prior source), else the card itself."""
+    first = (errors or [""])[0]
+    if first.startswith("No data file"):
+        return "DATA_FILE_MISSING"
+    if first.startswith("The workspace") or first.startswith("Could not check workspace"):
+        return "WORKSPACE_NOT_READY"
+    if "denied on this gateway" in first:
+        return "PRIOR_ARCHIVE_DENIED"
+    if "prior" in first.lower() or "archive" in first.lower():
+        return "PRIOR_SOURCE_INVALID"
+    return "CARD_INVALID"
 
 
 def _prepare_prior_replicas(u, norm):
@@ -3251,6 +4097,8 @@ def _prepare_prior_replicas(u, norm):
     if required is None or not isinstance(selector.get(required),str) or not selector[required].strip():
         raise ValueError('Select a source kind and its nonempty analysis_id, path, or collection_id')
     if kind == 'archive':
+        if ARCHIVE_DENIED:
+            raise ValueError('Prior source kind archive is denied on this gateway (its reference-results tools are left out)')
         manifest = _analysis_results_store().resolve(selector['analysis_id'])
         directories = analysis_results.archive_directories(manifest)
         if any(_outside_read_roots(p, u) for p in directories):
@@ -3323,13 +4171,411 @@ def _preview_prior_replicas(u, card):
     return {'status':'ok','preview':norm.get('prior_preview'), 'read_only':True}
 
 
+# ---- a campaign card from a published analysis -------------------------------------
+#
+# The catalog knows a published fit's complete configuration; the composer's
+# defaults do not (they enable only the first FF shape, 140 free parameters
+# against JAM24's 215, and keep library normalization bounds). In the pilot
+# every AI client copied the catalog into a card by hand, each differently.
+# campaign_card_from_catalog does it once, deterministically, and the card
+# carries its source so that validate_campaign can compare the two.
+
+_QCD_FROM_CONF = {"order": "order", "Q20": "Q20", "ht": "higherTwist", "dglap mode": "dglapMode",
+                  "alphaSmode": "asMode", "beta version": "betaVersion", "sia version": "siaVersion"}
+
+
+def _catalog_conf(analysis_id):
+    """A catalog entry's configuration as FitPack's conf (the compiler's
+    reproduction projection: the official input plus the author-confirmed
+    overlays), with the references that pin it."""
+    from jamai import compiled_input, configuration_compiler, configuration_snapshot
+    store = _analysis_catalog_store()
+    entry = store._entry(str(analysis_id or ""))
+    snap = configuration_snapshot.snapshot(store.root, entry, store._reference(entry))
+    compiled = configuration_compiler.compile_configuration(store, snap.ref)
+    conf = compiled_input._expected(compiled["ir"], True)
+    return conf, {"analysis_id": entry["config"]["analysis_id"], "configuration_ref": snap.ref,
+                  "compiled_ref": compiled["compiled_ref"], "catalog_ref": store._reference(entry),
+                  "parity_passed": not compiled["issues"]}
+
+
+def _conf_free_parameters(conf):
+    return sum(1 for table in conf["params"].values() for d in table.values() if d.get("fixed") is False)
+
+
+def _canonical_filters(filters):
+    """Filter expressions with their numbers normalised, so Q2>1.690000 equals Q2>1.69."""
+    if filters is None:
+        return None
+    if isinstance(filters, dict):
+        return {str(k): _canonical_filters(v) for k, v in filters.items()}
+    out = []
+    for expression in filters:
+        parts = [p.strip() for p in re.split(r"\band\b", str(expression))]
+        # Numbers only, not the digits of a variable name (Q2, W2SIDIS).
+        out.extend(re.sub(r"\s+", "", re.sub(r"(?<![A-Za-z_\d.])(\d+\.\d*|\.\d+|\d+)(?![A-Za-z_])",
+                                             lambda m: repr(float(m.group(0))), p)) for p in parts)
+    return sorted(out)
+
+
+def _composer_filters(reaction, filters, selected=None):
+    """The part of a reaction's published filters the composer can express:
+    none for reactions whose cut policy is none, pT only for jets (x<1 removes
+    nothing; FitPack skips it), and for per-dataset mappings only the selected
+    datasets. (filters, dropped)."""
+    policy = {r["key"]: r.get("cut_policy") for r in CAMPAIGN_REACTIONS}
+    if filters is None:
+        return None, []
+    if policy.get(reaction) == "none":
+        return None, list(filters) if isinstance(filters, list) else []
+    if isinstance(filters, dict):
+        keep = {str(k): v for k, v in filters.items() if selected is None or str(k) in selected}
+        return keep, []
+    if reaction == "jet":
+        kept = [f for f in filters if str(f).replace(" ", "").startswith("pT")]
+        return kept, [f for f in filters if f not in kept]
+    return list(filters), []
+
+
+def _slurm_recommendation(free_parameters, points):
+    """Resources for a fit of this size, from the pilot's timings: the full JAM24
+    fit (215 free parameters, 5853 points) takes 21-29 s per chi2 evaluation and
+    about an hour per optimizer iteration, a proton-only DIS fit (35 parameters,
+    2680 points) 0.6 s per evaluation. The composer's default (30 min, 4G) is
+    enough only for the smallest fits."""
+    free, pts = int(free_parameters or 0), int(points or 0)
+    if free > 150 or pts > 4000:
+        return {"time": "24:00:00", "mem": "8G", "cpus": 1, "partition": "",
+                "why": f"{free} free parameters, {pts or 'unknown'} points: a full global fit; an hour per optimizer iteration"}
+    if free > 60 or pts > 1500:
+        return {"time": "08:00:00", "mem": "6G", "cpus": 1, "partition": "",
+                "why": f"{free} free parameters, {pts or 'unknown'} points: several minutes per iteration"}
+    return {"time": "02:00:00", "mem": "4G", "cpus": 1, "partition": "",
+            "why": f"{free} free parameters, {pts or 'unknown'} points: seconds per iteration"}
+
+
+def _card_from_conf(conf, source, overrides=None, replicas=10):
+    """A campaign card that says exactly what the conf says: every parameter
+    with its bounds and ties (both FF shapes enabled), the datasets, their
+    normalizations and cuts, the QCD settings, the author-confirmed positivity;
+    job and Slurm from the size of the fit. overrides: top-level sections to
+    replace or update (job, slurm, qcd, parameters, datasets, reactions)."""
+    overrides = overrides if isinstance(overrides, dict) else {}
+    objects, notes = [], []
+    for obj, table in conf["params"].items():
+        if obj not in SELECTABLE_OBJECTS:
+            raise ValueError(f"the published fit has a {obj} object this gateway cannot compose")
+        params = {}
+        for name, d in table.items():
+            row = {"value": d.get("value"), "fixed": bool(d.get("fixed", False))}
+            if d.get("min") is not None:
+                row["min"] = d["min"]
+            if d.get("max") is not None:
+                row["max"] = d["max"]
+            if isinstance(d.get("fixed"), str):
+                # A tie: the parameter follows another one of the same object.
+                if obj in ff_registry.FF_OBJECTS:
+                    row["fixed"] = d["fixed"]
+                else:
+                    row["equal_to"] = d["fixed"]
+            if obj in ff_registry.FF_OBJECTS:
+                row["enabled"] = True       # both shapes, as the published fit has them
+            params[name] = row
+        objects.append({"type": obj, "parameters": params})
+    reactions, datasets, normalizations, cuts = [], {}, {}, {}
+    # Datasets the current readers keep no point of (the catalog's reader
+    # verification: SIA 1012 and 2006 in JAM24) are left out: FitPack stops on
+    # them. The exclusion is recorded on the card, so catalog_comparison knows.
+    zero = {tuple(k.split(":", 1)) for k, n in (source.get("retained_points") or {}).items() if n == 0 and ":" in k}
+    excluded = {}
+    for reaction, block in conf["datasets"].items():
+        reactions.append(reaction)
+        ids = [str(k) for k in sorted(block["xlsx"])]
+        out_ids = [i for i in ids if (reaction, i) in zero]
+        if out_ids:
+            excluded[reaction] = out_ids
+            notes.append(f"{reaction}: datasets {out_ids} keep no point after the cuts with the current readers "
+                         "(the published input lists them); left out, as FitPack stops on an empty dataset")
+        datasets[reaction] = [i for i in ids if i not in out_ids]
+        if block.get("norm"):
+            normalizations[reaction] = {str(k): {"value": d.get("value"), "min": d.get("min"), "max": d.get("max"),
+                                                 "fixed": d.get("fixed", False)} for k, d in block["norm"].items()
+                                        if str(k) not in out_ids}
+        filters, dropped = _composer_filters(reaction, block.get("filters"), set(datasets[reaction]))
+        if dropped:
+            notes.append(f"{reaction}: the published filters {dropped} are not composer cuts and were left out "
+                         "(they remove no points)")
+        if filters is None:
+            continue
+        try:
+            cuts[reaction] = object_registry.library_cuts(filters)
+        except (ValueError, SyntaxError) as e:
+            notes.append(f"{reaction}: filters {filters} could not be turned into cuts ({e}); the composer's defaults apply")
+    if isinstance(cuts.get("sia"), dict):
+        # SIA cuts are per-dataset filter strings in a card, not cut rows
+        cuts["sia"] = {k: (object_registry.cut_filters(v) if isinstance(v, list) and v and isinstance(v[0], dict) else v)
+                       for k, v in cuts["sia"].items() if k in datasets.get("sia", [])}
+    qcd = dict(CAMPAIGN_DEFAULTS["qcd"])
+    for ck, kk in _QCD_FROM_CONF.items():
+        if ck in conf:
+            qcd[kk] = conf[ck]
+    if "tmc" in conf:
+        qcd["tmc"] = "AOT" if conf["tmc"] in ("AOT", True) else "off"
+    for k, v in conf.items():
+        if k.endswith(" positivity") and isinstance(v, bool):
+            qcd[f"{k.split()[0]}Positivity"] = v
+    free, points = _conf_free_parameters(conf), None
+    try:
+        rows = source.get("retained_points") or {}
+        points = sum(rows.values()) or None
+    except Exception:
+        points = None
+    slurm = {k: v for k, v in _slurm_recommendation(free, points).items() if k != "why"}
+    card = {"objects": objects, "reactions": reactions, "datasets": datasets, "normalizations": normalizations,
+            "cuts": cuts, "qcd": qcd,
+            "parameters": dict(CAMPAIGN_DEFAULTS["parameters"]),
+            "job": {**CAMPAIGN_DEFAULTS["job"], "campaignName": re.sub(r"[^A-Za-z0-9_]", "_", source["analysis_id"]),
+                    "replicas": int(replicas), "tolerance": str(conf.get("ftol", CAMPAIGN_DEFAULTS["job"]["tolerance"])),
+                    "bootstrap": bool(conf.get("bootstrap", True))},
+            "slurm": slurm,
+            "source": {k: source[k] for k in ("analysis_id", "configuration_ref", "compiled_ref", "catalog_ref") if k in source}}
+    for section in ("job", "slurm", "qcd", "parameters"):
+        if isinstance(overrides.get(section), dict):
+            card[section].update(overrides[section])
+    if isinstance(overrides.get("datasets"), dict):
+        card["datasets"].update({str(r): [str(x) for x in v] for r, v in overrides["datasets"].items()})
+    if isinstance(overrides.get("reactions"), list):
+        card["reactions"] = [str(r) for r in overrides["reactions"]]
+    # What the user changed is part of the card's provenance: validate_campaign
+    # permits a difference from the catalog only where it was declared here.
+    if excluded:
+        card["source"]["excluded_zero_point_datasets"] = excluded
+    declared = {section: sorted(str(k) for k in overrides[section]) for section in ("job", "slurm", "qcd", "parameters", "datasets")
+                if isinstance(overrides.get(section), dict) and overrides[section]}
+    if isinstance(overrides.get("reactions"), list):
+        declared["reactions"] = True
+    if declared:
+        card["source"]["overrides"] = declared
+    if conf.get("flat par") or any(d.get("gaussian") for t in conf["params"].values() for d in t.values()):
+        notes.append("The published fit drew its starting values from Gaussian priors (flat par); the FF library "
+                     "carries that metadata, the PDF starts from the catalog values (initialization 'default').")
+    return card, notes, {"free_parameters": free, "datasets": {r: len(b["xlsx"]) for r, b in conf["datasets"].items()},
+                         "normalizations": {r: len(b["norm"]) for r, b in conf["datasets"].items() if b.get("norm")},
+                         "points_after_cuts": points}
+
+
+def campaign_card_from_catalog(analysis_id="JAM24.final", replicas=10, overrides=None, username=""):
+    """A complete, validate-ready campaign card for a published analysis in the
+    catalog, built from the compiled configuration (no hand copying). Needs no
+    cluster: validate_campaign then checks it against the workspace and reports
+    how it compares with the catalog (catalog_comparison)."""
+    u, err = _resolve_user(username)
+    if err:
+        return err
+    try:
+        conf, refs = _catalog_conf(analysis_id)
+    except Exception as e:
+        return _refuse("NOT_FOUND", f"No catalog configuration for {analysis_id!r}: {e}")
+    try:
+        n = int(replicas or 10)
+        if not 1 <= n <= 2000:
+            raise ValueError
+    except (TypeError, ValueError):
+        return _refuse("BAD_ARGUMENT", "replicas: a whole number from 1 to 2000")
+    try:
+        entry = _analysis_catalog_store()._entry(str(analysis_id))
+        retained = {}
+        for reaction, block in entry["config"]["source_verification"]["datasets"].items():
+            for row in block.get("entries", []):
+                v = (row.get("current_reader_verification") or {}).get("retained_count")
+                if isinstance(v, int):
+                    retained[f"{reaction}:{row['id']}"] = v
+        refs["retained_points"] = retained
+    except Exception:
+        pass
+    try:
+        card, notes, expected = _card_from_conf(conf, refs, overrides, n)
+    except ValueError as e:
+        return _refuse("CARD_INVALID", str(e))
+    return {"status": "ok", "card": card, "source": card["source"], "expected": expected, "notes": notes,
+            "message": f"A card for {refs['analysis_id']} with {expected['free_parameters']} free parameters over "
+                       f"{sum(expected['datasets'].values())} datasets. Call validate_campaign(card) next (you may send only the card's source, job, slurm and "
+                       f"overrides: the gateway rebuilds the rest from the catalog): it checks the "
+                       "card against the workspace and its catalog_comparison says where it still differs from the "
+                       "published fit. The confirmation phrase comes from that validation."}
+
+
+_CATALOG_CLAIMS = None
+
+
+def _catalog_name_claim(name):
+    """The catalog analysis a campaign name claims (JAM24 in 'JAM24_reproduction'), or None."""
+    global _CATALOG_CLAIMS
+    if _CATALOG_CLAIMS is None:
+        try:
+            store = analysis_catalog.Catalog(analysis_catalog.catalog_root(HERE))
+            claims = {}
+            for aid, entry in store.entries.items():
+                for token in (entry.get("folder", ""), aid.split(".")[0]):
+                    if token:
+                        claims[re.sub(r"[^a-z0-9]", "", token.lower())] = token
+            _CATALOG_CLAIMS = claims
+        except Exception:
+            _CATALOG_CLAIMS = {}
+    flat = re.sub(r"[^a-z0-9]", "", str(name or "").lower())
+    for key, token in _CATALOG_CLAIMS.items():
+        if key and key in flat:
+            return token
+    return None
+
+
+def _undeclared_differences(norm, comparison):
+    """The catalog_comparison differences that no override in the card explains."""
+    declared = (norm.get("source") or {}).get("overrides") or {}
+    excluded = (norm.get("source") or {}).get("excluded_zero_point_datasets") or {}
+    datasets = set(declared.get("datasets") or [])
+    qcd = set(declared.get("qcd") or [])
+    reactions = bool(declared.get("reactions"))
+    out = []
+    for d in comparison.get("differences") or []:
+        head = d.split(":")[0].strip()
+        if d.endswith("datasets differ") or "datasets differ (" in d or d.endswith("not part of the published fit") or d.endswith("cuts differ"):
+            if reactions or head in datasets:
+                continue
+            m = re.search(r"missing \[([^\]]*)\], extra \[([^\]]*)\]", d)
+            if m and not m.group(2).strip():
+                missing = {x.strip().strip("'\"") for x in m.group(1).split(",") if x.strip()}
+                if missing and missing <= set(excluded.get(head, [])):
+                    continue   # only the zero-point datasets the card itself left out
+        elif d.startswith("normalization parameters:"):
+            if reactions or datasets:
+                continue
+        elif d.startswith("free parameters:"):
+            if declared.get("parameters"):
+                continue
+        elif head in qcd:
+            continue
+        out.append(d)
+    return out
+
+
+def _catalog_comparison(norm):
+    """How a card compares with the published analysis it names (card.source):
+    datasets, free parameters, normalizations, QCD settings and cuts."""
+    src = norm.get("source") if isinstance(norm.get("source"), dict) else None
+    if not src or not src.get("analysis_id"):
+        return None
+    try:
+        conf, refs = _catalog_conf(src["analysis_id"])
+    except Exception as e:
+        return {"analysis_id": src.get("analysis_id"), "error": f"{type(e).__name__}: {e}"}
+    diffs, datasets = [], {}
+    for reaction, block in conf["datasets"].items():
+        expected = {str(k) for k in block["xlsx"]}
+        selected = {str(x) for x in norm["datasets"].get(reaction, [])}
+        datasets[reaction] = {"expected": len(expected), "selected": len(selected),
+                              "missing": sorted(expected - selected), "extra": sorted(selected - expected)}
+        if expected != selected:
+            diffs.append(f"{reaction}: datasets differ (missing {sorted(expected - selected)}, extra {sorted(selected - expected)})")
+    for reaction, ids in norm["datasets"].items():
+        if reaction not in conf["datasets"]:
+            datasets[reaction] = {"expected": 0, "selected": len(ids), "missing": [], "extra": sorted(map(str, ids))}
+            diffs.append(f"{reaction}: not part of the published fit")
+    expected_free = _conf_free_parameters(conf)
+    card_free = sum(1 for p in norm["parameters_table"] if not p["fixed"])
+    if expected_free != card_free:
+        diffs.append(f"free parameters: {card_free} in the card, {expected_free} in the published fit")
+    expected_norm = sum(len(b.get("norm") or {}) for b in conf["datasets"].values())
+    card_norm = sum(len(v) for v in (norm.get("normalizations") or {}).values())
+    if expected_norm != card_norm:
+        diffs.append(f"normalization parameters: {card_norm} in the card, {expected_norm} in the published fit")
+    qcd = {}
+
+    def same(a, b):
+        try:
+            return float(a) == float(b)
+        except (TypeError, ValueError):
+            return str(a).strip().lower() == str(b).strip().lower()
+
+    for ck, kk in _QCD_FROM_CONF.items():
+        if ck in conf:
+            got = norm["qcd"].get(kk)
+            qcd[kk] = {"expected": conf[ck], "card": got, "match": same(conf[ck], got)}
+    if "tmc" in conf:
+        expected_tmc = "AOT" if conf["tmc"] in ("AOT", True) else "off"
+        qcd["tmc"] = {"expected": expected_tmc, "card": norm["qcd"].get("tmc"), "match": same(expected_tmc, norm["qcd"].get("tmc"))}
+    for k, v in conf.items():
+        if k.endswith(" positivity") and isinstance(v, bool):
+            kk = f"{k.split()[0]}Positivity"
+            got = norm["qcd"].get(kk, True)
+            qcd[kk] = {"expected": v, "card": got, "match": bool(v) == bool(got)}
+    diffs.extend(f"{k}: card {v['card']!r}, published {v['expected']!r}" for k, v in qcd.items() if not v["match"])
+    cuts = {}
+    for reaction, block in conf["datasets"].items():
+        if reaction not in norm["datasets"]:
+            continue
+        expected, _ = _composer_filters(reaction, block.get("filters"), {str(x) for x in norm["datasets"].get(reaction, [])})
+        rows = norm["cuts"].get(reaction)
+
+        def to_filters(x):
+            # Cut rows (the card) or filter strings (the normalized card's SIA mapping).
+            if isinstance(x, dict):
+                return {str(k): to_filters(v) for k, v in x.items()}
+            if isinstance(x, list) and x and all(isinstance(c, dict) for c in x):
+                return object_registry.cut_filters(x)
+            return x
+
+        try:
+            got = to_filters(rows) if rows is not None else None
+        except (ValueError, KeyError, TypeError):
+            got = rows
+        if isinstance(got, dict):
+            got = {k: v for k, v in got.items() if str(k) in {str(x) for x in norm["datasets"].get(reaction, [])}}
+        match = _canonical_filters(expected) == _canonical_filters(got) if (expected or got) else True
+        cuts[reaction] = {"expected": expected, "card": got, "match": match}
+        if not match:
+            diffs.append(f"{reaction}: cuts differ")
+    return {**refs, "datasets": datasets,
+            "free_parameters": {"expected": expected_free, "card": card_free, "match": expected_free == card_free},
+            "normalizations": {"expected": expected_norm, "card": card_norm},
+            "qcd": qcd, "cuts": cuts, "verdict": "matches" if not diffs else "differs", "differences": diffs}
+
+
 def _validated(u, norm):
     """validate_campaign's result for a card that passed _checked_card."""
-    return {"status": "ok", "valid": True, "summary": _card_summary(norm),
-            "slurm_script": _array_script(_workspace(u), "<campaign-folder>", norm, 1, norm["job"]["replicas"]),
-            "confirmation_phrase": _confirm_phrase("SUBMIT", norm),
-            "next": "Show the user this summary and the Slurm script. Submit with "
-                    "submit_campaign(card, confirm=<the phrase>) only after they confirm."}
+    summary = _card_summary(norm)
+    points = sum((norm.get("_data_points") or {}).values()) or None
+    rec = _slurm_recommendation(summary["free_parameters"], points)
+    summary["slurm_recommendation"] = rec
+    asked, wanted = _parse_hms(norm["slurm"].get("time")), _parse_hms(rec["time"])
+    if asked is not None and wanted is not None and asked < wanted:
+        summary["slurm_warning"] = (f"The card asks for {norm['slurm']['time']} per replica; a fit of this size "
+                                    f"({rec['why']}) usually needs about {rec['time']} and {rec['mem']}. A task that "
+                                    "hits the time limit can be continued with rerun_replicas(resume=true).")
+    out = {"status": "ok", "valid": True, "summary": summary,
+           "slurm_script": _array_script(_workspace(u), "<campaign-folder>", norm, 1, norm["job"]["replicas"]),
+           "confirmation_phrase": _confirm_phrase("SUBMIT", norm),
+           "next": "Show the user this summary and the Slurm script. Submit with "
+                   "submit_campaign(card, confirm=<the phrase>) only after they confirm."}
+    comparison = _catalog_comparison(norm)
+    if comparison:
+        out["catalog_comparison"] = comparison
+        if comparison.get("verdict") == "differs":
+            undeclared = _undeclared_differences(norm, comparison)
+            if undeclared:
+                # Fail closed: a card that names a published analysis may differ
+                # from it only where the user declared the change (overrides).
+                out.update(status="error", valid=False, code="CATALOG_MISMATCH", undeclared_differences=undeclared,
+                           message="The card differs from the published analysis it names in ways no override declares; "
+                                   "it cannot be submitted as that analysis.")
+                out.pop("confirmation_phrase", None)
+                out["next"] = ("Rebuild the card with campaign_card_from_catalog, passing each intended change in overrides "
+                               "(then the difference is recorded as the user's), or drop card.source to run it as a new study.")
+            else:
+                out["next"] = ("The card differs from the published analysis it names only by the declared overrides "
+                               "(catalog_comparison.differences). Show the user the differences with the summary; "
+                               "submit only after they confirm.")
+    return out
 
 
 # The data a card selects, read as FitPack reads it: the reaction's reader
@@ -3484,7 +4730,7 @@ def _no_data_refusal(norm, points):
     check could not count every dataset."""
     if not points or len(points) < sum(len(ids) for ids in norm["datasets"].values()) or any(points.values()):
         return None
-    return {"status": "error", "valid": False, "points_after_cuts": points,
+    return {"status": "error", "code": "NO_DATA", "valid": False, "points_after_cuts": points,
             "message": "No selected dataset keeps a data point after the cuts, so the fit would have nothing "
                        "to fit. Change the cuts or the datasets and validate again."}
 
@@ -3505,7 +4751,7 @@ def _configuration_reactions(card):
 
 
 def _unsupported_configuration_fit(card):
-    return {"status": "unsupported", "valid": False, "fit_ready": False,
+    return {"status": "unsupported", "code": "CONFIG_ONLY_UNSUPPORTED", "valid": False, "fit_ready": False,
             "message": "Configuration only: FF fitting is not implemented for "
                        + ", ".join(sorted(_configuration_reactions(card))) + ". No campaign was submitted."}
 
@@ -3601,7 +4847,7 @@ def _configuration_preview(u, card):
             "dataset_configuration": blocks, "input_preview": fragment if not errors else ""}
 
 
-CAMPAIGN_WAIT = 5  # bounded response/poll wait; scientific work continues in the existing job queue
+CAMPAIGN_WAIT = 30  # a validate, submit or clone answers within this many seconds or hands out a job id to poll
 
 
 def _campaign_task(u, kind, card, fn, confirm=""):
@@ -3611,7 +4857,7 @@ def _campaign_task(u, kind, card, fn, confirm=""):
     try:
         encoded = json.dumps(card, separators=(',', ':'), allow_nan=False)
     except (TypeError, ValueError) as exc:
-        return {'status': 'invalid', 'valid': False, 'errors': ['Invalid campaign card: ' + str(exc)]}
+        return {'status': 'invalid', 'code': 'CARD_INVALID', 'valid': False, 'errors': ['Invalid campaign card: ' + str(exc)]}
     snapshot = json.loads(encoded)
     canonical = json.dumps(snapshot, sort_keys=True, separators=(',', ':'), allow_nan=False)
     params = {'card_sha256': hashlib.sha256(canonical.encode()).hexdigest(),
@@ -3665,11 +4911,16 @@ def _submit_campaign(u, card, confirm):
     if refused:
         return refused
     v = _validated(u, norm)
+    if not v.get("valid", True):
+        return v
     if (confirm or "").strip() != v["confirmation_phrase"]:
-        return {"status": "needs_confirmation", "confirmation_phrase": v["confirmation_phrase"],
+        return {"status": "needs_confirmation", "code": "CONFIRM_REQUIRED", "confirmation_phrase": v["confirmation_phrase"],
                 "summary": v["summary"], "slurm_script": v["slurm_script"],
                 "message": "Not submitted. Show the user the summary and Slurm script; when they "
                            "confirm, call again with confirm set to the phrase."}
+    replay = _idempotent(u, "SUBMIT", v["confirmation_phrase"])
+    if replay:
+        return replay
     ws = _workspace(u)
     folder = norm["job"]["campaignName"] + "_" + time.strftime("%Y%m%d_%H%M%S", time.gmtime())
     croot = f"{ws}/{CAMPAIGNS_DIR}/{folder}"
@@ -3694,7 +4945,7 @@ def _submit_campaign(u, card, confirm):
     m = re.search(r"Submitted batch job (\d+)", out)
     if not m:
         tail = _remote(u, f"tail -c 1500 {qc}/materialize.json 2>/dev/null", timeout=30).get("out")
-        return {"status": "error", "message": "The campaign was not submitted.",
+        return {"status": "error", "code": "MATERIALIZE_FAILED", "message": "The campaign was not submitted.",
                 "detail": out[-600:], "materialize_log": (tail or "")[-1500:]}
     log_prefix = _campaign_log_prefix(u, folder)
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -3706,11 +4957,17 @@ def _submit_campaign(u, card, confirm):
              "slurm_job_id": m.group(1), "status": "submitted", "input_card": norm}
     _registry(u, {"kind": "upsert", "entry": entry})
     why = _record_submission(u, croot, stage, "submit", m.group(1), range(1, n + 1), norm)
-    return {"status": "submitted", "collection_id": folder, "job_id": m.group(1), "replicas": n,
-            "partition": norm["slurm"]["partition_effective"], "campaign_folder": croot,
-            "log_path": f"{log_prefix}_{m.group(1)}_<replica>.out",
-            "error_log_path": f"{_campaign_error_log_prefix(u, folder)}_{m.group(1)}_<replica>.err", "summary": v["summary"],
-            "reproduce_file": f"{croot}/reproduce.json", **_reproduce_note(why)}
+    result = {"status": "submitted", "collection_id": folder, "job_id": m.group(1), "replicas": n,
+              "partition": norm["slurm"]["partition_effective"], "campaign_folder": croot,
+              "log_path": f"{log_prefix}_{m.group(1)}_<replica>.out",
+              "error_log_path": f"{_campaign_error_log_prefix(u, folder)}_{m.group(1)}_<replica>.err", "summary": v["summary"],
+              "reproduce_file": f"{croot}/reproduce.json",
+              "next": "campaign_status(collection_id, wait_for='fitting') waits up to 40 s and says whether a "
+                      "replica is loading, optimizing or failed before the fit; FitPack loads data and grids "
+                      "for several minutes first, so call it again while condition_met is false.",
+              **_reproduce_note(why)}
+    _remember(u, "SUBMIT", v["confirmation_phrase"], result)
+    return result
 
 
 def append_replicas(collection_id="", count=0, confirm="", username=""):
@@ -3721,14 +4978,14 @@ def append_replicas(collection_id="", count=0, confirm="", username=""):
         return err
     e = _collection(u, collection_id)
     if not e:
-        return {"status": "error", "message": f"No campaign {collection_id!r}; list_campaigns shows them."}
+        return {"status": "error", "code": "NOT_FOUND", "message": f"No campaign {collection_id!r}; list_campaigns shows them."}
     collection_id = e["collection_id"]      # a campaign name resolves to its id
     try:
         count = int(count)
         if not 1 <= count <= 2000:
             raise ValueError
     except (TypeError, ValueError):
-        return {"status": "error", "message": "count must be between 1 and 2000."}
+        return _refuse("BAD_ARGUMENT", "count must be between 1 and 2000.")
     if e.get('input_card',{}).get('parameters',{}).get('priorSnapshot'):
         return {'status':'error','message':'Appending requires a new explicit prior assignment; create a new validated campaign instead of silently reusing replicas.'}
     first, last = int(e["replicas"]) + 1, int(e["replicas"]) + count
@@ -3737,9 +4994,12 @@ def append_replicas(collection_id="", count=0, confirm="", username=""):
             "partition": e["input_card"]["slurm"]["partition_effective"]}
     phrase = _confirm_phrase("APPEND", plan)
     if (confirm or "").strip() != phrase:
-        return {"status": "needs_confirmation", "plan": plan, "confirmation_phrase": phrase,
+        return {"status": "needs_confirmation", "code": "CONFIRM_REQUIRED", "plan": plan, "confirmation_phrase": phrase,
                 "message": "Validated and launch-ready. Ask the user to confirm with the phrase; "
                            "nothing is queued until then."}
+    replay = _idempotent(u, "APPEND", phrase)
+    if replay:
+        return replay
     ws = _workspace(u)
     stage = f"{ws}/{CAMPAIGNS_DIR}/{e['campaign_folder']}/stages/{STAGE}"
     sb = base64.b64encode(_array_script(ws, e["campaign_folder"], e["input_card"], first, last).encode()).decode()
@@ -3751,7 +5011,7 @@ def append_replicas(collection_id="", count=0, confirm="", username=""):
                    f"sbatch {qs}/slurm/array_{first}_{last}.sh", timeout=60)
     m = re.search(r"Submitted batch job (\d+)", (r.get("out") or "") + (r.get("err") or ""))
     if not m:
-        return {"status": "error", "message": "sbatch refused the job.", "detail": (r.get("err") or r.get("out"))[-400:]}
+        return {"status": "error", "code": "SBATCH_REFUSED", "message": "sbatch refused the job.", "detail": (r.get("err") or r.get("out"))[-400:]}
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     e["jobs"] = list(e.get("jobs") or []) + [{"job_id": m.group(1), "first": first, "last": last,
                                                 "submitted_at": now, "log_prefix": _campaign_log_prefix(u, e["campaign_folder"]),
@@ -3760,7 +5020,9 @@ def append_replicas(collection_id="", count=0, confirm="", username=""):
     _registry(u, {"kind": "upsert", "entry": e})
     why = _record_submission(u, os.path.dirname(os.path.dirname(stage)), stage, "append", m.group(1),
                              range(first, last + 1), e["input_card"])
-    return {"status": "submitted", "job_id": m.group(1), **plan, **_reproduce_note(why)}
+    result = {"status": "submitted", "job_id": m.group(1), **plan, **_reproduce_note(why)}
+    _remember(u, "APPEND", phrase, result)
+    return result
 
 
 # Each replica's state and whether it is still in the Slurm queue (rerun_replicas).
@@ -3799,17 +5061,17 @@ def rerun_replicas(collection_id="", replicas="failed", confirm="", username="",
     resubmitted; earlier results are moved to stages/<stage>/previous/, not
     deleted. Always asks for the confirmation phrase first."""
     if type(resume) is not bool:
-        return {"status": "error", "message": "resume must be a boolean."}
+        return _refuse("BAD_ARGUMENT", "resume must be a boolean.")
     if mem is not None:
         if not isinstance(mem, str) or not re.fullmatch(r"[1-9]\d{0,3}[MG]", mem.strip()):
-            return {"status": "error", "message": "mem must be a positive Slurm memory request such as 6G or 500M."}
+            return _refuse("BAD_ARGUMENT", "mem must be a positive Slurm memory request such as 6G or 500M.")
         mem = mem.strip()
     u, err = _need_user(username)
     if err:
         return err
     e = _collection(u, collection_id)
     if not e:
-        return {"status": "error", "message": f"No campaign {collection_id!r}; list_campaigns shows them."}
+        return {"status": "error", "code": "NOT_FOUND", "message": f"No campaign {collection_id!r}; list_campaigns shows them."}
     collection_id = e["collection_id"]      # a campaign name resolves to its id
     # Only the new job uses this resource card. Keep the historical scientific
     # card (including a potentially large pinned prior snapshot) untouched.
@@ -3830,7 +5092,7 @@ def rerun_replicas(collection_id="", replicas="failed", confirm="", username="",
     if not d:
         return {"status": "error", "message": "Could not read the replicas' state.", "detail": (r.get("err") or "")[-400:]}
     if not d["queue_read"]:
-        return {"status": "error", "message": QUEUE_UNKNOWN_REFUSED}
+        return {"status": "error", "code": "QUEUE_UNKNOWN", "message": QUEUE_UNKNOWN_REFUSED}
     states = {int(k): v for k, v in d["states"].items()}
     spec = str(replicas or "failed").strip().lower()
     if spec in ("failed", "problems", "not_fitted", "all_failed"):
@@ -3839,10 +5101,10 @@ def rerun_replicas(collection_id="", replicas="failed", confirm="", username="",
         try:
             wanted = sorted(set(_numbers(replicas)))
         except ValueError:
-            return {"status": "error", "message": "replicas: 'failed' or replica numbers such as 3,7 or 10-12."}
+            return _refuse("BAD_ARGUMENT", "replicas: 'failed' or replica numbers such as 3,7 or 10-12.")
         outside = [i for i in wanted if not 1 <= i <= total]
         if outside:
-            return {"status": "error", "message": f"This campaign has replicas 1-{total}; no replica {outside}."}
+            return _refuse("BAD_ARGUMENT", f"This campaign has replicas 1-{total}; no replica {outside}.")
     busy = [i for i in wanted if states.get(i) == "queued"]
     wanted = [i for i in wanted if states.get(i) != "queued"]
     if not wanted:
@@ -3874,9 +5136,12 @@ def rerun_replicas(collection_id="", replicas="failed", confirm="", username="",
         binding['checkpoints'] = {k: v['sha256'] for k, v in resume_data['records'].items()}
     phrase = _confirm_phrase("RERUN", binding)
     if (confirm or "").strip() != phrase:
-        return {"status": "needs_confirmation", "plan": plan, "confirmation_phrase": phrase,
+        return {"status": "needs_confirmation", "code": "CONFIRM_REQUIRED", "plan": plan, "confirmation_phrase": phrase,
                 "message": "Nothing is queued yet. Show the user which replicas run again (their earlier "
                            "results are kept in previous/) and ask them to confirm with the phrase."}
+    replay = _idempotent(u, "RERUN", phrase)
+    if replay:
+        return replay
     ws = _workspace(u)
     stage = _stage_root(u, e)
     qs, stamp = _shq(stage), time.strftime("%Y%m%dT%H%M%S", time.gmtime())
@@ -3913,7 +5178,7 @@ def rerun_replicas(collection_id="", replicas="failed", confirm="", username="",
     r = _remote(u, 'bash -s', stdin=command, timeout=90)
     m = re.search(r"Submitted batch job (\d+)", (r.get("out") or "") + (r.get("err") or ""))
     if not m:
-        return {"status": "error", "message": "sbatch refused the job.", "detail": (r.get("err") or r.get("out"))[-400:]}
+        return {"status": "error", "code": "SBATCH_REFUSED", "message": "sbatch refused the job.", "detail": (r.get("err") or r.get("out"))[-400:]}
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     e = dict(e)
     e["jobs"] = list(e.get("jobs") or []) + [{"job_id": m.group(1), "first": min(wanted), "last": max(wanted),
@@ -3924,13 +5189,19 @@ def rerun_replicas(collection_id="", replicas="failed", confirm="", username="",
                                               "resource_overrides": overrides, "request_manifest": request_path}]
     e.update(updated_at=now, slurm_job_id=m.group(1), status="submitted")
     _registry(u, {"kind": "upsert", "entry": e})
+    # A checkpoint restart does not start from the seeds, so the record says so:
+    # reproduce_campaign runs from the seeds and such a replica is expected to differ.
     why = _record_submission(u, os.path.dirname(os.path.dirname(stage)), stage, "rerun", m.group(1),
-                             wanted, e["input_card"])
-    return {"status": "submitted", "job_id": m.group(1), **plan,
-            "request_manifest": request_path,
-            "previous_results": f"{stage}/previous/replica_<n>_{stamp}",
-            "message": "Queued. Run postprocess_campaign once they finish to update the fit summary.",
-            **_reproduce_note(why)}
+                             wanted, e["input_card"],
+                             extra={"resume": bool(resume), "slurm": slurm, "resource_overrides": overrides,
+                                    "request_manifest": request_path, "checkpoints": binding.get("checkpoints")})
+    result = {"status": "submitted", "job_id": m.group(1), **plan,
+              "request_manifest": request_path,
+              "previous_results": f"{stage}/previous/replica_<n>_{stamp}",
+              "message": "Queued. Run postprocess_campaign once they finish to update the fit summary.",
+              **_reproduce_note(why)}
+    _remember(u, "RERUN", phrase, result)
+    return result
 
 
 # ---- collections and status ----------------------------------------------------
@@ -3951,7 +5222,49 @@ QUEUE_UNKNOWN_REFUSED = "Could not read the Slurm queue, so nothing was changed.
 # Any other status, or a summary that cannot be read, is 'failed' too. The
 # status, postprocess and log snippets all start with it, so they always agree.
 _REPLICA_STATE = r'''
-import json, os
+import json, os, subprocess, time
+STALL_S = 900           # a running replica whose progress file is older than this is 'stalled'
+ENDED_HINT = {
+    'OUT_OF_MEMORY': 'Slurm ended the task: out of memory. rerun_replicas with a larger mem (e.g. mem=16G) runs it again.',
+    'TIMEOUT': 'Slurm ended the task: time limit. rerun_replicas(resume=true) continues it from its checkpoint.',
+    'CANCELLED': 'The task was cancelled (scancel).',
+    'FAILED': 'Slurm reports the task failed (non-zero exit); its log says why.',
+    'NODE_FAIL': 'The node failed; rerun_replicas runs the replica again.',
+}
+def progress(stage, i, slurm_state):
+    # What a running replica is doing, from checkpoints/replica_<i>/current_progress.json,
+    # which the runtime rewrites every few seconds: loading (no file yet: FitPack
+    # reads data and grids for minutes), optimizing (evaluations, objective) or
+    # stalled (nothing written for STALL_S). None unless Slurm runs the task.
+    if slurm_state not in ('RUNNING', 'COMPLETING'):
+        return None
+    path = os.path.join(stage, 'checkpoints', 'replica_%d' % i, 'current_progress.json')
+    try:
+        with open(path) as fh:
+            p = json.load(fh)
+        age = time.time() - float(p.get('updated_at') or os.path.getmtime(path))
+    except (OSError, ValueError, TypeError):
+        return {'phase': 'loading', 'evaluations': None, 'objective': None, 'age_s': None,
+                'note': 'no progress file yet: FitPack is still loading data and grids (several minutes)'}
+    phase = 'stalled' if age > STALL_S else ('optimizing' if p.get('status') in (None, 'optimizing') else str(p.get('status')))
+    return {'phase': phase, 'evaluations': p.get('evaluations'), 'objective': p.get('objective'), 'age_s': round(age)}
+def sacct_states(job_ids):
+    # {(job, task): {state, exit, elapsed}} of the array tasks Slurm has ended; {} when sacct is unavailable.
+    out = {}
+    if not job_ids:
+        return out
+    try:
+        r = subprocess.run(['sacct', '-n', '-P', '-X', '-j', ','.join(sorted(job_ids)), '-o', 'JobID,State,ExitCode,Elapsed'],
+                           capture_output=True, text=True, timeout=30)
+        for line in r.stdout.splitlines():
+            f = (line.strip().split('|') + ['', '', ''])[:4]
+            if '_' in f[0]:
+                job, task = f[0].split('_', 1)
+                if task.isdigit() and f[1]:
+                    out[(job, int(task))] = {'state': f[1].split()[0], 'exit': f[2], 'elapsed': f[3]}
+    except Exception:
+        pass
+    return out
 def no_data(s):
     # FitPack's 'success' for a fit over zero points: no chi2 at all.
     return s.get('status') == 'success' and s.get('chi2_total') is None
@@ -3993,22 +5306,40 @@ for i in range(1, total + 1):
 # ended are left out.
 ended = {'COMPLETED', 'CANCELLED', 'FAILED', 'TIMEOUT', 'PREEMPTED', 'BOOT_FAIL', 'NODE_FAIL',
          'DEADLINE', 'OUT_OF_MEMORY', 'REVOKED', 'SPECIAL_EXIT'}
-states, queued_jobs = {}, set()
+states, queued_jobs, tasks = {}, set(), {}
 ids = {str(j['job_id']) for j in jobs}
+main_ids = {str(j['job_id']) for j in jobs if not j.get('reproduce')}   # reproductions write elsewhere
 try:
-    q = subprocess.run(['squeue', '-h', '-r', '-u', __USER__, '-o', '%F|%T'], capture_output=True,
+    q = subprocess.run(['squeue', '-h', '-r', '-u', __USER__, '-o', '%F|%K|%T'], capture_output=True,
                        text=True, timeout=30) if ids else None
     if q and q.returncode != 0:
         raise RuntimeError(q.stderr)
     for line in (q.stdout if q else '').splitlines():
-        job, _, s = line.strip().partition('|')
+        job, task, s = (line.strip().split('|') + ['', ''])[:3]
         if job in ids and s and s not in ended:
             states[s] = states.get(s, 0) + 1
             queued_jobs.add(job)
+            if job in main_ids and task.isdigit():
+                tasks[int(task)] = s
 except Exception:
-    states, queued_jobs = None, set()
+    states, queued_jobs, tasks = None, set(), None
+# What the running replicas are doing, and how Slurm ended those that left no result.
+phases, running = {}, []
+for i, s in sorted((tasks or {}).items()):
+    p = progress(stage, i, s)
+    if p:
+        phases[p['phase']] = phases.get(p['phase'], 0) + 1
+        if len(running) < 5:
+            running.append(dict(p, replica=i))
+ended_without_result = {}
+if states is not None and done + len(tasks or {}) < total:
+    for (job, task), rec in sacct_states(main_ids).items():
+        if 1 <= task <= total and task not in (tasks or {}) and not os.path.isfile(
+                os.path.join(stage, 'current', 'replica_%d' % task, 'fit_summary.json')):
+            ended_without_result[rec['state']] = ended_without_result.get(rec['state'], 0) + 1
 print(json.dumps({'finished': done, 'succeeded': ok, 'not_fitted': not_fitted, 'failed': done - ok - not_fitted,
-                  'queue': states, 'queued_jobs': sorted(queued_jobs)}))
+                  'queue': states, 'queued_jobs': sorted(queued_jobs), 'phases': phases,
+                  'running_replicas': running, 'ended_without_result': ended_without_result}))
 '''
 
 
@@ -4079,22 +5410,74 @@ def list_campaigns(username=""):
     return res
 
 
-def campaign_status(collection_id="", username=""):
+def _campaign_verdict(prog, total):
+    """One word for where a campaign stands, from _campaign_progress's answer."""
+    queue, phases = prog.get("queue"), prog.get("phases") or {}
+    queued = None if queue is None else sum(queue.values())
+    if phases.get("optimizing"):
+        return "fitting"
+    if prog.get("ended_without_result"):
+        return "failed_before_fit"
+    if queued == 0 and prog.get("finished") is not None and prog["finished"] >= total:
+        return "finished"
+    if phases.get("stalled"):
+        return "stalled"
+    if phases.get("loading"):
+        return "loading"
+    if queued:
+        return "queued"
+    return "unknown" if queued is None else ("finished" if prog.get("finished") else "no_output")
+
+
+def campaign_status(collection_id="", username="", wait_for="", timeout=None):
+    """One campaign's state. wait_for='fitting' waits (up to timeout s, at most
+    JOB_WAIT) until a replica is optimizing or something failed before the fit;
+    'finished' until nothing of it is queued; 'change' until the state changes.
+    One call instead of a polling loop: FitPack loads data and grids for
+    several minutes before the first optimizer step."""
     u, err = _need_user(username)
     if err:
         return err
     e = _collection(u, collection_id)
     if not e:
-        return {"status": "error", "message": f"No campaign {collection_id!r}."}
+        return {"status": "error", "code": "NOT_FOUND", "message": f"No campaign {collection_id!r}."}
     collection_id = e["collection_id"]      # a campaign name resolves to its id
-    prog = _campaign_progress(u, e)
+    want = str(wait_for or "").strip().lower()
+    if want not in ("", "fitting", "finished", "change"):
+        return _refuse("BAD_ARGUMENT", "wait_for: 'fitting', 'finished', 'change', or nothing")
+    try:
+        limit = min(max(float(JOB_WAIT if timeout in (None, "") else timeout), 0.0), float(JOB_WAIT))
+    except (TypeError, ValueError):
+        return _refuse("BAD_ARGUMENT", f"timeout: seconds, at most {JOB_WAIT}")
+    total = int(e.get("replicas") or 0)
+    t0 = time.monotonic()
+    first = None
+    while True:
+        prog = _campaign_progress(u, e)
+        verdict = _campaign_verdict(prog, total)
+        snapshot = json.dumps({k: prog.get(k) for k in ("finished", "queue", "phases", "ended_without_result")}, sort_keys=True)
+        first = first or snapshot
+        met = ((want == "fitting" and verdict in ("fitting", "failed_before_fit", "finished", "stalled"))
+               or (want == "finished" and verdict in ("finished", "failed_before_fit", "no_output"))
+               or (want == "change" and snapshot != first))
+        if not want or met or time.monotonic() - t0 + 5 > limit:
+            break
+        time.sleep(5)
     log_patterns = _campaign_log_patterns(u, e)
     # A replica's log is under the job whose first-last range holds the replica.
     out = {"status": "ok", "collection_id": collection_id, "replicas": e["replicas"],
-           "jobs": e.get("jobs"), **prog,
+           "jobs": e.get("jobs"), **prog, "verdict": verdict,
            "campaign_folder": f"{_workspace(u)}/{CAMPAIGNS_DIR}/{e['campaign_folder']}",
            "log_pattern": log_patterns["stdout"], "error_log_pattern": log_patterns["stderr"],
            "summary": _card_summary(e["input_card"])}
+    if want:
+        out.update(waited_for=want, condition_met=bool(met), waited_s=round(time.monotonic() - t0))
+        if not met:
+            out["message"] = (f"Waited {out['waited_s']} s; the campaign is {verdict}. Call again with the same "
+                              "wait_for to keep waiting (FitPack loads for several minutes before it optimizes).")
+    if verdict == "failed_before_fit":
+        out["message"] = ("Slurm ended some tasks before FitPack wrote a result (ended_without_result says how); "
+                          "campaign_logs shows each one's error and what helps.")
     if prog.get("queue") is None:
         out["note"] = QUEUE_UNKNOWN
     return out
@@ -4108,29 +5491,30 @@ def cancel_campaign(collection_id="", confirm="", username=""):
         return err
     e = _collection(u, collection_id)
     if not e:
-        return {"status": "error", "message": f"No campaign {collection_id!r}."}
+        return {"status": "error", "code": "NOT_FOUND", "message": f"No campaign {collection_id!r}."}
     collection_id = e["collection_id"]      # a campaign name resolves to its id
     ids = [str(j["job_id"]) for j in e.get("jobs") or []]
     prog = _campaign_progress(u, e)
     if prog.get("queue") is None:
-        return {"status": "error", "message": QUEUE_UNKNOWN_REFUSED}
+        return {"status": "error", "code": "QUEUE_UNKNOWN", "message": QUEUE_UNKNOWN_REFUSED}
     queued = sum(prog["queue"].values())
     if not queued:
         return {"status": "ok", "cancelled": [], "message": "Nothing of this campaign is queued or running."}
     plan = {"collection_id": collection_id, "job_ids": ids, "queued_tasks": queued}
     phrase = _confirm_phrase("CANCEL", {"collection_id": collection_id, "job_ids": ids})
     if (confirm or "").strip() != phrase:
-        return {"status": "needs_confirmation", "plan": plan, "confirmation_phrase": phrase,
+        return {"status": "needs_confirmation", "code": "CONFIRM_REQUIRED", "plan": plan, "confirmation_phrase": phrase,
                 "message": "Nothing is cancelled yet. Ask the user to confirm with the phrase."}
     # Only the jobs that still have tasks in the queue, so an error from
     # scancel is a real one and not about a job that has already ended.
     live = [j for j in prog["queued_jobs"] if j in ids] or ids
     r = _remote(u, "scancel " + " ".join(_shq(j) for j in live), timeout=60)
     if r.get("rc") != 0:
-        return {"status": "error", "message": "scancel refused to stop the campaign.",
+        return {"status": "error", "code": "SCANCEL_FAILED", "message": "scancel refused to stop the campaign.",
                 "detail": ((r.get("err") or "") + (r.get("out") or ""))[-400:]}
     e.update(status="cancelled", updated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     _registry(u, {"kind": "upsert", "entry": e})
+    _effect("cancel", u, collection_id=collection_id, job_ids=ids, cancelled=live)
     return {"status": "cancelled", "collection_id": collection_id, "job_ids": ids, "cancelled": live,
             "message": "Stopped. Replicas that had already finished keep their results; postprocess "
                        "them as usual."}
@@ -4143,29 +5527,39 @@ def delete_campaign(collection_id="", delete_folder=False, confirm="", username=
     if isinstance(delete_folder, str):
         delete_folder = {"true": True, "false": False}.get(delete_folder.strip().lower(), delete_folder)
     if not isinstance(delete_folder, bool):
-        return {"status": "error", "message": "delete_folder must be true or false."}
+        return _refuse("BAD_ARGUMENT", "delete_folder must be true or false.")
     e = _collection(u, collection_id)
     if not e:
-        return {"status": "error", "message": f"No campaign {collection_id!r}."}
+        return {"status": "error", "code": "NOT_FOUND", "message": f"No campaign {collection_id!r}."}
     collection_id = e["collection_id"]      # a campaign name resolves to its id
     q = _campaign_progress(u, e).get("queue")
     if q is None:
-        return {"status": "error", "message": QUEUE_UNKNOWN_REFUSED}
+        return {"status": "error", "code": "QUEUE_UNKNOWN", "message": QUEUE_UNKNOWN_REFUSED}
     queued = sum(q.values())
     if queued:
-        return {"status": "error", "message": f"This campaign still has {queued} task(s) in the Slurm "
-                                              "queue. Stop it first (cancel_campaign), then delete it."}
+        return _refuse("STILL_QUEUED", f"This campaign still has {queued} task(s) in the Slurm "
+                                       "queue. Stop it first (cancel_campaign), then delete it.")
     plan = {"collection_id": collection_id, "delete_folder": bool(delete_folder)}
     phrase = _confirm_phrase("DELETE", plan)
     if (confirm or "").strip() != phrase:
-        return {"status": "needs_confirmation", "plan": plan, "confirmation_phrase": phrase}
+        return {"status": "needs_confirmation", "code": "CONFIRM_REQUIRED", "plan": plan, "confirmation_phrase": phrase}
+    # What was deleted stays on record: reproduce.json, the request and the
+    # registry entry go to <area>/.jam_trash/<folder>/ before anything is removed.
+    trash = None
+    if re.fullmatch(r"[A-Za-z0-9._-]+", e["campaign_folder"]):
+        trash = f"{_area(u)}/.jam_trash/{e['campaign_folder']}"
+        croot = f"{_workspace(u)}/{CAMPAIGNS_DIR}/{e['campaign_folder']}"
+        _remote(u, f"umask 077; mkdir -p {_shq(trash)} && cp -p {_shq(croot)}/reproduce.json "
+                   f"{_shq(croot)}/campaign.request.json {_shq(trash)}/ 2>/dev/null; cat > {_shq(trash)}/registry_entry.json",
+                stdin=json.dumps(e, default=str), timeout=60)
     _registry(u, {"kind": "delete", "id": collection_id})
     removed = False
     if delete_folder:
         folder = f"{_workspace(u)}/{CAMPAIGNS_DIR}/{e['campaign_folder']}"
         if re.fullmatch(r"[A-Za-z0-9._-]+", e["campaign_folder"]):
             removed = "GONE" in (_remote(u, f"rm -rf {_shq(folder)} && echo GONE", timeout=120).get("out") or "")
-    return {"status": "ok", "deleted": collection_id, "folder_removed": removed}
+    _effect("delete", u, collection_id=collection_id, folder=e["campaign_folder"], folder_removed=removed, trash=trash)
+    return {"status": "ok", "deleted": collection_id, "folder_removed": removed, "trash": trash}
 
 
 # ---- long analyses ----------------------------------------------------------------
@@ -4185,24 +5579,48 @@ _CACHE_PROGRESS = {}
 _JOBS_LOCK = threading.Lock()
 
 
+def _audit_job(job):
+    """The record of one finished background job: validate and submit refuse
+    inside such jobs, so this is where those refusals are counted."""
+    try:
+        result = job["result"]
+        status, code, is_error = _outcome(result)
+        params = job.get("params") if isinstance(job.get("params"), dict) else {}
+        public = {k: v for k, v in params.items() if k not in SECRET_ARGS}
+        errors = result.get("errors") if isinstance(result, dict) else None
+        _audit("job", job_id=job["job_id"], job_kind=job["kind"], user=job["user"], principal=job.get("principal", ""),
+               sid=_printable(job.get("sid", "")), params_sha256=_canonical_sha256(public) if public else None,
+               card_sha256=params.get("card_sha256"), confirmation_sha256=params.get("confirmation_sha256"),
+               status=status, code=code, errors=[str(x)[:200] for x in (errors or [])[:5]] if isinstance(errors, list) else [],
+               duration_ms=int(((job["finished"] or time.time()) - job["started"]) * 1000))
+    except Exception:
+        pass
+
+
 def _job_reply(job, wait):
     if job["done"].wait(wait):
         out = dict(job["result"]) if isinstance(job["result"], dict) else {"status": "ok", "result": job["result"]}
-        if job['kind'] == 'submit_campaign' and 'job_id' in out:
+        if job['kind'] in ('submit_campaign', 'reproduce_campaign') and 'job_id' in out:
             out['preparation_job_id'] = job['job_id']  # preserve the actual Slurm job_id
         else:
             out["job_id"] = job["job_id"]
         return out
-    campaign = job['kind'] in ('validate_campaign', 'preview_prior_replicas', 'submit_campaign')
+    campaign = job['kind'] in ('validate_campaign', 'preview_prior_replicas', 'submit_campaign', 'reproduce_campaign')
+    if job['kind'] == 'setup_workspace':
+        message = ("The workspace is being created (git clone can take minutes). Poll analysis_result with this "
+                   "job_id until complete; do not call setup_workspace again.")
+    elif campaign:
+        message = ("Campaign preparation is still running; no confirmation requirement is skipped. "
+                   "Poll analysis_result with this job_id until complete; do not repeat the original call.")
+    else:
+        message = ("Still computing on the cluster (the first evaluation of these replicas takes "
+                   "minutes; later ones read the cache). Call analysis_result with this job_id to wait "
+                   "for it. Do not start the analysis again.")
     return {"status": "running", "job_id": job["job_id"], "kind": job["kind"],
             "collection_id": job["params"].get("collection_id"), "request": job["params"],
             "elapsed_s": round(time.time() - job["started"]),
             "cache_progress": _CACHE_PROGRESS.get((job["user"], job["params"].get("collection_id"))),
-            "message": ("Campaign preparation is still running; no confirmation requirement is skipped. "
-                       "Poll analysis_result with this job_id until complete; do not repeat the original call."
-                       if campaign else "Still computing on the cluster (the first evaluation of these replicas takes "
-                       "minutes; later ones read the cache). Call analysis_result with this job_id to wait "
-                       "for it. Do not start the analysis again.")}
+            "message": message}
 
 
 def _background(u, kind, params, fn, wait=None):
@@ -4215,7 +5633,8 @@ def _background(u, kind, params, fn, wait=None):
         if job is None:
             job = {"job_id": secrets.token_hex(6), "key": key, "kind": kind, "params": params, "user": u,
                    "started": now, "finished": None, "done": threading.Event(), "result": None,
-                   "wait": JOB_WAIT if wait is None else wait}
+                   "wait": JOB_WAIT if wait is None else wait,
+                   "principal": getattr(_tls, "principal", ""), "sid": getattr(_tls, "sid", "")}
             _JOBS[job["job_id"]] = job
 
             def run():
@@ -4223,10 +5642,12 @@ def _background(u, kind, params, fn, wait=None):
                 try:
                     job["result"] = fn()
                 except Exception as exc:
-                    job["result"] = {"status": "error", "message": f"{type(exc).__name__}: {exc}"}
+                    job["result"] = {"status": "error", "code": "INTERNAL_ERROR",
+                                     "message": f"{type(exc).__name__}: {exc}"}
                 finally:
                     job["finished"] = time.time()
                     job["done"].set()
+                    _audit_job(job)
 
             threading.Thread(target=run, name=f"job-{kind}", daemon=True).start()
     return _job_reply(job, job['wait'])
@@ -4240,9 +5661,10 @@ def analysis_result(job_id="", username=""):
         return err
     job = _JOBS.get(str(job_id or ""))
     if not job or job["user"] != u:
-        return {"status": "error", "message": f"No analysis job {job_id!r} (jobs are kept {JOB_KEEP // 3600} h "
-                                              "and not across a gateway restart): run the analysis again; "
-                                              "what was already computed is cached."}
+        return _refuse("NOT_FOUND", f"No job {job_id!r} (jobs are kept {JOB_KEEP // 3600} h and not across a gateway "
+                                    "restart). An analysis: run it again, what was computed is cached. A submission: "
+                                    "check list_campaigns first, the campaign may already be queued; a confirmed "
+                                    f"request repeated within {IDEMPOTENT_HOURS:g} h is answered with its earlier result.")
     return _job_reply(job, job.get('wait', JOB_WAIT))
 
 
@@ -4331,7 +5753,7 @@ def postprocess_campaign(collection_id="", username=""):
         return err
     e = _collection(u, collection_id)
     if not e:
-        return {"status": "error", "message": f"No campaign {collection_id!r}."}
+        return {"status": "error", "code": "NOT_FOUND", "message": f"No campaign {collection_id!r}."}
     collection_id = e["collection_id"]      # a campaign name resolves to its id
     ready = _ensure_central_metrics(u, e)
     if ready.get('status') not in ('success','missing_inputs'): return ready
@@ -4362,7 +5784,7 @@ def campaign_summary(collection_id="", username="", replicas=None):
         return err
     e = _collection(u, collection_id)
     if not e:
-        return {"status": "error", "message": f"No campaign {collection_id!r}."}
+        return {"status": "error", "code": "NOT_FOUND", "message": f"No campaign {collection_id!r}."}
     collection_id = e["collection_id"]      # a campaign name resolves to its id
     try:
         selection = _replica_selection(replicas)
@@ -4729,7 +6151,7 @@ def campaign_pdf_plots(collection_id="", flavors="", q2=10.0, mean_overlay=None,
         return err
     e = _collection(u, collection_id)
     if not e:
-        return {"status": "error", "message": f"No campaign {collection_id!r}."}
+        return {"status": "error", "code": "NOT_FOUND", "message": f"No campaign {collection_id!r}."}
     collection_id = e["collection_id"]      # a campaign name resolves to its id
     selected = [o["type"] for o in e["input_card"].get("objects", [e["input_card"].get("object", {"type": "pdf"})])]
     object_key = object_key or ("pdf" if "pdf" in selected else selected[0])
@@ -4750,7 +6172,7 @@ def campaign_pdf_plots(collection_id="", flavors="", q2=10.0, mean_overlay=None,
         q2 = float(q2)
         assert math.isfinite(q2) and q2 > 0
     except Exception:
-        return {"status": "error", "message": "q2 must be a positive number"}
+        return _refuse("BAD_ARGUMENT", "q2 must be a positive number")
     if object_key == "pdf":
         try:
             display = pdf_plotting.validate_pdf_display(x_min, x_max, band_color, band_alpha)
@@ -4968,7 +6390,7 @@ def campaign_ff_plots(collection_id="", flavors="", q2=100.0, mean_overlay=False
         return error
     entry = _collection(u, collection_id)
     if not entry:
-        return {"status":"error", "message":f"No campaign {collection_id!r}."}
+        return {"status":"error", "code": "NOT_FOUND", "message":f"No campaign {collection_id!r}."}
     collection_id = entry["collection_id"]      # a campaign name resolves to its id
     objects = [obj.get("type") for obj in entry['input_card'].get('objects',[])]
     if not set(objects).intersection(ff_registry.FF_OBJECTS):
@@ -10691,7 +12113,7 @@ def analyze_by_experiment(collection_id="", experiments="", plot=True, username=
         return err
     e = _collection(u, collection_id)
     if not e:
-        return {"status": "error", "message": f"No campaign {collection_id!r}."}
+        return {"status": "error", "code": "NOT_FOUND", "message": f"No campaign {collection_id!r}."}
     collection_id = e["collection_id"]      # a campaign name resolves to its id
     try:
         selection = _replica_selection(replicas)
@@ -10751,6 +12173,7 @@ try:
             queue[int(task)] = s
 except Exception:
     queue, queue_read = {}, False
+ended_tasks = sacct_states({str(j.get('job_id')) for j in jobs if not j.get('reproduce')}) if queue_read else {}
 
 def clip(line):
     return line if len(line) <= WIDTH else line[:WIDTH] + ' ...'
@@ -10766,6 +12189,8 @@ def job_of(i):
     # The latest job that ran replica i: a range (first-last) or, for a rerun, a list.
     found = None
     for j in jobs:
+        if j.get('reproduce'):
+            continue    # a reproduction writes elsewhere; the replica's own logs are the original jobs'
         try:
             if (i in j['replicas']) if j.get('replicas') else int(j['first']) <= i <= int(j['last']):
                 found = j
@@ -10867,6 +12292,16 @@ def row_of(i, scan):
            'log_exists': bool(existing_logs), 'has_traceback': False}
     if state in ('running', 'queued'):
         row['slurm_state'] = queue[i]
+    if state == 'running':
+        p = progress(stage, i, queue.get(i))
+        if p:
+            row['phase'], row['progress'] = p['phase'], p
+    if state == 'no_output' and job and (job, i) in ended_tasks:
+        # Slurm ended the task before FitPack wrote a result: say how, and what helps.
+        rec = ended_tasks[(job, i)]
+        state = row['state'] = 'failed'
+        row['slurm_state'], row['elapsed'] = rec['state'], rec.get('elapsed')
+        row['error'] = ENDED_HINT.get(rec['state'], 'Slurm ended the task: ' + rec['state'])
     if row['log_exists']:
         row['has_traceback'] = None
         if scan and time.time() < deadline:
@@ -10935,8 +12370,11 @@ _LOG_MEANING = {
     "not_fitted": "The optimization failed, so FitPack only computed chi2 at the starting values: this "
                   "replica has no fitted parameters.",
     "failed": "The replica ended without success: its fit_summary.json reports a failure, has no chi2 (no "
-              "data point entered the fit) or cannot be read.",
-    "running": "The replica is running.",
+              "data point entered the fit) or cannot be read; or Slurm ended the task before any result "
+              "(slurm_state: OUT_OF_MEMORY, TIMEOUT, CANCELLED, FAILED), in which case error says what helps.",
+    "running": "The replica is running; phase says whether it is still loading data and grids (several "
+               "minutes), optimizing (evaluations and objective in progress) or stalled (no progress "
+               "written for 15 minutes).",
     "queued": "The replica is waiting in the Slurm queue.",
     "no_output": "The replica wrote no fit_summary.json and nothing of it is queued: it stopped before "
                  "writing results (an error, the time limit, or it was cancelled).",
@@ -10956,13 +12394,13 @@ def campaign_logs(collection_id="", replica=0, lines=80, username=""):
         return err
     e = _collection(u, collection_id)
     if not e:
-        return {"status": "error", "message": f"No campaign {collection_id!r}."}
+        return {"status": "error", "code": "NOT_FOUND", "message": f"No campaign {collection_id!r}."}
     collection_id = e["collection_id"]      # a campaign name resolves to its id
     total = int(e.get("replicas") or 0)
     try:
         replica, lines = int(replica or 0), int(lines or 80)
     except (TypeError, ValueError):
-        return {"status": "error", "message": "replica and lines must be whole numbers."}
+        return _refuse("BAD_ARGUMENT", "replica and lines must be whole numbers.")
     if not 0 <= replica <= total:
         return {"status": "error", "message": f"Campaign {collection_id!r} has replicas 1 to {total}; "
                                               f"there is no replica {replica}."}
@@ -11049,7 +12487,7 @@ def draft_slurm_job(name="", command="", time_limit="01:00:00", cpus=1, mem="4G"
         cpus = int(cpus)
         assert 1 <= cpus <= 64
     except Exception:
-        return {"status": "error", "message": "cpus must be between 1 and 64"}
+        return _refuse("BAD_ARGUMENT", "cpus must be between 1 and 64")
     if not re.fullmatch(r"\d{1,4}[MG]", str(mem)):
         return {"status": "error", "message": "mem must look like 4G or 500M"}
     if array and not re.fullmatch(r"\d{1,5}(-\d{1,5})?(%\d{1,4})?", array):
@@ -11060,7 +12498,7 @@ def draft_slurm_job(name="", command="", time_limit="01:00:00", cpus=1, mem="4G"
     ws, area = _workspace(u), _area(u)
     wd = os.path.normpath((workdir or ws).strip())
     if not (wd == area or wd.startswith(area + "/")):
-        return {"status": "error", "message": f"workdir must be inside your own area ({area})"}
+        return _refuse("OUTSIDE_AREA", f"workdir must be inside your own area ({area})")
     sdir = f"{ws}/slurm"
     c = SITE["container"]
     body = command.strip()
@@ -11105,12 +12543,13 @@ def submit_slurm_job(name="", confirm="", username=""):
     script = r.get("out") or ""
     phrase = _confirm_phrase("SLURM", {"name": name, "script": script})
     if (confirm or "").strip() != phrase:
-        return {"status": "needs_confirmation", "confirmation_phrase": phrase, "script": script}
+        return {"status": "needs_confirmation", "code": "CONFIRM_REQUIRED", "confirmation_phrase": phrase, "script": script}
     log_dir = _shq(_slurm_log_dir(u))
     s = _remote(u, f"mkdir -p {log_dir} && sbatch {_shq(path)}", timeout=60)
     m = re.search(r"Submitted batch job (\d+)", (s.get("out") or "") + (s.get("err") or ""))
     if not m:
-        return {"status": "error", "message": "sbatch refused the job", "detail": (s.get("err") or s.get("out"))[-400:]}
+        return {"status": "error", "code": "SBATCH_REFUSED", "message": "sbatch refused the job", "detail": (s.get("err") or s.get("out"))[-400:]}
+    _effect("slurm_submit", u, name=name, script_path=path, slurm_job_id=m.group(1))
     return {"status": "submitted", "job_id": m.group(1), "script_path": path}
 
 
@@ -11319,11 +12758,19 @@ TOOLS = {
                    "properties": {"pin_otp": {"type": "string"},
                                   "password": {"type": "string"}}},
         "fn": lambda a: connect_hpc(pin_otp=a.get("pin_otp", ""), password=a.get("password", ""))},
-    "node_diag": {"hidden": True,
-                  "desc": "Run a shell command on the gateway node (hot_redeploy.py and "
-                          "diagnostics). Not in tools/list; callable by name.",
-                  "schema": {"type": "object", "properties": {"cmd": {"type": "string"}}},
-                  "fn": lambda a: node_diag(a.get("cmd", "id; hostname"))},
+    "deploy": {"hidden": True, "admin": True,
+               "desc": "Hot upgrade of this gateway's code (hot_redeploy.py): stage files, verify, install, "
+                       "restart; status and node_info. Owner's token plus the admin secret (X-JAM-Admin). "
+                       "Not in tools/list; callable by name.",
+               "schema": {"type": "object",
+                          "properties": {"op": {"type": "string", "enum": ["status", "node_info", "stage_chunk", "stage_finish",
+                                                                             "verify", "install", "clean", "restart"]},
+                                         "stage": {"type": "string"}, "rel": {"type": "string"},
+                                         "index": {"type": "integer"}, "data_b64": {"type": "string"},
+                                         "sha256": {"type": "string"}, "hashes": {"type": "object"}},
+                          "required": ["op"]},
+               "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": False},
+               "fn": lambda a: deploy(a)},
     "fs_list": {"desc": "List a directory on the cluster (defaults to the user's own area).",
                 "schema": {"type": "object", "properties": {"path": {"type": "string"}}},
                 "fn": lambda a: fs_list(a.get("path", ""))},
@@ -11376,7 +12823,8 @@ TOOLS = {
         "desc": "Report on your workspace: which checkout is in use, every checkout in "
                 "your area, and whether code, data, grids, the campaign template and the "
                 "campaign runner (FitPack ai branch) are all present. A missing item says "
-                "how to fix it (fix: use_ai_branch or use_workspace).",
+                "how to fix it (fix: use_ai_branch or use_workspace). It reports the recorded "
+                "workspace: call use_workspace first when another checkout is meant.",
         "schema": {"type": "object", "properties": {}},
         "fn": lambda a: check_project()},
     "use_workspace": {
@@ -11394,9 +12842,12 @@ TOOLS = {
                 "Slurm partitions. Pion metadata also supplies its QCD/job defaults. Temporary "
                 "compatibility selects DIS 0 for fitted pion (including combined), otherwise 1. "
                 "Needs the cluster chain and a workspace. Call it first and walk "
-                "the user through each step.",
-        "schema": {"type": "object", "properties": {}},
-        "fn": lambda a: campaign_options()},
+                "the user through each step. The default answer is the summary, with the parameter tables "
+                "counted per object; section='parameters' with object_type (pdf, pdf-pion, ffpion, ffkaon, "
+                "ffhadron) returns one object's full table, and section=<name> one other section "
+                "(objects, reactions, defaults, choices, partitions).",
+        "schema": {"type": "object", "properties": {"section": {"type": "string"}, "object_type": {"type": "string"}}},
+        "fn": lambda a: campaign_options(section=a.get("section", ""), object_type=a.get("object_type", ""))},
     "campaign_datasets": {
         "desc": "The datasets of one available reaction from campaign_options, grouped by experiment, with labels "
                 "(experiment, observable, target). Optional search text. Nothing is preselected. "
@@ -11412,7 +12863,10 @@ TOOLS = {
         "schema": {"type": "object", "properties": {}},
         "fn": lambda a: use_ai_branch()},
     "validate_campaign": {
-        "desc": ("SIDIS needs the proton PDF plus the FFs of its hadrons; SIA needs FFs only. "
+        "desc": ("A card named after a published analysis must come from campaign_card_from_catalog (else CATALOG_REQUIRED), "
+                 "and may differ from the catalog only by the overrides it declares (else CATALOG_MISMATCH: no phrase, no submit). "
+                 "Such a card may be sent compactly as {source, job, slurm, overrides}; the gateway rebuilds the rest. "
+                 "SIDIS needs the proton PDF plus the FFs of its hadrons; SIA needs FFs only. "
                  if FF_EXECUTION_ENABLED else
                  "SIDIS/SIA selections return a dataset-only input fragment with configuration_valid and "
                  "fit_ready=false, never a runnable fit or submission confirmation. ") +
@@ -11433,12 +12887,12 @@ TOOLS = {
                 "points_after_cuts per dataset), the Slurm array script, the confirmation phrase and "
                 "warnings (a dataset with no points left after the cuts, a data file without a column "
                 "FitPack's status report reads); warnings never block submission, but a card whose "
-                "datasets keep no point at all after the cuts is refused. " + 'card = {"object": {"type": "pdf", "parameters": {"g1 a": {"value", "min", "max", "fixed": true|false, "equal_to": "uv1 a"}, ...}}, "reactions": ["idis", "dy"], "datasets": {"idis": ["10010", ...]}, "normalizations": {"idis": {"10010": {"value", "min", "max", "fixed": true|false|"<id of another selected dataset whose normalization this one equals>"}}} (only for datasets campaign_datasets lists with a normalization), "cuts": {"idis": [{"variable": "Q2", "op": ">", "value": 1.69, "enabled": true}]}, "qcd": {"order", "Q20", "tmc": "off"|"AOT", "higherTwist", "dglapMode", "asMode", "pdfPositivity": true|false, "ffpionPositivity": true|false, "ffkaonPositivity": true|false, "ffhadronPositivity": true|false}, "parameters": {"initialization": "default"|"random_within_bounds", "randomSeed", "perReplicaSeed"}, "job": {"campaignName", "replicas", "maxIterations", "tolerance", "optimizer", "bootstrap"}, "slurm": {"partition" ("" = auto), "time" (per replica, HH:MM:SS), "mem", "cpus"}}. Only parameters the user changed need to be listed; the rest keep the library values, and only changed rows are written into the card. A parameter switched to FREE needs a min and a max.',
+                "datasets keep no point at all after the cuts is refused. " + 'card = {"objects": [{"type": "pdf", "parameters": {"g1 a": {"value", "min", "max", "fixed": true|false, "equal_to": "uv1 a"}, ...}}, {"type": "ffpion", "parameters": {"u2 N": {"enabled": true, ...}}}] (legacy "object": {...} is still accepted), "source": {"analysis_id": ...} (set by campaign_card_from_catalog; validation then returns catalog_comparison), "reactions": ["idis", "dy"], "datasets": {"idis": ["10010", ...]}, "normalizations": {"idis": {"10010": {"value", "min", "max", "fixed": true|false|"<id of another selected dataset whose normalization this one equals>"}}} (only for datasets campaign_datasets lists with a normalization), "cuts": {"idis": [{"variable": "Q2", "op": ">", "value": 1.69, "enabled": true}]}, "qcd": {"order", "Q20", "tmc": "off"|"AOT", "higherTwist", "dglapMode", "asMode", "pdfPositivity": true|false, "ffpionPositivity": true|false, "ffkaonPositivity": true|false, "ffhadronPositivity": true|false}, "parameters": {"initialization": "default"|"random_within_bounds", "randomSeed", "perReplicaSeed"}, "job": {"campaignName", "replicas", "maxIterations", "tolerance", "optimizer", "bootstrap"}, "slurm": {"partition" ("" = auto), "time" (per replica, HH:MM:SS), "mem", "cpus"}}. Only parameters the user changed need to be listed; the rest keep the library values, and only changed rows are written into the card. A parameter switched to FREE needs a min and a max.',
         "schema": {"type": "object", "properties": {"card": {"type": "object"}}, "required": ["card"]},
         "fn": lambda a: validate_campaign(a.get("card"))},
     "preview_prior_replicas": {
         "compact": True,
-        "desc": "Read-only validated starting-value mapping. If status=running, poll analysis_result(job_id) until complete instead of repeating this request. Set card.parameters.priorSource: {kind: archive, analysis_id: JAM24.final, replica_ids: [0,1]} or {kind: file, path: absolute numeric NPY path, scientific_settings: {Q20: source_scale}, replica_ids: [...]}. Provide source scientific_settings Q20, beta version for PDFs, and relevant FF parametrizations; mismatches are blocked. Count must match jobs unless explicit IDs are supplied. Linked/fixed values are never overwritten; unmatched free parameters retain random initialization. Campaigns may use canonical snapshots or native MSR. Native NPY/MSR use source order; multi-step files require explicit step selection. Unsupported serialized constructors are rejected.",
+        "desc": "Read-only validated starting-value mapping. If status=running, poll analysis_result(job_id) until complete instead of repeating this request. Set card.parameters.priorSource: {kind: archive, analysis_id: JAM24.final, replica_ids: [0,1]} (the published replicas; absent on a gateway that leaves the reference-results tools out), {kind: file, path: absolute numeric NPY or MSR path, step: <step when the file has several>, scientific_settings: {Q20: source_scale}, replica_ids: [...]} or {kind: campaign, collection_id: <a postprocessed campaign>, replica_ids: [...]}. Provide source scientific_settings Q20, beta version for PDFs, and relevant FF parametrizations; mismatches are blocked. Count must match jobs unless explicit IDs are supplied. Linked/fixed values are never overwritten; unmatched free parameters retain random initialization. Campaigns may use canonical snapshots or native MSR. Native NPY/MSR use source order; multi-step files require explicit step selection. Unsupported serialized constructors are rejected.",
         "schema": {"type":"object","required":["card"],"properties":{"card":{"type":"object"},"username":{"type":"string"}}},
         "annotations": {"readOnlyHint":True,"destructiveHint":False},
         "fn": lambda a: preview_prior_replicas(a.get("card"), a.get("username", "")),
@@ -11465,12 +12919,22 @@ TOOLS = {
     "campaign_status": {
         "desc": "One campaign's Slurm state and replica progress: finished, succeeded (really fitted), "
                 "not_fitted (the optimization failed, so only chi2 at the starting values was computed) "
-                "and failed (queue is null when squeue cannot be read), its folder, and log_pattern: the "
-                "stdout path and error_log_pattern: the separate stderr path. campaign_logs reads both "
-                "streams and shows why replicas did not fit or failed.",
-        "schema": {"type": "object", "properties": {"collection_id": {"type": "string", "description": COLLECTION_ARG}},
+                "and failed (queue is null when squeue cannot be read); phases of the running replicas "
+                "(loading: FitPack reads data and grids for several minutes; optimizing: evaluations and "
+                "objective; stalled); ended_without_result: how Slurm ended tasks that left nothing "
+                "(OUT_OF_MEMORY, TIMEOUT, ...); a one-word verdict (queued, loading, fitting, stalled, "
+                "failed_before_fit, finished); its folder; log_pattern (stdout) and error_log_pattern "
+                "(stderr). To know whether a submitted campaign really fits, call once with "
+                "wait_for='fitting': it waits up to 40 s and answers when a replica optimizes or something "
+                "failed before the fit; call again with the same wait_for while condition_met is false "
+                "instead of polling other tools. wait_for='finished' waits until nothing is queued. "
+                "campaign_logs shows each replica's phase, error and what helps.",
+        "schema": {"type": "object", "properties": {"collection_id": {"type": "string", "description": COLLECTION_ARG},
+                                                    "wait_for": {"type": "string", "enum": ["", "fitting", "finished", "change"],
+                                                                 "description": "wait (at most timeout s, 40 by default) until a replica is optimizing or a task failed before the fit; until nothing is queued; or until the state changes"},
+                                                    "timeout": {"type": "number", "description": "seconds to wait, at most 40"}},
                    "required": ["collection_id"]},
-        "fn": lambda a: campaign_status(a.get("collection_id", ""))},
+        "fn": lambda a: campaign_status(a.get("collection_id", ""), wait_for=a.get("wait_for", ""), timeout=a.get("timeout"))},
     "postprocess_campaign": {
         "desc": "Postprocess: aggregate the finished replicas into the campaign fit summary. Only the "
                 "replicas that really fitted enter the statistics; the ones that did not fit (only chi2 "
@@ -11636,7 +13100,10 @@ TOOLS = {
                 "replica: identical, differs (with the differing keys and both hosts), running, no_output. Results "
                 "are bit-identical only on the same node type, so the reproduction asks Slurm for the original one "
                 "(node_constraint='auto'). Use it when the user asks to reproduce, re-derive or verify a campaign's "
-                "results.",
+                "results. Planning and the confirmed run may take minutes: a reply with status running carries a "
+                "job_id to poll with analysis_result; do not repeat the call. A queued reproduction counts as a job "
+                "of the campaign (list_campaigns shows it, cancel_campaign stops it, delete_campaign refuses while "
+                "it runs); the replicas' own logs and states keep pointing at the original jobs.",
         "schema": {"type": "object", "properties": {"collection_id": {"type": "string", "description": COLLECTION_ARG},
                                                     "replicas": {"type": "string", "default": "all"},
                                                     "check": {"type": "string", "description": "'latest' or a run stamp: compare instead of submitting"},
@@ -11726,6 +13193,17 @@ TOOLS = {
 # UI template, including when the same backend job is polled asynchronously.
 from jamai import thesis_delivery
 
+def _mark_denied():
+    """Flag the denied tools. They stay in TOOLS (thesis_delivery reads their
+    schemas at run time) but are never listed, never called and never named."""
+    for _name in sorted(TOOLS_DENY):
+        if _name in TOOLS:
+            TOOLS[_name]["denied"] = True
+        elif _name not in ARCHIVE_TOOLS + CATALOG_TOOLS:
+            print(f"note: tools_deny names no tool: {_name}", flush=True)
+
+
+_mark_denied()          # before get_thesis_plot builds its schema from the backends
 TOOLS["get_thesis_plot"] = {
     "desc": "Display thesis-style PNG plots directly in the conversation, without opening FEMTOMIND. "
             "Prefer this for natural-language requests to show plots, figures, PNGs or thesis-style images. "
@@ -11760,102 +13238,275 @@ _FALLBACK_PANEL = ("<!doctype html><meta charset='utf-8'><title>JAM gateway</tit
                    "<p style='font-family:sans-serif'>The panel file (jam_panel.html) is "
                    "missing on the gateway node. Re-run hot_redeploy.py to upload it.</p>")
 
-INSTRUCTIONS = (
-    "Published-analysis catalog questions use list_analysis_catalog, get_analysis_catalog and "
-    "get_analysis_requirements. These are read-only, need no HPC/workspace, and do not start "
+_CATALOG_TOOLS_AVAILABLE = [n for n in ("list_analysis_catalog", "get_analysis_catalog", "get_analysis_requirements")
+                            if n not in TOOLS_DENY]
+_CATALOG_PARAGRAPH = (
+    "Published-analysis catalog questions use " + ", ".join(_CATALOG_TOOLS_AVAILABLE) + ". "
+    "These are read-only, need no HPC/workspace, and do not start "
     "a fit. Prefer summaries and targeted selectors; keep numerical configuration server-side and "
     "reuse catalog_ref instead of retrieving/retransmitting all parameters. Full definitions/export "
     "are opt-in. Follow pagination; use current requirements rather than historical unresolved notes. "
+    "To run, reproduce or start from a published analysis (such as JAM24), build the card with "
+    "campaign_card_from_catalog and change values only through its overrides; never copy values by hand. "
     "Only follow the campaign workflow below when the user requests a fitting campaign.\n"
-    f"JAM global-analysis gateway for {SITE['label']}: the FemtoMind JAM app's fitting "
-    "campaign, as a conversation. Every call acts as the gateway's owner (the user whose "
-    "dashboard token the client sends); never ask for or pass another username. Go one "
-    "question at a time, in this order:\n"
-    "1. HPC: check_hpc_connection; ask which HPC (its 'sites'). If not connected, the user "
-    f"signs in ({SITE['login_secret']} for {SITE['login_host']}, {SITE['compute_secret']} for "
-    f"{SITE['compute_host']}) on the panel's Connect tab — give the link (get_console "
-    "tab=connect) and wait. Never ask for these in chat.\n"
-    "2. Workspace: check_project lists the folders in the user's area and what the workspace "
-    "has; ask which to use (use_workspace) or create a new one (setup_workspace; it clones the "
-    "FitPack ai branch). If a clone needs a GitHub token, send the user to the panel's Project "
-    "tab (the link in the result) — never ask for a token in chat. If the campaign runner or "
-    "the campaign template is marked missing with fix: use_ai_branch, the checkout is not on the "
-    "FitPack ai branch: offer use_ai_branch or a new workspace. A missing item without a fix (for "
-    "example a workspace folder that no longer exists, or an ai-branch checkout without "
-    "examples/input02.py): give the user its action; use_ai_branch does not help there.\n"
-    + ("3. Non-perturbative objects and parameters: Unpolarized PDF, Pion PDF and the fragmentation functions "
-       "(pion, kaon, total hadron), alone or combined, as campaign_options lists them. "
-       if FF_EXECUTION_ENABLED else
-       "3. Non-perturbative objects and parameters: Unpolarized PDF, Pion PDF, or both. ") +
-    "campaign_options returns each object's library: FREE/FIXED/tied, value, min, max. "
-    "Pion follows its final-fit reference with strictly one shape; never add second-shape pion "
-    "parameters. Fitted pion temporarily selects DIS 0, including combined campaigns; otherwise 1. "
-    "Use objects:[{type,parameters},...] (legacy object is still accepted). Leading neutron adds "
-    "the fitted p->pi,n companion and a fixed proton pdf unless pdf is selected. Ask which to change; "
-    "only changed rows are written into the card. A parameter switched to FREE needs a min "
-    "and max from the user. A parameter can also be set equal to another parameter in the same object "
-    "(equal_to): it then follows that parameter's value and is not fitted on its own.\n"
-    "4. Reactions: offer the enabled, compatible choices from campaign_options for the selected "
-    "objects; ask the user which to include. Never preselect reactions or datasets.\n"
-    "5. Datasets and cuts: campaign_datasets per reaction, grouped by experiment; ask which "
-    "ids. A dataset listed with a 'normalization' has a normalization parameter in the library: "
-    "offer to keep it, change its value or range, set it FREE or FIXED, or make it equal to "
-    "another selected dataset's normalization (normalizations in the card). Show the "
-    "reaction's cuts (e.g. Q2>1.69, W2>10) and ask whether to keep them. "
-    "Preserve dataset-specific cut mappings, including distinct H1 and ZEUS thresholds.\n"
-    "6. QCD settings: order, Q20, TMC, higher twist, DGLAP mode, alphaS mode.\n"
-    "7. Job config: campaign name, replicas, parameter initialization (library values or "
-    "random within bounds), inference (ensemble of pseudo-data replicas or central values), "
-    "tolerance, max iterations, optimizer — and the Slurm resources per replica (time, "
-    "memory, cpus, partition or auto), using slurm_partitions to explain the choice.\n"
-    "Every setting shows its library value; the user keeps or changes it. Reactions and "
-    "datasets are never preselected; never pick a value for the user.\n"
-    + ("8. Review: SIDIS (PDFs plus FFs) and SIA (FFs only) campaigns are fitted like the others. For every fit, "
-       if FF_EXECUTION_ENABLED else
-       "8. Review: SIDIS/SIA datasets are configuration-only: validate_campaign returns an input "
-       "fragment, configuration_valid and fit_ready=false. Do not attempt submission or claim FF fits "
-       "are implemented. SIDIS needs PDFs plus FFs; SIA needs FFs only. For supported fits, ") +
-    "validate_campaign; show the summary, its warnings (they never block "
-    "submission; a card that keeps no data point at all is refused: then change the cuts or "
-    "datasets with the user) and the Slurm array script exactly as returned (not shortened); submit with "
-    "submit_campaign(card, confirm=<phrase>) only after the user agrees.\n"
-    "9. Collections and analysis: list_campaigns (it also returns the user's Slurm queue), "
-    "campaign_status, postprocess_campaign, campaign_summary (fit summary), campaign_pdf_plots "
-    "(PDF curves as an interactive chart), analyze_by_experiment (per-dataset chi2 table and data vs "
-    "theory charts), campaign_logs (each replica's state and log), append_replicas (always "
-    "confirmed with its phrase), cancel_campaign (stops its queued and running tasks) and "
-    "delete_campaign (only when nothing of it is queued) — both also confirmed with their "
-    "phrase. rerun_replicas runs failed or unfitted replicas again under their own numbers (also "
-    "confirmed with its phrase). Each campaign folder holds reproduce.json (per submission: the "
-    "FitPack commit and any uncommitted changes, the image, the JAMAI files, input hashes and every "
-    "replica's seeds, with how_to_reproduce) and each replica folder replica_provenance.json; read "
-    "them with fs_read when the user asks how a fit was made. When the user asks to reproduce, re-derive "
-    "or verify a campaign's results, use reproduce_campaign: it runs the recorded replicas again (in the live "
-    "workspace when it is still the recorded state, else in a rebuilt clone at the recorded commit), confirmed "
-    "with its phrase, and reproduce_campaign(check='latest') then says per replica whether the results are "
-    "identical. The analysis tools (campaign_summary, analyze_by_experiment, "
-    "campaign_pdf_plots, campaign_ff_plots) take replicas, a selection of the fitted replicas "
-    "(best N, chi2_max, sigma outlier cut, exclude, only), when the user wants statistics over some "
-    "replicas only; say how many were kept and why the others were left out. "
-    "A replica counts as fitted only when its optimization ran: succeeded counts those, "
-    "not_fitted counts replicas whose optimization failed (FitPack then only computed chi2 at "
-    "the starting values). When replicas did not fit or failed, call campaign_logs and explain "
-    "the error to the user in plain words. The panel's Collections and Analysis tabs show the "
-    "same (Analysis has a Logs button).\n"
-    "Results and plots: when the user names a campaign, datasets or experiments, call the analysis "
-    "tool directly with those names as said (collection_id takes the campaign name; datasets and "
-    "experiments take the user's words) — do not look them up first with list_campaigns or "
-    "campaign_summary. Existing interactive analysis tools with status running return a job_id: "
-    "call analysis_result(job_id) until done; never restart the analysis. get_thesis_plot instead "
-    "always polls through get_thesis_plot itself. status no_match lists what the campaign "
-    "has: pick from it. For natural-language plot/figure requests, prefer get_thesis_plot: native PNGs "
-    "displayed independently in the conversation, without opening the app. Select experimental, pdf "
-    "or ff and reuse the user's scientific settings. If running, poll get_thesis_plot with only job_id; "
-    "do not switch to analysis_result or open_panel. For explicit interactive-app requests, preserve "
-    "the existing open_panel, campaign_pdf_plots, campaign_ff_plots and analyze_by_experiment workflow.\n"
-    "10. Any other cluster job: draft_slurm_job with the resources agreed with the user (it "
-    "runs sbatch --test-only), show the returned script exactly as written, ask the user, "
-    "then submit_slurm_job with the phrase.")
+    if _CATALOG_TOOLS_AVAILABLE else "")      # a gateway without the catalog tools never mentions them
+# ── procedures and conventions (the knowledge layer) ────────────────────────
+#
+# The step-by-step procedures and the JAM conventions live here, not in the
+# instructions every session reads: a client fetches the one it needs with
+# jam_guide(topic), and MCP prompts of the same names exist for hosts that
+# offer prompts. INSTRUCTIONS stays short: identity, credentials, the rules
+# every call obeys, and where to find the rest.
+
+_OBJECTS_SENTENCE = ("Unpolarized PDF, Pion PDF and the fragmentation functions (pion, kaon, total hadron), alone or "
+                     "combined, as campaign_options lists them." if FF_EXECUTION_ENABLED else
+                     "Unpolarized PDF, Pion PDF, or both.")
+_REVIEW_SENTENCE = ("SIDIS (PDFs plus FFs) and SIA (FFs only) campaigns are fitted like the others." if FF_EXECUTION_ENABLED else
+                    "SIDIS/SIA datasets are configuration-only: validate_campaign returns an input fragment, "
+                    "configuration_valid and fit_ready=false; do not attempt submission or claim FF fits are implemented.")
+
+PROCEDURES = {
+    "new_campaign": {
+        "description": "Compose, validate and submit a fitting campaign with the user, one question at a time.",
+        "arguments": [],
+        "text": (
+            "Go one question at a time, in this order. Every setting shows its library value; the user keeps or "
+            "changes it. Never preselect reactions or datasets; never pick a value for the user.\n"
+            "1. HPC: check_hpc_connection; ask which HPC (its 'sites'). If not connected, the user signs in on the "
+            "panel's Connect tab: give the link (get_console tab=connect) and wait. Never ask for credentials in chat.\n"
+            "2. Workspace: check_project lists the folders in the user's area and what the workspace has; ask which "
+            "to use (use_workspace) or create a new one (setup_workspace; it clones the FitPack ai branch). A clone "
+            "that needs a GitHub token: send the user to the panel's Project tab (the link in the result), never ask "
+            "for a token in chat. Campaign runner or template marked missing with fix: use_ai_branch means the "
+            "checkout is not on the ai branch: offer use_ai_branch or a new workspace. A missing item without a fix "
+            "(a folder that no longer exists, an ai-branch checkout without examples/input02.py): give the user its "
+            "action.\n"
+            f"3. Non-perturbative objects and parameters: {_OBJECTS_SENTENCE} campaign_options returns each object's "
+            "library (section='parameters', object_type=<object> for the full table): FREE/FIXED/tied, value, min, max. "
+            "Pion follows its final-fit reference with strictly one shape; never add second-shape pion parameters. "
+            "Fitted pion temporarily selects DIS 0, including combined campaigns; otherwise 1. Use "
+            "objects:[{type,parameters},...] (legacy object is still accepted). Leading neutron adds the fitted "
+            "p->pi,n companion and a fixed proton pdf unless pdf is selected. Ask which to change; only changed "
+            "rows are written into the card. A parameter switched to FREE needs a min and max from the user; "
+            "equal_to makes a parameter follow another of the same object. The composer enables only the first "
+            "FF shape by default; the published JAM24 fit uses both (campaign_card_from_catalog gives that card).\n"
+            "4. Reactions: offer the enabled, compatible choices from campaign_options for the selected objects; ask "
+            "which to include.\n"
+            "5. Datasets and cuts: campaign_datasets per reaction, grouped by experiment; ask which ids. A dataset "
+            "listed with a 'normalization' has a normalization parameter: offer to keep it, change its value or "
+            "range, set it FREE or FIXED, or make it equal to another selected dataset's (normalizations in the "
+            "card). Show the reaction's cuts (e.g. Q2>1.69, W2>10) and ask whether to keep them; preserve "
+            "dataset-specific cut mappings, including distinct H1 and ZEUS thresholds.\n"
+            "6. QCD settings: order, Q20, TMC, higher twist, DGLAP mode, alphaS mode, positivity (pdf, ffpion, ffkaon, "
+            "ffhadron), betaVersion and siaVersion.\n"
+            "7. Job config: campaign name, replicas, parameter initialization (library values or random within "
+            "bounds; priorSource for replica starts, see jam_guide priors_and_checkpoints), inference (ensemble of "
+            "pseudo-data replicas or central values), tolerance, max iterations, optimizer, and the Slurm resources "
+            "per replica (time, memory, cpus, partition or auto): slurm_partitions explains the choice and "
+            "validate_campaign's slurm_recommendation sizes them for the fit (jam_guide slurm_sizing).\n"
+            f"8. Review: {_REVIEW_SENTENCE} validate_campaign; show the summary, its warnings (they never block; a "
+            "card that keeps no data point at all is refused: change the cuts or datasets with the user) and the "
+            "Slurm array script exactly as returned (not shortened); submit with submit_campaign(card, "
+            "confirm=<phrase>) only after the user agrees. Then campaign_status(collection_id, wait_for='fitting').")},
+    "reproduce_published": {
+        "description": "Run a published analysis from the catalog (JAM24) as a campaign, without copying values by hand.",
+        "arguments": [{"name": "analysis_id", "description": "JAM24.final (the published configuration) or JAM24.current", "required": False}],
+        "text": (
+            "1. list_analysis_catalog. JAM24.final is the published configuration (the paper's fit, author-confirmed); "
+            "JAM24.current is the same fit on the updated COMPASS SIDIS workbooks (the 1105-series datasets). 'The "
+            "JAM24 analysis' means .final; say which one you use.\n"
+            "2. campaign_card_from_catalog(analysis_id, replicas, overrides) gives the complete card: every parameter "
+            "with bounds and ties, both FF shapes (215 free parameters), the 98 datasets with normalizations and "
+            "cuts, the author-confirmed QCD settings and positivity, Slurm resources sized for the fit. Never copy "
+            "values from get_analysis_catalog into a card by hand. overrides changes job, slurm, qcd, parameters, "
+            "datasets or reactions; say what you changed.\n"
+            "3. validate_campaign(card). Read catalog_comparison: verdict matches means the card is the published "
+            "configuration up to what the composer cannot express (the card's notes list it, e.g. the jet x<1 "
+            "filter, which removes nothing); differences lists anything else. Show the user the summary, the "
+            "slurm_recommendation and the script.\n"
+            "4. submit_campaign(card, confirm=<phrase>) only after the user agrees; then campaign_status(collection_id, "
+            "wait_for='fitting') until condition_met (FitPack loads data and grids for several minutes).\n"
+            "5. Afterwards compare with the archive: get_analysis_fit_statistics(analysis_id) gives the published "
+            "per-dataset chi2 (chi2 of the mean prediction, see jam_guide chi2_conventions); analyze_by_experiment "
+            "gives the campaign's. {analysis_id}")},
+    "diagnose_replicas": {
+        "description": "Find out why replicas did not fit, failed or stalled, and what to do about it.",
+        "arguments": [{"name": "collection_id", "description": "the campaign (name or id)", "required": False}],
+        "text": (
+            "1. campaign_status(collection_id): verdict (queued, loading, fitting, stalled, failed_before_fit, "
+            "finished), phases of the running replicas, ended_without_result (how Slurm ended tasks that left "
+            "nothing). Loading takes several minutes; stalled means no progress written for 15 minutes.\n"
+            "2. campaign_logs(collection_id): the overview counts fitted, not_fitted (the optimizer failed, chi2 at "
+            "the starting values only), failed, running, queued, no_output; replica_detail has the first problem "
+            "replica's Python error and log tail. campaign_logs(collection_id, replica=N) for one replica.\n"
+            "3. Decide from the error: 'No data point entered the fit' (NO_DATA): change the cuts or datasets, "
+            "rerunning does not help. OUT_OF_MEMORY: rerun_replicas(replicas, mem='16G'). TIMEOUT: "
+            "rerun_replicas(replicas, resume=true) continues from the checkpoint. not_fitted with an optimizer "
+            "message: consider initialization random_within_bounds, more iterations or a looser tolerance, and say "
+            "so to the user. A traceback: read it; a missing data column or file is a workspace problem "
+            "(check_project). Every rerun needs its phrase; afterwards postprocess_campaign.\n"
+            "4. Explain the error to the user in plain words, and what you propose. {collection_id}")},
+    "analyze_campaign": {
+        "description": "Fit summary, chi2 tables, data vs theory and PDF/FF plots of a campaign.",
+        "arguments": [{"name": "collection_id", "description": "the campaign (name or id)", "required": False}],
+        "text": (
+            "1. postprocess_campaign(collection_id) once replicas finish (campaign_summary's note says when it is "
+            "stale). 2. campaign_summary: the fit summary; see jam_guide chi2_conventions for what the numbers are "
+            "(point-only chi2 of the mean prediction; penalties separate). 3. analyze_by_experiment: the per-dataset "
+            "table (npts, chi2, chi2_red, z_score, normalizations) and data vs theory charts; pass the user's words "
+            "as datasets and experiments. 4. Figures: get_thesis_plot(plot_type experimental|pdf|ff) for native PNGs "
+            "in the conversation; campaign_pdf_plots / campaign_ff_plots / analyze_by_experiment(plot=true) for the "
+            "interactive app. 5. replicas selects fitted replicas for statistics (best N, chi2_max, sigma outlier "
+            "cut, exclude, only); say how many were kept and why. 6. Interpret with jam_guide "
+            "interpretation_thresholds, and compare with the published JAM24 values "
+            "(get_analysis_fit_statistics) before calling a difference a problem. A reply with status running "
+            "carries a job_id: analysis_result(job_id) until done, never restart the analysis. {collection_id}")},
+    "verify_campaign": {
+        "description": "How a fit was made (reproduce.json) and how to run it again exactly.",
+        "arguments": [{"name": "collection_id", "description": "the campaign (name or id)", "required": False}],
+        "text": (
+            "Each campaign folder holds reproduce.json (per submission: the FitPack commit and any uncommitted "
+            "changes, the image, the JAMAI files, input hashes and every replica's seeds, with how_to_reproduce) and "
+            "each replica folder replica_provenance.json (the commit it actually ran with, the node's CPU); fs_read "
+            "them when the user asks how a fit was made. reproduce_campaign(collection_id, replicas) runs the "
+            "recorded replicas again: in the live workspace when it still is the recorded state, else in a rebuilt "
+            "clone at the recorded commit, on the original node type (results are bit-identical only there). It "
+            "returns a plan and a phrase; the confirmed run may take minutes (poll analysis_result). Later "
+            "reproduce_campaign(collection_id, check='latest') says per replica identical or differs (with the "
+            "differing keys and both hosts). A replica produced by a checkpoint restart (rerun resume=true) differs "
+            "by design, since it did not run from its seeds. {collection_id}")},
+    "slurm_job": {
+        "description": "Any other cluster job: draft, test, confirm, submit.",
+        "arguments": [],
+        "text": (
+            "slurm_partitions for the resources; draft_slurm_job with the resources agreed with the user (it runs "
+            "sbatch --test-only, nothing is queued); show the returned script exactly as written; ask the user; then "
+            "submit_slurm_job with the phrase.")},
+}
+
+GUIDE = {
+    "chi2_conventions": (
+        "Reported chi2 is the point term only: residual = (central data - prediction)/alpha, with prediction = "
+        "theory/normalization + shift, the correlated systematics profiled against the central data. The "
+        "correlated-nuisance and normalization penalties are reported separately and never inside chi2; their sum "
+        "with the point term is the 'objective', a diagnostic. The ensemble chi2 (campaign_summary "
+        "ensemble_central_chi2, analyze_by_experiment chi2 and chi2_red) first averages the predictions over the "
+        "selected replicas point by point, then sums the squared residuals; it is not the mean of per-replica chi2 "
+        "(that is mean_total_chi2, chi2_basis=central_data_point_residuals). The archived JAM24 statistics follow "
+        "the same convention (chi2_data is the chi2 of the mean prediction; mean_replica_data_chi2_diagnostic the "
+        "mean over replicas). chi2_red = chi2/npts: no parameter subtraction, no penalties. z_score is the chi2 of "
+        "npts points as a standard normal deviate (negative below the expected chi2, positive above). "
+        "bootstrap_diagnostic holds the optimizer's own pseudo-data scores. Replica selections (best N, chi2_max, "
+        "sigma) use the central point scores; by default every fitted replica is kept."),
+    "interpretation_thresholds": (
+        "There is no automatic goodness threshold: good_fraction is null unless the user supplies chi2_max or sigma "
+        "cuts. The panel colours chi2_red and |Z| in bands <1 good, 1-2, 2-3 caution, 3-5 bad, >=5 critical, and "
+        "counts datasets with |Z|>3 as 'in tension'. Use the same words: a dataset with |Z|>3 is in tension with the "
+        "fit, chi2_red near 1 is consistent. Always state npts with a chi2: a small dataset with a large chi2_red may "
+        "have a modest |Z|. Compare a campaign's per-dataset values with the published JAM24 ones "
+        "(get_analysis_fit_statistics) before calling a difference a problem; with few replicas the ensemble "
+        "numbers fluctuate."),
+    "dataset_ids": (
+        "A card lists datasets per reaction as strings: {\"idis\": [\"10010\", ...]}. Analysis tools (analyze_by_experiment, "
+        "campaign_logs) take reaction-qualified ids such as idis:10010 or bare ids; the catalog and reference-results "
+        "tools need reaction-qualified ids. SIA ids: 1xxx pion, 2xxx kaon, 4xxx charged hadrons; SIDIS 1xxx pion, "
+        "2xxx kaon, 3xxx hadrons. JAM24.current replaces the SIDIS COMPASS workbooks 1005, 1006, 2005, 2006, 3000, "
+        "3001 by 1105, 1106, 2105, 2106, 3100, 3101. SIA 1012 and 2012 keep no points under the configured cuts and "
+        "are refused without an explicit cut."),
+    "jam24": (
+        "JAM24 (arXiv:2501.00665, Anderson, Melnitchouk, Sato): the simultaneous global fit of unpolarized proton PDFs "
+        "and pion, kaon and residual-hadron fragmentation functions, with the W+charm and SIDIS data that probe the "
+        "strange quark. The catalog's JAM24.final is the published configuration: NLO, Q20 = 1.6129 GeV2, all four "
+        "positivity flags off, 215 free parameters (35 PDF, 60 per FF with both shapes), 98 datasets over idis, dy, "
+        "wzrv, wasym, zrap, jet, wc, sia and sidis, 5853 points after cuts, ftol 1e-3, Gaussian starting values "
+        "(flat par). Its 791-replica ensemble is archived; get_analysis_fit_statistics gives its per-dataset chi2. "
+        "campaign_card_from_catalog builds its card; the composer's defaults (first FF shape only, library "
+        "normalization bounds) are not JAM24."),
+    "slurm_sizing": (
+        "FitPack loads data and grids for several minutes before the first optimizer step. A full JAM24-size fit "
+        "(215 free parameters, 5853 points) takes 21-29 s per chi2 evaluation and about an hour per optimizer "
+        "iteration: ask for 24:00:00 and 8G per replica (the farm's limit is 24 h; a task that hits it continues with "
+        "rerun_replicas(resume=true)). A fit of 60-150 free parameters: 08:00:00 and 6G. A proton-only DIS fit (35 "
+        "parameters, 2700 points, 0.6 s per evaluation): 02:00:00 and 4G. The composer's default of 00:30:00 and 4G "
+        "fits only the smallest tests. validate_campaign's slurm_recommendation applies these rules; cpus stays 1."),
+    "priors_and_checkpoints": (
+        "parameters.priorSource starts the replicas from an existing ensemble: kind archive (analysis_id, the "
+        "published JAM24 replicas; not available on a gateway that leaves the reference-results tools out), file "
+        "(a replicas file on the cluster, path; step when it has several) or campaign (collection_id of a "
+        "postprocessed campaign); preview_prior_replicas shows the mapping before validating. Otherwise "
+        "initialization is default (library values) or random_within_bounds; the FF library carries Gaussian "
+        "metadata. Each running replica writes checkpoints/replica_N/current_progress.json (phase, evaluations, "
+        "objective) and latest.json; rerun_replicas(resume=true) restarts from the checkpoint, mem raises the memory "
+        "of the rerun. Checkpoint-resumed replicas do not reproduce from seeds."),
+    "answer_templates": (
+        "Validation: object(s), free/fixed parameters (and the catalog's count when the card names a published "
+        "analysis), reactions with dataset counts, cuts, QCD settings, replicas and Slurm resources, warnings, then "
+        "the script verbatim and the question whether to submit. Submission: collection_id, job_id, where the logs "
+        "are, and that you will check with campaign_status(wait_for='fitting'). Status: the verdict in one word, "
+        "counts, and the next step. chi2 table: dataset, npts, chi2, chi2_red, z_score, normalization; name the "
+        "convention once. Replica selection: how many kept of how many fitted, and why. Never claim a fit converged "
+        "or is good without a criterion the user gave."),
+    "restart_recovery": (
+        "After a gateway restart the background jobs are gone (analysis_result says so): do not resubmit a campaign "
+        "blindly; list_campaigns shows what is queued, and a confirmed request repeated within 6 h is answered with "
+        "its earlier result anyway. The cluster sign-in survives a restart of the gateway process but not of its "
+        "job: check_hpc_connection; if disconnected, send the user to the panel's Connect tab."),
+}
+CATALOG_DENIED = bool(TOOLS_DENY & set(CATALOG_TOOLS))
+
+
+def jam_guide(topic=""):
+    """A procedure (new_campaign, reproduce_published, diagnose_replicas, analyze_campaign,
+    verify_campaign, slurm_job) or a convention (chi2_conventions, interpretation_thresholds,
+    dataset_ids, jam24, slurm_sizing, priors_and_checkpoints, answer_templates,
+    restart_recovery); empty: the index."""
+    hidden = {"reproduce_published", "jam24"} if CATALOG_DENIED else set()
+    name = str(topic or "").strip().lower().removeprefix("jam_")
+    procedures = {k: v for k, v in PROCEDURES.items() if k not in hidden}
+    topics = {k: v for k, v in GUIDE.items() if k not in hidden}
+    if not name:
+        return {"status": "ok", "procedures": {k: v["description"] for k, v in procedures.items()},
+                "topics": sorted(topics), "usage": "jam_guide(topic=<name>)"}
+    if name in procedures:
+        return {"status": "ok", "topic": name, "kind": "procedure", "text": procedures[name]["text"].replace(" {collection_id}", "").replace(" {analysis_id}", "")}
+    if name in topics:
+        return {"status": "ok", "topic": name, "kind": "convention", "text": topics[name]}
+    return _refuse("NOT_FOUND", "topics: " + ", ".join(sorted(list(procedures) + list(topics))))
+
+
+def _prompt_messages(name, arguments):
+    """An MCP prompt: the procedure's text with its arguments filled in."""
+    spec = PROCEDURES[name]
+    text = spec["text"]
+    for arg in spec["arguments"]:
+        value = str((arguments or {}).get(arg["name"]) or "").strip()
+        marker = " {%s}" % arg["name"]
+        text = text.replace(marker, f" The {arg['name'].replace('_', ' ')} is {value}." if value else "")
+    return {"description": spec["description"], "messages": [{"role": "user", "content": {"type": "text", "text": text}}]}
+
+
+INSTRUCTIONS = (
+    _CATALOG_PARAGRAPH +
+    f"JAM global-analysis gateway for {SITE['label']}: FitPack fits on {SITE['compute_host']}, as a conversation. "
+    "Every call acts as the user whose token the client sends; never ask for or pass another username. The cluster "
+    f"sign-in ({SITE['login_secret']} for {SITE['login_host']}, {SITE['compute_secret']} for {SITE['compute_host']}) and "
+    "GitHub tokens are typed on the panel page only (get_console gives the link): never ask for them in chat.\n"
+    "Procedures: call jam_guide(topic) before you start one and follow it: new_campaign (compose with the user, one "
+    "question at a time), " + ("" if CATALOG_DENIED else
+    "reproduce_published (a published analysis such as JAM24 as a campaign: campaign_card_from_catalog, never copy "
+    "values by hand), ") +
+    "diagnose_replicas (why replicas did not fit, failed or stalled), analyze_campaign (summaries, chi2 tables, "
+    "plots), verify_campaign (how a fit was made; run it again exactly), slurm_job (any other cluster job); and the "
+    "conventions chi2_conventions, interpretation_thresholds, dataset_ids, " + ("" if CATALOG_DENIED else "jam24, ") +
+    "slurm_sizing, priors_and_checkpoints, answer_templates, restart_recovery. The same procedures exist as MCP prompts.\n"
+    "Rules: never preselect reactions or datasets and never pick a value for the user; every setting shows its "
+    "library value and the user keeps or changes it. A write (submit, append, rerun, reproduce, cancel, delete, "
+    "submit_slurm_job) first returns a plan and a confirmation phrase: show the plan (a Slurm script exactly as "
+    "returned, never shortened) and call again with confirm=<phrase> only after the user agrees"
+    + (", and on this gateway the phrase is shown only on the panel page: ask the user to read it to you" if HUMAN_GATE else "")
+    + ". A reply with status running carries a job_id: poll analysis_result (get_thesis_plot polls itself) and never "
+    "restart the work. After a submission call campaign_status(collection_id, wait_for='fitting') instead of polling "
+    "logs. When replicas did not fit or failed, campaign_logs says why; explain it in plain words.")
 
 # ── plugins ─────────────────────────────────────────────────────────────────
 # Other physics tasks (plugins/<name>/, see plugins/__init__.py) add their own
@@ -11896,18 +13547,86 @@ if os.path.isfile(_PLUGINS_INIT):
     except Exception as e:
         PLUGIN_STATUS = {"loaded": [], "errors": {"plugins": f"{type(e).__name__}: {e}"}}
 
+TOOLS["jam_guide"] = {
+    "desc": "The step-by-step procedure for a task (new_campaign, reproduce_published, diagnose_replicas, "
+            "analyze_campaign, verify_campaign, slurm_job) or a JAM convention (chi2_conventions, "
+            "interpretation_thresholds, dataset_ids, jam24, slurm_sizing, priors_and_checkpoints, answer_templates, "
+            "restart_recovery). Call it before starting a procedure and follow it; no topic returns the index. "
+            "Read-only, needs no cluster.",
+    "schema": {"type": "object", "properties": {"topic": {"type": "string"}}},
+    "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+    "fn": lambda a: jam_guide(a.get("topic", ""))}
+TOOLS["campaign_card_from_catalog"] = {
+    "desc": "A complete, validate-ready campaign card for a published analysis in the catalog (default "
+            "JAM24.final: the published configuration; JAM24.current: the updated workbooks), built from the "
+            "compiled configuration instead of copying values by hand: every parameter with its bounds and "
+            "ties, both FF shapes (215 free parameters for JAM24), the datasets with their normalizations "
+            "and cuts (datasets that keep no point are left out and recorded), the QCD settings and the "
+            "author-confirmed positivity flags, Slurm resources sized for the fit. replicas sets the number "
+            "of replicas; overrides replaces or updates the sections job, slurm, qcd, parameters, datasets or "
+            "reactions, and is recorded on the card. Needs no cluster. Then call validate_campaign: send the "
+            "card, or only its source, job, slurm and overrides; catalog_comparison says where the card "
+            "differs from the published fit, and its phrase is what submit_campaign needs. Use this whenever "
+            "the user wants to run, reproduce or start from a published analysis.",
+    "schema": {"type": "object", "properties": {"analysis_id": {"type": "string", "default": "JAM24.final"},
+                                                "replicas": {"type": "integer", "default": 10},
+                                                "overrides": {"type": "object"}}},
+    "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+    "fn": lambda a: campaign_card_from_catalog(a.get("analysis_id", "JAM24.final"), a.get("replicas", 10), a.get("overrides"))}
+TOOLS["pending_confirmations"] = {
+    "desc": "Human-gate mode only: the confirmations waiting for a person (kind, phrase, what they would do). "
+            "Answered only to the gateway's panel page; an AI client gets a refusal and must ask the user to read "
+            "the phrase off the panel.",
+    "schema": {"type": "object", "properties": {}},
+    "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+    "fn": lambda a: pending_confirmations()}
+
+
+def _default_annotations():
+    """MCP annotations for every tool that has none: hosts show and gate tools
+    by them (a destructive tool asks the person; a read-only one need not)."""
+    submits = {"submit_campaign", "append_replicas", "rerun_replicas", "reproduce_campaign"}
+    destructive = {"cancel_campaign", "delete_campaign"}
+    mutating = {"setup_workspace", "use_workspace", "use_ai_branch", "connect_hpc", "postprocess_campaign",
+                "draft_slurm_job"}
+    for name, spec in TOOLS.items():
+        if spec.get("annotations"):
+            continue
+        if name in submits:        # repeating a confirmed request replays it (IDEMPOTENT_HOURS)
+            a = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}
+        elif name in destructive:
+            a = {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": False}
+        elif name == "submit_slurm_job":
+            a = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False}
+        elif name in mutating:
+            a = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}
+        else:
+            a = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}
+        spec["annotations"] = a
+
+
+_default_annotations()
+_mark_denied()          # again, for tools the plugins added
+
 if SHARED:
+    _legacy_shared = AUTH_MODE == "dashboard"
     for _name, _spec in TOOLS.items():
-        if _name != "node_diag":
+        if _name != "deploy":
             _spec["schema"].setdefault("properties", {})["username"] = {
                 "type": "string",
-                "description": "The JLab username to act as: the person who signed in on the panel. "
-                               "Shared gateway; without it the gateway acts as its owner."}
-    INSTRUCTIONS += (
+                "description": ("The JLab username to act as: the person who signed in on the panel. "
+                                "Shared gateway; without it the gateway acts as its owner." if _legacy_shared else
+                                "The JLab username this call acts as. It must be the user whose token the "
+                                "client sends; the gateway refuses any other.")}
+    INSTRUCTIONS += ((
         f"\nThis gateway is SHARED: it acts as the JLab user named in each call. First ask the user for "
         f"their JLab username and pass it as username in every tool call; without it, every call acts "
         f"as the gateway's owner ({GATEWAY_OWNER}). Each person signs in on the panel's Connect tab "
         "with their own username and credentials, and has their own workspace and campaigns.")
+        if _legacy_shared else (
+        "\nThis gateway is SHARED: each person has their own token, and every call acts as the token's "
+        "user; a username, when given, must be that user. Each person signs in on the panel's Connect tab "
+        "with their own credentials, and has their own workspace and campaigns."))
 
 # Content-Security-Policy for the browser panel: it talks only to this origin,
 # and it must not be framed elsewhere — it is where cluster credentials are typed.
@@ -11932,9 +13651,14 @@ def inline_charts(html):
 def _panel_html():
     try:
         with open(PANEL_FILE, encoding="utf-8") as fh:
-            return inline_charts(fh.read())
+            html = inline_charts(fh.read())
     except OSError:
         return _FALLBACK_PANEL
+    if HUMAN_GATE:
+        # Only a page this process served carries the nonce, and only requests
+        # with it are shown confirmation phrases (pending_confirmations).
+        html = html.replace("</head>", f"<script>window.JAM_PANEL_NONCE={json.dumps(PANEL_NONCE)};</script></head>", 1)
+    return html
 
 
 def _tool_entry(name, spec):
@@ -11978,6 +13702,13 @@ def _tool_result(out, is_error=False, compact=False):
 def _request_identity(headers):
     """The user a request acts as, from its Authorization: Bearer <token>."""
     return _identify(headers.get("Authorization"))
+
+
+def _admin_ok(secret):
+    """Whether secret is the admin secret (the second factor of `deploy`)."""
+    secret = str(secret or "").strip()
+    return bool(ADMIN_SHA256 and secret and len(secret) <= 1024
+                and hmac.compare_digest(_sha(secret), ADMIN_SHA256))
 
 
 class H(BaseHTTPRequestHandler):
@@ -12045,11 +13776,16 @@ class H(BaseHTTPRequestHandler):
               f"ua={self.headers.get('User-Agent', '')[:40]!r} "
               f"len={self.headers.get('Content-Length')}")
         sid = _req_sid(self.headers)
+        _tls.auth = "none"
         _tls.user = _request_identity(self.headers)
+        _tls.principal = _tls.user          # the token's user; _tls.user may become the user acted as
+        _tls.sid, _tls.client = sid, (self.headers.get("User-Agent") or "")[:40]
+        _tls.admin, _tls.admin_via = _admin_ok(self.headers.get("X-JAM-Admin")), "header"
+        _tls.panel = HUMAN_GATE and hmac.compare_digest(str(self.headers.get("X-JAM-Panel") or ""), PANEL_NONCE)
         try:
             self._dispatch(sid)
         finally:
-            _tls.user = ""
+            _tls.user = _tls.principal = ""
 
     def _dispatch(self, sid):
         n = int(self.headers.get("Content-Length", 0) or 0)
@@ -12074,14 +13810,26 @@ class H(BaseHTTPRequestHandler):
         result = None
         if method == "initialize":
             result = {"protocolVersion": params.get("protocolVersion", "2025-03-26"),
-                      "capabilities": {"tools": {}, "resources": {}},
+                      "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
                       "serverInfo": {"name": MCP_NAME, "version": "0.9.0"},
                       "instructions": INSTRUCTIONS}
         elif method == "ping":
             result = {}
+        elif method == "prompts/list":
+            hidden = {"reproduce_published"} if CATALOG_DENIED else set()
+            result = {"prompts": [{"name": "jam_" + k, "description": v["description"],
+                                   "arguments": [{"name": a["name"], "description": a.get("description", ""),
+                                                  "required": bool(a.get("required"))} for a in v["arguments"]]}
+                                  for k, v in PROCEDURES.items() if k not in hidden]}
+        elif method == "prompts/get":
+            name = str(params.get("name") or "").removeprefix("jam_")
+            if name not in PROCEDURES or (CATALOG_DENIED and name == "reproduce_published"):
+                error = {"code": -32602, "message": f"prompt not found: {params.get('name')}"}
+            else:
+                result = _prompt_messages(name, params.get("arguments") or {})
         elif method == "tools/list":
-            # Hidden tools (node_diag, for hot_redeploy.py) stay callable by name.
-            result = {"tools": [_tool_entry(k, v) for k, v in TOOLS.items() if not v.get("hidden")]}
+            # Hidden tools (deploy, for hot_redeploy.py) stay callable by name.
+            result = {"tools": [_tool_entry(k, v) for k, v in TOOLS.items() if not v.get("hidden") and not v.get("denied")]}
         elif method == "resources/list":
             result = {"resources": [
                 {"uri": PANEL_URI, "name": "jam-panel", "mimeType": PANEL_MIME,
@@ -12109,38 +13857,58 @@ class H(BaseHTTPRequestHandler):
                 result = {"contents": [{"uri": uri, "mimeType": mime, "text": _panel_html(),
                                         "_meta": {"ui": {"prefersBorder": True}}}]}
         elif method == "tools/call":
+            t0 = time.monotonic()
             name = params.get("name", "")
             args = params.get("arguments") or {}
             spec = TOOLS.get(name)
-            if spec is None:
+            if spec is None or spec.get("denied") or (spec.get("hidden") and getattr(_tls, "user", "") != GATEWAY_OWNER):
+                # A denied tool does not exist on this deployment; a hidden one does
+                # not exist for anyone but the owner, token or no token.
                 result = _tool_result("unknown tool", is_error=True)
             elif not getattr(_tls, "user", ""):
-                result = _tool_result({"status": "unauthorized", "message": AUTH_HELP},
+                result = _tool_result({"status": "unauthorized", "code": "AUTH_REQUIRED", "message": AUTH_HELP},
                                       is_error=True)
             else:
                 asked = str(args.get("username") or "").strip().lower() if isinstance(args, dict) else ""
                 if asked and asked != _tls.user and not SHARED:
-                    result = _tool_result({"status": "error", "message":
+                    result = _tool_result({"status": "error", "code": "NOT_SHARED", "message":
                                            f"This gateway is not shared: it acts only as {GATEWAY_OWNER}."},
                                           is_error=True)
                 elif asked and not re.fullmatch(USERNAME_RE, asked):
-                    result = _tool_result({"status": "error", "message": "username: a JLab username"},
+                    result = _tool_result({"status": "error", "code": "BAD_USERNAME", "message": "username: a JLab username"},
+                                          is_error=True)
+                elif asked and asked != _tls.user and AUTH_MODE != "dashboard":
+                    # With per-person tokens the token says who acts; a username may only repeat it.
+                    result = _tool_result(_refuse("IDENTITY_MISMATCH",
+                                                  f"this token belongs to {_tls.user}; it cannot act as {asked}"),
                                           is_error=True)
                 else:
                     if asked:
-                        _tls.user = asked
+                        _tls.user = asked   # legacy shared mode: the caller names the user (audited as acting != principal)
+                    if spec.get("admin") and not _tls.admin and isinstance(params.get("_meta"), dict):
+                        # A proxy may strip the header: the secret may travel in _meta instead.
+                        _tls.admin, _tls.admin_via = _admin_ok(params["_meta"].get("jam/admin")), "meta"
                     if spec.get("hidden") and _tls.user != GATEWAY_OWNER:
-                        # The node shell is the owner's alone, shared mode or not.
+                        # The upgrade tool is the owner's alone, shared mode or not.
                         result = _tool_result("unknown tool", is_error=True)
+                    elif spec.get("admin") and not ADMIN_SHA256:
+                        result = _tool_result(_refuse("ADMIN_DISABLED", "this gateway has no admin secret "
+                                                      "(JAM_GW_ADMIN_SHA256); upgrade it by relaunching the job",
+                                                      status="unauthorized"), is_error=True)
+                    elif spec.get("admin") and not _tls.admin:
+                        result = _tool_result(_refuse("ADMIN_REQUIRED", "deploy needs the admin secret in the "
+                                                      "X-JAM-Admin header (or _meta jam/admin)", status="unauthorized"),
+                                              is_error=True)
                     elif _confirm_gate(args):
                         result = _tool_result(_confirm_gate(args), is_error=True)
                     else:
                         try:
-                            out = spec["fn"](args)
+                            out = _apply_human_gate(spec["fn"](args))
                             formatter = spec.get("format_result")
                             result = formatter(out) if formatter else _tool_result(out, compact=spec.get("compact", False))
                         except Exception as e:
                             result = _tool_result(f"error: {e}", is_error=True)
+            _audit_call(name, args, result, t0, rid)
         else:
             error = {"code": -32601, "message": f"method not found: {method}"}
         payload = {"jsonrpc": "2.0", "id": rid}
@@ -12191,6 +13959,12 @@ def _bind():
 if __name__ == "__main__":
     _ensure_access_dir()
     server, port = _bind()
+    _audit_open()
+    _audit("audit.start", pid=os.getpid(), port=port, gateway_sha256=_GATEWAY_SHA256, auth_mode=AUTH_MODE)
+    print(f"auth: {AUTH_MODE}" + (f" ({len(USERS_SHA256)} user tokens)" if USERS_SHA256 else "")
+          + (" (LEGACY: the dashboard accepts any token, so anyone reaching this gateway can use it; "
+             "relaunch with the current redeploy_jam.py to get a gateway token)" if AUTH_MODE == "dashboard" else ""),
+          flush=True)
     print(f"jam-gateway '{MCP_NAME}' (owner {GATEWAY_OWNER}, site {SITE['id']}) "
           f"listening on {port}, host {socket.getfqdn()}", flush=True)
     if PLUGIN_STATUS["loaded"] or PLUGIN_STATUS["errors"]:
@@ -12199,4 +13973,5 @@ if __name__ == "__main__":
               flush=True)
     if os.environ.get("SLURM_JOB_ID"):
         register(port)
+    threading.Thread(target=_audit_mirror_loop, name="audit-mirror", daemon=True).start()
     server.serve_forever()
