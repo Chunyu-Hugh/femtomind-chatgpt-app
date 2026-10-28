@@ -100,7 +100,15 @@ def worktree(label, commit):
     if not os.path.isdir(path):
         subprocess.run(["git", "-C", paths.APP_ROOT, "worktree", "add", "--detach", path, commit], check=True,
                        capture_output=True, text=True)
+    want = subprocess.check_output(["git", "-C", paths.APP_ROOT, "rev-parse", commit], text=True).strip()
     sha = subprocess.check_output(["git", "-C", path, "rev-parse", "HEAD"], text=True).strip()
+    if sha != want:
+        # a clean worktree follows the requested commit (HEAD moves on); a dirty
+        # one (the condition-B catalog overlay) is left as it is and reported
+        dirty = subprocess.check_output(["git", "-C", path, "status", "--porcelain"], text=True).strip()
+        if not dirty:
+            subprocess.run(["git", "-C", path, "checkout", "--detach", want], check=True, capture_output=True, text=True)
+            sha = want
     return path, sha
 
 
