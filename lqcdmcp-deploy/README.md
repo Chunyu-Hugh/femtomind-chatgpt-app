@@ -901,6 +901,33 @@ reported explicitly. Current-reader parity does not resolve historical blockers
 or establish historical ensemble reproduction. Campaign execution remains
 disabled, and normal campaign-card behavior is unchanged.
 
+#### A campaign card from the catalog
+
+`campaign_card_from_catalog(analysis_id="JAM24.final", replicas=10, overrides)`
+returns a validate-ready card built from the compiled configuration, never by
+copying values: every parameter with its bounds and ties, both FF shapes (215
+free parameters for JAM24, where the composer's defaults give 140), the
+datasets with their normalizations and cuts, the QCD settings and the
+author-confirmed positivity flags, and Slurm resources sized for the fit.
+Datasets the current readers keep no point of (JAM24: SIA 1012 and 2006) are
+left out, because FitPack stops on an empty dataset, and the card records that.
+`overrides` updates the sections `job`, `slurm`, `qcd`, `parameters`,
+`datasets` or `reactions`; the changed keys are recorded on `card.source`.
+
+`validate_campaign` and `submit_campaign` accept such a card in full, or
+compactly as `{source, job, slurm, overrides}`, which the gateway rebuilds from
+the catalog. Two rules then fail closed:
+
+- A campaign whose name claims a catalog analysis (`JAM24...`) but whose card
+  was not built from the catalog is refused (`CATALOG_REQUIRED`).
+- A catalog-built card may differ from the catalog only where an override
+  declares the change (or by the recorded zero-point datasets). Any other
+  difference returns `valid: false` with `CATALOG_MISMATCH` and the list of
+  `undeclared_differences`, and gives no confirmation phrase.
+
+`catalog_comparison` in the validation result lists datasets, free parameters,
+normalizations, QCD settings and cuts against the published fit.
+
 #### Read-only compiled-input MCP preview
 
 `preview_compiled_input` accepts a revision-pinned `configuration_ref` from
