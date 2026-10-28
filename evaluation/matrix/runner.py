@@ -73,7 +73,10 @@ def manifest(args, runs):
     return {"schema": "femtomind.matrix_manifest.v1", "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "n": args.n, "arms": args.arms, "conditions": args.conditions, "features": args.features, "runs": runs,
             "model": os.environ.get("EVAL_MODEL", "claude-opus-5-5"), "timeout": os.environ.get("EVAL_TIMEOUT", "3h"),
-            "probe_minutes": args.probe_minutes, "prompts": prompts, "catalog": refs, "gateway_commits": commits,
+            "probe_minutes": args.probe_minutes, "prompts": prompts,
+            "gateway_confirm_wait_seconds": int(os.environ.get("EVAL_GW_CONFIRM_WAIT", "0")),
+            "note": "the gateway's review delay before a confirmation (20 s in production) is set as recorded: "
+                    "the prompt makes the assistant the only actor", "catalog": refs, "gateway_commits": commits,
             "fitpack_main": os.environ.get("EVAL_FITPACK_MAIN", "/w/ceph24/JAM/chunyu/bench_nomcp/fitpack"),
             "fitpack_ai": os.environ.get("EVAL_FITPACK_AI", "/w/ceph24/JAM/chunyu/bench_mcp/fitpack"),
             "claude_version": claude, "app_head": subprocess.check_output(["git", "-C", paths.APP_ROOT, "rev-parse", "HEAD"], text=True).strip()}

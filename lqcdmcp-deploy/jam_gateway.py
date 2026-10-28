@@ -1916,7 +1916,10 @@ CAMPAIGN_CHOICES = {
 }
 
 
-CONFIRM_WAIT = 20          # seconds between showing a plan and accepting its phrase
+# Seconds between showing a plan and accepting its phrase. JAM_GW_CONFIRM_WAIT
+# overrides it (0 for a benchmark in which the assistant is, by instruction,
+# the only actor); production keeps the default.
+CONFIRM_WAIT = int(os.environ.get("JAM_GW_CONFIRM_WAIT", "20") or 0)
 CONFIRM_RULE = ("Stop here and show the user the plan; the phrase is accepted only after they answer. "
                 "The request that led to this plan is not their confirmation, and a confirm sent in the same "
                 f"turn, or within {CONFIRM_WAIT} seconds of the plan, is refused.")

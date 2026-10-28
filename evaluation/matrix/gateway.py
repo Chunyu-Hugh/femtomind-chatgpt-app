@@ -166,7 +166,11 @@ def start(label, commit, variant, condition, port, results_dir=None):
     access = paths.eval_dir("gw_access_%d" % port)
     env = dict(os.environ, JAM_GW_PORT=str(port), JAM_GW_BIND="127.0.0.1", JAM_GW_OWNER=OWNER,
                JAM_GW_NAME="jam-gateway-eval-%d" % port, JAM_GW_ACCESS_DIR=access, JAM_GW_AUDIT_MIRROR="0",
-               JAM_GW_DASHBOARD_AUTH="0", JAM_GW_APP_DIR=tree)
+               JAM_GW_DASHBOARD_AUTH="0", JAM_GW_APP_DIR=tree,
+               # the benchmark's prompt makes the assistant the only actor ("decide everything
+               # yourself"), so the production review delay before a confirmation is set to 0
+               JAM_GW_CONFIRM_WAIT=os.environ.get("EVAL_GW_CONFIRM_WAIT", "0"))
+    info["confirm_wait_seconds"] = int(env["JAM_GW_CONFIRM_WAIT"])
     if caps["token_mode"]:
         env["JAM_GW_TOKEN_SHA256"] = hashlib.sha256(tok.encode()).hexdigest()
     else:
