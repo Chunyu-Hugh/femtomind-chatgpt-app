@@ -79,21 +79,31 @@ first free port from 8080 and registers with the proxy as
   `~/.jam_gateway/site.json` on the node) makes the gateway act as the
   user named by `username` in each call, with that user's own chain,
   area and workspace; without a username it acts as its owner.
-  `node_diag` stays the owner's. The panel then lets the Connect tab's
-  username be typed and sends it with every call. Meant for colleagues
-  who cannot launch a gateway (see the guide, 2.5).
+  Each person has a token of their own (`python3 redeploy_jam.py user-token
+  add <name>`; only its sha256 is stored, in `site.json` `"users"`), and a
+  call acts as the token's user and nobody else: a `username` that names
+  anyone else is refused. Meant for colleagues who cannot launch a gateway
+  (see the guide, 2.5). A shared gateway launched without token hashes
+  (legacy) still takes the typed username, and says LEGACY at start-up.
 - **Dashboard page instead.** `python3 redeploy_jam.py script` writes
   `jam-gateway-<user>.slurm`; launch an MCP server with that name and file.
 - **Upgrade a running gateway:** `python3 hot_redeploy.py`, then
-  `python3 deploy_and_verify.py --check`. Through `node_diag` (a shell on the
-  gateway node, absent from `tools/list` but callable by name; see Access)
-  it uploads the new gateway and test-imports it on the node (nothing is
-  replaced if that fails), installs the panel and `jamai/`, keeps the old
-  gateway as `jam_gateway.prev.py` and stops the server, which the job's
-  supervisor loop restarts. It then checks that the answering server started
-  after the swap, runs the uploaded file (sha256) and still accepts the
-  token. It refuses a gateway that is not a Slurm job, since nothing would
-  restart it. The job and the cluster sign-in survive.
+  `python3 deploy_and_verify.py --check`. It uses the hidden tool `deploy`
+  (absent from `tools/list`; the owner's token plus the admin secret in the
+  `X-JAM-Admin` header, see Security model): it stages the new gateway, panel,
+  `jamai/`, `plugins/` and `analyses/` in chunks under
+  `~/.jam_gateway/app/.hot_redeploy.stage-<stamp>`, has the gateway verify
+  that the complete staged application imports in a fresh interpreter
+  (nothing is replaced if that fails), installs it (the previous application
+  stays in `.hot_redeploy.previous`), cleans the stage and asks the server to
+  stop, which the job's supervisor loop restarts. It then checks through
+  `deploy status` that the answering server started after the swap and runs
+  the uploaded file (sha256). It refuses a gateway that is not a Slurm job,
+  since nothing would restart it. The job and the cluster sign-in survive.
+  A gateway from before the deploy tool still has `node_diag` and answers
+  "unknown tool": upgrade it once with `python3 hot_redeploy_legacy.py`
+  (same job; it also writes the token and admin hashes to the node, so the
+  restarted gateway takes the gateway token), or relaunch it.
 
 ### One node, and its prolog: running two gateways
 
@@ -144,29 +154,27 @@ start and stop independently, four at a time.
 
 ## How it works
 
-- **Access.** Every `tools/call` needs `Authorization: Bearer <dashboard
+- **Access.** Every `tools/call` needs `Authorization: Bearer <gateway
   token>`; `initialize` and `tools/list` need none, and the LQCDMCP proxy
-  forwards `/cloud/<name>/mcp` without checking anyone. The gateway refuses an
-  empty token or one shorter than 16 characters, and asks the dashboard about
-  any other, with the caller's token. `validate_user` (for the gateway's owner)
-  must not answer with an error or `allow_mcp: false`, and when it names an
-  account (`user_account`, `user_id`), one of them must be the owner.
-  `get_my_mcp_servers` must list this gateway: its name, owner == the
-  gateway's owner (when the entry has an owner) and the same Slurm job id
-  (when both are known). Anything else, including a listing the gateway
-  cannot parse or a failed call, is a refusal (fail closed).
-  Decisions are cached per token hash: 10 min when accepted, 60 s when
-  refused, 15 s after a dashboard error. A doubled `Bearer ` is tolerated.
-  `JAM_GW_TEST_TOKEN` is the token of a test instance (below).
-  **This check does not keep others out.** In October 2026 the dashboard
-  answered yes for any token (tested with a made-up token and with none):
-  `validate_user` trusts its `username` argument, which the gateway sets to
-  its owner, and `get_my_mcp_servers` then answers for that user. So the
-  gateway accepts any token of 16 or more characters, and whoever reaches it
-  can call every tool as its owner, `node_diag` and the open cluster chain
-  included. `deploy_and_verify.py` and `check_dashboard_token.py` show only
-  that the owner's token works. Until the dashboard checks the token, stop a
-  gateway when you are done with it (`python3 redeploy_jam.py cancel`).
+  forwards `/cloud/<name>/mcp` without checking anyone. The gateway token is
+  the gateway's own: `redeploy_jam.py` makes a secret per gateway
+  (`~/.config/jam_gateway/<name>.token`, mode 600; `python3 redeploy_jam.py
+  token` shows it) and writes only its sha256 into the job script
+  (`JAM_GW_TOKEN_SHA256`, with `JAM_GW_DASHBOARD_AUTH=0`). The gateway
+  compares `sha256(bearer)` with it in constant time and never asks the
+  dashboard. The dashboard token (`LQCDMCP_TOKEN`) only launches, cancels and
+  inspects the job. A doubled `Bearer ` is tolerated; a token over 1024
+  characters is refused unread. `JAM_GW_TEST_TOKEN` is the plain secret of a
+  test instance (below).
+  **Why not the dashboard.** Until October 2026 the gateway asked the
+  dashboard about every token (`validate_user` for its owner, then
+  `get_my_mcp_servers`). The dashboard answered yes for any token (tested
+  with a made-up token and with none): `validate_user` trusts its `username`
+  argument, which the gateway set to its owner. So that check kept nobody
+  out. A gateway launched without a token hash still runs it (legacy mode),
+  prints `auth: dashboard (LEGACY ...)` at start-up, and
+  `deploy_and_verify.py` reports that a made-up token is accepted; relaunch
+  it with the current `redeploy_jam.py`.
 - **Panel.** A browser GET (`Accept: text/html`) of the gateway URL returns
   `jam_panel.html` with a strict CSP (inline script and style only,
   `connect-src 'self'`, `frame-ancestors 'none'`); `?tab=` picks the tab. The
@@ -368,14 +376,24 @@ start and stop independently, four at a time.
   Their stdout and stderr go to separate, unique files under `/farm_out/<user>/`.
 - **Partition.** Auto: `priority` when the wall clock per replica is up to
   4 h, `production` beyond.
-- **Tools.** ping, get_console, open_panel, connect_hpc, check_hpc_connection,
+- **Tools.** `tools/list` is the contract (42 JAM tools): the cluster and
+  workspace (ping, get_console, open_panel, connect_hpc, check_hpc_connection,
   check_project, setup_workspace, use_workspace, use_ai_branch, fs_list,
-  fs_read, campaign_options, campaign_datasets, validate_campaign,
-  submit_campaign, list_campaigns, campaign_status, cancel_campaign,
-  delete_campaign, postprocess_campaign, campaign_summary, campaign_pdf_plots,
-  analyze_by_experiment, campaign_logs, append_replicas, slurm_partitions,
-  draft_slurm_job, submit_slurm_job; hidden: node_diag. The AI-facing
-  workflow is `INSTRUCTIONS` in `jam_gateway.py`.
+  fs_read), the campaign (campaign_options, campaign_datasets,
+  validate_campaign, preview_prior_replicas, submit_campaign, list_campaigns,
+  campaign_status, campaign_logs, append_replicas, rerun_replicas,
+  reproduce_campaign, cancel_campaign, delete_campaign), its results
+  (postprocess_campaign, campaign_summary, analyze_by_experiment,
+  campaign_pdf_plots, campaign_ff_plots, get_thesis_plot, analysis_result),
+  other Slurm jobs (slurm_partitions, draft_slurm_job, submit_slurm_job), the
+  published catalog and reference results (list_analysis_catalog,
+  get_analysis_catalog, get_analysis_requirements,
+  preview_analysis_configuration, preview_compiled_input,
+  list_analysis_results, get_analysis_fit_statistics,
+  get_analysis_theory_predictions), pending_confirmations (human-gate mode);
+  hidden: deploy. Every tool carries MCP annotations (read-only, destructive,
+  idempotent). `JAM_GW_TOOLS_DENY` leaves tools out (see Security model). The
+  AI-facing workflow is `INSTRUCTIONS` in `jam_gateway.py`.
 
 **Test instance.** `jam_gateway.py` also runs off the platform, on a machine
 that can reach scilogin: set `JAM_GW_OWNER` (the JLab user), `JAM_GW_NAME`,
@@ -384,6 +402,110 @@ use), `JAM_GW_ACCESS_DIR` (its log folder) and `JAM_GW_TEST_TOKEN` (the token
 it accepts, since the dashboard does not know such a gateway). The scripts
 reach it with `JAM_GW_URL` and `JAM_GW_TOKEN`; `hot_redeploy.py` refuses it
 (no supervisor loop restarts it).
+
+## Security model
+
+### What the gateway is
+
+One process per owner on a cluster node, reached through the LQCDMCP proxy
+(which checks nobody). It holds the owner's open SSH chain, so access to it is
+access to the cluster as the owner. The gateway therefore decides who may
+call it, what a call may do, who may change its code, and records all of it.
+
+### Who may call it
+
+- **Gateway token.** `redeploy_jam.py` makes a secret per gateway and puts
+  only its sha256 into the job script (`JAM_GW_TOKEN_SHA256`). The gateway
+  compares `sha256(bearer)` with it in constant time and never asks the
+  dashboard. `python3 redeploy_jam.py token` shows the token; `rotate token`
+  replaces it (relaunch for it to take effect).
+- **Shared gateway.** One token per person (`redeploy_jam.py user-token add
+  <name>`; `site.json` `"users"` holds the hashes). A call acts as the
+  token's user and nobody else; `username`, when given, must be that user.
+- **Legacy mode.** A gateway launched without a token hash runs the
+  October-2026 dashboard check, which lets anyone through. It says so at
+  start-up and in `deploy_and_verify.py`.
+- **Test instance.** `JAM_GW_TEST_TOKEN` is the plain secret of a gateway
+  that runs off the proxy (never set in a launch).
+
+### What a call may do
+
+- `tools/list` is the contract. A hidden tool (`deploy`) does not exist for
+  anyone but the owner; a denied tool (`JAM_GW_TOOLS_DENY="a,b"` or
+  `site.json` `"tools_deny"`) does not exist on that deployment: absent from
+  the list, "unknown tool" when called, unnamed in the instructions. With the
+  reference-results tools denied, the archive is not a prior source either.
+  `check_hpc_connection` reports the effective list.
+- A write (submit, append, rerun, reproduce, cancel, delete, submit_slurm_job)
+  needs a confirmation phrase, `CONFIRM JAM <kind> <hash>`, bound to the exact
+  request: any change to the request changes the phrase. The same confirmed
+  request within `JAM_GW_IDEMPOTENT_HOURS` (6; 0 turns it off) is answered
+  with the earlier result (`IDEMPOTENT_REPLAY`) instead of queued again.
+  The phrase is a check that the confirmed plan is the plan that runs; it is
+  not a credential and not, by itself, proof that a person agreed (an AI
+  client receives it and can send it back).
+- **A published analysis is reproduced from its catalog entry, or not at
+  all.** A campaign whose name claims a catalog analysis (`JAM24...`) but whose
+  card was not built with `campaign_card_from_catalog` is refused
+  (`CATALOG_REQUIRED`): the library defaults are another model (140 free FF
+  parameters, not JAM24's 215). A catalog-built card may differ from the
+  catalog only where the user declared the change in `overrides`, which the
+  card records; any other difference withholds the confirmation phrase and
+  refuses submission (`CATALOG_MISMATCH`). On a deployment where the catalog
+  tools are denied there is no catalog to claim, so neither rule applies.
+- **Human gate.** `JAM_GW_HUMAN_GATE=1` (or `site.json` `"human_gate"`) keeps
+  the phrase away from AI clients: a reply that needs confirmation says a
+  person must read the phrase off the panel page, whose "Pending
+  confirmations" card lists it (`pending_confirmations` answers only to
+  requests carrying the nonce the served page holds). Off by default.
+- Every tool carries MCP annotations (`readOnlyHint`, `destructiveHint`,
+  `idempotentHint`), so hosts can show and gate them.
+- `delete_campaign` first copies `reproduce.json`, the request and the
+  registry entry to `<area>/.jam_trash/<folder>/`.
+- Refusals carry a stable `code` (`REFUSAL_CODES` in `jam_gateway.py`)
+  beside their message.
+
+### Who may change the gateway's code
+
+`deploy`: the owner's token AND a second secret, the admin secret
+(`JAM_GW_ADMIN_SHA256`; `X-JAM-Admin` header, or `_meta` `jam/admin` when a
+proxy strips headers). Eight fixed operations: stage a file in chunks, seal
+it with its sha256, verify the complete staged application in a fresh
+interpreter, install with rollback, clean, restart, status, node_info. Paths
+are confined to the application package; stage names to timestamps. There is
+no shell on the node. Without an admin hash the tool is off (`ADMIN_DISABLED`)
+and the gateway is upgraded by relaunching.
+
+### What is recorded
+
+`~/.jam_gateway/audit.jsonl` (mode 600, hash-chained: each line carries the
+sha256 of the line before) gets one line per `tools/call` (the token's user
+and the user acted as, which check accepted the token, session and request
+ids, the tool, the argument keys and a digest of the arguments, the outcome's
+status and code, the duration), per finished background job and per write
+effect. Never argument values: the PIN, passwords, GitHub tokens and campaign
+cards stay out; the confirmation phrase appears only as its sha256. Records
+about a user are also appended to `<area>/.jam_audit.jsonl` through that
+user's own chain (`JAM_GW_AUDIT_MIRROR=0` keeps the log local).
+`python3 audit_verify.py <file>` checks the chain; `--anchor` prints
+`seq:head` to keep elsewhere.
+
+### What it does not protect against
+
+Anyone holding the gateway token; the owner's own account (the same uid can
+rewrite the local log, hence the mirror and the anchor); a proxy that strips
+headers (the admin secret then travels in `_meta`); and everything on the
+cluster side (Slurm, filesystems), which is unchanged. The proxy registers a
+gateway's route without authentication, and the gateway listens on
+`0.0.0.0`; both are the platform's to change.
+
+### Settings
+
+`JAM_GW_TOKEN_SHA256`, `JAM_GW_ADMIN_SHA256` (or the files
+`~/.jam_gateway/{token,admin}.sha256`, mode 600), `JAM_GW_DASHBOARD_AUTH=0`,
+`JAM_GW_TOOLS_DENY`, `JAM_GW_IDEMPOTENT_HOURS`, `JAM_GW_HUMAN_GATE`,
+`JAM_GW_AUDIT_MIRROR`, `JAM_GW_APP_DIR`; operator side `JAM_GW_TOKEN`,
+`JAM_GW_ADMIN`, `JAM_GW_SECRETS_DIR` (default `~/.config/jam_gateway`).
 
 ## Architecture and extension guide
 
@@ -900,6 +1022,33 @@ Swallowed native filter exceptions and catalog/native rounding distinctions are
 reported explicitly. Current-reader parity does not resolve historical blockers
 or establish historical ensemble reproduction. Campaign execution remains
 disabled, and normal campaign-card behavior is unchanged.
+
+#### A campaign card from the catalog
+
+`campaign_card_from_catalog(analysis_id="JAM24.final", replicas=10, overrides)`
+returns a validate-ready card built from the compiled configuration, never by
+copying values: every parameter with its bounds and ties, both FF shapes (215
+free parameters for JAM24, where the composer's defaults give 140), the
+datasets with their normalizations and cuts, the QCD settings and the
+author-confirmed positivity flags, and Slurm resources sized for the fit.
+Datasets the current readers keep no point of (JAM24: SIA 1012 and 2006) are
+left out, because FitPack stops on an empty dataset, and the card records that.
+`overrides` updates the sections `job`, `slurm`, `qcd`, `parameters`,
+`datasets` or `reactions`; the changed keys are recorded on `card.source`.
+
+`validate_campaign` and `submit_campaign` accept such a card in full, or
+compactly as `{source, job, slurm, overrides}`, which the gateway rebuilds from
+the catalog. Two rules then fail closed:
+
+- A campaign whose name claims a catalog analysis (`JAM24...`) but whose card
+  was not built from the catalog is refused (`CATALOG_REQUIRED`).
+- A catalog-built card may differ from the catalog only where an override
+  declares the change (or by the recorded zero-point datasets). Any other
+  difference returns `valid: false` with `CATALOG_MISMATCH` and the list of
+  `undeclared_differences`, and gives no confirmation phrase.
+
+`catalog_comparison` in the validation result lists datasets, free parameters,
+normalizations, QCD settings and cuts against the published fit.
 
 #### Read-only compiled-input MCP preview
 

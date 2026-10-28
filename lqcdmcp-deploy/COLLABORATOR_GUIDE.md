@@ -17,12 +17,14 @@ Claude Code / Codex  ──┼──>  your gateway  ──>  ifarm: your worksp
 - The **gateway** is your own: it works on the cluster as you. You start it
   at the beginning of the day and stop it when you are done.
 - The **dashboard token** comes from the LQCDMCP dashboard login. It starts
-  your gateway, and the panel and the AI assistant use it to talk to the
-  gateway.
-- **Others can use your gateway while it runs.** The gateway asks the
-  dashboard whether a token is yours, but in October 2026 the dashboard
+  and stops your gateway.
+- The **gateway token** is your gateway's own. `redeploy_jam.py` makes it the
+  first time you launch (1.6); the panel and the AI assistant use it to talk
+  to the gateway. Only someone who has it can use your gateway.
+- **An older gateway is open to others.** A gateway launched before October
+  2026 asked the dashboard whether a token was its owner's, and the dashboard
   answered yes for any token (tested with a made-up token and with none). So
-  this check does not keep others out: anyone who can reach your gateway's
+  that check kept nobody out: anyone who could reach such a gateway's
   address can use it as you, including your cluster sign-in. Stop your
   gateway when you are done (step 2.4).
 - Your **cluster sign-in** (PIN + one-time code, ifarm password) and your
@@ -101,8 +103,26 @@ export JAM_GW_USER=<you>
 ```
 
 You can put the `JAM_GW_USER` line in `~/.bashrc` (or `~/.zshrc` on macOS) so
-it is always set. Export the token again in each new terminal: it changes each
-time you sign in to the dashboard.
+it is always set. Export the dashboard token again in each new terminal: it
+changes each time you sign in to the dashboard.
+
+### 1.6 Your gateway token
+
+The gateway does not take the dashboard token: it has a token of its own,
+which `redeploy_jam.py` makes the first time you launch and keeps in
+`~/.config/jam_gateway/jam-gateway-<you>.token` (readable by you only). To see
+it, and the line that exports it:
+
+```bash
+python3 redeploy_jam.py token            # add --show to print the token itself
+export JAM_GW_TOKEN="$(cat ~/.config/jam_gateway/jam-gateway-<you>.token)"
+```
+
+Put the `export JAM_GW_TOKEN=...` line in `~/.bashrc` too: unlike the
+dashboard token it does not expire. It is what you paste into the panel (2.2)
+and what Claude Code and Codex send (4.1, 4.2). Keep it private, like a
+password; `python3 redeploy_jam.py rotate token` makes a new one (relaunch
+the gateway afterwards).
 
 ---
 
@@ -155,7 +175,7 @@ If it stops early, see [Troubleshooting](#troubleshooting).
 1. Open your gateway's address in your browser:
    **`https://lqcdmcp.jlab.org:8000/cloud/jam-gateway-<you>/mcp`**
    (the last lines of the report show it too).
-2. It asks for a token. Paste your dashboard token and press **Use this
+2. It asks for a token. Paste your gateway token (1.6) and press **Use this
    token**. The panel keeps it in this browser tab only and forgets it when
    you close the tab; a new tab asks again.
 3. On the **Connect** tab, fill in:
@@ -242,24 +262,29 @@ python3 deploy_and_verify.py        # the report then says "shared gateway: yes"
 `~/.jam_gateway/site.json` on the gateway node and run
 `python3 hot_redeploy.py`.)
 
-You then use the owner's gateway address with your own accounts:
+Before launching, the owner makes a token for each person and hands it over
+privately (only its sha256 is stored):
+
+```bash
+python3 redeploy_jam.py user-token add <name>      # prints that person's token once
+python3 redeploy_jam.py user-token list | revoke <name>
+```
+
+You then use the owner's gateway address with your own token and accounts:
 
 1. Open `https://lqcdmcp.jlab.org:8000/cloud/jam-gateway-<owner>/mcp` in your
-   browser and paste **your own** dashboard token.
-2. On the Connect tab the **Cluster username** field is editable: type your
-   JLab username and press Tab, then sign in with your own PIN + code and
-   password. From then on every tab shows your chain, your workspace and
-   your campaigns, and jobs run under your account. The username is kept per
-   browser tab, like the token.
-3. With Claude Code or Codex, register the owner's address (4.1, 4.2) and
-   start by telling the assistant your JLab username (*"I am treyand."*); it
-   passes it along with every call.
+   browser and paste the token the owner gave you.
+2. The Connect tab shows your JLab username (your token says who you are).
+   Sign in with your own PIN + code and password. From then on every tab
+   shows your chain, your workspace and your campaigns, and jobs run under
+   your account.
+3. With Claude Code or Codex, register the owner's address (4.1, 4.2) with
+   your token as `JAM_GW_TOKEN`. The assistant need not be told who you are.
 
 Two things to know: a shared gateway is one Slurm job, so it stops when the
-owner cancels it; and, as with any gateway (see Access in README.md),
-anyone who knows the address can use a signed-in session, so sign in only
-for as long as you need. Switch back to your own gateway as soon as you can
-start one.
+owner cancels it; and the owner's account holds every person's open chain
+(see Security model in README.md), so sign in only for as long as you need.
+Switch back to your own gateway as soon as you can start one.
 
 ## Part 3 — The panel
 
@@ -455,16 +480,17 @@ type them: open the panel instead.
    Then run `claude` once to sign in, and quit it.
 2. Register your gateway once, in a terminal where step 1.5 is done:
    ```bash
-   claude mcp add --transport http --scope user jam-gateway "https://lqcdmcp.jlab.org:8000/cloud/jam-gateway-$JAM_GW_USER/mcp" --header 'Authorization: Bearer ${LQCDMCP_TOKEN}'
+   claude mcp add --transport http --scope user jam-gateway "https://lqcdmcp.jlab.org:8000/cloud/jam-gateway-$JAM_GW_USER/mcp" --header 'Authorization: Bearer ${JAM_GW_TOKEN}'
    ```
    Copy it exactly. The double quotes fill in your username now (check with
    `claude mcp list` that the address ends in `jam-gateway-<you>/mcp`). The
-   single quotes keep `${LQCDMCP_TOKEN}` as written, so Claude Code reads
-   your current token each time it starts.
-   If you registered `jam-gateway` with an earlier version of this guide,
-   remove that entry first: `claude mcp remove jam-gateway -s user`.
-3. Each time, start Claude Code from a terminal where `LQCDMCP_TOKEN` is
-   exported (step 1.5):
+   single quotes keep `${JAM_GW_TOKEN}` as written, so Claude Code reads
+   your gateway token (1.6) each time it starts.
+   If you registered `jam-gateway` with an earlier version of this guide
+   (with `LQCDMCP_TOKEN`), remove that entry first:
+   `claude mcp remove jam-gateway -s user`.
+3. Each time, start Claude Code from a terminal where `JAM_GW_TOKEN` is
+   exported (step 1.6):
    ```bash
    export MCP_TOOL_TIMEOUT=900000
    export CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=900000
@@ -475,8 +501,8 @@ type them: open the panel instead.
    and the analysis by experiment can take up to 15 minutes. These lines
    raise its limits to 15 minutes (the values are in milliseconds). You can
    put them in `~/.bashrc` or `~/.zshrc`.
-4. After a new token: export it again and restart `claude`. Nothing needs to
-   be registered again.
+4. The gateway token does not expire. If you rotate it (1.6), export the new
+   one and restart `claude`; nothing needs to be registered again.
 
 To check: `claude mcp list` shows `jam-gateway`, but it says `✔ Connected`
 even when the token is wrong or expired. The real check is to ask Claude:
@@ -484,7 +510,7 @@ even when the token is wrong or expired. The real check is to ask Claude:
 `claude mcp list` prints:
 
 ```
-[Warning] [jam-gateway] mcpServers.jam-gateway: Missing environment variables: LQCDMCP_TOKEN
+[Warning] [jam-gateway] mcpServers.jam-gateway: Missing environment variables: JAM_GW_TOKEN
 ```
 
 ### 4.2 Codex (OpenAI's terminal assistant, with your ChatGPT account)
@@ -501,22 +527,22 @@ even when the token is wrong or expired. The real check is to ask Claude:
    ```toml
    [mcp_servers.jam-gateway]
    url = "https://lqcdmcp.jlab.org:8000/cloud/jam-gateway-<you>/mcp"
-   bearer_token_env_var = "LQCDMCP_TOKEN"
+   bearer_token_env_var = "JAM_GW_TOKEN"
    tool_timeout_sec = 900
    ```
    `tool_timeout_sec = 900` lets a step run for up to 15 minutes. Codex's
    default is 60 seconds, and cloning, plots and the analysis take longer.
    If your file already has a `jam-gateway` entry from an earlier version of
    this guide, add the `tool_timeout_sec` line to it.
-3. Start `codex` from a terminal where `LQCDMCP_TOKEN` is exported
-   (step 1.5). Codex reads the token once, when it starts. After a new token:
-   export it, quit Codex and start it again; `codex resume --last` continues
-   the conversation.
+3. Start `codex` from a terminal where `JAM_GW_TOKEN` is exported
+   (step 1.6). Codex reads the token once, when it starts. After rotating the
+   token: export it, quit Codex and start it again; `codex resume --last`
+   continues the conversation.
 
 To check: `codex mcp list` only reads the configuration file; it shows the
 entry even without a token. The real check is to ask: *"Check my cluster
 connection."* If the token is not exported, Codex reports
-`Environment variable LQCDMCP_TOKEN for MCP server 'jam-gateway' is not set`.
+`Environment variable JAM_GW_TOKEN for MCP server 'jam-gateway' is not set`.
 
 ### 4.3 What to say
 
@@ -560,7 +586,7 @@ platform does not offer. Use Codex (4.2) with your ChatGPT account instead.
 | "the gateway is not up yet: you have no gateway job queued or running" | Run `python3 deploy_and_verify.py` without `--check`. |
 | `jam-gateway-<you> (owner <you>) is NOT in the list` | Your gateway is not running (do step 2.1), or the token comes from another account's dashboard login. |
 | `the dashboard does not confirm this token as <you>'s` | The end of the line says why: the token is another account's or `JAM_GW_USER` is not your JLab username; MCP servers are not enabled for you (step 1.2); or the dashboard answered with an error (sign in again and copy a new token). |
-| "the gateway does not accept this token", `unauthorized`, or the panel says "The gateway did not accept this token." | The token expired or belongs to another account. Sign in to the dashboard again and copy the token. Then `export LQCDMCP_TOKEN='...'` and restart Claude Code or Codex. On the panel, paste it again (the **Token** button at the top right). |
+| "the gateway does not accept this token", `unauthorized`, or the panel says "The gateway did not accept this token." | A gateway launched with the current `redeploy_jam.py` takes its gateway token (1.6): `python3 redeploy_jam.py token`, `export JAM_GW_TOKEN=...`, paste that into the panel, restart Claude Code or Codex. An older gateway takes the dashboard token, which may have expired: sign in to the dashboard again and copy it. |
 | "the running gateway is an older version than the code in this folder" | You updated this folder (for example with `git pull`) after starting your gateway. Run `python3 hot_redeploy.py` (keeps your cluster sign-in), then `python3 deploy_and_verify.py --check`; or start over: `python3 redeploy_jam.py cancel`, then `python3 deploy_and_verify.py`. |
 | "the gateway answers without a token" | Stop it at once with `python3 redeploy_jam.py cancel` and send the report to Chunyu. |
 | Connect fails at scilogin | Type the PIN and the code together, no space. Use a fresh code. |
@@ -577,8 +603,10 @@ platform does not offer. Use Codex (4.2) with your ChatGPT account instead.
 | Collections shows `<n> did not fit` or `<n> failed`, or the status `not fitted` | Did not fit: the optimization failed, so FitPack only computed χ² at the starting values. Failed: the replica ended without success. Open Analysis → **Logs** to see the Python error, or ask the assistant *"Why did my replicas not fit?"* |
 | Create Input Card: "Dataset … has no points left after the cuts …, so it adds nothing to the fit." | The cuts remove every point of that dataset. If that is not what you want, change the cuts or the datasets and press **Create Input Card** again. The warning does not block **Submit Jobs**, unless no selected dataset keeps any point: then the card is refused. |
 | The assistant says "not connected" or "no live chain" | Sign in on the panel's Connect tab (2.2), then ask again. |
-| Claude Code: `Missing environment variables: LQCDMCP_TOKEN` | Export the token (1.5) and restart `claude`. |
-| Codex: `Environment variable LQCDMCP_TOKEN for MCP server 'jam-gateway' is not set` | Export the token (1.5) and restart `codex`. |
+| Claude Code: `Missing environment variables: JAM_GW_TOKEN` | Export your gateway token (1.6) and restart `claude`. |
+| Codex: `Environment variable JAM_GW_TOKEN for MCP server 'jam-gateway' is not set` | Export your gateway token (1.6) and restart `codex`. |
+| `deploy_and_verify.py`: "forged token -> ALLOWED" | Your gateway predates gateway tokens and trusts the dashboard, which accepts any token. Relaunch it (`python3 redeploy_jam.py cancel`, then `python3 deploy_and_verify.py`) to get a gateway token. |
+| The assistant says a person must read the confirmation phrase off the panel | The owner runs the gateway in human-gate mode. Open the panel page: the "Pending confirmations" card shows the phrase; tell it to the assistant. |
 | A step times out in Claude Code or Codex | Claude Code: export the two timeout lines of 4.1 before starting `claude`. Codex: `tool_timeout_sec = 900` in `~/.codex/config.toml` (4.2). |
 
 ---
@@ -623,7 +651,7 @@ platform does not offer. Use Codex (4.2) with your ChatGPT account instead.
   documentation. Run **MCP: Open User Configuration** from the Command
   Palette and add (merge it with anything already in the file):
   ```json
-  {"inputs": [{"type": "promptString", "id": "lqcdmcp-token", "description": "LQCDMCP dashboard token", "password": true}],
+  {"inputs": [{"type": "promptString", "id": "lqcdmcp-token", "description": "JAM gateway token (1.6)", "password": true}],
    "servers": {"jamGateway": {"type": "http",
      "url": "https://lqcdmcp.jlab.org:8000/cloud/jam-gateway-<you>/mcp",
      "headers": {"Authorization": "Bearer ${input:lqcdmcp-token}"}}}}
