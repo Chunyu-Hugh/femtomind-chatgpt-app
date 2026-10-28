@@ -30,7 +30,20 @@ ENVIRONMENT_KEYS = ("grid path", "grid-8 path")
 # that writes the default explicitly says the same thing.
 DEFAULT_EQUIVALENTS = {"pdf positivity": False, "ffpion positivity": False, "ffkaon positivity": False,
                        "ffhadron positivity": False, "ht": False, "offpdf": False, "nuc": True, "ww": False,
-                       "flat par": False, "bootstrap": True, "resample version": 0}
+                       "flat par": False, "bootstrap": True, "resample version": 0,
+                       "dis version": 1}          # fitlib/resman.py: 1 when absent
+
+# The gateway's own bookkeeping in a generated input (seeds, the initialization
+# label, the parameter sectors it applied): provenance, not FitPack settings.
+BOOKKEEPING_PREFIX = "jamai "
+
+
+def _gaussian_equivalent(d):
+    """FitPack's parman.gen_flat reads mean and std only when gaussian is true:
+    gaussian false with a mean and std says the same as no Gaussian fields."""
+    if isinstance(d, dict) and not d.get("gaussian"):
+        for field in ("gaussian", "mean", "std"):
+            d.pop(field, None)
 
 SETTINGS = ("order", "Q20", "tmc", "ht", "dglap mode", "alphaSmode", "beta version", "sia version", "ftol",
             "bootstrap", "flat par", "pdf positivity", "ffpion positivity", "ffkaon positivity", "ffhadron positivity")
@@ -74,11 +87,14 @@ def tier1_normalize(conf):
     for key, default in DEFAULT_EQUIVALENTS.items():
         if key not in c:
             c[key] = default
+    for key in [k for k in c if str(k).startswith(BOOKKEEPING_PREFIX)]:
+        c.pop(key)
     for key in list(c):
         if key not in ("params", "datasets"):
             c[key] = _num(c[key])
     for obj, table in (c.get("params") or {}).items():
         for name, d in list(table.items()):
+            _gaussian_equivalent(d)
             if isinstance(d, dict):
                 for field in ("value", "min", "max", "mean", "std"):
                     if field in d:
@@ -91,7 +107,14 @@ def tier1_normalize(conf):
         norm = block.get("norm") or {}
         b["norm"] = {str(k): {f: _num(v) for f, v in (d or {}).items()} if isinstance(d, dict) else d for k, d in norm.items()}
         if "filters" in block:
-            b["filters"] = canonical_filters(block["filters"])
+            filters = block["filters"]
+            if isinstance(filters, dict):
+                # a per-dataset filter table may list datasets the fit does not
+                # use (JAM24's SIA table has 69 entries for 55 datasets): only
+                # the selected datasets' filters say anything about the fit
+                selected = {str(k) for k in xlsx}
+                filters = {k: v for k, v in filters.items() if str(k) in selected}
+            b["filters"] = canonical_filters(filters)
         for extra in block:
             if extra not in ("xlsx", "norm", "filters"):
                 b[extra] = block[extra]
@@ -176,4 +199,5 @@ def tier1(target, candidate):
             "rules": ["runtime keys removed", "xlsx paths as reaction/basename",
                       "filter numbers as repr(float), spaces removed, 'and' split", "numbers compared as floats",
                       "site paths (grid folders) set aside", "explicit defaults equal to absent",
-                      "conf['steps'] dropped once projected"]}
+                      "conf['steps'] dropped once projected", "per-dataset filters of unselected datasets set aside",
+                      "gaussian false equal to no Gaussian fields", "the gateway's 'jamai *' bookkeeping keys set aside"]}
