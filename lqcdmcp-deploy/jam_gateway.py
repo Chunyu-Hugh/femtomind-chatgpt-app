@@ -1997,6 +1997,26 @@ def _idempotent(u, kind, phrase):
                        f"queue it again, or wait {IDEMPOTENT_HOURS:g} h."}
 
 
+def _forget_replays(collection_id):
+    """A cancelled or deleted campaign is no longer 'already carried out': the
+    same request may queue it again."""
+    if not collection_id:
+        return
+    with _IDEMP_LOCK:
+        table = _idemp_table()
+        keep = {k: v for k, v in table.items() if (v.get("result") or {}).get("collection_id") != collection_id}
+        if len(keep) == len(table):
+            return
+        try:
+            _ensure_access_dir()
+            fd = os.open(_IDEMP_FILE + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as fh:
+                json.dump(keep, fh, default=str)
+            os.replace(_IDEMP_FILE + ".tmp", _IDEMP_FILE)
+        except OSError:
+            pass
+
+
 def _remember(u, kind, phrase, result):
     if IDEMPOTENT_HOURS <= 0 or not isinstance(result, dict) or result.get("status") != "submitted":
         return
@@ -2405,6 +2425,23 @@ def _normalize_parameters(obj, library):
         row = {"name": name, "fixed": fixed,
                "value": ov.get("value", lib["value"]), "min": ov.get("min", lib["min"]),
                "max": ov.get("max", lib["max"])}
+        gaussian = ov.get("gaussian", lib.get("gaussian"))
+        if gaussian is not None:
+            # Gaussian starting value (FitPack's gen_flat, with flat par on):
+            # a draw from N(mean, std) inside [min, max].
+            if type(gaussian) is not bool:
+                errors.append(f"Parameter {name}: gaussian must be true or false.")
+            elif gaussian:
+                try:
+                    mean, std = float(ov.get("mean", lib.get("mean"))), float(ov.get("std", lib.get("std")))
+                except (TypeError, ValueError):
+                    mean = std = float("nan")
+                if not (math.isfinite(mean) and math.isfinite(std) and std > 0):
+                    errors.append(f"Parameter {name}: a Gaussian start needs a finite mean and a positive std.")
+                else:
+                    row.update(gaussian=True, mean=mean, std=std)
+            else:
+                row["gaussian"] = False
         params.append(row)
         try:
             row["value"] = float(row["value"])
@@ -2438,7 +2475,8 @@ def _normalize_parameters(obj, library):
             errors.append(f"Parameter {name}: fixed must be true (FIXED) or false (FREE).")
             continue
         if row["fixed"] == lib["fixed"] and all(
-                _same_number(row[k], lib[k]) for k in ("value", "min", "max")):
+                _same_number(row[k], lib[k]) for k in ("value", "min", "max")) and all(
+                row.get(k) == lib.get(k) for k in ("gaussian", "mean", "std")):
             continue
         changed.append(row)
         if row["fixed"]:
@@ -4280,6 +4318,15 @@ def _card_from_conf(conf, source, overrides=None, replicas=10):
                     row["equal_to"] = d["fixed"]
             if obj in ff_registry.FF_OBJECTS:
                 row["enabled"] = True       # both shapes, as the published fit has them
+                # The published starting values: a free parameter draws from its own
+                # N(mean, std); a linked or fixed one is never drawn on its own.
+                if d.get("gaussian") is True and d.get("fixed") is False:
+                    row.update(gaussian=True, mean=d.get("mean"), std=d.get("std"))
+                else:
+                    row["gaussian"] = False
+            elif d.get("gaussian") is True and d.get("fixed") is False:
+                # the published Gaussian starting values (author-confirmed procedure)
+                row.update(gaussian=True, mean=d.get("mean"), std=d.get("std"))
             params[name] = row
         objects.append({"type": obj, "parameters": params})
     reactions, datasets, normalizations, cuts = [], {}, {}, {}
@@ -4333,7 +4380,9 @@ def _card_from_conf(conf, source, overrides=None, replicas=10):
     slurm = {k: v for k, v in _slurm_recommendation(free, points).items() if k != "why"}
     card = {"objects": objects, "reactions": reactions, "datasets": datasets, "normalizations": normalizations,
             "cuts": cuts, "qcd": qcd,
-            "parameters": dict(CAMPAIGN_DEFAULTS["parameters"]),
+            "parameters": {**CAMPAIGN_DEFAULTS["parameters"],
+                           # flat par: FitPack draws the starting values, from N(mean, std) where given
+                           **({"initialization": "random_within_bounds"} if conf.get("flat par") else {})},
             "job": {**CAMPAIGN_DEFAULTS["job"], "campaignName": re.sub(r"[^A-Za-z0-9_]", "_", source["analysis_id"]),
                     "replicas": int(replicas), "tolerance": str(conf.get("ftol", CAMPAIGN_DEFAULTS["job"]["tolerance"])),
                     "bootstrap": bool(conf.get("bootstrap", True))},
@@ -4356,9 +4405,9 @@ def _card_from_conf(conf, source, overrides=None, replicas=10):
         declared["reactions"] = True
     if declared:
         card["source"]["overrides"] = declared
-    if conf.get("flat par") or any(d.get("gaussian") for t in conf["params"].values() for d in t.values()):
-        notes.append("The published fit drew its starting values from Gaussian priors (flat par); the FF library "
-                     "carries that metadata, the PDF starts from the catalog values (initialization 'default').")
+    if conf.get("flat par"):
+        notes.append("The published fit drew its starting values from Gaussian priors: the card sets initialization "
+                     "random_within_bounds (FitPack's flat par) and carries each free parameter's mean and std.")
     return card, notes, {"free_parameters": free, "datasets": {r: len(b["xlsx"]) for r, b in conf["datasets"].items()},
                          "normalizations": {r: len(b["norm"]) for r, b in conf["datasets"].items() if b.get("norm")},
                          "points_after_cuts": points}
@@ -4453,6 +4502,9 @@ def _undeclared_differences(norm, comparison):
         elif d.startswith("free parameters:"):
             if declared.get("parameters"):
                 continue
+        elif d.startswith("flat par:"):
+            if "initialization" in (declared.get("parameters") or []):
+                continue
         elif head in qcd:
             continue
         out.append(d)
@@ -4509,6 +4561,9 @@ def _catalog_comparison(norm):
             kk = f"{k.split()[0]}Positivity"
             got = norm["qcd"].get(kk, True)
             qcd[kk] = {"expected": v, "card": got, "match": bool(v) == bool(got)}
+    if "flat par" in conf:
+        card_flat = (norm.get("parameters") or {}).get("initialization") == "random_within_bounds"
+        qcd["flat par"] = {"expected": bool(conf["flat par"]), "card": card_flat, "match": bool(conf["flat par"]) == card_flat}
     diffs.extend(f"{k}: card {v['card']!r}, published {v['expected']!r}" for k, v in qcd.items() if not v["match"])
     cuts = {}
     for reaction, block in conf["datasets"].items():
@@ -5520,6 +5575,7 @@ def cancel_campaign(collection_id="", confirm="", username=""):
     e.update(status="cancelled", updated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     _registry(u, {"kind": "upsert", "entry": e})
     _effect("cancel", u, collection_id=collection_id, job_ids=ids, cancelled=live)
+    _forget_replays(collection_id)
     return {"status": "cancelled", "collection_id": collection_id, "job_ids": ids, "cancelled": live,
             "message": "Stopped. Replicas that had already finished keep their results; postprocess "
                        "them as usual."}
@@ -5564,6 +5620,7 @@ def delete_campaign(collection_id="", delete_folder=False, confirm="", username=
         if re.fullmatch(r"[A-Za-z0-9._-]+", e["campaign_folder"]):
             removed = "GONE" in (_remote(u, f"rm -rf {_shq(folder)} && echo GONE", timeout=120).get("out") or "")
     _effect("delete", u, collection_id=collection_id, folder=e["campaign_folder"], folder_removed=removed, trash=trash)
+    _forget_replays(collection_id)
     return {"status": "ok", "deleted": collection_id, "folder_removed": removed, "trash": trash}
 
 
