@@ -1816,6 +1816,7 @@
 
   /* ---------- analysis ---------- */
   let analysisCampaign = ws().analysisCampaign || "";
+  let metricsWatch = 0;
   let theoryPlotSeq = 0, theoryPlotVisible = false;
   let logsSeq = 0;      // a newer Logs request, a closed Logs box or another campaign voids an answer on its way
   const FLAVORS = ["u","d","g","s","ub","db","sb"];
@@ -1883,8 +1884,43 @@
     return '<div class="note">Replica selection: '+esc(rs.kept)+' of '+esc(rs.of)+' fitted replicas used'
       + (dropped.length ? '; left out '+esc(shown)+(dropped.length > 12 ? ' and '+(dropped.length - 12)+' more' : '') : '')+'.</div>';
   }
-  function caBusy(t){ theoryPlotSeq++; theoryPlotVisible = false; $("caOut").innerHTML = '<div class="spin">'+esc(t)+'</div>'; }
+  function caBusy(t){ metricsWatch++; theoryPlotSeq++; theoryPlotVisible = false; $("caOut").innerHTML = '<div class="spin">'+esc(t)+'</div>'; }
   function caWarn(t, cause){ $("caOut").innerHTML = '<div class="note warn">'+esc(t)+causePre(cause)+'</div>'; }
+  function metricsProgressHtml(p){
+    if (!p) return "";
+    const n = x=>Number.isFinite(Number(x)) ? Number(x) : 0;
+    const state = p.status === "failed" ? "Update failed; the last complete cohort is retained."
+      : p.status === "complete" ? "Central-data cache complete." : "Updating central-data predictions in recoverable batches.";
+    return '<div class="note'+(p.status === "failed" ? ' warn' : '')+'"><strong>'+esc(state)+'</strong><br>'
+      +'Complete displayed cohort: '+n(p.last_complete_replicas)+' / '+n(p.available_fitted)+' fitted replicas. '
+      +'Pinned target: '+n(p.target_replicas)+'. Cached: '+n(p.cached_replicas)
+      +'; newly evaluated: '+n(p.newly_evaluated)+'; remaining: '+n(p.remaining_replicas)+'; failed: '+n(p.failed_replicas)+'.'
+      +(p.error ? '<br>'+esc(p.error) : '')+'</div>';
+  }
+  function watchMetrics(cid, result, refresh){
+    const ticket = ++metricsWatch, displayed = result.metrics_cohort && result.metrics_cohort.id;
+    if (!result.cache_progress) return;
+    $("caOut").insertAdjacentHTML("afterbegin", '<div id="caCacheProgress">'+metricsProgressHtml(result.cache_progress)+'</div>');
+    if (!result.metrics_cohort || result.metrics_cohort.current_ensemble_complete) return;
+    (async()=>{
+      while (cid === analysisCampaign && ticket === metricsWatch){
+        await new Promise(resolve=>setTimeout(resolve, 3000));
+        if (cid !== analysisCampaign || ticket !== metricsWatch) return;
+        const status = await call("campaign_metrics_progress", {collection_id:cid});
+        if (cid !== analysisCampaign || ticket !== metricsWatch) return;
+        const box = $("caCacheProgress"); if (!box) return;
+        if (status.status !== "ok"){
+          box.innerHTML = '<div class="note warn">'+esc(msgOf(status,"Progress unavailable; cached metrics remain displayed."))+'</div>'; return;
+        }
+        box.innerHTML = metricsProgressHtml(status.cache_progress);
+        if (status.cache_progress && status.cache_progress.status === "failed") return;
+        if (status.cohort && status.cohort !== displayed){ refresh(); return; }
+      }
+    })().catch(error=>{
+      if (cid === analysisCampaign && ticket === metricsWatch && $("caCacheProgress"))
+        $("caCacheProgress").innerHTML = '<div class="note warn">'+esc(error.message || error)+' Cached metrics remain displayed.</div>';
+    });
+  }
   function showBox(id){
     ["caMoreBox","caPdfBox","caExpBox","caLogsBox"].forEach(b=>$(b).style.display = b === id && $(b).style.display === "none" ? "" : "none");
     if ($("caLogsBox").style.display === "none") logsSeq++;
@@ -1902,12 +1938,16 @@
     // (χ² at the starting values only) are counted apart from the failed ones; a
     // summary written before that distinction has no not_fitted_replicas.
     const nf = s.not_fitted_replicas;
+    const fitted = s.fitted_results == null ? s.completed_replicas : s.fitted_results;
     const counts = nf === undefined
-      ? ["Completed / failed / missing", f(s.completed_replicas)+" / "+f(s.failed_replicas)+" / "+f(s.missing_replicas)]
-      : ["Fitted / not fitted / failed / missing", f(s.completed_replicas)+" / "+f(nf)+" / "+f(s.failed_replicas)+" / "+f(s.missing_replicas)];
+      ? ["Completed / failed / missing", f(fitted)+" / "+f(s.failed_replicas)+" / "+f(s.missing_replicas)]
+      : ["Fitted / not fitted / failed / missing", f(fitted)+" / "+f(nf)+" / "+f(s.failed_replicas)+" / "+f(s.missing_replicas)];
     const bad = (Number(nf) || 0) + (Number(s.failed_replicas) || 0) > 0;
+    const goodNA = Object.keys(s.quality_thresholds || {}).length
+      ? "N/A — central-data quality evaluation incomplete" : "N/A — no scientific quality criterion";
     return '<div class="rev">'+[["Status", s.status], counts,
-      ["Good fraction", s.good_fraction == null ? "N/A — no scientific quality criterion" : (100*s.good_fraction).toFixed(1)+"%"],
+      ["Replicas used for these metrics", f(s.completed_replicas)],
+      ["Good fraction", s.good_fraction == null ? goodNA : (100*s.good_fraction).toFixed(1)+"%"],
       ["Finished-summary / submitted", s.completion_fraction == null ? "—" : (100*s.completion_fraction).toFixed(1)+"%"],
       ["Fitted / submitted", s.fitted_fraction == null ? "—" : (100*s.fitted_fraction).toFixed(1)+"%"],
       ["Individual central point χ² mean / median", f(s.mean_total_chi2)+" / "+f(s.median_total_chi2)], ["Individual central point χ² min / max", f(s.min_total_chi2)+" / "+f(s.max_total_chi2)],
@@ -1934,18 +1974,19 @@
   }
   $("caPost").onclick = async ()=>{
     if (!analysisCampaign) return; caBusy("Aggregating the replicas…");
-    const cid = analysisCampaign;
-    try{ const r = await settle(await call("postprocess_campaign", {collection_id: cid}), ()=>cid === analysisCampaign, "Evaluating central-data metrics");
-      if (cid !== analysisCampaign) return;                 // another campaign was picked meanwhile
+    const cid = analysisCampaign, ticket = metricsWatch;
+    try{ const r = await settle(await call("postprocess_campaign", {collection_id: cid}), ()=>cid === analysisCampaign && ticket === metricsWatch, "Evaluating central-data metrics");
+      if (cid !== analysisCampaign || ticket !== metricsWatch) return;
       if (!r || r.status !== "ok"){ caWarn(msgOf(r, "Postprocess failed."), r && r.detail); return; }
       $("caOut").innerHTML = '<div class="note">'+esc(r.message)+'</div>'+notFitNote(r)+summaryHtml(r.summary); loadAnalysisCampaigns();
-    } catch(e){ if (cid === analysisCampaign) caWarn("Postprocess failed: "+(e && e.message || e)); }
+      watchMetrics(cid, r, ()=>$("caPost").onclick());
+    } catch(e){ if (cid === analysisCampaign && ticket === metricsWatch) caWarn("Postprocess failed: "+(e && e.message || e)); }
   };
   $("caSum").onclick = async ()=>{
     if (!analysisCampaign) return; caBusy("Loading the fit summary…");
-    const cid = analysisCampaign;
-    try{ const sel = replicaSelection(), r = await settle(await call("campaign_summary", Object.assign({collection_id: cid}, sel ? {replicas: sel} : {})), ()=>cid === analysisCampaign, "Evaluating central-data metrics");
-      if (cid !== analysisCampaign) return;
+    const cid = analysisCampaign, ticket = metricsWatch;
+    try{ const sel = replicaSelection(), r = await settle(await call("campaign_summary", Object.assign({collection_id: cid}, sel ? {replicas: sel} : {})), ()=>cid === analysisCampaign && ticket === metricsWatch, "Evaluating central-data metrics");
+      if (cid !== analysisCampaign || ticket !== metricsWatch) return;
       // The gateway's notes here name its tool (postprocess_campaign); the panel names the button.
       const nfNote = notFitNote(r);
       if (!r || !r.summary){ caWarn(r && r.status === "ok" ? "No fit summary yet. Press Postprocess once replicas have finished."
@@ -1959,7 +2000,8 @@
         + rows.map(x=>'<tr><td class="mono">'+esc(x.reaction+":"+x.dataset_id)+'</td><td class="mono">'+esc(x.chi2_per_npt == null ? "—" : fmtNum(x.chi2_per_npt))+'</td>'
           + '<td class="mono">'+esc(x.chi2 == null ? "—" : fmtNum(x.chi2))+'</td><td class="mono">'+esc(x.npts == null ? "—" : x.npts)+'</td>'
           + '<td><div class="bar" style="width:'+Math.max(2, Math.round(100*(x.chi2_per_npt || 0)/mx))+'%"></div></td></tr>').join("")+'</tbody></table>' : "");
-    } catch(e){ if (cid === analysisCampaign) caWarn("Could not load the summary: "+(e && e.message || e)); }
+      watchMetrics(cid, r, ()=>$("caSum").onclick());
+    } catch(e){ if (cid === analysisCampaign && ticket === metricsWatch) caWarn("Could not load the summary: "+(e && e.message || e)); }
   };
   function imagesHtml(plots, cap){
     return '<div class="imgs">'+(plots || []).map(p=>'<figure><img alt="'+esc(cap(p))+'" src="'+esc(p.data_url)+'"><figcaption>'+esc(cap(p))+'</figcaption></figure>').join("")+'</div>';
@@ -1974,7 +2016,7 @@
     while (r && r.status === "running" && r.job_id){
       if (!current()) return null;
       $("caOut").innerHTML = '<div class="spin">'+esc(label || "Computing on the cluster")+'… '
-        + Math.round(r.elapsed_s || (Date.now() - t0) / 1000)+' s so far. The first evaluation of a campaign\'s replicas takes minutes; later ones read the cache.</div>';
+        + Math.round(r.elapsed_s || (Date.now() - t0) / 1000)+' s so far.</div>'+metricsProgressHtml(r.cache_progress);
       r = await call("analysis_result", {job_id: r.job_id});
     }
     return current() ? r : null;
@@ -2142,7 +2184,7 @@
       const v = view(), n = v.reduce((a, x)=>a + x.npts, 0), raw = v.reduce((a, x)=>a + (x.npts_raw || 0), 0), c2 = v.reduce((a, x)=>a + (x.chi2 || 0), 0);
       const worst = v.slice().sort((a, b)=>(b.chi2_red || 0) - (a.chi2_red || 0))[0], tension = v.filter(x=>isNum(x.z_score) && Math.abs(x.z_score) > 3).length;
       const tiles = [["Datasets", v.length + " / " + rows.length, reactions.filter(x=>onR.has(x)).join(", ")],
-        ["Points", String(n), raw ? "of " + raw + " before cuts" : ""], ["χ²/N", n ? f2(c2 / n) : "—", "mean over " + esc(r.n_replicas) + " fitted replicas"],
+        ["Points", String(n), raw ? "of " + raw + " before cuts" : ""], ["χ²/N", n ? f2(c2 / n) : "—", "ensemble-mean predictions · " + esc(r.n_replicas) + " fitted replicas"],
         ["Worst χ²_red", worst ? f2(worst.chi2_red) : "—", worst ? (worst.experiment || "") + " " + worst.dataset : "", worst ? worst.dataset : ""],
         ["|Z| > 3", String(tension), tension ? "datasets in tension" : "no dataset in tension"]];
       $("tvKpis").innerHTML = tiles.map(t=>'<div class="kpi'+(t[3] ? " link" : "")+'"'+(t[3] ? ' data-ds="'+esc(t[3])+'" title="Draw this dataset"' : "")+'><div class="k">'+esc(t[0])+'</div><div class="v">'+esc(t[1])+'</div><div class="d">'+esc(t[2])+'</div></div>').join("");

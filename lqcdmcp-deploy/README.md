@@ -1023,6 +1023,33 @@ reported explicitly. Current-reader parity does not resolve historical blockers
 or establish historical ensemble reproduction. Campaign execution remains
 disabled, and normal campaign-card behavior is unchanged.
 
+#### A campaign card from the catalog
+
+`campaign_card_from_catalog(analysis_id="JAM24.final", replicas=10, overrides)`
+returns a validate-ready card built from the compiled configuration, never by
+copying values: every parameter with its bounds and ties, both FF shapes (215
+free parameters for JAM24, where the composer's defaults give 140), the
+datasets with their normalizations and cuts, the QCD settings and the
+author-confirmed positivity flags, and Slurm resources sized for the fit.
+Datasets the current readers keep no point of (JAM24: SIA 1012 and 2006) are
+left out, because FitPack stops on an empty dataset, and the card records that.
+`overrides` updates the sections `job`, `slurm`, `qcd`, `parameters`,
+`datasets` or `reactions`; the changed keys are recorded on `card.source`.
+
+`validate_campaign` and `submit_campaign` accept such a card in full, or
+compactly as `{source, job, slurm, overrides}`, which the gateway rebuilds from
+the catalog. Two rules then fail closed:
+
+- A campaign whose name claims a catalog analysis (`JAM24...`) but whose card
+  was not built from the catalog is refused (`CATALOG_REQUIRED`).
+- A catalog-built card may differ from the catalog only where an override
+  declares the change (or by the recorded zero-point datasets). Any other
+  difference returns `valid: false` with `CATALOG_MISMATCH` and the list of
+  `undeclared_differences`, and gives no confirmation phrase.
+
+`catalog_comparison` in the validation result lists datasets, free parameters,
+normalizations, QCD settings and cuts against the published fit.
+
 #### Read-only compiled-input MCP preview
 
 `preview_compiled_input` accepts a revision-pinned `configuration_ref` from
@@ -1177,6 +1204,34 @@ submitted during this implementation; known historical reconstruction limitation
 remain separate from readiness to configure this updated campaign.
 
 
+### Readable future campaign input cards
+
+Native FitPack loads `input.py` one line at a time. New cards retain the legacy
+template and a small, line-compatible loader; readable generated definitions
+and overrides live in `stage_configuration/<sha256>.py` beside the card.
+The loader verifies those bytes before executing them. Literal initialization
+and bootstrap seed declarations remain in the card for existing provenance
+readers. This changes source formatting/storage, not the effective `conf`.
+
+For prior-initialized campaigns, the complete, original prior snapshot lives
+once in `prior_replicas/<snapshot-sha256>.json` beside the stage input, shared
+by every replica. Both its exact file bytes and canonical snapshot hash are
+verified. Publication is atomic and refuses to overwrite different existing
+bytes. The existing manifests/lock retain their full audit snapshots, and the
+pre-submission barrier checks the new settings/reference as well as those
+manifests. Native initialization still receives the same complete dictionary;
+historical inline cards remain supported. Keep the card and its referenced
+files together on shared Ceph. Relocation requires rematerializing references;
+copying only the card is not a portable standalone campaign export.
+
+FF publication figures search all selected panels for text space, then try
+smaller readable fonts. If annotations or legends still cannot fit without
+covering bands, a separate footer is reserved below the x labels. Long campaign
+labels wrap and expand that footer. Dense flavor panels retain a small corner
+label rather than causing the entire figure to fail. Numerical FF values,
+interval calculations, hadron colors, LaTeX, three columns and logarithmic
+display limits remain unchanged.
+
 ### Central-data scientific chi-square reporting
 
 Scientific replica scores and chi-square selections use only point residuals
@@ -1204,6 +1259,23 @@ theory. With theory-dependent beta, this equivalence is not asserted: the output
 retains the requested mean predictions and labels the mean-nuisance convention;
 it does not silently perform another profiling operation that changes them.
 
+The **By experiment** dataset table, overview/KPI totals, CSV and LaTeX exports
+use that same ensemble calculation and selected, pinned replica cohort.
+`chi2`/`chi2_red` are the central point-residual chi-square of the pointwise mean
+complete predictions, not the mean of individual chi-squares; `z_score` applies
+the existing chi-square-CDF-to-normal transformation with dataset Npts degrees
+of freedom. `chi2_cor` is the sum of squared mean signed nuisance residuals.
+`chi2_norm` evaluates the native normalization penalty at mean fitted N: native
+`_get_nres` is `(N-1)/dN` or zero for its fixed/linked/covariance exclusions, so
+the square of its mean equals the penalty at mean N. Finite `dN=1000` remains
+finite. `norm`/`norm_std` retain the fitted normalization mean and sample standard
+deviation across selected replicas (no standard deviation for one replica).
+Cached `theory` already contains normalization and the central-profiled shift;
+reporting never applies either again. `mean_individual_chi2*`, `objective_mean`,
+and the explicitly labeled best-replica experiment diagnostic remain separate
+from the ensemble result. Unavailable zero-point datasets remain unavailable;
+a complete cached partial cohort is labeled by its actual replica count.
+
 `campaign_summary` and `postprocess_campaign` reuse the prediction cache and the
 existing asynchronous analysis jobs for expensive initial evaluation. Poll
 `analysis_result` when they return `running`. Cache metric records use a separate
@@ -1215,6 +1287,42 @@ needed, rather than treated as complete scientific metrics. Distribution-plot
 cache formats and numerical calculations are unchanged. Chi-square-based PDF,
 FF and experimental selections require matching central scores; there is no
 bootstrap fallback. Default selections still keep every fitted replica.
+
+#### Incremental prediction cohorts and dashboard progress
+
+Summary, Postprocess and experimental analysis coordinate one central-cache
+builder per campaign. An OS advisory lock also serializes builders across
+gateway processes. Each invocation evaluates at most eight missing/changed
+replicas, using the existing scientific container and calculation. Every
+completed replica (all configured datasets together) is journaled atomically
+with full-precision arrays, a payload hash, dataset identity and exact source
+fingerprints. A restart replays committed rows; interrupted temporary files
+are never treated as completed replicas. Failed replicas remain explicit
+blockers rather than being dropped from the requested cohort.
+
+The store is `<campaign>/analysis/cache/incremental/`: `rows/` and `static/`
+hold recoverable batches, `builds/` pins target identities and signatures,
+`cohorts/` holds complete snapshots, and atomic `active.json` selects the last
+complete cohort. Legacy `datasets/` files remain untouched; the first adoption
+uses hard links where possible, with a copy fallback. No cleanup or destructive
+migration is performed. New fitted replicas cannot enter an in-progress cohort;
+they belong to a later cohort. Changed input invalidates the scientific context;
+changed MSR/summary fingerprints invalidate only the corresponding replica.
+
+While extending a valid cohort, the browser displays its actual replica count
+and metrics immediately, with cached/new/remaining/failed progress, and refreshes
+after publication. It never labels those metrics as the complete current
+ensemble. `campaign_metrics_progress(collection_id)` reads compact durable
+progress without starting a scientific calculation. First-ever cohorts retain
+the existing asynchronous `analysis_result` workflow. Chi-square selections and
+experimental plots use the same pinned cohort and score ledger, even if another
+cohort finishes during a request. Ordinary PDF/FF plotting without a chi-square
+selection remains independent of central-cache construction.
+
+This changes persistence and orchestration, not scientific evaluation,
+normalization, profiling, threading, credible intervals or figure styling.
+Repeated W+charm grid loading remains in the existing FitPack implementation;
+no numerical-library thread settings or protected FitPack code are changed.
 
 Summary fields `mean_total_chi2`, `median_total_chi2`, `min_total_chi2` and
 `max_total_chi2` describe individual central-data point-residual chi-square and

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import shutil
+from pprint import pformat
 from pathlib import Path
 
 from .dataset_catalog import CONFIGURATION_DATASETS, CONFIGURATION_ONLY_REACTIONS, configuration_dataset_block, sidis_dis_cut_values
@@ -70,7 +71,11 @@ def _enabled_cuts(stage: ResolvedStage) -> dict:
     return out
 
 
-def _render_stage_override_block(stage: ResolvedStage) -> str:
+def _literal(value):
+    return pformat(value, width=100, sort_dicts=False)
+
+
+def _render_stage_override_block(stage: ResolvedStage, prior_reference=None) -> str:
     # FitPack input files are Python programs. The safest bridge is therefore a
     # Python snippet appended to the copied template. When FitPack executes the
     # input card, these assignments/filtering operations mutate `conf` for this
@@ -142,29 +147,28 @@ def _render_stage_override_block(stage: ResolvedStage) -> str:
         '',
         '# --- JAMAI stage overrides ---',
         # The lines below are written as source code into the generated input.py.
-        # Keep them compact because this block is meant to be read by FitPack,
-        # not imported as helper functions.
+        # Keep the generated source readable without changing literal values.
         f'_ALLOWED_REACTIONS = {stage.reactions!r}',
-        f'_STAGE_DATASETS = {stage.datasets!r}',
+        f'_STAGE_DATASETS = {_literal(stage.datasets)}',
         f'_ACTIVE_FIT_OBJECTS = {stage.effective_fit_objects!r}',
-        f'_PARAMETER_OVERRIDES = {parameter_overrides!r}',
-        f'_NORM_OVERRIDES = {norm_overrides!r}',
+        f'_PARAMETER_OVERRIDES = {_literal(parameter_overrides)}',
+        f'_NORM_OVERRIDES = {_literal(norm_overrides)}',
         "_DATASET_CONF = conf.setdefault('datasets', {})",
-        "_FILTER_STAGE_MAPPING = lambda _mapping, _allowed_ids: [_mapping.pop(_dataset_id, None) for _dataset_id in list(_mapping.keys()) if _dataset_id not in _allowed_ids] if isinstance(_mapping, dict) else None",
-        "_FREEZE_OBJECT_PARAMS = lambda _params: [(_entry.__setitem__('fixed', True) if isinstance(_entry, dict) and (_entry.get('fixed') is False or 'fixed' not in _entry) else None) for _entry in _params.values()] if isinstance(_params, dict) else None",
-        "for _reaction in list(_DATASET_CONF.keys()): _DATASET_CONF.pop(_reaction, None) if _reaction not in _ALLOWED_REACTIONS else None",
-        "for _reaction in _ALLOWED_REACTIONS: _dataset_entry = _DATASET_CONF.get(_reaction, {}); _dataset_ids = _STAGE_DATASETS.get(_reaction, []); _allowed_ids = set(_dataset_ids) if isinstance(_dataset_ids, (list, tuple, set)) else set(); _FILTER_STAGE_MAPPING(_dataset_entry.get('xlsx') if isinstance(_dataset_entry, dict) else None, _allowed_ids); _FILTER_STAGE_MAPPING(_dataset_entry.get('norm') if isinstance(_dataset_entry, dict) else None, _allowed_ids)",
+        "def _FILTER_STAGE_MAPPING(_mapping, _allowed_ids):\n    if isinstance(_mapping, dict):\n        for _dataset_id in list(_mapping):\n            if _dataset_id not in _allowed_ids:\n                _mapping.pop(_dataset_id, None)",
+        "def _FREEZE_OBJECT_PARAMS(_params):\n    if isinstance(_params, dict):\n        for _entry in _params.values():\n            if isinstance(_entry, dict) and (_entry.get('fixed') is False or 'fixed' not in _entry):\n                _entry['fixed'] = True",
+        "for _reaction in list(_DATASET_CONF):\n    if _reaction not in _ALLOWED_REACTIONS:\n        _DATASET_CONF.pop(_reaction, None)",
+        "for _reaction in _ALLOWED_REACTIONS:\n    _dataset_entry = _DATASET_CONF.get(_reaction, {})\n    _dataset_ids = _STAGE_DATASETS.get(_reaction, [])\n    _allowed_ids = set(_dataset_ids) if isinstance(_dataset_ids, (list, tuple, set)) else set()\n    if isinstance(_dataset_entry, dict):\n        _FILTER_STAGE_MAPPING(_dataset_entry.get('xlsx'), _allowed_ids)\n        _FILTER_STAGE_MAPPING(_dataset_entry.get('norm'), _allowed_ids)",
         "assert all(_key in _ACTIVE_FIT_OBJECTS for _key in _PARAMETER_OVERRIDES), 'Cannot override inactive object'",
-        "for _object_name, _overrides in _PARAMETER_OVERRIDES.items(): [conf['params'][_object_name][_param_name].update(_override) for _param_name, _override in _overrides.items()]",
-        "for _object_name, _object_params in list(conf.get('params', {}).items()): _FREEZE_OBJECT_PARAMS(_object_params) if _object_name not in _ACTIVE_FIT_OBJECTS else None",
-        "for _reaction, _dataset_overrides in _NORM_OVERRIDES.items(): _norm_entries = _DATASET_CONF.setdefault(_reaction, {}).setdefault('norm', {}); [_norm_entries.setdefault(int(_dataset_id), {}).update(_override) for _dataset_id, _override in _dataset_overrides.items()]",
+        "for _object_name, _overrides in _PARAMETER_OVERRIDES.items():\n    for _param_name, _override in _overrides.items():\n        conf['params'][_object_name][_param_name].update(_override)",
+        "for _object_name, _object_params in list(conf.get('params', {}).items()):\n    if _object_name not in _ACTIVE_FIT_OBJECTS:\n        _FREEZE_OBJECT_PARAMS(_object_params)",
+        "for _reaction, _dataset_overrides in _NORM_OVERRIDES.items():\n    _norm_entries = _DATASET_CONF.setdefault(_reaction, {}).setdefault('norm', {})\n    for _dataset_id, _override in _dataset_overrides.items():\n        _norm_entries.setdefault(int(_dataset_id), {}).update(_override)",
         # FemtoMind gateway additions. Upstream only removed datasets from the
         # template, so a dataset the template does not list was silently
         # dropped; selected ids are added here with the repository's data path.
         f'_STAGE_CUTS = {_enabled_cuts(stage)!r}',
-        "for _reaction in _ALLOWED_REACTIONS: _dataset_entry = _DATASET_CONF.setdefault(_reaction, {}); _xlsx = _dataset_entry.setdefault('xlsx', {}); [_xlsx.setdefault(int(_dataset_id), '%s/expdata/%d.xlsx' % (_reaction, int(_dataset_id))) for _dataset_id in _STAGE_DATASETS.get(_reaction, [])]",
+        "for _reaction in _ALLOWED_REACTIONS:\n    _dataset_entry = _DATASET_CONF.setdefault(_reaction, {})\n    _xlsx = _dataset_entry.setdefault('xlsx', {})\n    for _dataset_id in _STAGE_DATASETS.get(_reaction, []):\n        _xlsx.setdefault(int(_dataset_id), '%s/expdata/%d.xlsx' % (_reaction, int(_dataset_id)))",
         # Upstream carried the cuts in the manifest but never wrote them.
-        "for _reaction, _filters in _STAGE_CUTS.items(): _DATASET_CONF.setdefault(_reaction, {})['filters'] = _filters",
+        "for _reaction, _filters in _STAGE_CUTS.items():\n    _DATASET_CONF.setdefault(_reaction, {})['filters'] = _filters",
         "# Temporary app compatibility policy; remove when pion PDFs support IDIS v1.",
         "conf.pop('dis_version', None)",
         f"conf['dis version'] = {dis_version_for(stage.effective_fit_objects)!r}",
@@ -177,7 +181,7 @@ def _render_stage_override_block(stage: ResolvedStage) -> str:
         f"conf['alphaSmode'] = {stage.qcd.get('asMode', 'backward')!r}",
         f"conf['beta version'] = {stage.qcd.get('betaVersion', 1)!r}",
         f"conf['sia version'] = {stage.qcd.get('siaVersion', 1)!r}",
-        "[conf.pop(_obsolete, None) for _obsolete in ('sea_type', 'strange off', 's_veto', 'grid-8 path')]",
+        "for _obsolete in ('sea_type', 'strange off', 's_veto', 'grid-8 path'):\n    conf.pop(_obsolete, None)",
         f"conf['flat par'] = {(stage.params.get('initializationMode') or stage.params.get('initialization')) == 'random_within_bounds'!r}",
         *([f"conf['grid path'] = {stage.qcd.get('grid_path')!r}"] if stage.qcd.get('grid_path') else []),
         f"conf['bootstrap'] = {bool(stage.job.get('bootstrap', False))!r}",
@@ -185,16 +189,40 @@ def _render_stage_override_block(stage: ResolvedStage) -> str:
         # Explicit campaign choices override template defaults. Legacy manifests
         # without these fields retain the previous all-enabled behavior.
         *[f"conf[{(obj + ' positivity')!r}] = {value!r}" for obj, value in positivity.items()],
-        *([f"conf['jamai prior replicas'] = {stage.params['prior_replicas']!r}"] if stage.params.get('prior_replicas') else ["conf.pop('jamai prior replicas', None)"]),
+        *([f"conf['jamai prior replicas'] = {_literal(stage.params['prior_replicas'])}"] if stage.params.get('prior_replicas') and prior_reference is None else
+          _prior_loader(prior_reference) if prior_reference else ["conf.pop('jamai prior replicas', None)"]),
         f"conf['jamai parameter initialization'] = {stage.params.get('initializationMode') or stage.params.get('initialization', 'default_prior')!r}",
         f"conf['jamai parameter random seed'] = {stage.params.get('randomSeed', None)!r}",
         f"conf['jamai per replica seed'] = {bool(stage.params.get('perReplicaSeed', True))!r}",
         f"conf['jamai base seed'] = {stage.params.get('baseSeed', 120000)!r}",
-        f"conf['jamai parameter sectors'] = {stage.params.get('sectors', [])!r}",
+        f"conf['jamai parameter sectors'] = {_literal(stage.params.get('sectors', []))}",
         "conf['jamai bootstrap seed offset'] = 100000",
         '',
     ]
     return '\n'.join(lines)
+
+
+def _prior_loader(reference):
+    # Standalone stdlib loader: cards also work when FitPack copies them into a
+    # replica directory, and analysis readers need no new application imports.
+    return [f'_JAMAI_PRIOR_REFERENCE = {_literal(reference)}',
+            'import json as _jamai_json', 'import hashlib as _jamai_hashlib',
+            'from pathlib import Path as _JamaiPath',
+            "_jamai_raw = _JamaiPath(_JAMAI_PRIOR_REFERENCE['path']).read_bytes()",
+            "if _jamai_hashlib.sha256(_jamai_raw).hexdigest() != _JAMAI_PRIOR_REFERENCE['file_sha256']:",
+            "    raise ValueError('Prior snapshot file integrity failure')",
+            '_JAMAI_PRIOR_SNAPSHOT = _jamai_json.loads(_jamai_raw)',
+            '_jamai_payload = dict(_JAMAI_PRIOR_SNAPSHOT)',
+            "_jamai_payload.pop('sha256', None)",
+            '_jamai_encoded = _jamai_json.dumps(',
+            '    _jamai_payload, sort_keys=True, ensure_ascii=False,',
+            "    allow_nan=False, separators=(',', ':'),",
+            ").encode('utf-8')",
+            '_jamai_digest = _jamai_hashlib.sha256(_jamai_encoded).hexdigest()',
+            "if (_jamai_digest != _JAMAI_PRIOR_REFERENCE['snapshot_sha256']",
+            "        or _jamai_digest != _JAMAI_PRIOR_SNAPSHOT.get('sha256')):",
+            "    raise ValueError('Prior snapshot integrity failure')",
+            "conf['jamai prior replicas'] = _JAMAI_PRIOR_SNAPSHOT"]
 
 
 def materialize_stage_input(template_path: str | Path, output_path: str | Path, stage: ResolvedStage,
@@ -244,22 +272,26 @@ def materialize_stage_input(template_path: str | Path, output_path: str | Path, 
     # Validate sources before copying, then compose the single final input.
     # Replace only the five approved reaction blocks before dataset pruning.
     # This also removes historical Jet filters and preserves omitted WC filters.
-    fragments = [f"\nconf.setdefault('datasets', {{}})[{reaction!r}] = {PROTON_REACTION_DATASETS[reaction]!r}"
+    fragments = [f"\nconf.setdefault('datasets', {{}})[{reaction!r}] = {_literal(PROTON_REACTION_DATASETS[reaction])}"
                  for reaction in stage.reactions if reaction in PROTON_REACTION_DATASETS]
     if 'dy' in stage.reactions:
-        fragments.append(f"\nconf.setdefault('datasets', {{}})['dy'] = {DY_DATASET_DEFAULTS!r}")
+        fragments.append(f"\nconf.setdefault('datasets', {{}})['dy'] = {_literal(DY_DATASET_DEFAULTS)}")
     for reaction, block in ff_blocks.items():
-        fragments.append(f"\nconf.setdefault('datasets', {{}})[{reaction!r}] = {block!r}")
+        fragments.append(f"\nconf.setdefault('datasets', {{}})[{reaction!r}] = {_literal(block)}")
     for key, params in ff_params.items():
-        fragments.append(f"\nconf.setdefault('params', {{}})[{key!r}] = {params!r}")
+        fragments.append(f"\nconf.setdefault('params', {{}})[{key!r}] = {_literal(params)}")
         fragments.extend(f"conf[{name!r}] = {value!r}" for name, value in ff_library(key)['settings'].items())
     if ff_objects:
         # The proton template is only a settings scaffold for FF-only SIA.
         # Remove unused template distributions instead of initializing an unrelated PDF.
         keep = set(stage.fit_objects) | set(stage.frozen_objects)
         fragments.append(f"\n_FF_STAGE_OBJECTS = {sorted(keep)!r}")
-        fragments.append("for _key in ('pdf', 'pdf-pion', 'ffpion', 'ffkaon', 'ffhadron'): conf.get('params', {}).pop(_key, None) if _key not in _FF_STAGE_OBJECTS else None")
-    overrides = _render_stage_override_block(stage)
+        fragments.append("for _key in ('pdf', 'pdf-pion', 'ffpion', 'ffkaon', 'ffhadron'):\n    if _key not in _FF_STAGE_OBJECTS:\n        conf.get('params', {}).pop(_key, None)")
+    reference = None
+    if stage.params.get('prior_replicas'):
+        from .prior_replicas import store_snapshot
+        reference = store_snapshot(stage.params['prior_replicas'], Path(output_path).parent / 'prior_replicas')
+    overrides = _render_stage_override_block(stage, reference)
     for key, source in stage.params.get('library_sources', {}).items():
         if key in FF_OBJECTS:
             if source.get('sha256') and source['sha256'] != ff_library(key)['sha256']:
@@ -278,21 +310,49 @@ def materialize_stage_input(template_path: str | Path, output_path: str | Path, 
         for key, library in libraries.items():
             fragments.extend([
                 f'\n# {key} library: {library["source"]} (sha256 {library["sha256"]})',
-                f"conf['params'][{key!r}] = {library['params']!r}",
+                f"conf['params'][{key!r}] = {_literal(library['params'])}",
             ])
             fragments.extend(f'conf[{name!r}] = {value!r}'
                              for name, value in library['settings'].items())
-            fragments.extend(f"conf['datasets'][{reaction!r}] = {dataset!r}"
+            fragments.extend(f"conf['datasets'][{reaction!r}] = {_literal(dataset)}"
                              for reaction, dataset in library['datasets'].items()
                              if reaction in stage.reactions)
         if 'pdf-pion' in libraries and 'pdf' not in stage.effective_fit_objects:
-            fragments.append(f"conf['params']['pdf'] = {libraries['pdf-pion']['fixed_companions']['pdf']!r}")
+            fragments.append(f"conf['params']['pdf'] = {_literal(libraries['pdf-pion']['fixed_companions']['pdf'])}")
         if 'ln' in stage.reactions:
             fragments.append(f"conf['path2idistab'] = {str(Path(root) / 'grids' / 'grids-idis' / 'distab')!r}")
     output_file = Path(copy_stage_input_template(template_path, output_path))
+    # Native tools.config.load_config executes each input line separately.
+    # Keep multiline human-readable settings in a verified source file, and
+    # use only complete single-line statements in the small legacy entry card.
+    from .prior_replicas import publish_immutable
+    source = ('\n'.join(fragments) + overrides).encode('utf-8')
+    source_sha = hashlib.sha256(source).hexdigest()
+    settings = publish_immutable(output_file.parent / 'stage_configuration', source_sha + '.py', source)
     with output_file.open('a', encoding='utf-8') as f:
-        f.write('\n'.join(fragments))
-        f.write(overrides)
+        f.write('\n# Readable generated settings; original template above is retained.\n')
+        f.write(f'_JAMAI_SETTINGS_PATH = {str(settings)!r}\n')
+        f.write(f'_JAMAI_SETTINGS_SHA256 = {source_sha!r}\n')
+        f.write('import hashlib as _jamai_hashlib\n')
+        f.write('from pathlib import Path as _JamaiSettingsPath\n')
+        f.write('_jamai_settings = _JamaiSettingsPath(_JAMAI_SETTINGS_PATH).read_bytes()\n')
+        f.write("if _jamai_hashlib.sha256(_jamai_settings).hexdigest() != _JAMAI_SETTINGS_SHA256: raise ValueError('Campaign settings integrity failure')\n")
+        f.write("exec(compile(_jamai_settings, _JAMAI_SETTINGS_PATH, 'exec'), globals())\n")
+        # Existing setting/seed/provenance readers inspect scalar assignments
+        # in this card. Keep all of them visible, not just bootstrap controls.
+        import ast
+        settings_text = source.decode('utf-8')
+        for node in ast.parse(settings_text).body:
+            if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Subscript)
+                    and isinstance(node.targets[0].value, ast.Name) and node.targets[0].value.id == 'conf'
+                    and isinstance(node.targets[0].slice, ast.Constant)):
+                try:
+                    value = ast.literal_eval(node.value)
+                except (ValueError, TypeError):
+                    continue
+                if type(value) in (str, int, float, bool, type(None)):
+                    f.write(ast.get_source_segment(settings_text, node) + '\n')
     return str(output_file)
 
 

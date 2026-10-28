@@ -4,6 +4,51 @@ import hashlib,json,math,re
 from pathlib import Path
 
 SCHEMA='femtomind.prior-replicas.v1'
+
+REFERENCE_SCHEMA = 'femtomind.prior-reference.v1'
+
+
+def store_snapshot(data, directory):
+    """One immutable, content-addressed payload per stage, shared by all workers."""
+    verify(data)
+    raw = json.dumps(data, ensure_ascii=False, allow_nan=False, separators=(',', ':')).encode('utf-8')
+    path = publish_immutable(directory, data['sha256'] + '.json', raw)
+    return {'schema': REFERENCE_SCHEMA, 'path': str(path),
+            'file_sha256': hashlib.sha256(raw).hexdigest(), 'snapshot_sha256': data['sha256']}
+
+
+def publish_immutable(directory, filename, raw):
+    """Atomically publish generated campaign bytes without replacing old files."""
+    import os
+    import tempfile
+    directory = Path(directory).resolve()
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / filename
+    fd, temporary = tempfile.mkstemp(prefix='.prior-', suffix='.tmp', dir=directory)
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+        try:
+            os.link(temporary, path)  # Atomic publication, never replace an existing payload.
+        except FileExistsError:
+            if path.read_bytes() != raw:
+                raise ValueError('Existing campaign payload differs or is corrupted: ' + str(path))
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+    return path
+
+
+def load_snapshot_reference(reference):
+    """Resolve generated-card metadata for pre-submission integrity verification."""
+    if reference.get('schema') != REFERENCE_SCHEMA:
+        raise ValueError('Unsupported prior snapshot reference')
+    raw = Path(reference['path']).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != reference['file_sha256']:
+        raise ValueError('Prior snapshot file integrity failure')
+    data = verify(json.loads(raw))
+    if data['sha256'] != reference['snapshot_sha256']:
+        raise ValueError('Prior snapshot reference integrity failure')
+    return data
 def identity(row):
     if not isinstance(row,(list,tuple)) or len(row)!=3 or type(row[0]) is not int or row[0] not in (1,2):
         raise ValueError('Expected FitPack identity [1, object, coefficient] or [2, reaction, dataset]')
