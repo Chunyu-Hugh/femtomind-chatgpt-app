@@ -2808,6 +2808,9 @@ def _normalize_card(card, library):
     if j["optimizer"] not in CAMPAIGN_CHOICES["optimizer"]:
         errors.append(f"Optimizer must be one of {CAMPAIGN_CHOICES['optimizer']}.")
     j["bootstrap"] = j.get("bootstrap") in (True, "ensemble", "true", "True", 1)
+    # What the gateway may resubmit on its own, decided now: part of the card,
+    # so the submission's confirmation phrase covers it.
+    j["recovery"] = _normalize_recovery(j.get("recovery"), errors)
     j["campaignName"] = re.sub(r"[^A-Za-z0-9._-]+", "_", str(j.get("campaignName") or "").strip()).strip("._-")[:40]
     if not j["campaignName"]:
         errors.append("Name the campaign.")
@@ -2885,6 +2888,8 @@ def _card_summary(norm):
                          else "central values only",
             "replicas": norm["job"]["replicas"], "max_iterations": norm["job"]["maxIterations"],
             "tolerance": norm["job"]["tolerance"], "optimizer": norm["job"]["optimizer"],
+            **({"recovery": dict(norm["job"]["recovery"], meaning=_recovery_meaning(norm["job"]["recovery"]))}
+               if norm["job"].get("recovery") else {}),
             "slurm": {k: norm["slurm"][k] for k in ("partition_effective", "time", "mem", "cpus")}}
 
 
@@ -5848,6 +5853,182 @@ def rerun_replicas(collection_id="", replicas="failed", confirm="", username="",
     return result
 
 
+# ---- automatic recovery: bounded reruns the submission agreed to --------------
+
+# A card's job.recovery says what the gateway may resubmit on its own: a replica
+# that Slurm ended at its time limit (TIMEOUT) continues from its checkpoint
+# (rerun_replicas resume=true); one that ran out of memory (OUT_OF_MEMORY) runs
+# again with twice the memory, up to RECOVERY_MEM_CAP_G. At most max_attempts
+# per replica. The confirmation of the submission covers it (the policy is part
+# of the confirmed card); nothing else is ever resubmitted. Every attempt and
+# every refusal is in the registry entry (campaign_status shows it), the audit
+# log and reproduce.json. JAM_GW_RECOVERY_INTERVAL=0 turns the loop off.
+RECOVERY_MAX_ATTEMPTS = 3
+RECOVERY_MEM_CAP_G = 64
+RECOVERY_INTERVAL = int(os.environ.get("JAM_GW_RECOVERY_INTERVAL", SITE.get("recovery_interval", 300)) or 0)
+
+
+def _normalize_recovery(rec, errors):
+    """A card's job.recovery, checked; None when it asks for nothing."""
+    if rec in (None, False, "", "off", {}):
+        return None
+    if not isinstance(rec, dict) or set(rec) - {"timeout", "oom", "max_attempts"}:
+        errors.append("job.recovery: {timeout: 'resume' or 'stop', oom: 'more_memory' or 'stop', max_attempts: 1-3}.")
+        return None
+    r = {"timeout": rec.get("timeout", "stop"), "oom": rec.get("oom", "stop"), "max_attempts": rec.get("max_attempts", 1)}
+    try:
+        r["max_attempts"] = int(r["max_attempts"])
+        if not 1 <= r["max_attempts"] <= RECOVERY_MAX_ATTEMPTS:
+            raise ValueError
+    except (TypeError, ValueError):
+        errors.append(f"job.recovery.max_attempts: 1 to {RECOVERY_MAX_ATTEMPTS}.")
+    if r["timeout"] not in ("resume", "stop") or r["oom"] not in ("more_memory", "stop"):
+        errors.append("job.recovery: timeout 'resume' or 'stop'; oom 'more_memory' or 'stop'.")
+    if HUMAN_GATE and (r["timeout"], r["oom"]) != ("stop", "stop"):
+        errors.append("job.recovery: this gateway requires a person to approve every write, so it cannot "
+                      "resubmit replicas on its own; leave recovery out and use rerun_replicas.")
+    return r if (r["timeout"], r["oom"]) != ("stop", "stop") else None
+
+
+def _recovery_meaning(policy):
+    parts = []
+    if policy.get("timeout") == "resume":
+        parts.append("a replica that hits its time limit continues from its checkpoint")
+    if policy.get("oom") == "more_memory":
+        parts.append(f"one that runs out of memory runs again with twice the memory (at most {RECOVERY_MEM_CAP_G}G)")
+    return ("The gateway resubmits on its own, without asking again: " + "; ".join(parts)
+            + f"; at most {policy.get('max_attempts', 1)} time(s) per replica. Anything else that fails waits for you.")
+
+
+_RECOVERY_STATE = r'''
+import json, os, subprocess
+stage = __STAGE__; total = __TOTAL__; jobs = __JOBS__
+ended = {'COMPLETED', 'CANCELLED', 'FAILED', 'TIMEOUT', 'PREEMPTED', 'BOOT_FAIL', 'NODE_FAIL',
+         'DEADLINE', 'OUT_OF_MEMORY', 'REVOKED', 'SPECIAL_EXIT'}
+fits = [j for j in jobs if not j.get('reproduce')]
+ids = {str(j.get('job_id')) for j in fits}
+queued, read = set(), True
+try:
+    q = subprocess.run(['squeue', '-h', '-r', '-u', __USER__, '-o', '%F|%K|%T'], capture_output=True,
+                       text=True, timeout=30) if ids else None
+    if q and q.returncode != 0:
+        raise RuntimeError(q.stderr)
+    for line in (q.stdout if q else '').splitlines():
+        job, task, s = (line.strip().split('|') + ['', ''])[:3]
+        if job in ids and task.isdigit() and s and s not in ended:
+            queued.add(int(task))
+except Exception:
+    read = False
+latest = {}
+for j in fits:
+    for i in (j.get('replicas') or range(int(j.get('first') or 1), int(j.get('last') or 0) + 1)):
+        latest[int(i)] = j
+slurm = sacct_states(ids) if read else {}
+out = {}
+for i in range(1, total + 1):
+    state, summary = replica_state(os.path.join(stage, 'current', 'replica_%d' % i, 'fit_summary.json'))
+    j = latest.get(i) or {}
+    end = slurm.get((str(j.get('job_id')), i)) or {}
+    out[str(i)] = {'state': 'queued' if i in queued else (state or 'no_output'), 'slurm': end.get('state'),
+                   'job_id': j.get('job_id'), 'mem': (j.get('slurm') or {}).get('mem')}
+print(json.dumps({'queue_read': read, 'replicas': out}))
+'''
+
+
+def _doubled_mem(mem):
+    m = re.fullmatch(r"([1-9]\d{0,4})([MG])", str(mem or "").strip())
+    if not m:
+        return None
+    gb = int(m.group(1)) / (1024 if m.group(2) == "M" else 1)
+    new = gb * 2
+    return None if new > RECOVERY_MEM_CAP_G else (f"{int(new)}G" if new >= 1 else f"{int(new * 1024)}M")
+
+
+def _recover_campaign(u, e, policy):
+    """One look at a campaign under a recovery policy; returns what it did."""
+    if e.get("status") == "cancelled" or "rerun_replicas" in TOOLS_DENY:
+        return []
+    r = _run_ifarm_py(u, _analysis_code(_REPLICA_STATE + _RECOVERY_STATE, STAGE=_stage_root(u, e),
+                                        TOTAL=int(e.get("replicas") or 0), JOBS=e.get("jobs") or [], USER=u),
+                      timeout=90, cap=2000000)
+    d = _last_json(r)
+    if not d or not d.get("queue_read"):
+        return []                                     # an unknown queue changes nothing
+    attempts = {str(k): int(v) for k, v in (e.get("recovery_attempts") or {}).items()}
+    groups = {"TIMEOUT": [], "OUT_OF_MEMORY": {}}
+    for i, x in d["replicas"].items():
+        if x["state"] != "no_output" or attempts.get(i, 0) >= policy.get("max_attempts", 1):
+            continue
+        if x["slurm"] == "TIMEOUT" and policy.get("timeout") == "resume":
+            groups["TIMEOUT"].append(int(i))
+        elif x["slurm"] == "OUT_OF_MEMORY" and policy.get("oom") == "more_memory":
+            groups["OUT_OF_MEMORY"].setdefault(x.get("mem") or (e["input_card"].get("slurm") or {}).get("mem"), []).append(int(i))
+    actions = []
+    batches = ([("TIMEOUT", sorted(groups["TIMEOUT"]), {"resume": True})] if groups["TIMEOUT"] else [])
+    for mem, reps in groups["OUT_OF_MEMORY"].items():
+        new = _doubled_mem(mem)
+        batches.append(("OUT_OF_MEMORY", sorted(reps), {"mem": new} if new else None))
+    for reason, reps, kwargs in batches:
+        record = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "reason": reason, "replicas": reps}
+        if kwargs is None:
+            record.update(action="stopped", why=f"twice the memory would exceed {RECOVERY_MEM_CAP_G}G")
+            stop = True
+        else:
+            spec = ",".join(str(i) for i in reps)
+            plan = rerun_replicas(e["collection_id"], replicas=spec, username=u, **kwargs)
+            res = plan if plan.get("status") != "needs_confirmation" else rerun_replicas(
+                e["collection_id"], replicas=spec, confirm=plan["confirmation_phrase"], username=u, **kwargs)
+            if res.get("status") == "ok" and not res.get("rerun"):
+                continue                              # queued again meanwhile: nothing to do, nothing spent
+            stop = res.get("status") != "submitted"
+            record.update(action="stopped" if stop else ("resumed" if reason == "TIMEOUT" else "more_memory"),
+                          **({"job_id": res.get("job_id"), **({"mem": kwargs["mem"]} if "mem" in kwargs else {})}
+                             if not stop else {"why": res.get("message") or res.get("code") or res.get("status")}))
+        for i in reps:
+            # A refusal ends recovery for these replicas: it is not tried again.
+            attempts[str(i)] = policy.get("max_attempts", 1) if stop else attempts.get(str(i), 0) + 1
+        fresh = _collection(u, e["collection_id"]) or e
+        fresh = dict(fresh, recovery_attempts=attempts, recovery_log=(list(fresh.get("recovery_log") or []) + [record])[-50:])
+        _registry(u, {"kind": "upsert", "entry": fresh})
+        _effect("auto_rerun", u, campaign_folder=e["campaign_folder"], reason=reason, replicas=_array_ranges(reps),
+                action=record["action"], slurm_job_id=str(record.get("job_id") or ""))
+        e = fresh
+        actions.append(record)
+    return actions
+
+
+def _recovery_users():
+    users = [GATEWAY_OWNER] + sorted(set(USERS_SHA256) - {GATEWAY_OWNER})
+    return [x for x in users if x and _chain_alive(x)]
+
+
+def _recovery_pass():
+    done = {}
+    for u in _recovery_users():
+        _tls.user, _tls.principal, _tls.sid = u, "recovery", "recovery"
+        try:
+            for e in _registry(u, {"kind": "read"}):
+                policy = ((e.get("input_card") or {}).get("job") or {}).get("recovery")
+                if policy:
+                    acted = _recover_campaign(u, e, policy)
+                    if acted:
+                        done[(u, e["collection_id"])] = acted
+        except Exception as exc:                       # one user's trouble never stops the loop
+            _hlog(f"recovery pass for {u} failed: {type(exc).__name__}: {exc}")
+        finally:
+            _tls.user = _tls.principal = _tls.sid = ""
+    return done
+
+
+def _recovery_loop():
+    while True:
+        time.sleep(RECOVERY_INTERVAL)
+        try:
+            _recovery_pass()
+        except Exception as exc:
+            _hlog(f"recovery loop: {type(exc).__name__}: {exc}")
+
+
 # ---- collections and status ----------------------------------------------------
 
 # squeue can fail (a busy controller, a timeout). The queue is then unknown,
@@ -6102,7 +6283,7 @@ def _card_brief(summary):
     brief = {k: summary[k] for k in ("object", "fit_objects", "frozen_objects", "free_parameters",
                                      "fixed_parameters", "reactions", "datasets", "normalization_parameters",
                                      "qcd", "initialization", "inference", "replicas", "max_iterations",
-                                     "tolerance", "optimizer", "slurm", "dis_version") if k in summary}
+                                     "tolerance", "optimizer", "recovery", "slurm", "dis_version") if k in summary}
     brief["changed_parameters"] = len(summary.get("changed_parameters") or [])
     cuts = {}
     for reaction, cs in (summary.get("cuts") or {}).items():
@@ -6162,6 +6343,11 @@ def campaign_status(collection_id="", username="", wait_for="", timeout=None, de
            "log_pattern": log_patterns["stdout"], "error_log_pattern": log_patterns["stderr"],
            "summary": (_card_summary(e["input_card"]) if str(detail or "").strip().lower() == "card"
                        else _card_brief(_card_summary(e["input_card"])))}
+    policy = ((e.get("input_card") or {}).get("job") or {}).get("recovery")
+    if policy or e.get("recovery_log"):
+        out["recovery"] = {"policy": policy, "meaning": _recovery_meaning(policy) if policy else None,
+                           "attempts": e.get("recovery_attempts") or {}, "log": (e.get("recovery_log") or [])[-10:],
+                           "checked_every_s": RECOVERY_INTERVAL or None}
     if want:
         out.update(waited_for=want, condition_met=bool(met), waited_s=round(time.monotonic() - t0))
         if not met:
@@ -14473,7 +14659,7 @@ TOOLS = {
                 "points_after_cuts per dataset), the Slurm array script, the confirmation phrase and "
                 "warnings (a dataset with no points left after the cuts, a data file without a column "
                 "FitPack's status report reads); warnings never block submission, but a card whose "
-                "datasets keep no point at all after the cuts is refused. " + 'card = {"objects": [{"type": "pdf", "parameters": {"g1 a": {"value", "min", "max", "fixed": true|false, "equal_to": "uv1 a"}, ...}}, {"type": "ffpion", "parameters": {"u2 N": {"enabled": true, ...}}}] (legacy "object": {...} is still accepted), "source": {"analysis_id": ...} (set by campaign_card_from_catalog; validation then returns catalog_comparison), "reactions": ["idis", "dy"], "datasets": {"idis": ["10010", ...]}, "normalizations": {"idis": {"10010": {"value", "min", "max", "fixed": true|false|"<id of another selected dataset whose normalization this one equals>"}}} (only for datasets campaign_datasets lists with a normalization), "cuts": {"idis": [{"variable": "Q2", "op": ">", "value": 1.69, "enabled": true}]}, "qcd": {"order", "Q20", "tmc": "off"|"AOT", "higherTwist", "dglapMode", "asMode", "pdfPositivity": true|false, "ffpionPositivity": true|false, "ffkaonPositivity": true|false, "ffhadronPositivity": true|false}, "parameters": {"initialization": "default"|"random_within_bounds", "randomSeed", "perReplicaSeed"}, "job": {"campaignName", "replicas", "maxIterations", "tolerance", "optimizer", "bootstrap"}, "slurm": {"partition" ("" = auto), "time" (per replica, HH:MM:SS), "mem", "cpus"}}. Only parameters the user changed need to be listed; the rest keep the library values, and only changed rows are written into the card. A parameter switched to FREE needs a min and a max.',
+                "datasets keep no point at all after the cuts is refused. " + 'card = {"objects": [{"type": "pdf", "parameters": {"g1 a": {"value", "min", "max", "fixed": true|false, "equal_to": "uv1 a"}, ...}}, {"type": "ffpion", "parameters": {"u2 N": {"enabled": true, ...}}}] (legacy "object": {...} is still accepted), "source": {"analysis_id": ...} (set by campaign_card_from_catalog; validation then returns catalog_comparison), "reactions": ["idis", "dy"], "datasets": {"idis": ["10010", ...]}, "normalizations": {"idis": {"10010": {"value", "min", "max", "fixed": true|false|"<id of another selected dataset whose normalization this one equals>"}}} (only for datasets campaign_datasets lists with a normalization), "cuts": {"idis": [{"variable": "Q2", "op": ">", "value": 1.69, "enabled": true}]}, "qcd": {"order", "Q20", "tmc": "off"|"AOT", "higherTwist", "dglapMode", "asMode", "pdfPositivity": true|false, "ffpionPositivity": true|false, "ffkaonPositivity": true|false, "ffhadronPositivity": true|false}, "parameters": {"initialization": "default"|"random_within_bounds", "randomSeed", "perReplicaSeed"}, "job": {"campaignName", "replicas", "maxIterations", "tolerance", "optimizer", "bootstrap", "recovery": {"timeout": "resume"|"stop", "oom": "more_memory"|"stop", "max_attempts": 1-3} (off unless the user asks: the gateway then resubmits replicas Slurm ended at their time limit from their checkpoint, or out of memory with twice the memory, on its own, without asking again; offer it, never choose it for the user)}, "slurm": {"partition" ("" = auto), "time" (per replica, HH:MM:SS), "mem", "cpus"}}. Only parameters the user changed need to be listed; the rest keep the library values, and only changed rows are written into the card. A parameter switched to FREE needs a min and a max.',
         "schema": {"type": "object", "properties": {"card": {"type": "object"}}, "required": ["card"]},
         "fn": lambda a: validate_campaign(a.get("card"))},
     "preview_prior_replicas": {
@@ -15624,4 +15810,6 @@ if __name__ == "__main__":
     if os.environ.get("SLURM_JOB_ID"):
         register(port)
     threading.Thread(target=_audit_mirror_loop, name="audit-mirror", daemon=True).start()
+    if RECOVERY_INTERVAL:
+        threading.Thread(target=_recovery_loop, name="recovery", daemon=True).start()
     server.serve_forever()
