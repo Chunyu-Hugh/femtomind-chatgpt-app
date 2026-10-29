@@ -280,11 +280,19 @@ You then use the owner's gateway address with your own token and accounts:
    your account.
 3. With Claude Code or Codex, register the owner's address (4.1, 4.2) with
    your token as `JAM_GW_TOKEN`. The assistant need not be told who you are.
+   Use the owner's name in the address, not yours: for Claude Code,
+   ```bash
+   claude mcp add --transport http --scope user jam-gateway "https://lqcdmcp.jlab.org:8000/cloud/jam-gateway-<owner>/mcp" --header 'Authorization: Bearer ${JAM_GW_TOKEN}'
+   ```
+   Or let your assistant do the setup: README.md, "For collaborators and
+   their AI assistants", is written for it.
 
 Two things to know: a shared gateway is one Slurm job, so it stops when the
 owner cancels it; and the owner's account holds every person's open chain
 (see Security model in README.md), so sign in only for as long as you need.
-Switch back to your own gateway as soon as you can start one.
+Do not launch a gateway of your own while the shared one runs: starting any
+gateway on the node ends the shared one for everybody (Part 2). Agree a time
+with the owner first.
 
 ## Part 3 — The panel
 

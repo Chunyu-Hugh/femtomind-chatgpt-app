@@ -1,13 +1,176 @@
 # JAM gateway on LQCDMCP
 
-Each JAM collaborator runs **their own** MCP gateway, `jam-gateway-<user>`, as
-a Slurm job on the JLab LQCD cluster, launched through Jie Chen's LQCDMCP
-platform. It runs JAM fits on ifarm as that collaborator, from an MCP client
+A JAM gateway, `jam-gateway-<user>`, is an MCP server that runs as a Slurm
+job on the JLab LQCD cluster, launched through Jie Chen's LQCDMCP platform.
+It runs JAM fits on ifarm as the person calling it, from an MCP client
 (Claude Code or Codex) or from the browser panel it serves, which mirrors
-the FemtoMind JAM app's fitting campaign.
+the FemtoMind JAM app's fitting campaign. A collaborator uses their own
+gateway or a colleague's shared one, each with a personal token.
 
-**Collaborators: start with [COLLABORATOR_GUIDE.md](COLLABORATOR_GUIDE.md).**
-This file is for whoever maintains the gateway.
+**Collaborators: the next section is written for your AI assistant.** Tell
+it: *"Read the section 'For collaborators and their AI assistants' in
+lqcdmcp-deploy/README.md and set me up."* The step-by-step guide for people
+is [COLLABORATOR_GUIDE.md](COLLABORATOR_GUIDE.md); the rest of this file is
+for whoever maintains the gateway.
+
+## For collaborators and their AI assistants
+
+This section is addressed to an AI assistant (Claude Code or Codex) that
+helps a JAM collaborator connect to a JAM gateway and run fits. Follow it in
+order. Where it says *the collaborator*, the person must do the step
+themselves; do not do it for them.
+
+### Rules
+
+1. **Never ask for a secret in the chat.** The gateway token, the JLab PIN,
+   the one-time code, the ifarm password and the GitHub token are never typed
+   into the conversation. The token goes into a file the collaborator fills
+   in (setup step 1); the cluster sign-in and the GitHub token go only into
+   the panel page in their browser. If one is pasted into the chat anyway,
+   tell the collaborator to have it replaced.
+2. **Never start or stop a gateway on the node** unless the collaborator owns
+   it and has agreed it with everyone using the node. All gateways run on
+   `qcd24s100`, and starting or stopping any of them ends every other one,
+   the shared gateway included (see "One node, and its prolog" below). Do not
+   run `redeploy_jam.py launch` or `cancel`, `hot_redeploy.py`, or
+   `deploy_and_verify.py` without `--check` for someone who uses a shared
+   gateway.
+3. **The token decides who is calling.** Leave `username` out of tool calls,
+   or give the collaborator's own JLab username. Any other name is refused
+   (`IDENTITY_MISMATCH`).
+4. **Writes wait for the collaborator.** Submitting, adding replicas,
+   rerunning, stopping and deleting return a plan and a confirmation phrase.
+   Show the plan, ask the collaborator, and send the phrase back only after
+   they agree. The gateway takes a phrase at the earliest 20 seconds after
+   handing it out (`CONFIRM_TOO_SOON` before that). Do not work around a
+   refusal; explain it.
+5. **A published analysis comes from the catalog.** To reproduce or vary
+   JAM24 (or any entry of `list_analysis_catalog`), build the card with
+   `campaign_card_from_catalog` and put every change in its `overrides`. A
+   hand-built card named after a catalog analysis is refused
+   (`CATALOG_REQUIRED`), and so is an undeclared difference from the catalog
+   (`CATALOG_MISMATCH`). `JAM24.final` is the published configuration;
+   `JAM24.current` uses the updated data workbooks.
+
+### What to ask the collaborator first
+
+- Their JLab username.
+- Whose gateway they will use: a colleague's shared one (the usual case; as
+  of 2026-10-28 it is `jam-gateway-chunyu`, run by Chunyu Hu) or their own.
+  Below, `<gateway>` stands for that name.
+- That they have the personal token the owner handed them privately (for
+  their own gateway: `python3 redeploy_jam.py token` made it, see
+  COLLABORATOR_GUIDE.md 1.6).
+- That they can sign in to `scilogin.jlab.org` (PIN and one-time code) and
+  `ifarm.jlab.org` (password).
+- For a first workspace: a GitHub token that can read the private repository
+  `QCDHUB/fitpack_legacy`, or the path of a FitPack workspace they already
+  have under `/w/ceph24/JAM/<username>`.
+
+### Setup, once
+
+1. **Store the token.** The collaborator runs this in their own terminal, not
+   through the assistant, and pastes the token at the prompt; nothing is
+   echoed. For their own gateway, the file already exists as
+   `~/.config/jam_gateway/jam-gateway-<username>.token`; use that path in
+   the export line instead.
+
+   ```sh
+   mkdir -p ~/.config/jam_gateway && chmod 700 ~/.config/jam_gateway
+   stty -echo; printf 'JAM gateway token: '; read -r t; stty echo; echo
+   (umask 077; printf '%s\n' "$t" > ~/.config/jam_gateway/shared.token); unset t
+   echo 'export JAM_GW_TOKEN="$(cat ~/.config/jam_gateway/shared.token)"' >> ~/.bashrc   # or ~/.zshrc
+   ```
+
+2. **Register the gateway with the client**, once. Claude Code (the single
+   quotes keep `${JAM_GW_TOKEN}` unexpanded, so Claude Code reads the token
+   each time it starts):
+
+   ```sh
+   claude mcp add --transport http --scope user jam-gateway "https://lqcdmcp.jlab.org:8000/cloud/<gateway>/mcp" --header 'Authorization: Bearer ${JAM_GW_TOKEN}'
+   echo 'export MCP_TOOL_TIMEOUT=900000 CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=900000' >> ~/.bashrc   # or ~/.zshrc
+   ```
+
+   Codex: add to `~/.codex/config.toml`
+
+   ```toml
+   [mcp_servers.jam-gateway]
+   url = "https://lqcdmcp.jlab.org:8000/cloud/<gateway>/mcp"
+   bearer_token_env_var = "JAM_GW_TOKEN"
+   tool_timeout_sec = 900
+   ```
+
+   An older `jam-gateway` entry that sends `LQCDMCP_TOKEN` must be removed
+   first (`claude mcp remove jam-gateway -s user`, or edit the Codex file).
+
+3. **Restart the client** from a new terminal, so that `JAM_GW_TOKEN` is set,
+   and call `check_hpc_connection`. Expect `auth: "token"` and
+   `account.username` equal to the collaborator's JLab username; a shared
+   gateway also shows `shared: true` and its `owner`. `connected: false` is
+   normal before step 4.
+
+4. **Sign in to the cluster on the panel.** The collaborator opens
+   `https://lqcdmcp.jlab.org:8000/cloud/<gateway>/mcp` in a browser, pastes
+   the same token when the page asks, and on the Connect tab signs in with
+   their own PIN, one-time code and ifarm password. `check_hpc_connection`
+   then shows `connected: true`. The sign-in lasts until the gateway job ends.
+
+5. **Workspace, first time only.** Either the collaborator creates one on the
+   panel's Project tab (Create and clone, with the GitHub token typed there;
+   COLLABORATOR_GUIDE.md 2.3), or the assistant calls `use_workspace` with
+   an existing workspace path. `check_project` reports what is missing.
+
+### Each day
+
+- The gateway is a Slurm job of at most 6 hours. When the client cannot
+  reach it, or the proxy answers `{"error": "Backend not found"}`, it is not
+  running: ask its owner. Do not launch one (rule 2).
+- After every gateway restart the collaborator signs in again on the panel
+  (setup step 4). Fits keep running, and results stay on ifarm, when the
+  gateway stops.
+
+### Running fits
+
+The gateway sends its own instructions when the client connects, and the
+`jam_guide` tool explains conventions (χ² definitions, dataset ids, Slurm
+sizing, priors). A reproduction of the published JAM24 fit goes:
+`list_analysis_catalog`, then `campaign_card_from_catalog` with
+`analysis_id: "JAM24.final"`, then `validate_campaign` on that card (show
+the collaborator the summary: 215 free parameters, 5853 points), then
+`submit_campaign` with the phrase once they agree, then
+`campaign_status` with `wait_for: "fitting"`. For other fits, ask the same
+questions as the panel's Campaign tab, one step at a time.
+
+A call answers within 25 seconds. Longer work answers `status: "running"`
+with a `job_id`: call `analysis_result` with it, one call at a time, until it
+is done.
+
+| Reply `code` | Meaning | What to do |
+|---|---|---|
+| `AUTH_REQUIRED` | no token, or a wrong one | check that `JAM_GW_TOKEN` is set in the client's shell; restart the client |
+| `IDENTITY_MISMATCH` | `username` names someone else | leave `username` out |
+| `CHAIN_DOWN` | not signed in to the cluster | setup step 4 |
+| `CONFIRM_REQUIRED` | a write needs the collaborator's yes | show the plan, ask, then send the phrase |
+| `CONFIRM_TOO_SOON` | phrase sent within 20 s | wait, then send it again, once the collaborator has agreed |
+| `IDEMPOTENT_REPLAY` | the same request was already submitted | nothing new was queued; this is the earlier result |
+| `CATALOG_REQUIRED`, `CATALOG_MISMATCH` | rule 5 | rebuild with `campaign_card_from_catalog`; declare changes in `overrides` |
+
+### For the owner of a shared gateway
+
+Make one token per person, hand each over privately, and relaunch in shared
+mode; only the tokens' sha256 are kept, and a new token takes effect at the
+next launch. Agree the relaunch with everyone on the node first (rule 2).
+
+```sh
+export JAM_GW_USER=<you> LQCDMCP_TOKEN='<dashboard token>'
+python3 redeploy_jam.py user-token add <name>      # prints that person's token once
+python3 redeploy_jam.py user-token list            # names only; revoke <name> removes one
+python3 redeploy_jam.py cancel
+JAM_GW_SHARED=1 python3 redeploy_jam.py launch
+python3 deploy_and_verify.py --check
+```
+
+Then sign in again on your own panel.
 
 ## Files
 
