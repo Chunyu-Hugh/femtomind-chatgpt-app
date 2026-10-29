@@ -907,7 +907,10 @@ such columns are reported because FitPack stops on them), with `rows` the
 first points. Input: `reaction` + `datasets` (cuts: structured
 `{variable, op, value}` only, as cards; default the library's cuts; SIDIS
 and SIA always use the catalog's filters), or `collection_id` for a
-campaign's own datasets and cuts. At most 40 datasets per call.
+campaign's own datasets and cuts. At most 40 datasets per call: a larger
+request is refused with the count per reaction and the ids in
+`datasets_by_reaction`, to narrow by `reaction` and, for JAM24's 53 SIA
+datasets, by `datasets` in two calls.
 
 **`campaign_report`** writes `report/campaign_report.md` (and
 `campaign_report.json`, the record it is made from) in the campaign folder:
@@ -921,7 +924,10 @@ central-metrics cache and of `reproduce.json`. Every number is read, none is
 written by the model; the reply tells the client to show it as returned.
 `write=false` returns it without saving. The write is atomic (temporary file,
 then `mv`) and recorded as an audit effect; the tool is marked not read-only,
-not destructive, idempotent.
+not destructive, idempotent. At JAM24's size (96 datasets, 365 parameters
+set from the catalog) the Markdown stays readable: parameters changed from
+the library are counted per object beyond twelve (the JSON keeps the list),
+and per-dataset cuts are grouped by the cuts the datasets share.
 
 Both run as background jobs under the 25 s reply limit (`analysis_result`).
 
