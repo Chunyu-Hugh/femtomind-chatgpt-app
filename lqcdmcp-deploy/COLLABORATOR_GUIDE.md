@@ -564,6 +564,11 @@ connection."* If the token is not exported, Codex reports
 - *"How is my campaign doing?"* · *"What is in my Slurm queue?"* ·
   *"Postprocess it and show the fit summary."* · *"Plot the u and d PDFs at
   Q² = 10."* · *"Which experiment fits worst? Show data vs theory for NMC."*
+- *"How was this campaign made?"* · *"Which FitPack version and seeds did
+  replica 3 use?"* · *"Did anything change between my runs?"* — it reads the
+  campaign's record (every submission's FitPack commit, saved changes, image
+  and seeds) and answers. *"Run replica 3 again exactly."* reproduces it,
+  after you confirm.
 - *"Stop my campaign."* · *"Delete the test campaign."* — it tells you what
   will happen and asks you to confirm.
 - *"Why did my replicas fail?"* · *"Show me the log of replica 3."* — it

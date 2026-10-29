@@ -3577,6 +3577,276 @@ def _external_roots():
     return list(SITE.get("lhapdf_extra") or []) + ([SITE["grid_root"]] if SITE.get("grid_root") else [])
 
 
+# ---- campaign_provenance: how a campaign was made, read back -------------------
+
+# reproduce.json is written for machines (every JAMAI hash, every replica's
+# seeds, the full listing of untracked files) and outgrows what fs_read shows.
+# This reads it on ifarm and answers what a person asks: which FitPack commit
+# and changes, which image, which seeds, what changed between submissions, and
+# per replica what it actually ran with and whether its seeds match the record.
+_PROVENANCE_VIEW = _STATE_LIB + r'''
+croot, stage, page, SCHEMA, KEEP = __CROOT__, __STAGE__, __REPLICAS__, __SCHEMA__, __KEEP__
+
+def done(d):
+    print(json.dumps(d, sort_keys=True, default=str))
+    raise SystemExit
+
+def read(path):
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+if not os.path.exists(os.path.join(croot, 'reproduce.json')):
+    done({'ok': False, 'error': 'no_record'})
+rec = load_record(croot)
+if rec is None:
+    done({'ok': False, 'error': 'unreadable'})
+if rec.get('schema') != SCHEMA:
+    done({'ok': False, 'error': 'schema', 'found': rec.get('schema')})
+subs = rec['submissions']
+
+def code(s):
+    fp = s.get('fitpack') or {}
+    unt = fp.get('untracked') or {}
+    diff = fp.get('diff') if isinstance(fp.get('diff'), dict) else None
+    c = s.get('container') or {}
+    jam = s.get('jamai_sha256') or {}
+    return {
+        'fitpack': {'commit': fp.get('commit'), 'branch': fp.get('branch'), 'commit_date': fp.get('commit_date'),
+                    'remote': fp.get('remote'), 'path': fp.get('path'), 'clean': fp.get('clean'),
+                    'changed_files': len(fp.get('changed_files') or []),
+                    'untracked_saved': len(unt.get('saved') or []),
+                    'untracked_not_saved': len(unt.get('not_saved') or []),
+                    'diff': None if diff is None else {
+                        'file': diff.get('file'), 'sha256': diff.get('sha256'), 'bytes': diff.get('bytes'),
+                        'present': bool(diff.get('file')) and os.path.exists(os.path.join(croot, diff['file'])),
+                        'note': diff.get('note')}},
+        'container': {'image': c.get('image'), 'realpath': c.get('realpath'), 'sha256': c.get('sha256')},
+        'external': [{'path': e.get('path'), 'files': e.get('files'), 'listing_sha256': e.get('listing_sha256')}
+                     for e in s.get('external') or []],
+        # One fingerprint for the whole JAMAI package: equal fingerprints, equal files.
+        'jamai': {'files': len(jam), 'sha256': hashlib.sha256(json.dumps(jam, sort_keys=True).encode()).hexdigest()},
+        'gateway_sha256': s.get('gateway_sha256'),
+    }
+
+def view(n, s):
+    seeds = s.get('seeds') or {}
+    v = {'n': n, 'kind': s.get('kind'), 'job_id': s.get('job_id'), 'submitted_at': s.get('submitted_at'),
+         'replicas': s.get('replicas'),
+         'settings': dict((k, s.get(k)) for k in ('optimizer', 'tolerance', 'max_iterations', 'bootstrap')),
+         'seeds': dict((k, seeds.get(k)) for k in ('base_seed', 'per_replica_seed', 'initialization',
+                                                   'parameter_seed', 'bootstrap_seed')),
+         'inputs_sha256': s.get('inputs_sha256')}
+    v.update(code(s))
+    for k in ('resume', 'resource_overrides', 'reproduces_job_id', 'mode', 'run', 'output', 'node_constraint',
+              'workspace_used'):
+        if k in s:
+            v[k] = s[k]
+    return v
+
+def key(s):
+    c = code(s)
+    unt = (s.get('fitpack') or {}).get('untracked')
+    return {'fitpack commit': c['fitpack']['commit'],
+            'fitpack changes': (c['fitpack']['diff'] or {}).get('sha256'),
+            'untracked files': None if not isinstance(unt, dict) else sorted(
+                (x.get('path'), x.get('sha256')) for x in (unt.get('saved') or []) + (unt.get('not_saved') or [])),
+            'container': c['container']['sha256'], 'jamai': c['jamai']['sha256'],
+            'external data': None if 'external' not in s else [e['listing_sha256'] for e in c['external']],
+            'settings': [s.get(k) for k in ('optimizer', 'tolerance', 'max_iterations', 'bootstrap')],
+            'seed rule': [(s.get('seeds') or {}).get(k) for k in ('base_seed', 'per_replica_seed', 'initialization')],
+            'gateway': s.get('gateway_sha256')}
+
+# Early records (before 2026-10-26) did not measure the image, the external data
+# or the untracked files: their first appearance is not a change. For the commit
+# and the saved changes, no value is a state of its own (a clean workspace), and
+# an empty list of untracked files is a measurement too.
+LATER_MEASURED = ('untracked files', 'container', 'external data')
+
+def unmeasured(v):
+    return v is None
+
+# What changed from one fit of the campaign to the next (reproductions run the
+# recorded code on purpose and are left out).
+fits = [(n, s) for n, s in enumerate(subs, 1) if s.get('kind') != 'reproduce']
+changes = []
+for (na, a), (nb, b) in zip(fits, fits[1:]):
+    ka, kb = key(a), key(b)
+    changed, first = [], []
+    for k in sorted(ka):
+        if ka[k] == kb[k]:
+            continue
+        if k in LATER_MEASURED and unmeasured(ka[k]) and not unmeasured(kb[k]):
+            first.append(k)
+        else:
+            changed.append(k)
+    if changed or first:
+        changes.append({'from': {'n': na, 'job_id': a.get('job_id')}, 'to': {'n': nb, 'job_id': b.get('job_id')},
+                        'changed': changed, 'first_recorded': first})
+
+def produced(i):
+    last = None
+    for n, s in fits:
+        if i in parse_ranges(s.get('replicas')):
+            last = (n, s)
+    return last
+
+rows = []
+for i in page:
+    row = {'replica': i}
+    p = produced(i)
+    if p is None:
+        row['recorded'] = False
+        rows.append(row)
+        continue
+    n, s = p
+    seeds = ((s.get('seeds') or {}).get('replicas') or {}).get(str(i)) or {}
+    folder = os.path.join(stage, 'current', 'replica_%d' % i)
+    prov = read(os.path.join(folder, 'replica_provenance.json')) or {}
+    fs = read(os.path.join(folder, 'fit_summary.json')) or {}
+    row.update(recorded=True, produced_by={'n': n, 'kind': s.get('kind'), 'job_id': s.get('job_id')},
+               recorded_seeds=seeds)
+    if prov:
+        row['ran'] = {'host': prov.get('host'), 'node_type': node_type(prov.get('host')), 'cpu': prov.get('cpu'),
+                      'started_at': prov.get('started_at'), 'fitpack_commit': (prov.get('fitpack') or {}).get('commit'),
+                      'image': prov.get('image_realpath') or prov.get('image'), 'python': prov.get('python'),
+                      'libraries': prov.get('libraries')}
+        ran, rec_commit = row['ran']['fitpack_commit'], (s.get('fitpack') or {}).get('commit')
+        if ran and rec_commit:
+            row['commit_matches_record'] = ran == rec_commit
+    if fs:
+        row['result'] = dict((k, fs.get(k)) for k in ('status', 'seed', 'bootstrap_seed', 'chi2_total',
+                                                       'n_fitted_parameters', 'parameter_hash'))
+        if seeds:
+            row['seeds_match_record'] = (fs.get('seed') == seeds.get('parameter_seed')
+                                         and fs.get('bootstrap_seed') == seeds.get('bootstrap_seed'))
+    if s.get('kind') == 'rerun' and s.get('resume'):
+        row['note'] = 'restarted from a checkpoint: it did not run from its seeds, so a reproduction differs by design'
+    reps = []
+    for m, t in enumerate(subs, 1):
+        if t.get('kind') != 'reproduce' or i not in parse_ranges(t.get('replicas')):
+            continue
+        out = t.get('output') or os.path.join(stage, 'reproduce', str(t.get('run')))
+        rfs = read(os.path.join(out, 'replica_%d' % i, 'fit_summary.json'))
+        rprov = read(os.path.join(out, 'replica_%d' % i, 'replica_provenance.json')) or {}
+        same = None
+        if rfs and fs.get('parameter_hash'):
+            same = rfs.get('parameter_hash') == fs.get('parameter_hash')
+        # Results are bit-identical only on the same node type, so the node is part of the answer.
+        reps.append({'n': m, 'run': t.get('run'), 'job_id': t.get('job_id'), 'finished': rfs is not None,
+                     'same_fitted_parameters': same, 'host': rprov.get('host'),
+                     'node_type': node_type(rprov.get('host'))})
+    if reps:
+        row['reproductions'] = reps
+    rows.append(row)
+
+shown = [view(n, s) for n, s in enumerate(subs, 1)]
+omitted = 0
+if len(shown) > 2 * KEEP:
+    omitted = len(shown) - 2 * KEEP
+    shown = shown[:KEEP] + shown[-KEEP:]
+counts = {}
+for s in subs:
+    counts[s.get('kind')] = counts.get(s.get('kind'), 0) + 1
+done({'ok': True, 'schema': rec.get('schema'), 'updated_at': rec.get('updated_at'), 'counts': counts,
+      'submissions': shown, 'submissions_omitted': omitted, 'changes': changes, 'replicas': rows})
+'''
+
+
+def campaign_provenance(collection_id="", replicas="", offset=0, limit=20, username=""):
+    """How a campaign was made, read from its reproduce.json and the replicas'
+    own records: every submission's code, image and seed rule, what changed
+    between them, and per requested replica what it ran with."""
+    u, err = _need_user(username)
+    if err:
+        return err
+    params = {"collection_id": collection_id, "replicas": str(replicas or ""), "offset": offset, "limit": limit}
+    return _background(u, "campaign_provenance", params,
+                       lambda: _campaign_provenance(u, collection_id, replicas, offset, limit), wait=JOB_WAIT)
+
+
+def _campaign_provenance(u, collection_id, replicas, offset, limit):
+    e = _collection(u, collection_id)
+    if not e:
+        return _refuse("NOT_FOUND", f"No campaign {collection_id!r}; list_campaigns shows them.")
+    collection_id = e["collection_id"]
+    total = int(e.get("replicas") or 0)
+    spec = str(replicas or "").strip().lower()
+    if spec in ("", "none"):
+        wanted = []
+    elif spec in ("all", "*"):
+        wanted = list(range(1, total + 1))
+    else:
+        try:
+            wanted = sorted(set(_numbers(replicas)))
+        except ValueError:
+            return _refuse("BAD_ARGUMENT", "replicas: 'all' or replica numbers such as 3,7 or 10-12.")
+        outside = [i for i in wanted if not 1 <= i <= total]
+        if outside:
+            return _refuse("BAD_ARGUMENT", f"This campaign has replicas 1-{total}; no replica {outside}.")
+    try:
+        offset, limit = max(0, int(offset or 0)), min(100, max(1, int(limit or 20)))
+    except (TypeError, ValueError):
+        return _refuse("BAD_ARGUMENT", "offset and limit must be whole numbers.")
+    page = wanted[offset:offset + limit]
+    stage = _stage_root(u, e)
+    croot = os.path.dirname(os.path.dirname(stage))
+    r = _run_ifarm_py(u, _fill(_PROVENANCE_VIEW, CROOT=croot, STAGE=stage, REPLICAS=page,
+                               SCHEMA=REPRODUCTION_SCHEMA, KEEP=10), timeout=120, cap=800000)
+    d = _last_json(r)
+    if not d:
+        return _refuse("RECORD_UNREADABLE", "Could not read the campaign's record.", detail=(r.get("err") or "")[-400:])
+    if not d.get("ok"):
+        if d.get("error") == "no_record":
+            return _refuse("RECORD_MISSING", "This campaign has no reproduce.json: it was submitted before the "
+                           "record existed (2026-10-25), so its code and seeds were not recorded.",
+                           collection_id=collection_id)
+        why = (f"it has schema {d.get('found')!r}, not {REPRODUCTION_SCHEMA}" if d.get("error") == "schema"
+               else "it is not valid JSON")
+        return _refuse("RECORD_UNREADABLE", f"The campaign's reproduce.json cannot be read: {why}.",
+                       collection_id=collection_id)
+    d.pop("ok")
+    subs = d["submissions"]
+    first = subs[0] if subs else {}
+    fp = first.get("fitpack") or {}
+    kinds = ", ".join(f"{n} {k}" for k, n in sorted(d["counts"].items()))
+    parts = ["no uncommitted changes" if fp.get("clean") else f"{fp.get('changed_files')} changed tracked files"]
+    if fp.get("untracked_saved"):
+        parts.append(f"{fp['untracked_saved']} untracked files")
+    if fp.get("diff"):
+        state = ", ".join(parts) + f", saved in {fp['diff'].get('file')}"
+    elif not fp.get("clean"):
+        state = ", ".join(parts) + ", not saved"
+    else:
+        state = parts[0]
+    image = (first.get("container") or {}).get("sha256")
+    # A new gateway version alone does not change a fit, nor does a quantity an
+    # early record did not measure yet: both are listed, not counted.
+    physics = [c for c in d["changes"] if set(c["changed"]) - {"gateway"}]
+    message = (f"{sum(d['counts'].values())} recorded submissions ({kinds}). The first ran FitPack "
+               f"{str(fp.get('commit'))[:12]} on {fp.get('branch')} ({state}), "
+               + (f"image sha256 {image[:12]}. " if image else "image not recorded (an early record). ")
+               + ("Code, image, data and settings are the same in every fit of the campaign."
+                  if not physics else
+                  f"{len(physics)} change(s) of code, image, data or settings between fits: see changes."))
+    rows = d["replicas"]
+    mismatched = [x["replica"] for x in rows if x.get("seeds_match_record") is False
+                  or x.get("commit_matches_record") is False]
+    if mismatched:
+        message += f" Replicas {mismatched} ran with seeds or a commit other than the record's."
+    more = offset + limit < len(wanted)
+    return {"status": "ok", "collection_id": collection_id, "campaign_name": e.get("campaign_name"),
+            "record_file": f"{croot}/reproduce.json", "total_replicas": total, **d,
+            "page": {"offset": offset, "limit": limit, "returned": len(rows), "requested": len(wanted),
+                     **({"next_offset": offset + limit} if more else {})},
+            "message": message,
+            "next": ("reproduce_campaign(collection_id, replicas) runs recorded replicas again on the original node "
+                     "type; reproduce_campaign(collection_id, check='latest') compares a finished reproduction "
+                     "with the current results in full.")}
+
+
 # ---- reproduce_campaign: run recorded replicas again, exactly ------------------
 
 # Which recorded state produced the requested replicas, and whether the live
@@ -5936,6 +6206,9 @@ def _job_reply(job, wait):
     if job['kind'] == 'setup_workspace':
         message = ("The workspace is being created (git clone can take minutes). Poll analysis_result with this "
                    "job_id until complete; do not call setup_workspace again.")
+    elif job['kind'] == 'campaign_provenance':
+        message = ("Still reading the campaign's record on the cluster. Call analysis_result with this job_id; "
+                   "do not call campaign_provenance again.")
     elif campaign:
         message = ("Campaign preparation is still running; no confirmation requirement is skipped. "
                    "Poll analysis_result with this job_id until complete; do not repeat the original call.")
@@ -13731,6 +14004,30 @@ TOOLS = {
                    "required": ["collection_id"]},
         "fn": lambda a: reproduce_campaign(a.get("collection_id", ""), a.get("replicas", "all"), a.get("check", ""),
                                            a.get("confirm", ""), node_constraint=a.get("node_constraint", "auto"))},
+    "campaign_provenance": {
+        "desc": "How a campaign was made, from its reproduce.json: every submission (submit, append, rerun, "
+                "reproduce) with its FitPack commit, branch and remote, whether uncommitted changes and untracked "
+                "files were saved (diff file, sha256, still present), the container image and its sha256, the "
+                "external data fingerprints, one fingerprint of the JAMAI code, the gateway version, the fit "
+                "settings and the seed rule, and which of these changed between the campaign's fits (changes; "
+                "first_recorded names what an early record had not measured yet, which is not a change). replicas "
+                "('1,3', '2-4' or 'all') adds per replica: the submission that produced it, its recorded seeds, "
+                "the node, node type, CPU, FitPack commit and library versions it ran with, its status and chi2, "
+                "whether the seeds it used and its commit match the record, and its reproductions. Replicas come "
+                "in pages of limit (default 20, at most 100) from offset. Read-only. Use it when the user asks how "
+                "a fit was made, which code, version or seeds it used, what changed between runs, or for the "
+                "history of a campaign; never fs_read reproduce.json for this (fs_read shows only its end). "
+                "reproduce_campaign runs replicas again. A reply with status running carries a job_id for "
+                "analysis_result.",
+        "schema": {"type": "object", "properties": {
+            "collection_id": {"type": "string", "description": COLLECTION_ARG},
+            "replicas": {"type": "string", "default": "",
+                         "description": "'' (submissions only), 'all', or numbers such as '1,3' or '2-4'"},
+            "offset": {"type": "integer", "default": 0, "minimum": 0},
+            "limit": {"type": "integer", "default": 20, "minimum": 1, "maximum": 100}},
+            "required": ["collection_id"]},
+        "fn": lambda a: campaign_provenance(a.get("collection_id", ""), a.get("replicas", ""),
+                                            a.get("offset", 0), a.get("limit", 20))},
     "campaign_logs": {
         "desc": "Logs of a campaign: each replica's state (fitted, not fitted, failed, running, no "
                 "output) and, for a replica that did not fit, the Python error and ends of its Slurm "
@@ -13989,8 +14286,12 @@ PROCEDURES = {
         "text": (
             "Each campaign folder holds reproduce.json (per submission: the FitPack commit and any uncommitted "
             "changes, the image, the JAMAI files, input hashes and every replica's seeds, with how_to_reproduce) and "
-            "each replica folder replica_provenance.json (the commit it actually ran with, the node's CPU); fs_read "
-            "them when the user asks how a fit was made. reproduce_campaign(collection_id, replicas) runs the "
+            "each replica folder replica_provenance.json (the commit it actually ran with, the node's CPU). When the "
+            "user asks how a fit was made, which code or seeds it used or what changed between runs, call "
+            "campaign_provenance(collection_id) for the submissions and campaign_provenance(collection_id, "
+            "replicas='1-5') for replicas, and answer from it (fs_read shows only the end of a large record): name "
+            "the FitPack commit and branch, whether uncommitted changes were saved, the image, the seeds, and any "
+            "change between fits. reproduce_campaign(collection_id, replicas) runs the "
             "recorded replicas again: in the live workspace when it still is the recorded state, else in a rebuilt "
             "clone at the recorded commit, on the original node type (results are bit-identical only there). It "
             "returns a plan and a phrase; the confirmed run may take minutes (poll analysis_result). Later "
