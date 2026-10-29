@@ -506,8 +506,10 @@ start and stop independently, four at a time.
   `replicas` (`'1,3'`, `'2-4'`, `'all'`; pages of `limit`, default
   20, at most 100, from `offset`) adds per replica the submission that
   produced it, its recorded seeds, the host, node type, CPU, commit, image
-  and library versions from `replica_provenance.json`, status, χ² and fitted
-  parameter count from `fit_summary.json`, whether the seeds it used and its
+  and library versions from `replica_provenance.json`, status, fitted
+  parameter count and `optimizer_chi2` from `fit_summary.json` (the
+  optimizer's own score on the replica's pseudo-data, not the central-data
+  χ² that `campaign_summary` reports), whether the seeds it used and its
   commit match the record, and each reproduction of it with its node type
   and whether its fitted parameters equal the current ones. A history of more
   than 20 submissions shows the first and last 10. Use it instead of
