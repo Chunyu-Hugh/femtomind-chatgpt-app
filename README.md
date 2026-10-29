@@ -58,6 +58,7 @@ browser panel                      ─┘
 ### Reproduce
 
 - [x] Every submission records what it ran: FitPack commit and uncommitted changes, container, input hashes, seeds, CPU model per replica (`reproduce.json`).
+- [x] Look up how any earlier campaign was made: each submission's code, saved changes, image and seed rule, what changed between runs, and per replica the seeds, node and commit it actually used, with its reproductions (`campaign_provenance`).
 - [x] Run replicas again exactly: rebuilds the recorded FitPack state, runs on the original node type and compares with the earlier results.
 
 ### Published analyses (JAM24)

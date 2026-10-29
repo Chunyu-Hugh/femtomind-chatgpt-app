@@ -141,6 +141,12 @@ the collaborator the summary: 215 free parameters, 5853 points), then
 `campaign_status` with `wait_for: "fitting"`. For other fits, ask the same
 questions as the panel's Campaign tab, one step at a time.
 
+When the collaborator asks how an earlier fit was made, which FitPack
+version or seeds it used, or what changed between runs, call
+`campaign_provenance` with the campaign (add `replicas` for single
+replicas); `reproduce_campaign` runs replicas again, after the
+collaborator confirms.
+
 A call answers within 25 seconds. Longer work answers `status: "running"`
 with a `job_id`: call `analysis_result` with it, one call at a time, until it
 is done.
@@ -486,6 +492,29 @@ start and stop independently, four at a time.
   writes them, with the image and its real path, Slurm ids, library versions
   and JAMAI hashes, to `replica_<n>/replica_provenance.json` before the fit.
   `fit_summary.json` keeps the `seed` and `bootstrap_seed` that `ai.py` used.
+- **Reading the record back.** `campaign_provenance(collection_id)` reads
+  `reproduce.json` on ifarm and answers in one call (read-only, about 1 s):
+  every submission (submit, append, rerun, reproduce) with its job, replicas,
+  FitPack commit, branch and remote, whether uncommitted changes and untracked
+  files were saved (the diff file, its sha256, whether it is still there),
+  the image and its sha256, the external data fingerprints, one fingerprint
+  for the whole JAMAI package, the gateway version, the fit settings and the
+  seed rule; and which of these changed from one fit of the campaign to the
+  next (reproductions left out; a new gateway version alone is listed, not
+  counted; the image, external data and untracked files that records before
+  2026-10-26 did not measure appear as `first_recorded`, not as a change).
+  `replicas` (`'1,3'`, `'2-4'`, `'all'`; pages of `limit`, default
+  20, at most 100, from `offset`) adds per replica the submission that
+  produced it, its recorded seeds, the host, node type, CPU, commit, image
+  and library versions from `replica_provenance.json`, status, χ² and fitted
+  parameter count from `fit_summary.json`, whether the seeds it used and its
+  commit match the record, and each reproduction of it with its node type
+  and whether its fitted parameters equal the current ones. A history of more
+  than 20 submissions shows the first and last 10. Use it instead of
+  `fs_read`, which shows only the end of a large record. Checked on
+  2026-10-28 against the October test campaigns on ifarm: in the one
+  reproduced four times, the three runs on `farm18` nodes have the same
+  fitted parameters and the one on `farm19` does not.
 - **Reproducing a campaign.** `reproduce_campaign(collection_id, replicas)`
   runs recorded replicas again exactly. It finds the submission that last
   produced each replica in `reproduce.json` (replicas from different
