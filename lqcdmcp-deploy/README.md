@@ -492,6 +492,21 @@ start and stop independently, four at a time.
   writes them, with the image and its real path, Slurm ids, library versions
   and JAMAI hashes, to `replica_<n>/replica_provenance.json` before the fit.
   `fit_summary.json` keeps the `seed` and `bootstrap_seed` that `ai.py` used.
+- **Automatic recovery, if the submission asked for it.** A card's
+  `job.recovery` = `{timeout: 'resume'|'stop', oom: 'more_memory'|'stop',
+  max_attempts: 1-3}` (off by default) is part of the confirmed card, so the
+  submission's phrase covers it, and the summary says in words what it allows.
+  Every `JAM_GW_RECOVERY_INTERVAL` seconds (300; 0 turns it off) the gateway
+  looks at its signed-in users' campaigns with a policy: a replica with no
+  result whose latest task Slurm ended with TIMEOUT runs again through
+  `rerun_replicas(resume=true)` (from its checkpoint; a refused checkpoint is
+  not replaced by a fresh start), one ended OUT_OF_MEMORY with twice the memory
+  of that task, up to 64G. At most `max_attempts` per replica; a refusal (no
+  checkpoint, sbatch refused, the memory cap) stops recovery for those replicas.
+  Nothing else is resubmitted. Every attempt is in the registry entry
+  (`campaign_status` shows `recovery`: the policy, the attempts, the last ten
+  actions), the audit log (`auto_rerun`) and reproduce.json (an ordinary rerun
+  entry). A gateway with the human gate refuses a recovery policy.
 - **The cache on compute nodes.** When at least `JAM_GW_CACHE_SLURM_MIN` (12)
   replicas wait for their central-data predictions, the gateway submits a Slurm
   array (`jam_cache_<campaign>`, up to `JAM_GW_CACHE_WORKERS` tasks, 16, one per 8
