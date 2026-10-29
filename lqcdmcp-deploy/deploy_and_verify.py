@@ -244,7 +244,10 @@ if c.get("connected"):
     p = (o.get("parameters") or {}).get("pdf") or {}
     if o.get("status") == "ok":
         src = f" from {p.get('source')}" if p.get("source") else ""
-        say(f"   composer: {len(p.get('rows', []))} PDF parameters ({p.get('free')} free / {p.get('fixed')} fixed)"
+        # The summary counts the rows; a gateway from before 2026-10-28 lists them.
+        rows = p.get("rows")
+        rows = rows if isinstance(rows, int) else len(rows or [])
+        say(f"   composer: {rows} PDF parameters ({p.get('free')} free / {p.get('fixed')} fixed)"
             f"{src}, reactions available: {[r['key'] for r in o.get('reactions', []) if r.get('enabled')]}")
     else:
         say("   composer: " + scrub(o.get("message") or o.get("text") or json.dumps(o))[:300])
