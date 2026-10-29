@@ -12595,6 +12595,15 @@ def _build_central_predictions():
     # Always build the full configured dataset set, so published cohorts are complete.
     selected = list(ids)
     pending = store.load(selected)
+    # A shard (one task of a Slurm array) evaluates every pending replica whose
+    # number falls to it and journals each one; it never publishes the cohort.
+    shard = __SHARD__
+    if shard:
+        part, parts = int(os.environ.get('SLURM_ARRAY_TASK_ID', '0')), int(shard)
+        pending = [s for s in pending if (replica_number(s['identity']) or 0) % parts == part]
+        batch = len(pending)
+    else:
+        batch = __BATCH_SIZE__
     missing = list(selected) if pending else []
     store.progress('running')
     import hashlib
@@ -12636,7 +12645,7 @@ def _build_central_predictions():
             fitted_ids = {tuple(x) for x in resman.parman.order if x[0] == 1}
             acc = {k: {'theory': [], 'shift': [], 'chi2': [], 'chi2_cor': [], 'chi2_norm': [], 'norm': [], 'columns': None, 'nuisance': [], 'normalization_residuals': [], 'objective_residuals': []}
                    for k in missing if ids[k][1] in residuals[ids[k][0]].tabs}
-            for s in pending[:__BATCH_SIZE__]:
+            for s in pending[:batch]:
                 # Bounded batch: extract and atomically journal one complete replica.
                 for a in acc.values():
                     for field in ('theory','shift','chi2','chi2_cor','chi2_norm','norm','nuisance','normalization_residuals','objective_residuals'):
@@ -12721,12 +12730,17 @@ def _build_central_predictions():
         except (OSError, KeyError, TypeError, ValueError, ArithmeticError, SystemExit) as exc:
             failed_identity = context.split(';', 1)[0]
             if failed_identity in store.ids: store.failed[failed_identity] = str(exc)
-            store.progress('failed', str(exc))
+            # A failed shard leaves its replicas to the gateway's own pass; the
+            # build as a whole has not failed.
+            if not shard: store.progress('failed', str(exc))
             print(json.dumps({'status': 'error', 'message': 'Cannot evaluate ' + context + ': ' + str(exc) +
                               '. Completed replica batches remain cached; no replica was silently dropped.'}))
             raise SystemExit(0)
         finally:
             if resman is not None: resman.shutdown()
+    if shard:
+        print(json.dumps({'status': 'shard_done', 'shard': [part, parts], 'evaluated': len(pending),
+                          'seconds': round(time.time() - started, 1)})); return
     remaining = [i for i in store.ids if any(i not in store.rows[k] for k in selected)]
     if remaining:
         print(json.dumps({'status':'partial','cohort':store.cohort,'progress':store.progress('running')})); return
@@ -12734,7 +12748,15 @@ def _build_central_predictions():
     print(json.dumps({'status': 'success', 'computed': missing, 'selected': selected,
                       'seconds': round(time.time() - started, 1)}))
 
-with PredictionBuildLock(__CACHE__) as acquired:
+if __SHARD__:
+    # Shards run side by side (each replica's rows are journaled atomically);
+    # the publishing pass afterwards takes the lock.
+    try:
+        _build_central_predictions()
+    except Exception as exc:
+        print(json.dumps({'status': 'error', 'message': str(exc)}))
+else:
+  with PredictionBuildLock(__CACHE__) as acquired:
     if acquired:
         try:
             _build_central_predictions()
@@ -12891,6 +12913,71 @@ print(json.dumps({'status': 'success', 'images': images, 'rendering_errors': met
 '''
 
 
+# Many replicas to evaluate: a Slurm array on the farm's compute nodes instead
+# of one process on the login host (100 replicas took 17 minutes there, one
+# FitPack data load per batch of 8). Each task loads the data once and
+# evaluates its share; the gateway's own pass then publishes the cohort and
+# evaluates whatever a task left. JAM_GW_CACHE_WORKERS=0 turns it off.
+CACHE_WORKERS = int(os.environ.get("JAM_GW_CACHE_WORKERS", SITE.get("cache_workers", 16)) or 0)
+CACHE_SLURM_MIN = int(os.environ.get("JAM_GW_CACHE_SLURM_MIN", SITE.get("cache_slurm_min", 12)) or 12)
+CACHE_PER_TASK = 8
+CACHE_WORKER_WAIT = 3 * 3600
+
+
+def _cache_worker_script(u, e, ws, build_py, tasks):
+    """The Slurm array that evaluates a campaign's pending replicas in shards."""
+    sl = (e.get("input_card") or {}).get("slurm") or {}
+    folder = e["campaign_folder"]
+    name = f"jam_cache_{folder[:40]}"
+    log_root = SITE.get("slurm_log_root", "/farm_out").rstrip("/")
+    return f"""#!/bin/bash
+#SBATCH --job-name={name}
+#SBATCH --partition={sl.get("partition_effective") or "production"}
+#SBATCH --time=02:00:00
+#SBATCH --mem={sl.get("mem") or "8G"}
+#SBATCH --cpus-per-task=1
+#SBATCH --array=0-{tasks - 1}
+#SBATCH --output={log_root}/%u/{folder}/out/{name}_%A_%a.out
+#SBATCH --error={log_root}/%u/{folder}/err/{name}_%A_%a.err
+set -uo pipefail
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 TERM=dumb
+cd {_shq(ws)}
+{_container_exec(ws)} -u {_shq(build_py)}
+"""
+
+
+def _submit_cache_workers(u, e, stage, cache, remaining):
+    """Submit the shards; {'job_id', 'tasks'} or {'error'} (then the gateway's
+    own pass evaluates everything, as before)."""
+    tasks = max(1, min(CACHE_WORKERS, math.ceil(remaining / CACHE_PER_TASK)))
+    ws = _workspace(u)
+    wdir = f"{cache}/incremental/workers"
+    build_py = f"{wdir}/build_{int(time.time())}.py"
+    code = _analysis_code(_PREDICTIONS, STAGE=stage, CACHE=cache, DATASETS=[], EXPERIMENTS=[],
+                          KNOWN=DATASET_EXPERIMENTS, SHARD=tasks)
+    r = _remote(u, f"mkdir -p {_shq(wdir)} && cat > {_shq(build_py)}", timeout=60, stdin=code)
+    if r["rc"] != 0:
+        return {"error": "could not write the worker program: " + (r.get("err") or "")[-200:]}
+    folder = e["campaign_folder"]
+    logs = f"{_slurm_log_dir(u)}/{folder}"
+    r = _remote(u, f"mkdir -p {_shq(logs + '/out')} {_shq(logs + '/err')} && sbatch --parsable", timeout=60,
+                stdin=_cache_worker_script(u, e, ws, build_py, tasks))
+    m = re.match(r"\s*(\d+)", r.get("out") or "")
+    if r["rc"] != 0 or not m:
+        return {"error": "sbatch refused the workers: " + ((r.get("err") or r.get("out") or "").strip())[-300:]}
+    _effect("cache_workers", u, campaign_folder=folder, slurm_job_id=m.group(1), tasks=tasks, replicas=remaining)
+    return {"job_id": m.group(1), "tasks": tasks, "replicas": remaining, "program": build_py,
+            "logs": f"{logs}/out/jam_cache_{folder[:40]}_{m.group(1)}_<task>.out"}
+
+
+def _cache_workers_left(u, job_id):
+    """How many of the array's tasks are still queued or running; None if unknown."""
+    r = _remote(u, f"squeue -h -r -j {int(job_id)} -o %T", timeout=30)
+    if r["rc"] != 0:
+        return 0 if "Invalid job id" in (r.get("err") or "") else None
+    return len([l for l in (r.get("out") or "").splitlines() if l.strip()])
+
+
 def _ensure_central_metrics(u, e, selection=None):
     stage, cache = _stage_root(u, e), _cache_dir(u, e)
     def view():
@@ -12906,6 +12993,21 @@ def _ensure_central_metrics(u, e, selection=None):
                 _CACHE_PROGRESS[(u,e['collection_id'])] = progress
                 return {'status':'error','message':message,'progress':progress,'cache_progress':progress}
             pinned = None
+            remaining = int((_CACHE_PROGRESS.get((u, e['collection_id'])) or {}).get('remaining_replicas') or 0)
+            if CACHE_WORKERS and remaining >= CACHE_SLURM_MIN:
+                workers = _submit_cache_workers(u, e, stage, cache, remaining)
+                progress = dict(_CACHE_PROGRESS.get((u, e['collection_id'])) or {}, workers=workers)
+                _CACHE_PROGRESS[(u, e['collection_id'])] = progress
+                if workers.get('job_id'):
+                    deadline = time.time() + CACHE_WORKER_WAIT
+                    while time.time() < deadline:
+                        left = _cache_workers_left(u, workers['job_id'])
+                        seen = view() or {}
+                        progress = dict(seen.get('progress') or progress, workers=dict(workers, tasks_left=left))
+                        _CACHE_PROGRESS[(u, e['collection_id'])] = progress
+                        if left == 0:
+                            break
+                        time.sleep(20)
             while True:
                 try:
                     reply = _last_json(_run_ifarm_py(u, _analysis_code(_PREDICTIONS, STAGE=stage, CACHE=cache,
@@ -12992,6 +13094,7 @@ def _analysis_code(template, **values):
     values.setdefault('REPORT_CACHE', None)
     values.setdefault('PINNED_COHORT', None)
     values.setdefault('BATCH_SIZE', 8)
+    values.setdefault('SHARD', 0)
     values.setdefault('ADOPT_CACHE', True)
     values.setdefault('BUILD_LEDGER', True)
     return inspect.getsource(analysis_cache) + "\n" + inspect.getsource(prediction_cache) + "\n" + _fill(template, **values)

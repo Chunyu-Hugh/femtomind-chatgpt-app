@@ -54,7 +54,7 @@ browser panel                      ─┘
 - [x] Data vs theory by experiment, PDF bands at any Q² with chosen credible intervals, FF plots, thesis-style PNG figures.
 - [x] The per-dataset table in pages, worst-fitting first on request, so a global fit's 96 datasets fit an assistant's reply.
 - [x] Per-replica numbers: each replica's χ² (total, by reaction, by dataset) and fitted parameters, with their spread (`campaign_replica_values`).
-- [x] Predictions cached incrementally, so later views are fast.
+- [x] Predictions cached incrementally, so later views are fast; many replicas are evaluated by a Slurm array on the farm's compute nodes, one data load per task.
 - [x] A campaign report to keep or send: configuration, data, results and provenance in one Markdown file, every input listed with its sha256.
 
 ### Reproduce
@@ -95,7 +95,6 @@ browser panel                      ─┘
 - [ ] ChatGPT in the browser (needs an OAuth sign-in the platform does not offer).
 - [ ] HEP-Genesis-Agent and other MCP clients tested end to end (it supports our token header).
 - [ ] Automatic recovery of failed replicas and automatic postprocessing.
-- [ ] Faster analysis on compute nodes (in progress).
 
 ## Repository
 
