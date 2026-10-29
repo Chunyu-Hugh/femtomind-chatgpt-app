@@ -21,7 +21,7 @@ ARCHIVE_TOOLS = ("list_analysis_results", "get_analysis_fit_statistics", "get_an
 # not describe.
 ALWAYS = ("fs_list", "fs_read", "submit_slurm_job", "draft_slurm_job", "setup_workspace", "use_ai_branch",
           "connect_hpc", "delete_campaign", "cancel_campaign", "rerun_replicas", "append_replicas",
-          "reproduce_campaign", "list_campaigns",
+          "reproduce_campaign", "list_campaigns", "campaign_provenance",
           "sbi_infer", "sbi_options", "sbi_panel", "sbi_validation", "get_thesis_plot")
 
 # Condition A has the paper only: no catalog, no archive (and, through
