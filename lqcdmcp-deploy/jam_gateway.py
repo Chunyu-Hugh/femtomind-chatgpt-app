@@ -5845,7 +5845,7 @@ QUEUE_UNKNOWN_REFUSED = "Could not read the Slurm queue, so nothing was changed.
 # status, postprocess and log snippets all start with it, so they always agree.
 _REPLICA_STATE = r'''
 import json, os, subprocess, time
-STALL_S = 900           # a running replica whose progress file is older than this is 'stalled'
+STALL_S = 900           # a running replica with no evaluation for this long is 'stalled'
 ENDED_HINT = {
     'OUT_OF_MEMORY': 'Slurm ended the task: out of memory. rerun_replicas with a larger mem (e.g. mem=16G) runs it again.',
     'TIMEOUT': 'Slurm ended the task: time limit. rerun_replicas(resume=true) continues it from its checkpoint.',
@@ -5857,14 +5857,19 @@ def progress(stage, i, slurm_state):
     # What a running replica is doing, from checkpoints/replica_<i>/current_progress.json,
     # which the runtime rewrites every few seconds: loading (no file yet: FitPack
     # reads data and grids for minutes), optimizing (evaluations, objective) or
-    # stalled (nothing written for STALL_S). None unless Slurm runs the task.
+    # stalled (no evaluation for STALL_S). None unless Slurm runs the task.
+    # The top-level updated_at moves only at accepted steps, and the Jacobian of a
+    # JAM24 fit takes longer than STALL_S between two of them; last_evaluation's
+    # updated_at moves with every evaluation, so the newer of the two is used.
     if slurm_state not in ('RUNNING', 'COMPLETING'):
         return None
     path = os.path.join(stage, 'checkpoints', 'replica_%d' % i, 'current_progress.json')
     try:
         with open(path) as fh:
             p = json.load(fh)
-        age = time.time() - float(p.get('updated_at') or os.path.getmtime(path))
+        last = p.get('last_evaluation') if isinstance(p.get('last_evaluation'), dict) else {}
+        stamps = [float(t) for t in (p.get('updated_at'), last.get('updated_at')) if t]
+        age = time.time() - (max(stamps) if stamps else os.path.getmtime(path))
     except (OSError, ValueError, TypeError):
         return {'phase': 'loading', 'evaluations': None, 'objective': None, 'age_s': None,
                 'note': 'no progress file yet: FitPack is still loading data and grids (several minutes)'}
