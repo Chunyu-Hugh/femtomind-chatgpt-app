@@ -3717,8 +3717,9 @@ for i in page:
         if ran and rec_commit:
             row['commit_matches_record'] = ran == rec_commit
     if fs:
-        row['result'] = dict((k, fs.get(k)) for k in ('status', 'seed', 'bootstrap_seed', 'chi2_total',
-                                                       'n_fitted_parameters', 'parameter_hash'))
+        row['result'] = {'status': fs.get('status'), 'seed': fs.get('seed'), 'bootstrap_seed': fs.get('bootstrap_seed'),
+                         'optimizer_chi2': fs.get('chi2_total'), 'n_fitted_parameters': fs.get('n_fitted_parameters'),
+                         'parameter_hash': fs.get('parameter_hash')}
         if seeds:
             row['seeds_match_record'] = (fs.get('seed') == seeds.get('parameter_seed')
                                          and fs.get('bootstrap_seed') == seeds.get('bootstrap_seed'))
@@ -3842,6 +3843,10 @@ def _campaign_provenance(u, collection_id, replicas, offset, limit):
             "page": {"offset": offset, "limit": limit, "returned": len(rows), "requested": len(wanted),
                      **({"next_offset": offset + limit} if more else {})},
             "message": message,
+            **({"chi2_note": "optimizer_chi2 is fit_summary.json's chi2_total, the optimizer's own score on the data "
+                             "the replica fitted (its pseudo-data when bootstrap is on). It is not the chi2 to report: "
+                             "campaign_summary gives the central-data point chi2 per replica."}
+               if any(x.get("result") for x in rows) else {}),
             "next": ("reproduce_campaign(collection_id, replicas) runs recorded replicas again on the original node "
                      "type; reproduce_campaign(collection_id, check='latest') compares a finished reproduction "
                      "with the current results in full.")}
@@ -5252,14 +5257,25 @@ def _inspection_request(u, reaction, datasets, cuts, collection_id):
             source = "the library's default cuts (campaign_options)"
         else:
             source = "the cuts given"
+        # An object maps dataset ids to their cuts. A key that is no dataset read
+        # here (a variable name, a typo) would leave the data uncut, so refuse it.
+        shape = ('cuts: a list of {variable, op (> >= < <=), value} for every dataset, e.g. [{"variable": "Q2", '
+                 '"op": ">", "value": 10}], or such lists by dataset id, e.g. {"10010": [...]}')
+        if isinstance(cuts, dict):
+            stray = [str(k) for k in cuts if str(k) not in wanted]
+            if stray:
+                return _refuse("BAD_ARGUMENT", f"{shape}; {stray} is not among the datasets read ({wanted}).")
+            if any(not isinstance(v, list) for v in cuts.values()):
+                return _refuse("BAD_ARGUMENT", f"{shape}; each dataset id takes a list.")
         try:
             if isinstance(cuts, dict):
-                filters = {str(k): object_registry.cut_filters(v) for k, v in cuts.items() if str(k) in wanted}
+                filters = {str(k): object_registry.cut_filters(v) for k, v in cuts.items()}
             else:
                 filters = object_registry.cut_filters(list(cuts))
         except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as exc:
-            return _refuse("BAD_ARGUMENT", "cuts: a list of {variable, op (> >= < <=), value}, or such lists by "
-                                           f"dataset id ({exc}).")
+            return _refuse("BAD_ARGUMENT", f"{shape} ({exc}).")
+        if not filters:
+            source = "no cuts (an empty cuts list was given)"
     return {"datasets": {reaction: wanted}, "filters": {reaction: filters}, "dis_version": 1, "sia_version": 1,
             "source": source}
 
@@ -5968,6 +5984,21 @@ def _slurm_queue(u):
     return queue
 
 
+def _campaign_state(e, prog):
+    """The status list_campaigns shows, from the registry entry and
+    _campaign_progress's answer."""
+    q = prog.get("queue")
+    queued = None if q is None else sum(q.values())
+    stored = e.get("status", "submitted")
+    finished, not_fitted = prog.get("finished"), prog.get("not_fitted")
+    # An unread queue keeps the stored status: the campaign may still run.
+    # Nothing queued and not one finished replica fitted: 'not fitted'.
+    return ("running" if queued else stored if queued is None
+            else "not fitted" if finished and not_fitted == finished
+            else stored if stored in ("postprocessed", "cancelled")
+            else "completed" if finished else stored)
+
+
 def list_campaigns(username=""):
     """Every campaign in this workspace (Collections), newest first, with live
     replica counts, and the user's whole Slurm queue."""
@@ -5979,17 +6010,10 @@ def list_campaigns(username=""):
         prog = _campaign_progress(u, e)
         q = prog.get("queue")
         queued = None if q is None else sum(q.values())
-        stored = e.get("status", "submitted")
         finished, not_fitted = prog.get("finished"), prog.get("not_fitted")
-        # An unread queue keeps the stored status: the campaign may still run.
-        # Nothing queued and not one finished replica fitted: 'not fitted'.
-        state = ("running" if queued else stored if queued is None
-                 else "not fitted" if finished and not_fitted == finished
-                 else stored if stored in ("postprocessed", "cancelled")
-                 else "completed" if finished else stored)
         out.append({"collection_id": e["collection_id"], "campaign_name": e.get("campaign_name"),
                     "created_at": e.get("created_at"), "replicas": e.get("replicas"),
-                    "job_ids": [j["job_id"] for j in e.get("jobs") or []], "status": state,
+                    "job_ids": [j["job_id"] for j in e.get("jobs") or []], "status": _campaign_state(e, prog),
                     "finished": finished, "succeeded": prog.get("succeeded"),
                     "not_fitted": not_fitted, "failed": prog.get("failed"),
                     "queue": q, "queued": queued, "reactions": e["input_card"]["reactions"],
@@ -6517,8 +6541,8 @@ def _report_markdown(rec):
     if rec["warnings"]:
         lines += ["**Read first:**", ""] + [f"- {w}" for w in rec["warnings"]] + [""]
     lines += ["## Campaign", "",
-              f"- {c['replicas']} replicas; created {c['created_at']}; first Slurm job {c['slurm_job_id']}; status in "
-              f"the registry: {c['status']}",
+              f"- {c['replicas']} replicas; created {c['created_at']}; first Slurm job {c['slurm_job_id']}; status "
+              f"{c['status']} (as list_campaigns shows it)",
               f"- Folder: `{c['folder']}`"]
     source = card.get("catalog_source")
     if source:
@@ -6664,7 +6688,8 @@ def _campaign_report(u, cid, write):
         warnings.append("The campaign folder could not be read for the Sources hashes.")
     rec = {"report_version": 1, "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
            "gateway_sha256": _GATEWAY_SHA256, "warnings": warnings,
-           "campaign": {"collection_id": cid, "name": e.get("campaign_name"), "status": e.get("status"),
+           "campaign": {"collection_id": cid, "name": e.get("campaign_name"),
+                        "status": _campaign_state(e, _campaign_progress(u, e)),
                         "replicas": e.get("replicas"), "created_at": e.get("created_at"),
                         "slurm_job_id": e.get("slurm_job_id"), "folder": croot},
            "configuration": card, "data": data, "results": results, "provenance": provenance,
@@ -13732,7 +13757,10 @@ TOOLS = {
         "schema": {"type": "object", "properties": {
             "reaction": {"type": "string", "enum": sorted(CATALOG_REACTIONS)},
             "datasets": {"type": "array", "items": {"type": "string"}},
-            "cuts": {"type": ["array", "object"]},
+            "cuts": {"type": ["array", "object"],
+                     "description": 'Every dataset: [{"variable": "Q2", "op": ">", "value": 10}]; by dataset id: '
+                                    '{"10010": [{"variable": "W2", "op": ">", "value": 12}]} (a dataset left out '
+                                    'is read with no cuts). Omit for the library\'s cuts.'},
             "collection_id": {"type": "string", "description": COLLECTION_ARG},
             "rows": {"type": "integer", "minimum": 0, "maximum": INSPECT_MAX_ROWS, "default": 0}}},
         "fn": lambda a: inspect_datasets(a.get("reaction", ""), a.get("datasets", ""), a.get("cuts"),
