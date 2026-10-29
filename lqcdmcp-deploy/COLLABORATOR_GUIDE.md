@@ -567,6 +567,10 @@ connection."* If the token is not exported, Codex reports
 - *"How is my campaign doing?"* · *"What is in my Slurm queue?"* ·
   *"Postprocess it and show the fit summary."* · *"Plot the u and d PDFs at
   Q² = 10."* · *"Which experiment fits worst? Show data vs theory for NMC."*
+- *"How does my fit compare with the published JAM24?"* · *"Which datasets
+  differ from it?"* — it compares every dataset with the 791 published
+  replicas. *"Show each replica's χ²"* · *"How spread are the fitted
+  g1 a values?"* — per-replica numbers.
 - *"How was this campaign made?"* · *"Which FitPack version and seeds did
   replica 3 use?"* · *"Did anything change between my runs?"* — it reads the
   campaign's record (every submission's FitPack commit, saved changes, image

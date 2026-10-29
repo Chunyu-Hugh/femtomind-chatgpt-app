@@ -52,6 +52,8 @@ browser panel                      ─┘
 - [x] One χ² convention throughout: the central-data point term, with correlated and normalization penalties reported apart.
 - [x] Replica selection for the statistics (best N, χ² cut, outlier cut), without refitting.
 - [x] Data vs theory by experiment, PDF bands at any Q² with chosen credible intervals, FF plots, thesis-style PNG figures.
+- [x] The per-dataset table in pages, worst-fitting first on request, so a global fit's 96 datasets fit an assistant's reply.
+- [x] Per-replica numbers: each replica's χ² (total, by reaction, by dataset) and fitted parameters, with their spread (`campaign_replica_values`).
 - [x] Predictions cached incrementally, so later views are fast.
 - [x] A campaign report to keep or send: configuration, data, results and provenance in one Markdown file, every input listed with its sha256.
 
@@ -67,6 +69,7 @@ browser panel                      ─┘
 - [x] A compiler from the catalog to FitPack input, with an exact parity check against the official input.
 - [x] Run or extend JAM24 from its catalog entry (all 215 free parameters), changing only what you declare; a JAM24-named fit built otherwise is refused.
 - [x] The 791 archived JAM24 replicas as read-only reference results: fit statistics and theory predictions per dataset.
+- [x] Compare a new fit with the published one, dataset by dataset: where its χ² falls among same-size subsamples of the published replicas, with multiple-comparison corrected p-values (`compare_with_reference`).
 
 ### Guidance for the assistant
 
@@ -93,7 +96,6 @@ browser panel                      ─┘
 - [ ] HEP-Genesis-Agent and other MCP clients tested end to end (it supports our token header).
 - [ ] Automatic recovery of failed replicas and automatic postprocessing.
 - [ ] Faster analysis on compute nodes (in progress).
-- [ ] Per-replica values for export, and a direct comparison of a new fit with the published one.
 
 ## Repository
 

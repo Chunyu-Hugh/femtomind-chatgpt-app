@@ -6309,6 +6309,14 @@ def _job_reply(job, wait):
     elif campaign:
         message = ("Campaign preparation is still running; no confirmation requirement is skipped. "
                    "Poll analysis_result with this job_id until complete; do not repeat the original call.")
+    elif job['kind'] == 'campaign_replica_values':
+        message = ("Reading the replicas' numbers on the cluster (seconds; the first chi2 request of a campaign "
+                   "computes its central-data predictions first, minutes for a global fit). Poll analysis_result "
+                   "with this job_id until complete; do not repeat the original call.")
+    elif job['kind'] == 'compare_with_reference':
+        message = ("Comparing with the published replicas on the cluster: about a minute, more the first time a "
+                   "campaign is analysed (its central-data predictions are computed first, minutes for a global "
+                   "fit). Poll analysis_result with this job_id until complete; do not repeat the original call.")
     elif job['kind'] == 'inspect_datasets':
         message = ("Reading the data files on the cluster (seconds to a minute). Poll analysis_result "
                    "with this job_id until complete; do not repeat the original call.")
@@ -13083,24 +13091,219 @@ def _names(text):
     return [x.strip() for x in re.split(r"[,;]", str(text or "")) if x.strip()]
 
 
-def _theory_results(u, e, datasets, experiments, interval, charts=True, export_png=False, selection=None):
+# ---- campaign_replica_values: per-replica numbers --------------------------
+
+# Read on ifarm, where the replicas are: chi2 from the central-data cache's
+# per-dataset documents (stats: chi2, chi2_cor, chi2_norm, norm per replica),
+# parameters from each replica's fitted_parameters.json. Statistics are over
+# every selected replica; values come for one page of replicas.
+_REPLICA_VALUES = r'''
+import glob, json, math, os, re
+kind, stage, cache = __KIND__, __STAGE__, __CACHE__
+wanted, want_ds, want_par = set(__REPLICAS__), __DATASETS__, __PARAMETERS__
+offset, limit = __OFFSET__, __LIMIT__
+
+def num(text):
+    m = re.search(r'(\d+)$', str(text))
+    return int(m.group(1)) if m else None
+
+def stats(xs):
+    xs = [x for x in xs if isinstance(x, (int, float)) and math.isfinite(x)]
+    if not xs:
+        return {"n": 0}
+    m = math.fsum(xs) / len(xs)
+    sd = math.sqrt(math.fsum((x - m) ** 2 for x in xs) / (len(xs) - 1)) if len(xs) > 1 else 0.0
+    return {"n": len(xs), "mean": m, "sd": sd, "min": min(xs), "max": max(xs)}
+
+def done(d):
+    print(json.dumps(d))
+    raise SystemExit
+
+if kind == "chi2":
+    rows, unknown = {}, set(want_ds)
+    for path in sorted(glob.glob(os.path.join(cache, "datasets", "*.json"))):
+        try:
+            doc = json.load(open(path))
+        except (OSError, ValueError):
+            done({"ok": False, "error": "cannot read " + os.path.basename(path)})
+        if doc.get("unavailable"):
+            continue
+        key, st = doc["key"], doc["stats"]
+        unknown.discard(key)
+        for j, ident in enumerate(doc["replicas"]):
+            r = num(ident)
+            if wanted and r not in wanted:
+                continue
+            row = rows.setdefault(r, {"replica": r, "chi2": 0.0, "by_reaction": {}, "datasets": {}})
+            c = float(st["chi2"][j])
+            row["chi2"] += c
+            row["by_reaction"][doc["reaction"]] = row["by_reaction"].get(doc["reaction"], 0.0) + c
+            if key in want_ds:
+                row["datasets"][key] = {"chi2": c, "chi2_cor": st["chi2_cor"][j], "chi2_norm": st["chi2_norm"][j],
+                                        "norm": st["norm"][j]}
+    order = sorted(rows)
+    page = [rows[r] for r in order[offset:offset + limit]]
+    for row in page:
+        if not want_ds:
+            del row["datasets"]
+    done({"ok": True, "total": len(order), "replicas": order, "rows": page,
+          "chi2_over_replicas": stats([rows[r]["chi2"] for r in order]), "unknown_datasets": sorted(unknown)})
+
+names, values, missing = None, {}, []
+for path in glob.glob(os.path.join(stage, "current", "replica_*", "fitted_parameters.json")):
+    r = num(os.path.basename(os.path.dirname(path)))
+    if wanted and r not in wanted:
+        continue
+    try:
+        doc = json.load(open(path))
+        order = [("%s: %s" % (o, n)) if s == 1 else ("norm %s:%s" % (o, n)) for s, o, n in doc["order"]]
+        vals = doc["replicas"][0]["values"]
+    except (OSError, ValueError, KeyError, IndexError, TypeError):
+        missing.append(r)
+        continue
+    if names is None:
+        names = order
+    elif order != names:
+        done({"ok": False, "error": "replica %d lists its parameters in another order than the others" % r})
+    values[r] = vals
+if names is None:
+    done({"ok": False, "error": "no replica has a fitted_parameters.json yet", "missing": sorted(missing)})
+picked = []
+for want in want_par:
+    hit = [i for i, n in enumerate(names) if n == want or n.split(": ", 1)[-1] == want
+           or (want.endswith(":") and n.startswith(want))]
+    if not hit:
+        done({"ok": False, "error": "no parameter named %r" % want, "names": names})
+    picked += [i for i in hit if i not in picked]
+order = sorted(values)
+out = {"ok": True, "total": len(order), "replicas": order, "missing": sorted(missing), "names": names}
+if picked:
+    if len(picked) > 20:
+        done({"ok": False, "error": "%d parameters match; ask for at most 20" % len(picked), "names": names})
+    out["selected"] = [names[i] for i in picked]
+    out["rows"] = [{"replica": r, "values": {names[i]: values[r][i] for i in picked}} for r in order[offset:offset + limit]]
+out["stats"] = {names[i]: stats([values[r][i] for r in order]) for i in (picked or range(len(names)))}
+done(out)
+'''
+
+
+def campaign_replica_values(collection_id="", kind="chi2", replicas="", datasets="", parameters="", offset=0,
+                            limit=20, username=""):
+    """Per-replica numbers of a campaign: chi2 (total, by reaction, by dataset)
+    or fitted parameters, with statistics over the replicas."""
+    u, err = _need_user(username)
+    if err:
+        return err
+    e = _collection(u, collection_id)
+    if not e:
+        return _refuse("NOT_FOUND", f"No campaign {collection_id!r}; list_campaigns shows them.")
+    if kind not in ("chi2", "parameters"):
+        return _refuse("BAD_ARGUMENT", "kind: 'chi2' or 'parameters'.")
+    spec = str(replicas or "").strip().lower()
+    try:
+        wanted = [] if spec in ("", "all") else sorted(set(_numbers(replicas)))
+        offset, limit = max(0, int(offset or 0)), min(100, max(1, int(limit or 20)))
+    except (TypeError, ValueError):
+        return _refuse("BAD_ARGUMENT", "replicas: 'all' or numbers such as '1,3' or '2-4'; offset and limit whole numbers.")
+    ds = [x if ":" in x else x for x in _names(datasets)]
+    if kind == "chi2" and len(ds) > 20:
+        return _refuse("BAD_ARGUMENT", f"{len(ds)} datasets: ask for at most 20 per call.")
+    if kind == "chi2" and any(":" not in x for x in ds):
+        return _refuse("BAD_ARGUMENT", "datasets: reaction-qualified ids such as 'idis:10010'.")
+    pars = _names(parameters)
+    params = {"collection_id": e["collection_id"], "kind": kind, "replicas": wanted, "datasets": ds,
+              "parameters": pars, "offset": offset, "limit": limit}
+    return _background(u, "campaign_replica_values", params,
+                       lambda: _campaign_replica_values(u, e, kind, wanted, ds, pars, offset, limit))
+
+
+def _campaign_replica_values(u, e, kind, wanted, ds, pars, offset, limit):
+    cache = ""
+    if kind == "chi2":
+        ready = _ensure_central_metrics(u, e)
+        if ready.get("status") != "success":
+            return {**ready, "status": ready.get("status") or "error",
+                    "message": "The campaign's central-data chi2 are not ready: " + str(ready.get("message") or ready.get("status"))}
+        cache = ready["cache"]
+    r = _run_ifarm_py(u, _fill(_REPLICA_VALUES, KIND=kind, STAGE=_stage_root(u, e), CACHE=cache, REPLICAS=wanted,
+                               DATASETS=ds, PARAMETERS=pars, OFFSET=offset, LIMIT=limit), timeout=120, cap=4000000)
+    d = _last_json(r)
+    if not isinstance(d, dict):
+        return _refuse("READ_FAILED", "The replicas' files could not be read on the cluster.",
+                       detail=(r.get("err") or "")[-300:])
+    if not d.pop("ok"):
+        return _refuse("BAD_ARGUMENT" if "named" in d["error"] or "at most" in d["error"] else "NO_DATA",
+                       d.pop("error") + ".", **d)
+    total = d["total"]
+    page = {"offset": offset, "limit": limit, "returned": len(d.get("rows") or []), "total": total,
+            **({"next_offset": offset + limit} if offset + limit < total and d.get("rows") is not None else {})}
+    if kind == "chi2":
+        c = d["chi2_over_replicas"]
+        message = (f"{total} fitted replicas; their central-data chi2 (point term, as campaign_summary) ranges "
+                   f"{c.get('min', 0):.1f}–{c.get('max', 0):.1f}, mean {c.get('mean', 0):.1f}. Rows give each "
+                   "replica's total and by reaction" + (", and the datasets asked for" if ds else "")
+                   + ("; unknown_datasets are not in the campaign" if d.get("unknown_datasets") else "") + ".")
+    else:
+        message = (f"{total} replicas with fitted parameters ({len(d['names'])} each"
+                   + (f", {len(d['missing'])} without a readable file" if d.get("missing") else "") + "). "
+                   + ("stats has each selected parameter's mean, sd, min and max over the replicas; rows each "
+                      "replica's values." if d.get("selected") else
+                      "stats has every parameter's mean, sd, min and max over the replicas; name parameters "
+                      "(at most 20, e.g. 'pdf: g1 a', 'g1 a' in every object, or 'ffpion:' for a whole object) "
+                      "for each replica's values."))
+        if not d.get("selected"):
+            d.pop("names", None)
+    return _rounded({"status": "ok", "collection_id": e["collection_id"], "kind": kind, **d, "page": page,
+                     "message": message})
+
+
+THEORY_SORTS = {"dataset": None, "chi2_red": "chi2_red", "chi2": "chi2"}
+
+
+def _theory_results(u, e, datasets, experiments, interval, charts=True, export_png=False, selection=None,
+                    offset=0, limit=None, sort="dataset"):
     """Data vs theory for the datasets asked for: the per-dataset table, the
     chart data and, on request, the thesis PNGs. Computes into the cache only
-    what is missing or stale."""
+    what is missing or stale. limit (None: every dataset) pages the table; the
+    charts and PNGs are made for the datasets of the page only."""
     ready = _ensure_central_metrics(u, e, selection)
     if ready.get('status') not in ('success',): return ready
     stage, cache = _stage_root(u, e), ready['cache']
     ws = _workspace(u)
-    args = dict(STAGE=stage, CACHE=cache, DATASETS=datasets, EXPERIMENTS=experiments, KNOWN=DATASET_EXPERIMENTS, COHORT_IDS=ready['replicas'])
-    view = lambda: _last_json(_run_ifarm_py(u, _analysis_code(_PREDICTIONS_VIEW, INTERVAL=interval, CHARTS=charts,
-                                                               SELECTION=selection, **args), timeout=300, cap=60000000))
-    d, built = view(), None
+
+    def view(ds, ex, with_charts):
+        args = dict(STAGE=stage, CACHE=cache, DATASETS=ds, EXPERIMENTS=ex, KNOWN=DATASET_EXPERIMENTS,
+                    COHORT_IDS=ready['replicas'])
+        return _last_json(_run_ifarm_py(u, _analysis_code(_PREDICTIONS_VIEW, INTERVAL=interval, CHARTS=with_charts,
+                                                          SELECTION=selection, **args), timeout=300, cap=60000000))
+    # A page reads the whole table without charts first (for the order and the
+    # total), then the charts of its own datasets only: a global fit's charts
+    # for every dataset are over a megabyte.
+    d, built = view(datasets, experiments, charts and limit is None), None
     if d and d.get('status') == 'need_build':
         return {'status':'error','message':'Pinned cached cohort changed; refresh the summary before plotting.'}
     if not d:
         return {"status": "error", "message": "reading the cached predictions failed"}
     if d.get("status") != "success":
         return d
+    page = None
+    if limit is not None:
+        rows = list(d["table"])
+        field = THEORY_SORTS.get(sort)
+        if field:
+            rows.sort(key=lambda row: -(row.get(field) or 0.0))
+        shown = rows[offset:offset + limit]
+        keys = {row["dataset"] for row in shown}
+        page = {"offset": offset, "limit": limit, "returned": len(shown), "total": len(rows), "sort": sort,
+                **({"next_offset": offset + limit} if offset + limit < len(rows) else {})}
+        d["table"] = shown
+        d["experiments"] = [g for g in d["experiments"]
+                            if any(f"{x.get('reaction')}:{x.get('dataset_id')}" in keys for x in g.get("datasets") or [])]
+        if charts and shown:
+            dc = view([row["dataset"] for row in shown], [], True)
+            d["charts"] = (dc or {}).get("charts") or []
+        else:
+            d["charts"] = []
     out = {"status": "ok", "collection_id": e["collection_id"], "campaign_name": e.get("campaign_name"),
            "credible_interval": interval, "n_replicas": d["n_replicas"], "excluded_replicas": d["excluded_replicas"],
            "percentiles": [(100 - interval) / 2, 100 - (100 - interval) / 2],
@@ -13114,6 +13317,12 @@ def _theory_results(u, e, datasets, experiments, interval, charts=True, export_p
            "table": d["table"], "experiments": d["experiments"], "ensemble_central_chi2": d.get("ensemble_central_chi2"),
            "metric_scope": "requested datasets; global campaign summary uses all configured datasets", "unavailable_datasets": d["unavailable_datasets"],
            "computed_now": (built or {}).get("computed", []), "compute_seconds": (built or {}).get("seconds")}
+    out["table"], out["experiments"] = _rounded(out["table"]), _rounded(out["experiments"])
+    if len(out["replica_ids"]) > 50:
+        # A large ensemble's identity list says nothing a count does not.
+        out["replica_ids"] = out["replica_ids"][:3] + ["…"] + out["replica_ids"][-3:]
+    if page:
+        out["page"] = page
     for k in ("unknown_datasets", "unmatched_experiments"):
         if d.get(k):
             out[k] = d[k]
@@ -13126,6 +13335,11 @@ def _theory_results(u, e, datasets, experiments, interval, charts=True, export_p
                      f"{len(sel['dropped'])} left out (see replica_selection).")
     if d["n_replicas"] < 2:
         notes.append("Only one fitted replica: no credible band.")
+    if page:
+        notes.append(f"table holds datasets {page['offset'] + 1}-{page['offset'] + page['returned']} of "
+                     f"{page['total']} (sort {page['sort']}), with their charts and experiments"
+                     + (f"; call again with offset={page['next_offset']} for the next ones." if page.get('next_offset')
+                        else "."))
     if out.get("unknown_datasets") or out.get("unmatched_experiments"):
         notes.append("Some names matched no dataset of this campaign: "
                      + ", ".join(out.get("unknown_datasets", []) + out.get("unmatched_experiments", [])) + ".")
@@ -13155,7 +13369,8 @@ def _theory_results(u, e, datasets, experiments, interval, charts=True, export_p
 
 
 def analyze_by_experiment(collection_id="", experiments="", plot=True, username="", credible_interval=95,
-                          datasets="", export_png=False, replicas=None):
+                          datasets="", export_png=False, replicas=None, offset=0, limit=20, sort="dataset",
+                          all=False):
     """Per-dataset table (JAM paper columns) and data vs mean fitted theory, for
     the datasets or experiments named (empty: all)."""
     try:
@@ -13174,12 +13389,20 @@ def analyze_by_experiment(collection_id="", experiments="", plot=True, username=
     except ValueError as exc:
         return {"status": "error", "message": str(exc)}
     ds, ex = _names(datasets), _names(experiments)
+    if sort not in THEORY_SORTS:
+        return _refuse("BAD_ARGUMENT", f"sort: one of {sorted(THEORY_SORTS)}.")
+    try:
+        offset = max(0, int(offset or 0))
+        limit = None if all else min(100, max(1, int(limit or 20)))
+    except (TypeError, ValueError):
+        return _refuse("BAD_ARGUMENT", "offset and limit must be whole numbers.")
     return _background(u, "analyze_by_experiment",
                        {"collection_id": e["collection_id"], "datasets": ds, "experiments": ex,
                         "interval": credible_interval, "plot": bool(plot), "png": bool(export_png),
-                        "replicas": selection},
+                        "replicas": selection, "offset": offset, "limit": limit, "sort": sort},
                        lambda: _theory_results(u, e, ds, ex, credible_interval, charts=bool(plot),
-                                               export_png=bool(export_png), selection=selection))
+                                               export_png=bool(export_png), selection=selection,
+                                               offset=offset, limit=limit, sort=sort))
 
 
 # Each replica's state and Slurm log (Logs). Replica i's log is
@@ -13695,6 +13918,143 @@ def _results_request(operation, arguments):
     return answer["result"]
 
 
+# ---- compare_with_reference: a campaign against a published fit's replicas ----
+
+# One computation per campaign cohort, archive, subsample count and seed; the
+# pages of an answer read it. A new cohort (more replicas, a rerun) is another key.
+_REFERENCE_COMPARISONS = {}
+_REFERENCE_LOCKS = {}
+_REFERENCE_GUARD = threading.Lock()
+REFERENCE_DEFINITIONS = (
+    "chi2 is the point term only: the sum over a dataset's points of ((prediction - value) / alpha)^2, with no "
+    "correlated or normalization penalty, which is the per-dataset chi2 campaign_summary shows. The prediction is "
+    "FitPack's complete one (raw theory / normalization + profiled systematic shift) on both sides. "
+    "mean_prediction: chi2 of the ensemble-mean prediction (the published table's chi2; published_chi2_data is the "
+    "archive's own number for it). mean_replica: the mean over replicas of each replica's chi2. "
+    "The null distribution: as many published replicas as the campaign has, drawn without replacement, subsamples "
+    "times, the same draws for every dataset; z = (campaign - null mean) / null sd, p is two-sided and empirical "
+    "(+1 corrected), p_BH and p_Holm correct it for the number of datasets compared. A small p says the campaign's "
+    "chi2 is unusual for an ensemble of its size drawn from the published fit; it says nothing about which fit is "
+    "better. Only datasets whose data (value and alpha) are identical on both sides are compared.")
+
+
+def _p_adjusted(ps):
+    """Benjamini-Hochberg and Holm adjusted p-values, in the order given."""
+    m = len(ps)
+    order = sorted(range(m), key=lambda i: ps[i])
+    bh, holm = [0.0] * m, [0.0] * m
+    prev = 1.0
+    for rank in range(m, 0, -1):
+        i = order[rank - 1]
+        prev = min(prev, ps[i] * m / rank)
+        bh[i] = min(1.0, prev)
+    running = 0.0
+    for rank, i in enumerate(order):
+        running = max(running, ps[i] * (m - rank))
+        holm[i] = min(1.0, running)
+    return bh, holm
+
+
+def _rounded(value, digits=8):
+    """Floats to `digits` significant digits, recursively: a page stays readable."""
+    if isinstance(value, float):
+        return float(f"{value:.{digits}g}") if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _rounded(v, digits) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_rounded(v, digits) for v in value]
+    return value
+
+
+def compare_with_reference(collection_id="", analysis_id="JAM24.final", subsamples=1000, seed=20261026,
+                           offset=0, limit=20, username=""):
+    """A campaign's per-dataset chi2 against the published fit's replicas, with
+    a null distribution from same-size subsamples of the published ensemble."""
+    u, err = _need_user(username)
+    if err:
+        return err
+    e = _collection(u, collection_id)
+    if not e:
+        return _refuse("NOT_FOUND", f"No campaign {collection_id!r}; list_campaigns shows them.")
+    try:
+        subsamples, seed = int(subsamples), int(seed)
+        offset, limit = max(0, int(offset or 0)), min(50, max(1, int(limit or 20)))
+    except (TypeError, ValueError):
+        return _refuse("BAD_ARGUMENT", "subsamples, seed, offset and limit must be whole numbers.")
+    if not 100 <= subsamples <= 5000:
+        return _refuse("BAD_ARGUMENT", "subsamples: from 100 to 5000 (1000 by default).")
+    analysis_id = str(analysis_id or "JAM24.final").strip()
+    try:
+        manifest = _analysis_results_store().resolve(analysis_id)
+    except ValueError:
+        return _refuse("NOT_FOUND", f"No published results for {analysis_id!r}; list_analysis_results lists them.")
+    dirs = analysis_results.archive_directories(manifest)
+    if any(_outside_read_roots(path) for path in dirs):
+        return _refuse("OUTSIDE_READ_ROOTS", "The registered results archive is outside the site's authorized read roots.")
+    params = {"collection_id": e["collection_id"], "analysis_id": analysis_id, "subsamples": subsamples, "seed": seed,
+              "offset": offset, "limit": limit}
+    return _background(u, "compare_with_reference", params,
+                       lambda: _compare_with_reference(u, e, analysis_id, manifest, dirs, subsamples, seed, offset, limit))
+
+
+def _compare_with_reference(u, e, analysis_id, manifest, dirs, subsamples, seed, offset, limit):
+    ready = _ensure_central_metrics(u, e)
+    if ready.get("status") != "success":
+        return {**ready, "status": ready.get("status") or "error",
+                "message": "The campaign's central-data predictions are not ready, so nothing was compared: "
+                           + str(ready.get("message") or ready.get("status"))}
+    key = (u, e["collection_id"], ready.get("cohort") or ready.get("cache"), manifest.get("archive_id"),
+           subsamples, seed)
+    with _REFERENCE_GUARD:
+        lock = _REFERENCE_LOCKS.setdefault(key, threading.Lock())
+    with lock:
+        full = _REFERENCE_COMPARISONS.get(key)
+        if full is None:
+            with open(os.path.join(os.path.dirname(analysis_results.__file__), "reference_comparison.py"),
+                      encoding="utf-8") as fh:
+                source = fh.read()
+            request = {"campaign_cache": ready["cache"], "archives": dirs, "subsamples": subsamples, "seed": seed}
+            code = source.replace("REQUEST = None  # filled in before the program is sent: __REQUEST__",
+                                  "REQUEST = json.loads(%s)" % json.dumps(json.dumps(request)))
+            r = _run_ifarm_py(u, code, apptainer=True, timeout=900, cap=8000000)
+            found = _last_json(r)
+            if not isinstance(found, dict):
+                why = " ".join(l.strip() for l in ((r.get("err") or "") + "\n" + (r.get("out") or "")).splitlines()
+                               if l.strip() and "syscshrc" not in l)
+                return _refuse("READ_FAILED", "The comparison could not run on the cluster.", detail=why[-400:])
+            if found.get("error"):
+                code_ = "NO_DATA" if found.get("error") == "no comparable dataset" else "READ_FAILED"
+                return _refuse(code_, f"Nothing was compared: {found['error']}.",
+                               not_comparable=found.get("not_comparable") or [])
+            for d in ("mean_prediction", "mean_replica"):
+                bh, holm = _p_adjusted([row[d]["p"] for row in found["datasets"]])
+                for row, a, b in zip(found["datasets"], bh, holm):
+                    row[d]["p_BH"], row[d]["p_Holm"] = a, b
+            _REFERENCE_COMPARISONS[key] = full = found
+    rows = sorted(full["datasets"], key=lambda r: (r["mean_prediction"]["p"], -abs(r["mean_prediction"]["z"] or 0.0)))
+    flagged = {d: [r["key"] for r in rows if r[d]["p_BH"] < 0.05] for d in ("mean_prediction", "mean_replica")}
+    g = full["global"]["mean_prediction"]
+    z = "n/a" if g["z"] is None else f"{g['z']:.2f}"
+    message = (f"{len(rows)} datasets compared with the {full.get('reference_replicas')} published replicas of "
+               f"{analysis_id} ({len(full['not_comparable'])} not comparable: not_comparable says why). Summed over "
+               f"them ({g['points']} points), the chi2 of the mean prediction is {g['campaign']:.1f} for the campaign "
+               f"and {g['reference_full']:.1f} for the published ensemble; {full['campaign_replicas']} published "
+               f"replicas drawn at random give {g['null_mean']:.1f} ± {g['null_sd']:.1f} (z {z}, p {g['p']:.3g}). "
+               + (f"{len(flagged['mean_prediction'])} datasets differ at p_BH < 0.05: "
+                  + ", ".join(flagged["mean_prediction"][:12]) + ("…" if len(flagged["mean_prediction"]) > 12 else "") + "."
+                  if flagged["mean_prediction"] else "No dataset differs at p_BH < 0.05.")
+               + " Datasets are ordered by p, the smallest first.")
+    more = offset + limit < len(rows)
+    return _rounded({"status": "ok", "collection_id": e["collection_id"], "analysis_id": analysis_id,
+                     "archive_id": full.get("archive_id"), "reference_replicas": full.get("reference_replicas"),
+                     "campaign_replicas": full["campaign_replicas"], "subsamples": full["subsamples"],
+                     "seed": full["seed"], "global": full["global"], "flagged": flagged,
+                     "datasets": rows[offset:offset + limit], "not_comparable": full["not_comparable"],
+                     "page": {"offset": offset, "limit": limit, "returned": len(rows[offset:offset + limit]),
+                              "total": len(rows), **({"next_offset": offset + limit} if more else {})},
+                     "definitions": REFERENCE_DEFINITIONS, "message": message})
+
+
 TOOLS = {
     "preview_compiled_input": {
         "compact": True,
@@ -13754,6 +14114,53 @@ TOOLS = {
             "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10}}},
         "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
         "fn": lambda a: _results_request("predictions", a)},
+    "campaign_replica_values": {
+        "compact": True,
+        "desc": "Per-replica numbers of a campaign, for distributions and correlations the summary does not give. "
+                "kind='chi2': each fitted replica's central-data chi2 (point term, as in campaign_summary), its "
+                "total and by reaction, and for the datasets named (at most 20, 'idis:10010') their chi2, chi2_cor, "
+                "chi2_norm and fitted norm; chi2_over_replicas has the mean, sd, min and max. kind='parameters': "
+                "without parameters, every fitted parameter's mean, sd, min and max over the replicas (stats); with "
+                "parameters (at most 20: 'pdf: g1 a', 'g1 a' for every object that has it, 'ffpion:' for a whole "
+                "object, 'norm idis:10010' for a normalization) also each replica's values. replicas ('all', '1,3', "
+                "'2-4') selects; rows come in pages of limit replicas (default 20, at most 100) from offset. "
+                "Read-only. A reply with status running carries a job_id for analysis_result.",
+        "schema": {"type": "object", "additionalProperties": False, "required": ["collection_id"], "properties": {
+            "collection_id": {"type": "string", "description": COLLECTION_ARG},
+            "kind": {"type": "string", "enum": ["chi2", "parameters"], "default": "chi2"},
+            "replicas": {"type": "string", "default": "all"},
+            "datasets": {"type": "string", "description": "kind=chi2: comma list of reaction:id, at most 20"},
+            "parameters": {"type": "string", "description": "kind=parameters: comma list of names, at most 20 matches"},
+            "offset": {"type": "integer", "minimum": 0, "default": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}}},
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        "fn": lambda a: campaign_replica_values(a.get("collection_id", ""), a.get("kind", "chi2"), a.get("replicas", ""),
+                                                a.get("datasets", ""), a.get("parameters", ""), a.get("offset", 0),
+                                                a.get("limit", 20))},
+    "compare_with_reference": {
+        "compact": True,
+        "desc": "How a campaign's fit compares with a published fit (default JAM24.final, its 791 replicas), dataset "
+                "by dataset: for every dataset whose data are identical on both sides, the chi2 of the campaign's "
+                "mean prediction and the mean replica chi2, the published ensemble's, and where the campaign's falls "
+                "among same-size random subsamples of the published replicas (null mean and sd, z, two-sided p, "
+                "Benjamini-Hochberg and Holm corrected p). Also the global sums, the datasets that differ at "
+                "p_BH < 0.05 (flagged), and the datasets not compared with the reason (changed workbook or cut, no "
+                "point after the cuts). chi2 is the point term only, as in campaign_summary; definitions says it "
+                "all. Datasets come ordered by p, smallest first, in pages of limit (default 20, at most 50) from "
+                "offset. Read-only; the first call for a campaign may compute its central-data predictions, so a "
+                "reply with status running carries a job_id for analysis_result. Use it when the user asks how "
+                "their fit compares with the published one or whether it reproduces it.",
+        "schema": {"type": "object", "additionalProperties": False, "required": ["collection_id"], "properties": {
+            "collection_id": {"type": "string", "description": COLLECTION_ARG},
+            "analysis_id": {"type": "string", "default": "JAM24.final"},
+            "subsamples": {"type": "integer", "minimum": 100, "maximum": 5000, "default": 1000},
+            "seed": {"type": "integer", "default": 20261026},
+            "offset": {"type": "integer", "minimum": 0, "default": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20}}},
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        "fn": lambda a: compare_with_reference(a.get("collection_id", ""), a.get("analysis_id", "JAM24.final"),
+                                               a.get("subsamples", 1000), a.get("seed", 20261026),
+                                               a.get("offset", 0), a.get("limit", 20))},
 
     "list_analysis_catalog": {
         "compact": True,
@@ -14134,10 +14541,21 @@ TOOLS = {
                 "LaTeX). Names that match nothing come back as unknown_datasets / unmatched_experiments; "
                 "if nothing matches, status no_match lists what the campaign has (available): choose from "
                 "it, no other tool is needed. Predictions are cached per dataset: only the first request "
-                "for a dataset evaluates the replicas. " + ASYNC_NOTE,
+                "for a dataset evaluates the replicas. The table comes in pages of limit datasets (default 20, at "
+                "most 100) from offset, with the charts, PNGs and experiments of that page; page says the total and "
+                "next_offset. sort='chi2_red' (or 'chi2') lists the worst-fitting datasets first, 'dataset' (default) "
+                "by name. A global fit's 96 datasets in one reply are over 200 kB of table: page it; all=true (for "
+                "the panel) returns every dataset at once. " + ASYNC_NOTE,
+        "compact": True,
         "schema": {"type": "object", "properties": {"collection_id": {"type": "string", "description": COLLECTION_ARG},
                                                     "datasets": {"type": "string",
                                                                  "description": "Comma list of reaction:id (or ids)."},
+                                                    "offset": {"type": "integer", "minimum": 0, "default": 0},
+                                                    "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+                                                    "sort": {"type": "string", "enum": ["dataset", "chi2_red", "chi2"],
+                                                             "default": "dataset"},
+                                                    "all": {"type": "boolean", "default": False,
+                                                            "description": "every dataset in one reply (the panel's table)"},
                                                     "experiments": {"type": "string",
                                                                     "description": "Comma list of experiment names."},
                                                     "plot": {"type": "boolean", "default": True},
@@ -14151,7 +14569,9 @@ TOOLS = {
         "fn": lambda a: analyze_by_experiment(a.get("collection_id", ""), a.get("experiments", ""),
                                               a.get("plot", True), credible_interval=a.get("credible_interval", 95),
                                               datasets=a.get("datasets", ""), export_png=a.get("export_png", False),
-                                              replicas=a.get("replicas"))},
+                                              replicas=a.get("replicas"), offset=a.get("offset", 0),
+                                              limit=a.get("limit", 20), sort=a.get("sort", "dataset"),
+                                              all=bool(a.get("all", False)))},
     "analysis_result": {
         "desc": "Wait for a long analysis or campaign preparation that answered status running. "
                 f"validate_campaign, preview_prior_replicas and submit_campaign results answer within about {CAMPAIGN_WAIT} s. "
