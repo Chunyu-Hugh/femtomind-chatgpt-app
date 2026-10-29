@@ -492,6 +492,18 @@ start and stop independently, four at a time.
   writes them, with the image and its real path, Slurm ids, library versions
   and JAMAI hashes, to `replica_<n>/replica_provenance.json` before the fit.
   `fit_summary.json` keeps the `seed` and `bootstrap_seed` that `ai.py` used.
+- **The cache on compute nodes.** When at least `JAM_GW_CACHE_SLURM_MIN` (12)
+  replicas wait for their central-data predictions, the gateway submits a Slurm
+  array (`jam_cache_<campaign>`, up to `JAM_GW_CACHE_WORKERS` tasks, 16, one per 8
+  replicas, the campaign's partition and memory, 1 CPU, 2 h) instead of
+  evaluating them on the login host in batches of 8, each with its own FitPack
+  data load. Each task loads the data once, evaluates the replicas whose number
+  falls to it and journals each one; the gateway then publishes the cohort,
+  evaluating whatever a task left. While it runs, cache_progress shows the job,
+  its tasks and how many are left; a refused sbatch is shown there too, and the
+  login-host path does the work. Checked on 2026-10-29 on test_OCT_9: three
+  tasks (3, 4 and 3 replicas, 7 s each) and the login-host build give the same
+  cohort, every prediction and chi2 identical. `JAM_GW_CACHE_WORKERS=0` turns it off.
 - **A fit against the published one.** `compare_with_reference(collection_id)`
   (default `JAM24.final`) reads the campaign's central-data cohort and the
   registered archive on ifarm (in the container, `jamai/reference_comparison.py`)
