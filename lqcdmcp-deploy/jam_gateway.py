@@ -1617,6 +1617,12 @@ DATASET_LABELS = {
         "20003": "CMS 13 TeV Wp+Wm pp"
     },
     "sidis": {
+        "1005": "COMPASS deuteron π+ multiplicity (workbook of the published JAM24 fit)",
+        "1006": "COMPASS deuteron π− multiplicity (workbook of the published JAM24 fit)",
+        "2005": "COMPASS deuteron K+ multiplicity (workbook of the published JAM24 fit)",
+        "2006": "COMPASS deuteron K− multiplicity (workbook of the published JAM24 fit)",
+        "3000": "COMPASS deuteron h+ multiplicity (workbook of the published JAM24 fit)",
+        "3001": "COMPASS deuteron h− multiplicity (workbook of the published JAM24 fit)",
         "1105": "COMPASS deuteron π+ multiplicity",
         "1106": "COMPASS deuteron π− multiplicity",
         "1115": "COMPASS proton π+ multiplicity",
@@ -5292,7 +5298,12 @@ def inspect_datasets(reaction="", datasets="", cuts=None, collection_id="", rows
         return req
     count = sum(len(ids) for ids in req["datasets"].values())
     if count > INSPECT_MAX_DATASETS:
-        return _refuse("BAD_ARGUMENT", f"{count} datasets; inspect at most {INSPECT_MAX_DATASETS} per call.")
+        # Say how to split it: JAM24 alone has 53 SIA datasets.
+        per = ", ".join(f"{r} {len(ids)}" for r, ids in req["datasets"].items())
+        return _refuse("BAD_ARGUMENT", f"{count} datasets ({per}); inspect at most {INSPECT_MAX_DATASETS} per call. "
+                                       "Narrow with reaction, and for a reaction with more, with datasets: its first "
+                                       f"{INSPECT_MAX_DATASETS} ids, then the rest (datasets_by_reaction lists them).",
+                       datasets_by_reaction=req["datasets"])
     try:
         rows = max(0, min(INSPECT_MAX_ROWS, int(rows or 0)))
     except (TypeError, ValueError):
@@ -6530,6 +6541,54 @@ def _md_table(header, rows):
                      + ["| " + " | ".join(cell(x) for x in row) + " |" for row in rows])
 
 
+def _count(n, word):
+    return f"{n} {word}" + ("" if n == 1 else "s")
+
+
+def _dataset_label(reaction, idx):
+    """The label campaign_datasets shows, without its not-normally-used star."""
+    label = DATASET_LABELS.get(reaction, {}).get(str(idx))
+    if label:
+        return label
+    try:
+        return CONFIGURATION_METADATA.get(reaction, {}).get(int(idx), {}).get("label", "")
+    except (TypeError, ValueError):
+        return ""
+
+
+def _cuts_cell(cuts):
+    """A reaction's cuts for the report table. Per-dataset cuts ('<id>: <cut>',
+    as _card_summary gives them) are grouped by the cuts the datasets share,
+    so 53 SIA datasets take three groups, not 106 entries."""
+    if not cuts:
+        return "none"
+    by_id = {}
+    for entry in cuts:
+        idx, sep, cut = str(entry).partition(": ")
+        if not (sep and idx.isdigit()):
+            return "; ".join(cuts)
+        by_id.setdefault(idx, []).append(cut)
+    groups = {}
+    for idx, own in by_id.items():
+        groups.setdefault(tuple(own), []).append(idx)
+    return "; ".join(f"{', '.join(own)} for {', '.join(ids)}" for own, ids in groups.items())
+
+
+def _changed_text(changed):
+    """The parameters a card changed from the library: listed when few,
+    counted per object when many (the JSON record keeps the list)."""
+    if not changed:
+        return "none changed from the library"
+    if len(changed) <= 12:
+        return "changed from the library: " + ", ".join(changed)
+    per = {}
+    for name in changed:
+        obj, sep, _ = name.partition(": ")
+        per[obj if sep else "parameters"] = per.get(obj if sep else "parameters", 0) + 1
+    return (f"{len(changed)} changed from the library ("
+            + ", ".join(f"{obj} {n}" for obj, n in per.items()) + "; listed in campaign_report.json)")
+
+
 def _report_markdown(rec):
     """The report's Markdown from its record (campaign_report builds the
     record; this only lays it out)."""
@@ -6541,7 +6600,7 @@ def _report_markdown(rec):
     if rec["warnings"]:
         lines += ["**Read first:**", ""] + [f"- {w}" for w in rec["warnings"]] + [""]
     lines += ["## Campaign", "",
-              f"- {c['replicas']} replicas; created {c['created_at']}; first Slurm job {c['slurm_job_id']}; status "
+              f"- {_count(c['replicas'], 'replica')}; created {c['created_at']}; first Slurm job {c['slurm_job_id']}; status "
               f"{c['status']} (as list_campaigns shows it)",
               f"- Folder: `{c['folder']}`"]
     source = card.get("catalog_source")
@@ -6554,20 +6613,19 @@ def _report_markdown(rec):
     lines += ["", "## Configuration", "",
               f"- Objects: {card['object']}; fitted: {', '.join(card['fit_objects'])}"
               + (f"; frozen: {', '.join(card['frozen_objects'])}" if card.get("frozen_objects") else ""),
-              f"- Parameters: {card['free_parameters']} free, {card['fixed_parameters']} fixed"
-              + (f"; changed from the library: {', '.join(card['changed_parameters'])}" if card["changed_parameters"] else
-                 "; none changed from the library"),
+              f"- Parameters: {card['free_parameters']} free, {card['fixed_parameters']} fixed; "
+              + _changed_text(card["changed_parameters"]),
               "- QCD: " + ", ".join(f"{k} {v}" for k, v in sorted(card["qcd"].items())),
               f"- Inference: {card['inference']}; initialization {card['initialization']}; optimizer {card['optimizer']}, "
               f"tolerance {card['tolerance']}, at most {card['max_iterations']} iterations",
               "- Slurm per replica: " + ", ".join(f"{k} {v}" for k, v in card["slurm"].items()), ""]
     lines.append(_md_table(["Reaction", "Datasets", "Normalization parameters", "Cuts"],
                            [[r, card["datasets"].get(r, 0), card["normalization_parameters"].get(r, 0),
-                             "; ".join(card["cuts"].get(r) or []) or "none"] for r in card["reactions"]]))
+                             _cuts_cell(card["cuts"].get(r))] for r in card["reactions"]]))
     data = rec["data"]
     lines += ["", "## Data after the cuts", ""]
     if data.get("points"):
-        lines += [f"{data['total_points']} points in {len(data['points'])} datasets, read with FitPack's own readers "
+        lines += [f"{_count(data['total_points'], 'point')} in {_count(len(data['points']), 'dataset')}, read with FitPack's own readers "
                   "and cuts.", ""]
         lines.append(_md_table(["Dataset", "Label", "Points"],
                                [[k, data["labels"].get(k, ""), v] for k, v in sorted(data["points"].items())]))
@@ -6582,7 +6640,14 @@ def _report_markdown(rec):
         lines.append(f"- Replicas: {s.get('completed_replicas')} fitted, {s.get('not_fitted_replicas')} did not fit, "
                      f"{s.get('failed_replicas')} failed, of {s.get('total_replicas')}")
         if s.get("mean_total_chi2") is None:
-            lines.append("- No replica fitted, so there are no chi2 statistics; campaign_logs says why they failed.")
+            if s.get("failed_replicas") or s.get("not_fitted_replicas"):
+                lines.append("- No replica fitted, so there are no chi2 statistics; campaign_logs says why.")
+            elif c["status"] == "cancelled":
+                lines.append("- The campaign was cancelled before any replica finished, so there are no chi2 "
+                             "statistics.")
+            else:
+                lines.append("- No replica has finished yet, so there are no chi2 statistics; campaign_status "
+                             "follows the run.")
         else:
             lines.append(f"- chi2 per replica (central data, point term only): mean {_num(s.get('mean_total_chi2'))}, "
                          f"median {_num(s.get('median_total_chi2'))}, range {_num(s.get('min_total_chi2'))}–"
@@ -6611,7 +6676,7 @@ def _report_markdown(rec):
     lines += ["", "## How it was made", ""]
     subs = prov.get("submissions") or []
     if subs:
-        lines.append(f"reproduce.json ({prov.get('schema')}) records {len(subs)} submissions:")
+        lines.append(f"reproduce.json ({prov.get('schema')}) records {_count(len(subs), 'submission')}:")
         lines += ["", _md_table(["Kind", "Slurm job", "Replicas", "Submitted", "FitPack commit", "Clean", "Container"],
                                 [[s["kind"], s["job_id"], s["replicas"], s["submitted_at"],
                                   f"{(s.get('fitpack_commit') or '')[:12]} ({s.get('fitpack_branch')})",
@@ -6647,7 +6712,7 @@ def _campaign_report(u, cid, write):
                                             "campaign_status and campaign_summary still answer for it.")
     if norm.get("source"):
         card["catalog_source"] = norm["source"]
-    labels = {f"{r}:{x}": DATASET_LABELS.get(r, {}).get(str(x), "") for r, ids in norm["datasets"].items() for x in ids}
+    labels = {f"{r}:{x}": _dataset_label(r, x) for r, ids in norm["datasets"].items() for x in ids}
     try:
         data_warnings, points = _data_warnings(u, norm)
     except (KeyError, TypeError, ValueError) as exc:
