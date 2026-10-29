@@ -5251,7 +5251,8 @@ def _inspection_request(u, reaction, datasets, cuts, collection_id):
         filters = ({str(k): list(v) for k, v in filters.items()} if isinstance(filters, dict) else list(filters))
         source = "the catalog's dataset filters (the ones a campaign uses)"
     else:
-        if cuts is None:
+        given = cuts is not None
+        if not given:
             if reaction in PION_DATASETS:
                 try:
                     library = _object_libraries(u, ["pdf-pion"])["pdf-pion"]
@@ -5263,14 +5264,19 @@ def _inspection_request(u, reaction, datasets, cuts, collection_id):
             source = "the library's default cuts (campaign_options)"
         else:
             source = "the cuts given"
-        # An object maps dataset ids to their cuts. A key that is no dataset read
-        # here (a variable name, a typo) would leave the data uncut, so refuse it.
         shape = ('cuts: a list of {variable, op (> >= < <=), value} for every dataset, e.g. [{"variable": "Q2", '
                  '"op": ">", "value": 10}], or such lists by dataset id, e.g. {"10010": [...]}')
         if isinstance(cuts, dict):
-            stray = [str(k) for k in cuts if str(k) not in wanted]
-            if stray:
-                return _refuse("BAD_ARGUMENT", f"{shape}; {stray} is not among the datasets read ({wanted}).")
+            if given:
+                # A key the user gave that is no dataset read here (a variable
+                # name, a typo) would leave the data uncut, so refuse it.
+                stray = [str(k) for k in cuts if str(k) not in wanted]
+                if stray:
+                    return _refuse("BAD_ARGUMENT", f"{shape}; {stray} is not among the datasets read ({wanted}).")
+            else:
+                # The library's per-dataset cuts cover all of the reaction's
+                # datasets: those of the datasets read here apply.
+                cuts = {k: v for k, v in cuts.items() if str(k) in wanted}
             if any(not isinstance(v, list) for v in cuts.values()):
                 return _refuse("BAD_ARGUMENT", f"{shape}; each dataset id takes a list.")
         try:
@@ -5281,7 +5287,8 @@ def _inspection_request(u, reaction, datasets, cuts, collection_id):
         except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as exc:
             return _refuse("BAD_ARGUMENT", f"{shape} ({exc}).")
         if not filters:
-            source = "no cuts (an empty cuts list was given)"
+            source = ("no cuts (an empty cuts list was given)" if given else
+                      "the library's default cuts (campaign_options): none for these datasets")
     return {"datasets": {reaction: wanted}, "filters": {reaction: filters}, "dis_version": 1, "sia_version": 1,
             "source": source}
 
@@ -6009,10 +6016,14 @@ def _campaign_state(e, prog):
     finished, not_fitted = prog.get("finished"), prog.get("not_fitted")
     # An unread queue keeps the stored status: the campaign may still run.
     # Nothing queued and not one finished replica fitted: 'not fitted'.
+    # Nothing queued and nothing finished: Slurm ended every task before FitPack
+    # wrote a result (time limit, memory, a cancel outside the gateway), which
+    # the stored 'submitted' would hide; campaign_status says how each ended.
     return ("running" if queued else stored if queued is None
             else "not fitted" if finished and not_fitted == finished
             else stored if stored in ("postprocessed", "cancelled")
-            else "completed" if finished else stored)
+            else "completed" if finished
+            else "ended without result" if finished == 0 else stored)
 
 
 def list_campaigns(username=""):
@@ -6064,7 +6075,33 @@ def _campaign_verdict(prog, total):
     return "unknown" if queued is None else ("finished" if prog.get("finished") else "no_output")
 
 
-def campaign_status(collection_id="", username="", wait_for="", timeout=None):
+def _card_brief(summary):
+    """The card summary as campaign_status shows it while a client polls: what
+    the campaign fits and on what, by count. A JAM24 card's full summary (every
+    fixed, changed and prior-matched parameter, every SIA cut) is over 30 kB,
+    and a client waiting for 'fitting' asks for it again and again."""
+    brief = {k: summary[k] for k in ("object", "fit_objects", "frozen_objects", "free_parameters",
+                                     "fixed_parameters", "reactions", "datasets", "normalization_parameters",
+                                     "qcd", "initialization", "inference", "replicas", "max_iterations",
+                                     "tolerance", "optimizer", "slurm", "dis_version") if k in summary}
+    brief["changed_parameters"] = len(summary.get("changed_parameters") or [])
+    cuts = {}
+    for reaction, cs in (summary.get("cuts") or {}).items():
+        cuts[reaction] = cs if not isinstance(cs, list) or len(cs) <= 8 else f"{len(cs)} cuts (detail='card' lists them)"
+    if cuts:
+        brief["cuts"] = cuts
+    prior = summary.get("prior_replicas")
+    if isinstance(prior, dict):
+        pv = prior.get("provenance") or {}
+        brief["prior_replicas"] = {"kind": pv.get("kind"), "source_replica_count": pv.get("source_replica_count"),
+                                   "assigned": len(prior.get("assignments") or []),
+                                   "matched_parameters": len(prior.get("matched") or [])}
+    elif prior is not None:
+        brief["prior_replicas"] = prior
+    return brief
+
+
+def campaign_status(collection_id="", username="", wait_for="", timeout=None, detail=""):
     """One campaign's state. wait_for='fitting' waits (up to timeout s, at most
     JOB_WAIT) until a replica is optimizing or something failed before the fit;
     'finished' until nothing of it is queued; 'change' until the state changes.
@@ -6104,7 +6141,8 @@ def campaign_status(collection_id="", username="", wait_for="", timeout=None):
            "jobs": e.get("jobs"), **prog, "verdict": verdict,
            "campaign_folder": f"{_workspace(u)}/{CAMPAIGNS_DIR}/{e['campaign_folder']}",
            "log_pattern": log_patterns["stdout"], "error_log_pattern": log_patterns["stderr"],
-           "summary": _card_summary(e["input_card"])}
+           "summary": (_card_summary(e["input_card"]) if str(detail or "").strip().lower() == "card"
+                       else _card_brief(_card_summary(e["input_card"])))}
     if want:
         out.update(waited_for=want, condition_met=bool(met), waited_s=round(time.monotonic() - t0))
         if not met:
@@ -6515,6 +6553,11 @@ if out['reproduce_sha256']:
                                'gateway_sha256': s.get('gateway_sha256')} for s in d.get('submissions', [])]
     except ValueError as e:
         out['reproduce_error'] = 'not JSON: %s' % e
+    except (AttributeError, TypeError, OSError) as e:
+        # Valid JSON of another shape (a list, a submission that is no object),
+        # or a file that cannot be opened: the record exists but is not read.
+        out.pop('submissions', None)
+        out['reproduce_error'] = 'not a reproduce record (%s: %s)' % (type(e).__name__, e)
 # campaign_summary computes the results from each replica's fit_summary.json
 # and the central-data cache: one digest over the replica files (sha256 of the
 # sorted "<replica folder> <sha256>" lines) and the cache's metrics file.
@@ -6740,6 +6783,12 @@ def _campaign_report(u, cid, write):
     provenance = {"schema": found.get("schema"), "submissions": found.get("submissions") or []}
     if found.get("reproduce_error"):
         provenance["why"] = f"reproduce.json could not be read: {found['reproduce_error']}."
+    elif not found:
+        # The read on ifarm failed: whether the campaign has a record is unknown,
+        # so the report must not say it has none.
+        provenance["why"] = ("The campaign folder could not be read on ifarm just now, so this report does not show "
+                             "how the campaign was made (reproduce.json may well exist). Make the report again; "
+                             "campaign_provenance reads the record on its own.")
     gateways = {s.get("gateway_sha256") for s in provenance["submissions"]} - {None}
     if len(gateways) > 1:
         warnings.append(f"The submissions ran under {len(gateways)} different gateway versions (reproduce.json).")
@@ -13849,7 +13898,7 @@ TOOLS = {
                  "SIDIS/SIA selections return a dataset-only input fragment with configuration_valid and "
                  "fit_ready=false, never a runnable fit or submission confirmation. ") +
                 "Create Input Card: validate the composer card and return the summary. If status=running, "
-                "poll analysis_result(job_id) until complete; each campaign call/poll waits at most about 5 seconds. "
+                f"poll analysis_result(job_id) until complete; each campaign call/poll waits at most about {CAMPAIGN_WAIT} seconds. "
                 "Never repeat the original request while running. No campaign is created by validation. (Free/fixed "
                 "parameters per object. Additive card.objects=[{type:'pdf',parameters:{}},"
                 "{type:'pdf-pion',parameters:{}}] selects one or both; card.companions={'p->pi,n':"
@@ -13887,7 +13936,8 @@ TOOLS = {
         "fn": lambda a: submit_campaign(a.get("card"), a.get("confirm", ""))},
     "list_campaigns": {
         "desc": "Collections: every campaign in this workspace with its status (running, submitted, "
-                "completed, not fitted, postprocessed, cancelled), job ids, how many replicas have "
+                "completed, not fitted, postprocessed, cancelled, ended without result: nothing queued and no "
+                "replica finished, so Slurm ended every task first; campaign_status says how), job ids, how many replicas have "
                 "finished: succeeded (really fitted), not_fitted (the optimization failed, so only chi2 "
                 "at the starting values was computed) and failed; how many of its tasks are still "
                 "queued, plus your whole Slurm queue (queue). When squeue cannot be read, queued and "
@@ -13906,13 +13956,19 @@ TOOLS = {
                 f"wait_for='fitting': it waits up to {JOB_WAIT} s and answers when a replica optimizes or something "
                 "failed before the fit; call again with the same wait_for while condition_met is false "
                 "instead of polling other tools. wait_for='finished' waits until nothing is queued. "
+                "summary is the card in brief (objects, parameter and dataset counts, QCD, job, Slurm); "
+                "detail='card' returns the whole card summary instead (every fixed and changed parameter, "
+                "normalization and cut), which for a global fit is tens of kilobytes. "
                 "campaign_logs shows each replica's phase, error and what helps.",
         "schema": {"type": "object", "properties": {"collection_id": {"type": "string", "description": COLLECTION_ARG},
                                                     "wait_for": {"type": "string", "enum": ["", "fitting", "finished", "change"],
                                                                  "description": f"wait (at most timeout s, {JOB_WAIT} by default) until a replica is optimizing or a task failed before the fit; until nothing is queued; or until the state changes"},
-                                                    "timeout": {"type": "number", "description": f"seconds to wait, at most {JOB_WAIT}"}},
+                                                    "timeout": {"type": "number", "description": f"seconds to wait, at most {JOB_WAIT}"},
+                                                    "detail": {"type": "string", "enum": ["", "card"], "default": "",
+                                                               "description": "'card': the whole card summary instead of the brief one"}},
                    "required": ["collection_id"]},
-        "fn": lambda a: campaign_status(a.get("collection_id", ""), wait_for=a.get("wait_for", ""), timeout=a.get("timeout"))},
+        "fn": lambda a: campaign_status(a.get("collection_id", ""), wait_for=a.get("wait_for", ""), timeout=a.get("timeout"),
+                                        detail=a.get("detail", ""))},
     "postprocess_campaign": {
         "desc": "Postprocess: aggregate the finished replicas into the campaign fit summary. Only the "
                 "replicas that really fitted enter the statistics; the ones that did not fit (only chi2 "

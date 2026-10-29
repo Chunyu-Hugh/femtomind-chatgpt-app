@@ -1714,7 +1714,7 @@
   $("collBtn").onclick = ()=>loadCollections();
   const collNote = (text, warn, cause)=>'<div class="note'+(warn ? " warn" : "")+'" style="margin:0 0 12px">'+esc(text)+causePre(cause)+'</div>';
   function stateTag(s){ return '<span class="tag '+({running: "active", submitted: "active", completed: "done", postprocessed: "done",
-                                                     "not fitted": "bad"}[s] || "other")+'">'+esc(s)+'</span>'; }
+                                                     "not fitted": "bad", "ended without result": "bad"}[s] || "other")+'">'+esc(s)+'</span>'; }
   // succeeded counts the replicas that really fitted. Of the other finished ones,
   // not_fitted fell back to χ² at the starting values (the optimization failed) and
   // failed did not finish with success; a gateway that sends no failed leaves the
