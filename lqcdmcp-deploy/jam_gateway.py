@@ -426,6 +426,8 @@ REFUSAL_CODES = (
     # reproduction records
     "RECORD_MISSING", "RECORD_UNREADABLE", "RECORD_INCOMPLETE", "WORKSPACE_DRIFT", "REBUILD_FAILED",
     "CHECKPOINT_INVALID",
+    # campaign and data files on the cluster that could not be read or written
+    "READ_FAILED", "WRITE_FAILED",
     # the gateway's own code path
     "NOT_A_JOB", "BAD_STAGE", "BAD_PATH", "HASH_MISMATCH", "VERIFY_FAILED", "INSTALL_FAILED",
     "PANEL_ONLY", "INTERNAL_ERROR", "ERROR_UNCODED",
@@ -5220,11 +5222,21 @@ def _inspection_request(u, reaction, datasets, cuts, collection_id):
         if not e:
             return _refuse("NOT_FOUND", f"No campaign {collection_id!r}; list_campaigns shows them.")
         norm = e["input_card"]
+        if cuts is not None:
+            # Dropping them would read the campaign's cuts under the user's request.
+            return _refuse("BAD_ARGUMENT", "With collection_id the campaign's own cuts are used, so cuts cannot be "
+                                           "given too. To read its datasets with other cuts, give reaction, datasets "
+                                           "and cuts without collection_id.", campaign_datasets=norm["datasets"])
         selected = {r: [str(x) for x in ids if not wanted or str(x) in wanted]
                     for r, ids in norm["datasets"].items() if not reaction or r == reaction}
         selected = {r: ids for r, ids in selected.items() if ids}
         if not selected:
             return _refuse("BAD_ARGUMENT", "The campaign selects none of these datasets.",
+                           campaign_datasets=norm["datasets"])
+        absent = [x for x in wanted if x not in {i for ids in selected.values() for i in ids}]
+        if absent:
+            return _refuse("BAD_ARGUMENT", f"Campaign {e['collection_id']} does not select {absent}"
+                           + (f" in {reaction}" if reaction else "") + "; campaign_datasets lists what it selects.",
                            campaign_datasets=norm["datasets"])
         filters = {r: (cs if r == "sia" else object_registry.cut_filters(cs))
                    for r, cs in norm["cuts"].items() if r in selected}
@@ -5315,7 +5327,8 @@ def inspect_datasets(reaction="", datasets="", cuts=None, collection_id="", rows
         rows = max(0, min(INSPECT_MAX_ROWS, int(rows or 0)))
     except (TypeError, ValueError):
         return _refuse("BAD_ARGUMENT", f"rows: a number from 0 to {INSPECT_MAX_ROWS}.")
-    code = _fill(_DATA_INSPECT, WS=_workspace(u), DATASETS=req["datasets"], CUTS=req["filters"],
+    ws = _workspace(u)
+    code = _fill(_DATA_INSPECT, WS=ws, DATASETS=req["datasets"], CUTS=req["filters"],
                  DIS_VERSION=req["dis_version"], SIA_VERSION=req["sia_version"], ROWS=rows,
                  PATHS={r: {str(idx): path for idx, path in block["xlsx"].items()}
                         for r, block in CONFIGURATION_DATASETS.items()})
@@ -5326,8 +5339,7 @@ def inspect_datasets(reaction="", datasets="", cuts=None, collection_id="", rows
         if not isinstance(found, list):
             why = " ".join(l.strip() for l in ((r.get("err") or "") + "\n" + (r.get("out") or "")).splitlines()
                            if l.strip() and "syscshrc" not in l)
-            return {"status": "error", "code": "READ_FAILED", "message": "Could not read the data files.",
-                    "detail": why[-400:]}
+            return _refuse("READ_FAILED", "Could not read the data files.", detail=why[-400:])
         notes = []
         for d in found:
             if d.get("error"):
@@ -5350,8 +5362,11 @@ def inspect_datasets(reaction="", datasets="", cuts=None, collection_id="", rows
                            "query as tools/reader.py applies them; uncertainties as tools/residuals.py reads "
                            "the columns (alpha_relative = uncorrelated uncertainty / |value|)."}
 
-    return _background(u, "inspect_datasets", {"datasets": req["datasets"], "filters": req["filters"], "rows": rows},
-                       run)
+    # The job's key is the whole request: the same ids and cuts read with another
+    # DIS or SIA reader version, or in another workspace, are another reading.
+    return _background(u, "inspect_datasets", {"datasets": req["datasets"], "filters": req["filters"], "rows": rows,
+                                               "dis_version": req["dis_version"], "sia_version": req["sia_version"],
+                                               "source": req["source"], "workspace": ws}, run)
 
 
 def _card_reactions(card):
@@ -6019,9 +6034,13 @@ def _campaign_state(e, prog):
     # Nothing queued and nothing finished: Slurm ended every task before FitPack
     # wrote a result (time limit, memory, a cancel outside the gateway), which
     # the stored 'submitted' would hide; campaign_status says how each ended.
+    # Finished replicas none of which fitted, some failing: 'failed', also after a
+    # postprocess, which would otherwise show a campaign with no result as done.
     return ("running" if queued else stored if queued is None
             else "not fitted" if finished and not_fitted == finished
-            else stored if stored in ("postprocessed", "cancelled")
+            else stored if stored == "cancelled"
+            else "failed" if finished and prog.get("succeeded") == 0
+            else stored if stored == "postprocessed"
             else "completed" if finished
             else "ended without result" if finished == 0 else stored)
 
@@ -6290,9 +6309,13 @@ def _job_reply(job, wait):
     elif campaign:
         message = ("Campaign preparation is still running; no confirmation requirement is skipped. "
                    "Poll analysis_result with this job_id until complete; do not repeat the original call.")
-    elif job['kind'] in ('inspect_datasets', 'campaign_report'):
-        message = ("Reading the data and campaign files on the cluster (seconds to a minute). Poll analysis_result "
+    elif job['kind'] == 'inspect_datasets':
+        message = ("Reading the data files on the cluster (seconds to a minute). Poll analysis_result "
                    "with this job_id until complete; do not repeat the original call.")
+    elif job['kind'] == 'campaign_report':
+        message = ("Making the report on the cluster: seconds when the campaign's summary is up to date, but the "
+                   "first report of a just-finished campaign also computes its central-data chi2, minutes for a "
+                   "global fit. Poll analysis_result with this job_id until complete; do not repeat the original call.")
     else:
         message = ("Still computing on the cluster (the first evaluation of these replicas takes "
                    "minutes; later ones read the cache). Call analysis_result with this job_id to wait "
@@ -6688,11 +6711,21 @@ def _report_markdown(rec):
         lines.append(f"- Replicas: {s.get('completed_replicas')} fitted, {s.get('not_fitted_replicas')} did not fit, "
                      f"{s.get('failed_replicas')} failed, of {s.get('total_replicas')}")
         if s.get("mean_total_chi2") is None:
-            if s.get("failed_replicas") or s.get("not_fitted_replicas"):
+            fitted = s.get("fitted_results") or 0
+            missing_msr, deselected = s.get("missing_msr_replicas") or 0, s.get("deselected_replicas") or 0
+            left_out = ", ".join(x for x in (f"{missing_msr} without their .msr file" if missing_msr else "",
+                                             f"{deselected} deselected" if deselected else "") if x)
+            if fitted:
+                lines.append(f"- {_count(fitted, 'replica')} fitted, but none enters the chi2 statistics"
+                             + (f" ({left_out})" if left_out else "") + "; campaign_summary's note says why.")
+            elif s.get("failed_replicas") or s.get("not_fitted_replicas"):
                 lines.append("- No replica fitted, so there are no chi2 statistics; campaign_logs says why.")
             elif c["status"] == "cancelled":
                 lines.append("- The campaign was cancelled before any replica finished, so there are no chi2 "
                              "statistics.")
+            elif c["status"] == "ended without result":
+                lines.append("- Slurm ended every task before FitPack wrote a result, so there are no chi2 "
+                             "statistics; campaign_status says how each ended (time limit, memory, ...).")
             else:
                 lines.append("- No replica has finished yet, so there are no chi2 statistics; campaign_status "
                              "follows the run.")
@@ -6744,6 +6777,9 @@ def _report_markdown(rec):
     return "\n".join(lines)
 
 
+REPORT_SUMMARY_WAIT = 1800    # s a report waits for a first campaign_summary (central-data predictions)
+
+
 def _campaign_report(u, cid, write):
     e = _collection(u, cid)
     if not e:
@@ -6769,6 +6805,12 @@ def _campaign_report(u, cid, write):
     if not points:
         data["why"] = "the data files could not be read."
     summary = campaign_summary(cid, username=u)
+    # A just-finished campaign's first summary evaluates its central-data
+    # predictions on ifarm (minutes for a global fit). The report is itself a
+    # background job, so it waits for that instead of reporting no results.
+    deadline = time.monotonic() + REPORT_SUMMARY_WAIT
+    while summary.get("status") == "running" and summary.get("job_id") and time.monotonic() < deadline:
+        summary = analysis_result(summary["job_id"], username=u)
     results = {}
     if summary.get("status") == "ok" and summary.get("summary"):
         results = {"summary": summary["summary"], "datasets": summary.get("datasets") or [],
@@ -6776,6 +6818,11 @@ def _campaign_report(u, cid, write):
         if summary.get("stale"):
             warnings.append("The fit summary is older than the replicas: run postprocess_campaign, then make the "
                             "report again.")
+    elif summary.get("status") == "running":
+        results["why"] = (f"The central-data chi2 were still being computed after {REPORT_SUMMARY_WAIT // 60} "
+                          f"minutes (analysis_result job {summary.get('job_id')}); make the report again when "
+                          "campaign_summary answers.")
+        warnings.append("The Results section is empty: the central-data chi2 were still being computed.")
     else:
         results["why"] = summary.get("message") or f"campaign_summary answered {summary.get('status')}."
     found = _last_json(_run_ifarm_py(u, _fill(_REPORT_SOURCES, CROOT=croot, STAGE=stage),
@@ -6794,7 +6841,9 @@ def _campaign_report(u, cid, write):
         warnings.append(f"The submissions ran under {len(gateways)} different gateway versions (reproduce.json).")
     if any(s.get("fitpack_clean") is False for s in provenance["submissions"]):
         warnings.append("Some submissions ran with uncommitted FitPack changes; reproduce.json keeps them as a diff.")
-    card_sha = _canonical_sha256(norm)
+    # The card as the registry keeps it (and as the audit hashed it at submission),
+    # not the copy with fit_objects filled in for an old card.
+    card_sha = _canonical_sha256(e["input_card"])
     sources = [("Campaign card (its input_card in the registry; sha256 of the canonical JSON)",
                 f"{_workspace(u)}/{CAMPAIGNS_DIR}/collections.json", card_sha),
                (f"Replica fit summaries ({found.get('replica_summaries', 0)} files; sha256 of the sorted "
@@ -13936,7 +13985,8 @@ TOOLS = {
         "fn": lambda a: submit_campaign(a.get("card"), a.get("confirm", ""))},
     "list_campaigns": {
         "desc": "Collections: every campaign in this workspace with its status (running, submitted, "
-                "completed, not fitted, postprocessed, cancelled, ended without result: nothing queued and no "
+                "completed, not fitted, failed: replicas finished but none fitted and some failed, postprocessed, cancelled, "
+                "ended without result: nothing queued and no "
                 "replica finished, so Slurm ended every task first; campaign_status says how), job ids, how many replicas have "
                 "finished: succeeded (really fitted), not_fitted (the optimization failed, so only chi2 "
                 "at the starting values was computed) and failed; how many of its tasks are still "
