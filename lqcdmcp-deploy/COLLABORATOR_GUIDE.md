@@ -398,8 +398,10 @@ Settings start at these values; keep or change each one:
 - The table lists your campaigns, newest first: name, creation time (US
   Eastern), replicas (`<fitted> / <total> fitted`, with `<n> did not fit`
   and `<n> failed` below it when there are any), status (submitted, running,
-  completed, not fitted, postprocessed or cancelled) and the Slurm job
-  numbers. **Refresh** reloads it.
+  completed, not fitted, postprocessed, cancelled, or ended without result:
+  nothing is queued and no replica finished, so Slurm ended every task first,
+  for example at its time limit) and the Slurm job numbers. **Refresh**
+  reloads it.
 - A replica counts as fitted only when its optimization ran. A replica that
   **did not fit** is one whose optimization failed: FitPack then only
   computed χ² at the starting values, so it has no fitted parameters and is

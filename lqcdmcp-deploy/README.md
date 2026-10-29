@@ -627,7 +627,10 @@ call it, what a call may do, who may change its code, and records all of it.
 - A call answers within `JAM_GW_REPLY_WAIT` seconds (25): the LQCDMCP proxy
   closes a request after 30 s (HTTP 504). Longer work answers `status:
   running` with a job id for `analysis_result`, and `campaign_status(wait_for=)`
-  waits at most that long per call.
+  waits at most that long per call. A client waiting for a fit calls
+  `campaign_status` again and again, so it answers with the card in brief
+  (counts, QCD, job, Slurm; 6 kB for a JAM24 campaign instead of 104 kB);
+  `detail='card'` gives the whole card summary.
 
 - `tools/list` is the contract. A hidden tool (`deploy`) does not exist for
   anyone but the owner; a denied tool (`JAM_GW_TOOLS_DENY="a,b"` or
