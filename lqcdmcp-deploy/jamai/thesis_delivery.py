@@ -13,7 +13,7 @@ BACKENDS = {
     "ff": "campaign_ff_plots",
 }
 OPTIONS = {
-    "experimental": {"datasets", "experiments", "credible_interval", "replicas"},
+    "experimental": {"datasets", "experiments", "credible_interval", "replicas", "offset", "limit", "sort"},
     "pdf": {"flavors", "object_key", "q2", "credible_interval", "mean_overlay",
             "x_min", "x_max", "band_color", "band_alpha", "replicas"},
     "ff": {"flavors", "q2", "credible_interval", "modes", "hadrons", "z_min",

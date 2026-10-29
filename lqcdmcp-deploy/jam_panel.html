@@ -2446,7 +2446,7 @@
     try{
       const sel = replicaSelection();
       let r = await call("analyze_by_experiment", {collection_id: cid, experiments: $("caExpList").value, datasets: $("caDsList").value, ...(sel ? {replicas: sel} : {}),
-                                                   plot: true, credible_interval: credibleInterval, export_png: !!png});
+                                                   plot: true, credible_interval: credibleInterval, export_png: !!png, all: true});
       r = await settle(r, current, "Evaluating the fitted replicas against the data");
       if (r) renderResult(r);
     } catch(e){ if (current()) caWarn("Analysis failed: "+(e && e.message || e)); }

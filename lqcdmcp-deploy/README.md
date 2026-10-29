@@ -492,6 +492,30 @@ start and stop independently, four at a time.
   writes them, with the image and its real path, Slurm ids, library versions
   and JAMAI hashes, to `replica_<n>/replica_provenance.json` before the fit.
   `fit_summary.json` keeps the `seed` and `bootstrap_seed` that `ai.py` used.
+- **A fit against the published one.** `compare_with_reference(collection_id)`
+  (default `JAM24.final`) reads the campaign's central-data cohort and the
+  registered archive on ifarm (in the container, `jamai/reference_comparison.py`)
+  and compares every dataset whose data (value and alpha) are identical on both
+  sides: the χ² of the mean prediction and the mean replica χ² (point term, as
+  `campaign_summary`), the published ensemble's, and a null distribution from
+  as many published replicas as the campaign has, drawn without replacement
+  `subsamples` times (1000), the same draws for every dataset: z, two-sided
+  p (+1 corrected), Benjamini-Hochberg and Holm corrected p, the global sums,
+  the datasets that differ at p_BH < 0.05, and those not compared with why.
+  Pages of 20 datasets, smallest p first; the computation is kept per cohort,
+  so later pages are instant. Checked on 2026-10-29 on a JAM24.final campaign
+  of 3 replicas: all 96 datasets comparable, the archive side equal to the
+  archive's own chi2_data, the campaign side equal to campaign_summary's table.
+- **Per-replica numbers.** `campaign_replica_values(collection_id, kind)`:
+  `chi2` reads each fitted replica's central-data χ² from the cache (total, by
+  reaction, and chi2, chi2_cor, chi2_norm and norm for up to 20 named
+  datasets); `parameters` reads each replica's `fitted_parameters.json` (mean,
+  sd, min and max of every parameter, and each replica's values for up to 20
+  named ones). Pages of replicas; statistics over all selected.
+- **The data-vs-theory table in pages.** `analyze_by_experiment` answers with
+  `limit` datasets (20) from `offset`, `sort='chi2_red'` worst first, with the
+  charts, PNGs and experiments of the page: for JAM24 the reply to a client went
+  from 242 kB to 36 kB. The panel asks with `all=true`.
 - **Reading the record back.** `campaign_provenance(collection_id)` reads
   `reproduce.json` on ifarm and answers in one call (read-only, about 1 s):
   every submission (submit, append, rerun, reproduce) with its job, replicas,
