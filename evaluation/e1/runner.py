@@ -35,7 +35,19 @@ class Client:
         if self.sid:
             hdrs["Mcp-Session-Id"] = self.sid
         req = urllib.request.Request(self.url, data=json.dumps(body).encode(), headers=hdrs, method="POST")
-        with urllib.request.urlopen(req, timeout=timeout or self.timeout, context=self.ctx) as r:
+        try:
+            handle = urllib.request.urlopen(req, timeout=timeout or self.timeout, context=self.ctx)
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):
+                raise SystemExit("the gateway refused this token (%s): use the gateway's own token, not the "
+                                 "dashboard token" % e.code)
+            if e.code == 404:
+                raise SystemExit("no gateway at %s (404): the Slurm job behind it has probably ended; "
+                                 "check `python3 redeploy_jam.py status` and relaunch" % self.url)
+            raise SystemExit("the gateway answered HTTP %s" % e.code)
+        except urllib.error.URLError as e:
+            raise SystemExit("could not reach %s: %s" % (self.url, e.reason))
+        with handle as r:
             self.sid = r.headers.get("Mcp-Session-Id") or self.sid
             raw = r.read().decode()
         try:
