@@ -6078,6 +6078,27 @@ def progress(stage, i, slurm_state):
                 'note': 'no progress file yet: FitPack is still loading data and grids (several minutes)'}
     phase = 'stalled' if age > STALL_S else ('optimizing' if p.get('status') in (None, 'optimizing') else str(p.get('status')))
     return {'phase': phase, 'evaluations': p.get('evaluations'), 'objective': p.get('objective'), 'age_s': round(age)}
+# SciPy least_squares' status codes (the runtime keeps the solver's result in
+# checkpoints/replica_<n>/current_progress.json as solver_result).
+SOLVER_STATUS = {-1: 'improper input', 0: 'it reached the evaluation limit (job.maxIterations)',
+                 1: 'gtol: the gradient fell below the tolerance', 2: 'ftol: the cost changed by less than the tolerance',
+                 3: 'xtol: the step became smaller than the tolerance', 4: 'ftol and xtol: cost and step both below the tolerance'}
+def stop_reason(stage, i):
+    # Why replica i's optimizer stopped, as its runtime recorded it; None if nothing is recorded.
+    path = os.path.join(stage, 'checkpoints', 'replica_%d' % i, 'current_progress.json')
+    try:
+        with open(path) as fh:
+            d = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    r = d.get('solver_result') if isinstance(d.get('solver_result'), dict) else {}
+    if not r:
+        st = d.get('status')
+        return {'why': 'interrupted (time limit, cancel or node failure)' if st == 'interrupted'
+                       else 'not recorded (the optimizer did not return)', 'runtime_status': st}
+    code = r.get('status')
+    return {'why': SOLVER_STATUS.get(code, str(r.get('message'))), 'status': code, 'message': r.get('message'),
+            'nfev': r.get('nfev'), 'njev': r.get('njev'), 'optimality': r.get('optimality')}
 def sacct_states(job_ids):
     # {(job, task): {state, exit, elapsed}} of the array tasks Slurm has ended; {} when sacct is unavailable.
     out = {}
@@ -6595,6 +6616,18 @@ selected = report['selected_individual']; values = [r['chi2_total'] for r in sel
 selected_ids = {r['identity'] for r in selected}
 bootstrap = [float(r.get('bootstrap_fit_chi2', r['chi2_total'])) for r in records if r['identity'] in selected_ids]
 fitted_finished = states.count('fitted'); finished = len(paths)
+# FitPack reports 'success' whenever its optimizer returns, wherever it stopped. A
+# fitted replica whose central-data chi2/N is in the 'critical' band (>= 5, the
+# panel's and jam_guide's) stopped far from the data: listed, never left out.
+FAR_CHI2_PER_POINT = 5.0
+stop_counts, far_from_data = {}, []
+for row in report['individual']:
+    number = replica_number(row['identity'])
+    why = (stop_reason(stage, number) or {}).get('why') if number else None
+    stop_counts[why or 'not recorded'] = stop_counts.get(why or 'not recorded', 0) + 1
+    if row.get('chi2_per_point') is not None and row['chi2_per_point'] >= FAR_CHI2_PER_POINT:
+        far_from_data.append({'replica': number, 'chi2': row['chi2_total'], 'npts': row['npts'],
+                              'chi2_per_point': row['chi2_per_point'], 'stopped_because': why})
 quality = None
 if selection and any(k in selection for k in ('chi2_max','sigma')) and fitted_finished == len(records):
     quality_selection = {k:v for k,v in selection.items() if k in ('chi2_max','sigma')}
@@ -6611,7 +6644,8 @@ agg = {'status': 'success' if selected else ('no_selected_replicas' if records e
        'scientifically_good_replicas':quality, 'good_fraction':quality/fitted_finished if quality is not None and fitted_finished else None,
        'quality_criterion':report['quality_criterion'], 'quality_evaluated_replicas':len(records),
        'quality_thresholds':{k:v for k,v in (selection or {}).items() if k in ('chi2_max','sigma')},
-       'optimizer_convergence':'not inferred from successful fit status',
+       'optimizer_convergence':'not inferred from successful fit status; optimizer_stops counts why the optimizers stopped',
+       'optimizer_stops':stop_counts, 'far_from_data':far_from_data,
        'replica_selection':report['replica_selection'], 'best_replica':report['best_replica'],
        'mean_total_chi2':statistics.mean(values) if values else None,
        'median_total_chi2':statistics.median(values) if values else None,
@@ -6636,6 +6670,23 @@ print(json.dumps(agg))
 
 def _stage_root(u, e):
     return f"{_workspace(u)}/{CAMPAIGNS_DIR}/{e['campaign_folder']}/stages/{STAGE}"
+
+
+FAR_CHI2_PER_POINT = 5.0
+
+
+def _far_note(far):
+    """The words for replicas that FitPack calls fitted but that stopped far from the data."""
+    if not far:
+        return ""
+    each = "; ".join(f"replica {x['replica']}: chi2/N {x['chi2_per_point']:.3g}"
+                     + (f", the optimizer stopped because {x['stopped_because']}" if x.get("stopped_because") else "")
+                     for x in far[:10]) + ("; …" if len(far) > 10 else "")
+    numbers = [x["replica"] for x in far]
+    return (f"{len(far)} replica(s) count as fitted (FitPack's optimizer returned) but stopped far from the data, "
+            f"with central-data chi2/N at or above {FAR_CHI2_PER_POINT:g}, the 'critical' band: {each}. They are "
+            "still in every statistic above. To leave them out, if you agree, ask for "
+            f"replicas={{'exclude': {numbers[:20]}}} (or a chi2_max); to fit them again, rerun_replicas.")
 
 
 def _not_fitted_note(n, total):
@@ -6670,6 +6721,9 @@ def postprocess_campaign(collection_id="", username=""):
     if agg.get("not_fitted_replicas"):
         out["note"] = out["not_fitted_note"] = _not_fitted_note(agg["not_fitted_replicas"],
                                                                 agg["total_replicas"])
+    if agg.get("far_from_data"):
+        out["far_from_data_note"] = _far_note(agg["far_from_data"])
+        out["note"] = " ".join(x for x in (out.get("note"), out["far_from_data_note"]) if x)
     return _cohort_reply(out, ready)
 
 
@@ -6737,6 +6791,9 @@ def campaign_summary(collection_id="", username="", replicas=None):
     if n:
         out["not_fitted_note"] = _not_fitted_note(n, total)
         notes.append(out["not_fitted_note"])
+    if agg.get("far_from_data"):
+        out["far_from_data_note"] = _far_note(agg["far_from_data"])
+        notes.append(out["far_from_data_note"])
     if notes:
         out["note"] = " ".join(notes)
     return _cohort_reply(out, ready)
@@ -6927,6 +6984,13 @@ def _report_markdown(rec):
             lines.append(f"- chi2 per replica (central data, point term only): mean {_num(s.get('mean_total_chi2'))}, "
                          f"median {_num(s.get('median_total_chi2'))}, range {_num(s.get('min_total_chi2'))}–"
                          f"{_num(s.get('max_total_chi2'))}")
+        for x in s.get("far_from_data") or []:
+            lines.append(f"- Replica {x['replica']} stopped far from the data: chi2/N {_num(x['chi2_per_point'])}"
+                         + (f"; the optimizer stopped because {x['stopped_because']}" if x.get("stopped_because") else "")
+                         + " (it is in the statistics above)")
+        stops = s.get("optimizer_stops") or {}
+        if stops:
+            lines.append("- Why the optimizers stopped: " + "; ".join(f"{why} ({n})" for why, n in sorted(stops.items(), key=lambda t: -t[1])))
         ens = s.get("ensemble_central_chi2") or {}
         if ens.get("chi2_reported") is not None:
             lines.append(f"- chi2 of the mean prediction: {_num(ens.get('chi2_reported'))} for {ens.get('npts')} points "
@@ -7012,6 +7076,8 @@ def _campaign_report(u, cid, write):
         if summary.get("stale"):
             warnings.append("The fit summary is older than the replicas: run postprocess_campaign, then make the "
                             "report again.")
+        if (summary["summary"] or {}).get("far_from_data"):
+            warnings.append(_far_note(summary["summary"]["far_from_data"]))
     elif summary.get("status") == "running":
         results["why"] = (f"The central-data chi2 were still being computed after {REPORT_SUMMARY_WAIT // 60} "
                           f"minutes (analysis_result job {summary.get('job_id')}); make the report again when "
@@ -13856,6 +13922,11 @@ def row_of(i, scan):
            'legacy_central_data_only_chi2_per_point': num(s, 'central_value_chi2_per_point'),
            'job_id': job, 'log': log, 'error_log': error_log,
            'log_exists': bool(existing_logs), 'has_traceback': False}
+    if state in ('fitted', 'not_fitted'):
+        stop = stop_reason(stage, i)
+        if stop:
+            row['stopped_because'] = stop['why']
+            row['optimizer'] = {k: stop.get(k) for k in ('status', 'nfev', 'njev', 'optimality') if stop.get(k) is not None}
     if state in ('running', 'queued'):
         row['slurm_state'] = queue[i]
     if state == 'running':
