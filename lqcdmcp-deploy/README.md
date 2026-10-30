@@ -272,7 +272,12 @@ first free port from 8080 and registers with the proxy as
   A gateway from before the deploy tool still has `node_diag` and answers
   "unknown tool": upgrade it once with `python3 hot_redeploy_legacy.py`
   (same job; it also writes the token and admin hashes to the node, so the
-  restarted gateway takes the gateway token), or relaunch it.
+  restarted gateway takes the gateway token), or relaunch it. It talks to the
+  old gateway with the dashboard token and checks the restarted one with the
+  new gateway token and admin secret through `deploy status` (until
+  2026-10-30 it checked with the dashboard token and `node_diag`, which the
+  new gateway has neither of, and so reported a successful upgrade as "the
+  new gateway refuses your token").
 
 ### One node, and its prolog: running two gateways
 
@@ -412,6 +417,15 @@ start and stop independently, four at a time.
   jobs that still have tasks in the queue; deleting is refused while any of
   its tasks is queued. When `squeue` fails the queue is unknown, never empty:
   stop and delete refuse, and the lists say so.
+- **A brief validation for assistants.** `validate_campaign` answers
+  `detail='brief'` by default: lists longer than 30 (parameters changed from
+  the library, fixed parameters), more than 20 normalizations, more than 8
+  cuts of a reaction and more than 40 per-dataset point counts become counts
+  (the point counts become totals per reaction plus every dataset left with no
+  point), and `catalog_comparison` keeps only what differs. Warnings, the
+  confirmation phrase and the Slurm script are never shortened. A JAM24 card's
+  reply went from 44 kB to 8 kB of text. The panel asks for `detail='full'`;
+  the phrase is the same for both.
 - **Data check.** `validate_campaign` also reads each selected dataset's
   `database/<reaction>/expdata/<id>.xlsx` in one container call, derives the
   cut variables as FitPack's readers do (idis `W2` or `X`, dy `Q2`; the
@@ -520,6 +534,18 @@ start and stop independently, four at a time.
   (`campaign_status` shows `recovery`: the policy, the attempts, the last ten
   actions), the audit log (`auto_rerun`) and reproduce.json (an ordinary rerun
   entry). A gateway with the human gate refuses a recovery policy.
+- **Automatic postprocess.** In the same loop, a campaign submitted, extended
+  or rerun by this gateway (`auto_postprocess: waiting` on its registry entry)
+  is postprocessed on its own once nothing of it is queued and the queue could
+  be read: `postprocess_campaign` in a background job, the same computation as
+  the panel's Postprocess (so a campaign of 12 replicas or more gets its cache
+  workers). A rerun or added replicas mark it waiting again; one the recovery
+  pass has just resubmitted waits. `campaign_status` shows `postprocess` (the
+  state, when, and in words: done, failed with why, or skipped because no
+  replica left a result); the audit log has `auto_postprocess`. Campaigns from
+  before 2026-10-30 are not marked and wait for a click.
+  `JAM_GW_AUTO_POSTPROCESS=0` (or `"auto_postprocess": false` in site.json)
+  turns it off; `check_hpc_connection` says whether it is on.
 - **The cache on compute nodes.** When at least `JAM_GW_CACHE_SLURM_MIN` (12)
   replicas wait for their central-data predictions, the gateway submits a Slurm
   array (`jam_cache_<campaign>`, up to `JAM_GW_CACHE_WORKERS` tasks, 16, one per 8

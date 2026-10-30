@@ -429,9 +429,11 @@ Choose the campaign at the top. The line below it shows how many replicas
 are Fitted, Not fitted and (when there are any) Failed. Then:
 
 - **Postprocess** — collects the finished replicas into the campaign's fit
-  summary; only fitted replicas enter its statistics. Press it again when
-  more replicas have finished; Load Fit Summary tells you when the summary
-  is out of date.
+  summary; only fitted replicas enter its statistics. The gateway also does
+  this on its own once nothing of a campaign is queued (while you are signed
+  in to the cluster); the campaign's status says when it ran. Press it again
+  when more replicas have finished; Load Fit Summary tells you when the
+  summary is out of date.
 - **Load Fit Summary** — replicas fitted / not fitted / failed / missing,
   χ² statistics of the fitted replicas and the best replica, then a table of
   χ²/N per dataset, worst first. It is each fitted replica's χ² for the data

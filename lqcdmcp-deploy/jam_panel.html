@@ -1570,7 +1570,7 @@
     $("createCard").disabled = true; $("submitErr").textContent = "";
     $("cStatus").innerHTML = '<span class="spin" style="padding:0">Validating on the cluster…</span>';
     let v;
-    try { v = await settleCampaign(await call("validate_campaign", {card}), ()=>rev === cardRev, "Validating on the cluster"); }
+    try { v = await settleCampaign(await call("validate_campaign", {card, detail: "full"}), ()=>rev === cardRev, "Validating on the cluster"); }
     catch(e){ v = {valid: false, errors: ["Validation failed: "+(e && e.message || e)]}; }
     if (rev === cardRev) validated = v;
     $("createCard").disabled = submitting; paintValidation();

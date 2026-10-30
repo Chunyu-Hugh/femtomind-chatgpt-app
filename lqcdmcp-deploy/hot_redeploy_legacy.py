@@ -10,7 +10,7 @@ token at once and runs in token mode.
 
 
     export LQCDMCP_TOKEN='...'   JAM_GW_USER=<you>
-    python3 hot_redeploy.py [gateway_file] [panel_file]
+    python3 hot_redeploy_legacy.py [gateway_file] [panel_file]
     (defaults: jam_gateway.py and jam_panel.html next to this script)
 
 The job's supervisor loop restarts the server from ~/.jam_gateway/app, and the
@@ -23,8 +23,9 @@ AI clients (not in tools/list) but callable by name with the owner's
 dashboard token (LQCDMCP_TOKEN). Nothing is replaced until the new gateway
 loads with its complete package on the node. The previous gateway, panel and
 package stay together in .hot_redeploy.previous for rollback.
-After the restart the script checks that the server answering started after
-the swap, runs the uploaded file and still accepts the token.
+After the restart the script checks, with the NEW gateway token and admin
+secret (the restarted gateway runs in token mode and has no node_diag), that
+the server answering started after the swap and runs the uploaded file.
 """
 import base64
 import hashlib
@@ -55,21 +56,31 @@ REFUSED = ("the running gateway refuses this token: it does not recognise it as 
 RELAUNCH = "python3 redeploy_jam.py cancel, then python3 deploy_and_verify.py (and sign in to the cluster again)"
 
 
-def post(body, timeout=90):
+# The old gateway takes the dashboard token only. gw_auth would send a stored
+# gateway token first (one exists after any earlier upgrade), so the calls to
+# the old gateway carry the dashboard token explicitly.
+OLD_HEADERS = {}
+
+
+def post(body, timeout=90, headers=None):
+    """headers: the auth headers to send; by default the old gateway's (the dashboard token)."""
     req = urllib.request.Request(URL, data=json.dumps(body).encode(), method="POST",
                                  headers={"Content-Type": "application/json",
                                           "Accept": "application/json, text/event-stream",
-                                          **gw_auth.auth_headers()})
+                                          **(OLD_HEADERS if headers is None else headers)})
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read().decode())
+        raw = r.read().decode()
+    # The gateway may answer as an event stream: the last data line is the reply.
+    events = [line[5:].strip() for line in raw.splitlines() if line.startswith("data:")]
+    return json.loads(events[-1] if events else raw)
 
 
-def ping():
+def ping(headers=None):
     """'ok' when the gateway answers its ping tool for this token, 'refused' when
     it refuses the token, None when no gateway answers."""
     try:
         res = post({"jsonrpc": "2.0", "id": 98, "method": "tools/call",
-                    "params": {"name": "ping", "arguments": {}}}, timeout=20).get("result") or {}
+                    "params": {"name": "ping", "arguments": {}}}, timeout=20, headers=headers).get("result") or {}
     except Exception:
         return None
     if (res.get("structuredContent") or {}).get("status") == "unauthorized":
@@ -100,6 +111,27 @@ def upload(path, dest, rid0):
     r = diag(f"base64 -d {dest}.b64 > {dest}.new && rm -f {dest}.b64 && echo DECODE-OK", rid0 + len(chunks))
     if "DECODE-OK" not in (r.get("out") or ""):
         sys.exit(f"decoding {path} on the node FAILED: {str(r)[:300]}")
+
+
+def new_status(headers):
+    """The restarted gateway's own account of itself (its hidden deploy tool,
+    with the admin secret): {'started_at', 'gateway_sha256', ...}, or
+    {'unknown_tool': True} when the server answering has no deploy tool (the
+    old code), or {'refused': message}."""
+    admin = gw_auth.admin_token()
+    try:
+        res = post({"jsonrpc": "2.0", "id": 97, "method": "tools/call",
+                    "params": {"name": "deploy", "arguments": {"op": "status"}, "_meta": {"jam/admin": admin}}},
+                   timeout=30, headers=dict(headers, **{"X-JAM-Admin": admin})).get("result") or {}
+    except Exception as exc:
+        return {"refused": f"no answer ({type(exc).__name__})"}
+    sc = res.get("structuredContent") or {}
+    text = " ".join(c.get("text", "") for c in res.get("content") or [])
+    if "unknown tool" in text and not sc:
+        return {"unknown_tool": True}
+    if sc.get("status") == "unauthorized" or res.get("isError"):
+        return {"refused": sc.get("message") or text[:300]}
+    return sc
 
 
 def deployment_files():
@@ -215,10 +247,61 @@ if stage.exists():
 """
 
 
+def confirm_restart(t0, wait=90):
+    """After the swap: the server answering started after t0 and runs the uploaded file. Exits with
+    what is wrong otherwise."""
+    # The restarted gateway runs in token mode: it accepts the gateway token,
+    # not the dashboard token, and it has the deploy tool instead of node_diag.
+    # So it is checked with the new secrets. (Checking it with the dashboard
+    # token and node_diag, as this script did before 2026-10-30, reported a
+    # successful upgrade as "the new gateway refuses your token".)
+    headers = {"Authorization": "Bearer " + gw_auth.ensure_secret("token")}
+    with open(LOCAL, "rb") as fh:
+        local_sha = hashlib.sha256(fh.read()).hexdigest()
+    deadline, state, status = time.time() + wait, None, {}
+    while time.time() < deadline:
+        time.sleep(5)
+        state = ping(headers)
+        if state == "ok":
+            status = new_status(headers)
+            if status.get("started_at", 0) > t0 and status.get("gateway_sha256") == local_sha:
+                break
+        # 'refused' or the old server: the old gateway takes only the dashboard
+        # token, so a refusal right after the swap can be it, still stopping.
+    if state is None:
+        sys.exit(f"the gateway does not answer {wait} s after the restart. Check again in a few minutes with "
+                 "python3 deploy_and_verify.py --check; if it stays down, the new code fails at start-up: "
+                 f"fix it, then {RELAUNCH}. The code that ran before is kept on the node as "
+                 f"{APP}/.hot_redeploy.previous (gateway, panel and jamai package).")
+    if state == "refused":
+        sys.exit("the gateway answering refuses the new gateway token. Either the old gateway is still running "
+                 "(it takes only the dashboard token: the restart did not happen) or the new one did not read "
+                 "~/.jam_gateway/token.sha256. python3 deploy_and_verify.py --check says which; "
+                 f"to be sure the new code runs: {RELAUNCH}.")
+    if status.get("unknown_tool"):
+        sys.exit("the gateway answering accepts the new token but has no deploy tool, so it is not the uploaded "
+                 f"code. To run the new code: {RELAUNCH}.")
+    if status.get("refused"):
+        sys.exit(f"the new gateway answers but refuses the admin secret ({status['refused'][:200]}); the admin "
+                 "hash written on the node may not have been read. python3 deploy_and_verify.py --check shows "
+                 "what runs.")
+    if not status.get("started_at", 0) > t0:
+        sys.exit("the gateway did not restart: the server answering started before the swap. To run the new "
+                 f"code: {RELAUNCH}.")
+    if status.get("gateway_sha256") != local_sha:
+        sys.exit(f"the gateway restarted but runs {str(status.get('gateway_sha256'))[:12]}, not the uploaded "
+                 f"{local_sha[:12]}. To be sure the new code runs: {RELAUNCH}.")
+    print(f"the new gateway is running (started {round(time.time() - status['started_at'])} s ago, sha256 "
+          f"{local_sha[:12]}) in token mode. From now on clients use the gateway token "
+          "(python3 redeploy_jam.py token --show) and code updates go through hot_redeploy.py; "
+          "python3 deploy_and_verify.py --check checks the rest.")
+
+
 def main():
     gw_auth.require()
     if not gw_auth.dashboard_token():
         sys.exit("no token: export LQCDMCP_TOKEN (the dashboard token the old gateway accepts)")
+    OLD_HEADERS["Authorization"] = "Bearer " + gw_auth.dashboard_token()
     state = ping()
     if state is None:
         sys.exit(f"your gateway does not answer at {URL}: start it with python3 deploy_and_verify.py")
@@ -279,34 +362,7 @@ def main():
             sys.exit(f"replacing the gateway file on the node FAILED, so nothing was restarted: {str(r)[:300]}")
         print("the server answered the restart call, so it may not have stopped; checking…")
 
-    deadline = time.time() + 60
-    state = None
-    while state is None and time.time() < deadline:
-        time.sleep(5)
-        state = ping()
-    if state == "refused":
-        time.sleep(20)          # a failed dashboard check is retried after 15 s; a refusal stands
-        state = ping() or state
-    if state is None:
-        sys.exit("the gateway does not answer 60 s after the restart. Check again in a few minutes with "
-                 "python3 deploy_and_verify.py --check; if it stays down, the new code fails at start-up: "
-                 f"fix it, then {RELAUNCH}. The code that ran before is kept on the node as "
-                 f"{APP}/.hot_redeploy.previous (gateway, panel and jamai package).")
-    if state == "refused":
-        sys.exit("the new gateway runs but refuses your token, so this script cannot reach it any more. "
-                 "python3 check_dashboard_token.py shows why; once it says the gateway accepts your token, "
-                 f"start over: {RELAUNCH}.")
-    # $PPID is the server that runs this node_diag call.
-    out = diag("cd /proc/$PPID/cwd; sha256sum jam_gateway.py; ps -o etimes= -p $PPID", 301).get("out") or ""
-    age = re.findall(r"^\s*(\d+)\s*$", out, re.M)
-    if age and int(age[-1]) > time.time() - t0:
-        sys.exit("the gateway did not restart: the server answering started before the swap and still runs "
-                 f"the old code. To run the new code: {RELAUNCH}.")
-    if not age or hashlib.sha256(open(LOCAL, "rb").read()).hexdigest() not in out:
-        sys.exit(f"could not confirm that the server runs the uploaded file (the node said: "
-                 f"{out.strip()[:300]!r}). To be sure the new code runs: {RELAUNCH}.")
-    print(f"the new gateway is running (started {age[-1]} s ago); python3 deploy_and_verify.py --check "
-          "checks the rest")
+    confirm_restart(t0)
 
 
 if __name__ == "__main__":

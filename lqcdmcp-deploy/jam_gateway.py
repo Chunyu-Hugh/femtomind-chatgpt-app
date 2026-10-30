@@ -1436,6 +1436,7 @@ def check_hpc_connection(username=""):
             "shared": SHARED, "owner": GATEWAY_OWNER,
             "auth": AUTH_MODE, "legacy_shared": SHARED and AUTH_MODE == "dashboard", "audit": True,
             "tools_denied": sorted(TOOLS_DENY), "human_gate": HUMAN_GATE,
+            "auto_postprocess": bool(AUTO_POSTPROCESS and RECOVERY_INTERVAL and "postprocess_campaign" not in TOOLS_DENY),
             "account": account, "site": _site_public(), "sites": [_site_public()],
             "note": ("Ready to run fits." if alive else
                      "Not signed in to the cluster. Sign in on the Connect tab of the "
@@ -5786,7 +5787,7 @@ _FOLLOW_SUBMISSION = (f"campaign_status(collection_id, wait_for='fitting') waits
                       "false, instead of reading logs.")
 
 
-def _campaign_task(u, kind, card, fn, confirm=""):
+def _campaign_task(u, kind, card, fn, confirm="", extra=None):
     # Freeze the request before a background thread uses it. Do not echo the
     # full card or prior arrays in running replies; the digest still joins only
     # identical in-flight requests, including the submission confirmation.
@@ -5797,20 +5798,92 @@ def _campaign_task(u, kind, card, fn, confirm=""):
     snapshot = json.loads(encoded)
     canonical = json.dumps(snapshot, sort_keys=True, separators=(',', ':'), allow_nan=False)
     params = {'card_sha256': hashlib.sha256(canonical.encode()).hexdigest(),
-              'confirmation_sha256': hashlib.sha256((confirm or '').encode()).hexdigest()}
+              'confirmation_sha256': hashlib.sha256((confirm or '').encode()).hexdigest(), **(extra or {})}
     return _background(u, kind, params, lambda: fn(snapshot), wait=CAMPAIGN_WAIT)
 
 
-def validate_campaign(card=None, username=""):
+def validate_campaign(card=None, username="", detail="brief"):
     """Validate an input card and show what would run, with the confirmation
-    phrase submit_campaign needs, and warnings about the selected data."""
+    phrase submit_campaign needs, and warnings about the selected data.
+    detail='brief' (the default) shortens the long lists for an assistant;
+    'full' (the panel's) keeps every one. The phrase is the same for both."""
     u, err = _need_user(username)
     if err:
         return err
-    return _campaign_task(u, 'validate_campaign', card, lambda snapshot: _validate_campaign(u, snapshot))
+    detail = "full" if str(detail or "").strip().lower() == "full" else "brief"
+    return _campaign_task(u, 'validate_campaign', card, lambda snapshot: _validate_campaign(u, snapshot, detail),
+                          extra={'detail': detail})
 
 
-def _validate_campaign(u, card):
+VALIDATION_LIST_MAX = 30
+
+
+def _brief_validation(out):
+    """validate_campaign's reply without the lists only a table can show. A
+    JAM24 card's full reply was 44 kB of text (365 parameters changed from
+    the library, 154 fixed, 52 normalizations, 98 per-dataset point counts,
+    every matching cut twice); an assistant needs the counts, what is empty
+    or different, and the script. Nothing that is wrong is ever shortened:
+    a dataset with no point, a mismatch with the catalog, a warning."""
+    s = dict(out.get("summary") or {})
+    shortened = []
+    from_catalog = isinstance(out.get("catalog_comparison"), dict)
+    for key, what in (("changed_parameters", "parameters differ from the FitPack library"
+                       + (" (the catalog card sets them; catalog_comparison compares the card with the published fit)"
+                          if from_catalog else "")),
+                      ("fixed", "parameters are fixed")):
+        v = s.get(key)
+        if isinstance(v, list) and len(v) > VALIDATION_LIST_MAX:
+            s[key] = f"{len(v)} {what}; detail='full' lists them"
+            shortened.append(key)
+    norms = s.get("normalizations")
+    if isinstance(norms, dict) and sum(len(m) for m in norms.values() if isinstance(m, dict)) > 20:
+        def count(m):
+            free = sum(1 for n in m.values() if isinstance(n, dict) and n.get("fixed") is False)
+            fixed = sum(1 for n in m.values() if isinstance(n, dict) and n.get("fixed") is True)
+            return f"{len(m)}: {free} free, {fixed} fixed, {len(m) - free - fixed} equal to another"
+        s["normalizations"] = {r: count(m) for r, m in norms.items() if isinstance(m, dict)}
+        shortened.append("normalizations")
+    cuts = s.get("cuts")
+    if isinstance(cuts, dict) and any(isinstance(c, list) and len(c) > 8 for c in cuts.values()):
+        s["cuts"] = {r: c if not isinstance(c, list) or len(c) <= 8 else f"{len(c)} cuts (detail='full' lists them)"
+                     for r, c in cuts.items()}
+        shortened.append("cuts")
+    points = s.get("points_after_cuts")
+    if isinstance(points, dict) and len(points) > 40:
+        by = {}
+        for k, n in points.items():
+            by.setdefault(str(k).split(":", 1)[0], 0)
+            by[str(k).split(":", 1)[0]] += n or 0
+        s["points_after_cuts"] = {"total": sum(n or 0 for n in points.values()), "by_reaction": by,
+                                  "datasets_with_no_point": sorted(k for k, n in points.items() if n == 0),
+                                  "datasets_unknown": sorted(k for k, n in points.items() if n is None)}
+        shortened.append("points_after_cuts")
+    out = dict(out, summary=s)
+    cc = out.get("catalog_comparison")
+    if isinstance(cc, dict):
+        cc = dict(cc)
+        for key in ("qcd", "cuts"):
+            block = cc.get(key)
+            if isinstance(block, dict):
+                bad = {k: v for k, v in block.items() if not (isinstance(v, dict) and v.get("match"))}
+                cc[key] = bad or f"all {len(block)} match the catalog"
+        block = cc.get("datasets")
+        if isinstance(block, dict):
+            bad = {k: v for k, v in block.items() if isinstance(v, dict) and (v.get("missing") or v.get("extra"))}
+            cc["datasets"] = bad or f"all {len(block)} reactions select the catalog's datasets"
+        out["catalog_comparison"] = cc
+    cal = out.get("calibration")
+    if isinstance(cal, dict) and cal.get("applies") and cal.get("warning") in (out.get("warnings") or []):
+        out["calibration"] = {k: v for k, v in cal.items() if k != "warning"}   # the warning is in warnings
+    if shortened or isinstance(cc, dict):
+        out["detail"] = ("brief: " + (", ".join(shortened) + " shortened" if shortened else "nothing shortened")
+                         + "; catalog_comparison lists only what differs. validate_campaign(card, detail='full') "
+                           "gives every row; the confirmation phrase is the same.")
+    return out
+
+
+def _validate_campaign(u, card, detail="full"):
     if _configuration_reactions(card):
         return _configuration_preview(u, card)
     norm, err = _checked_card(u, card)
@@ -5833,7 +5906,7 @@ def _validate_campaign(u, card):
         out["next"] = ("Show the user this summary, the warnings (they do not block submission) and the "
                        "Slurm script. Submit with submit_campaign(card, confirm=<the phrase>) only after "
                        "they confirm.")
-    return out
+    return _brief_validation(out) if detail == "brief" else out
 
 
 def submit_campaign(card=None, confirm="", username=""):
@@ -5896,7 +5969,8 @@ def _submit_campaign(u, card, confirm):
              "workspace_path": ws, "replicas": n,
              "jobs": [{"job_id": m.group(1), "first": 1, "last": n, "submitted_at": now,
                        "log_prefix": log_prefix, "error_log_prefix": _campaign_error_log_prefix(u, folder)}],
-             "slurm_job_id": m.group(1), "status": "submitted", "input_card": norm}
+             "slurm_job_id": m.group(1), "status": "submitted", "input_card": norm,
+             "auto_postprocess": {"state": "waiting", "since": now}}
     _registry(u, {"kind": "upsert", "entry": entry})
     why = _record_submission(u, croot, stage, "submit", m.group(1), range(1, n + 1), norm)
     result = {"status": "submitted", "collection_id": folder, "job_id": m.group(1), "replicas": n,
@@ -5958,7 +6032,8 @@ def append_replicas(collection_id="", count=0, confirm="", username=""):
     e["jobs"] = list(e.get("jobs") or []) + [{"job_id": m.group(1), "first": first, "last": last,
                                                 "submitted_at": now, "log_prefix": _campaign_log_prefix(u, e["campaign_folder"]),
                                                 "error_log_prefix": _campaign_error_log_prefix(u, e["campaign_folder"])}]
-    e.update(replicas=last, updated_at=now, slurm_job_id=m.group(1), status="submitted")
+    e.update(replicas=last, updated_at=now, slurm_job_id=m.group(1), status="submitted",
+             auto_postprocess={"state": "waiting", "since": now})
     _registry(u, {"kind": "upsert", "entry": e})
     why = _record_submission(u, os.path.dirname(os.path.dirname(stage)), stage, "append", m.group(1),
                              range(first, last + 1), e["input_card"])
@@ -6129,7 +6204,8 @@ def rerun_replicas(collection_id="", replicas="failed", confirm="", username="",
                                               "error_log_prefix": _campaign_error_log_prefix(u, e["campaign_folder"]),
                                               "resume": resume, "slurm": slurm,
                                               "resource_overrides": overrides, "request_manifest": request_path}]
-    e.update(updated_at=now, slurm_job_id=m.group(1), status="submitted")
+    e.update(updated_at=now, slurm_job_id=m.group(1), status="submitted",
+             auto_postprocess={"state": "waiting", "since": now})
     _registry(u, {"kind": "upsert", "entry": e})
     # A checkpoint restart does not start from the seeds, so the record says so:
     # reproduce_campaign runs from the seeds and such a replica is expected to differ.
@@ -6159,6 +6235,16 @@ def rerun_replicas(collection_id="", replicas="failed", confirm="", username="",
 RECOVERY_MAX_ATTEMPTS = 3
 RECOVERY_MEM_CAP_G = 64
 RECOVERY_INTERVAL = int(os.environ.get("JAM_GW_RECOVERY_INTERVAL", SITE.get("recovery_interval", 300)) or 0)
+# Automatic postprocess, in the same loop: once nothing of a campaign is queued
+# any more, the gateway runs postprocess_campaign for it on its own, the same
+# computation as the Fit Summary button (the central-data predictions, by a
+# Slurm array of cache workers for 12 replicas or more, then the summary). Only
+# campaigns submitted, extended or rerun by a gateway that has this are marked
+# (auto_postprocess on the registry entry); each outcome is on that entry
+# (campaign_status 'postprocess') and in the audit log. Reproductions write
+# elsewhere and are left alone. JAM_GW_AUTO_POSTPROCESS=0 turns it off.
+AUTO_POSTPROCESS = str(os.environ.get("JAM_GW_AUTO_POSTPROCESS", SITE.get("auto_postprocess", "1"))).strip().lower() \
+    not in ("0", "false", "off", "no", "")
 
 
 def _normalize_recovery(rec, errors):
@@ -6290,6 +6376,70 @@ def _recover_campaign(u, e, policy):
     return actions
 
 
+def _set_auto_postprocess(u, cid, record):
+    fresh = _collection(u, cid)
+    if fresh:
+        _registry(u, {"kind": "upsert", "entry": dict(fresh, auto_postprocess=record)})
+
+
+def _auto_postprocess(u, e):
+    """One look at a campaign waiting for its automatic postprocess: when
+    nothing of it is queued, postprocess it in a background job. Returns the
+    new state, or None when it is still waiting."""
+    ap = e.get("auto_postprocess") or {}
+    if (ap.get("state") != "waiting" or e.get("status") == "cancelled" or not AUTO_POSTPROCESS
+            or "postprocess_campaign" in TOOLS_DENY):
+        return None
+    prog = _campaign_progress(u, e)
+    queue = prog.get("queue")
+    if queue is None or sum(queue.values()) or prog.get("finished") is None:
+        return None                                   # still queued, or the queue is unknown: next time
+    stamp = lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    cid, folder = e["collection_id"], e["campaign_folder"]
+    if not prog["finished"]:
+        record = {"state": "skipped", "at": stamp(), "why": "no replica left a result, so there is nothing to summarize"}
+        _set_auto_postprocess(u, cid, record)
+        _effect("auto_postprocess", u, campaign_folder=folder, state="skipped")
+        return record
+    # 'running' is written before the job starts, so a second pass never starts it twice.
+    _set_auto_postprocess(u, cid, {"state": "running", "since": stamp()})
+
+    def run():
+        res = postprocess_campaign(cid, username=u)
+        ok = res.get("status") == "ok"
+        record = {"state": "done" if ok else "failed", "at": stamp()}
+        if ok:
+            record["note"] = res.get("note") or "Campaign postprocess completed."
+        else:
+            record["message"] = str(res.get("message") or res.get("code") or res.get("status"))[:400]
+        _set_auto_postprocess(u, cid, record)
+        _effect("auto_postprocess", u, campaign_folder=folder, state=record["state"])
+        return res
+    job = _background(u, "auto_postprocess", {"collection_id": cid}, run, wait=0)
+    return {"state": "running", "job_id": job.get("job_id")}
+
+
+def _postprocess_meaning(ap):
+    """campaign_status's words for the automatic postprocess of a campaign."""
+    state = ap.get("state")
+    if state == "waiting":
+        if not (AUTO_POSTPROCESS and RECOVERY_INTERVAL) or "postprocess_campaign" in TOOLS_DENY:
+            return ("Automatic postprocess is off on this gateway: run postprocess_campaign once the replicas "
+                    "have finished.")
+        return (f"The gateway runs postprocess_campaign on its own once nothing of this campaign is queued; it "
+                f"looks every {max(1, RECOVERY_INTERVAL // 60)} min while the cluster sign-in is open.")
+    if state == "running":
+        return "The gateway is postprocessing this campaign now; campaign_summary answers when it is done."
+    if state == "done":
+        return f"Postprocessed automatically at {ap.get('at')}: campaign_summary shows the result."
+    if state == "failed":
+        return (f"The automatic postprocess at {ap.get('at')} failed: {ap.get('message')}. "
+                "postprocess_campaign tries again.")
+    if state == "skipped":
+        return f"Not postprocessed: {ap.get('why')}."
+    return ""
+
+
 def _recovery_users():
     users = [GATEWAY_OWNER] + sorted(set(USERS_SHA256) - {GATEWAY_OWNER})
     return [x for x in users if x and _chain_alive(x)]
@@ -6302,10 +6452,13 @@ def _recovery_pass():
         try:
             for e in _registry(u, {"kind": "read"}):
                 policy = ((e.get("input_card") or {}).get("job") or {}).get("recovery")
-                if policy:
-                    acted = _recover_campaign(u, e, policy)
-                    if acted:
-                        done[(u, e["collection_id"])] = acted
+                acted = _recover_campaign(u, e, policy) if policy else []
+                if acted:
+                    done[(u, e["collection_id"])] = acted
+                    continue                          # resubmitted: queued again, nothing to postprocess yet
+                post = _auto_postprocess(u, e)
+                if post:
+                    done[(u, e["collection_id"])] = [post]
         except Exception as exc:                       # one user's trouble never stops the loop
             _hlog(f"recovery pass for {u} failed: {type(exc).__name__}: {exc}")
         finally:
@@ -6661,6 +6814,8 @@ def campaign_status(collection_id="", username="", wait_for="", timeout=None, de
     calibration = _campaign_calibration(e)
     if calibration:
         out["calibration"] = calibration["warning"]
+    if e.get("auto_postprocess"):
+        out["postprocess"] = dict(e["auto_postprocess"], meaning=_postprocess_meaning(e["auto_postprocess"]))
     policy = ((e.get("input_card") or {}).get("job") or {}).get("recovery")
     if policy or e.get("recovery_log"):
         out["recovery"] = {"policy": policy, "meaning": _recovery_meaning(policy) if policy else None,
@@ -15119,8 +15274,14 @@ TOOLS = {
                 "warnings (a dataset with no points left after the cuts, a data file without a column "
                 "FitPack's status report reads); warnings never block submission, but a card whose "
                 "datasets keep no point at all after the cuts is refused. " + 'card = {"objects": [{"type": "pdf", "parameters": {"g1 a": {"value", "min", "max", "fixed": true|false, "equal_to": "uv1 a"}, ...}}, {"type": "ffpion", "parameters": {"u2 N": {"enabled": true, ...}}}] (legacy "object": {...} is still accepted), "source": {"analysis_id": ...} (set by campaign_card_from_catalog; validation then returns catalog_comparison), "reactions": ["idis", "dy"], "datasets": {"idis": ["10010", ...]}, "normalizations": {"idis": {"10010": {"value", "min", "max", "fixed": true|false|"<id of another selected dataset whose normalization this one equals>"}}} (only for datasets campaign_datasets lists with a normalization), "cuts": {"idis": [{"variable": "Q2", "op": ">", "value": 1.69, "enabled": true}]}, "qcd": {"order", "Q20", "tmc": "off"|"AOT", "higherTwist", "dglapMode", "asMode", "pdfPositivity": true|false, "ffpionPositivity": true|false, "ffkaonPositivity": true|false, "ffhadronPositivity": true|false}, "parameters": {"initialization": "default"|"random_within_bounds" (the FitPack flat par: Gaussian draws where a parameter has gaussian/mean/std, uniform within its bounds otherwise), "randomSeed", "perReplicaSeed"}, "job": {"campaignName", "replicas", "maxIterations", "tolerance", "optimizer", "bootstrap", "recovery": {"timeout": "resume"|"stop", "oom": "more_memory"|"stop", "max_attempts": 1-3} (off unless the user asks: the gateway then resubmits replicas Slurm ended at their time limit from their checkpoint, or out of memory with twice the memory, on its own, without asking again; offer it, never choose it for the user)}, "slurm": {"partition" ("" = auto), "time" (per replica, HH:MM:SS), "mem", "cpus"}}. Only parameters the user changed need to be listed; the rest keep the library values, and only changed rows are written into the card. A parameter switched to FREE needs a min and a max.',
-        "schema": {"type": "object", "properties": {"card": {"type": "object"}}, "required": ["card"]},
-        "fn": lambda a: validate_campaign(a.get("card"))},
+        "schema": {"type": "object", "properties": {"card": {"type": "object"},
+                   "detail": {"type": "string", "enum": ["brief", "full"], "default": "brief",
+                              "description": "brief shortens long lists (parameters, normalizations, per-dataset "
+                                             "points, matching catalog rows) to counts and keeps everything that "
+                                             "is empty or different; full keeps every row. Same phrase."}},
+                   "required": ["card"]},
+        "compact": True,
+        "fn": lambda a: validate_campaign(a.get("card"), detail=a.get("detail", "brief"))},
     "preview_prior_replicas": {
         "compact": True,
         "desc": "Read-only validated starting-value mapping. If status=running, poll analysis_result(job_id) until complete instead of repeating this request. Set card.parameters.priorSource: {kind: archive, analysis_id: JAM24.final, replica_ids: [0,1]} (the published replicas; absent on a gateway that leaves the reference-results tools out), {kind: file, path: absolute numeric NPY or MSR path, step: <step when the file has several>, scientific_settings: {Q20: source_scale}, replica_ids: [...]} or {kind: campaign, collection_id: <a postprocessed campaign>, replica_ids: [...]}. Provide source scientific_settings Q20, beta version for PDFs, and relevant FF parametrizations; mismatches are blocked. Count must match jobs unless explicit IDs are supplied. Linked/fixed values are never overwritten; unmatched free parameters retain random initialization. Campaigns may use canonical snapshots or native MSR. Native NPY/MSR use source order; multi-step files require explicit step selection. Unsupported serialized constructors are rejected.",

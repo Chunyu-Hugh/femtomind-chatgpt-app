@@ -44,6 +44,7 @@ browser panel                      ─┘
 - [x] Live status: which replicas are loading, optimizing, fitted, did not fit or failed, and why (logs explained in plain words).
 - [x] Stop, delete (with a backup of the record), add more replicas, rerun failed ones (optionally with more memory).
 - [x] Checkpoints of accepted optimizer steps, and exact restarts from them.
+- [x] Automatic postprocessing once nothing of a campaign is queued; its status says when it ran and how it went.
 - [x] Optional automatic recovery, agreed at submission: a replica Slurm ends at its time limit continues from its checkpoint, one out of memory runs again with twice the memory, at most 3 times; every attempt recorded.
 - [x] Any other cluster job: draft a Slurm script with the assistant, test it with `sbatch --test-only`, submit after you confirm.
 
@@ -96,7 +97,6 @@ browser panel                      ─┘
 
 - [ ] ChatGPT in the browser (needs an OAuth sign-in the platform does not offer).
 - [ ] HEP-Genesis-Agent and other MCP clients tested end to end (it supports our token header).
-- [ ] Automatic postprocessing when a campaign finishes.
 
 ## Repository
 
