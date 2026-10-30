@@ -51,6 +51,7 @@ browser panel                      ─┘
 
 - [x] Fit summary: fitted / not fitted / failed replicas, χ² per replica and of the mean prediction, per dataset, worst first.
 - [x] One χ² convention throughout: the central-data point term, with correlated and normalization penalties reported apart.
+- [x] Why each optimizer stopped, in words, and a warning for replicas that count as fitted but stopped far from the data (χ²/N ≥ 5); nothing left out unasked.
 - [x] Replica selection for the statistics (best N, χ² cut, outlier cut), without refitting.
 - [x] Data vs theory by experiment, PDF bands at any Q² with chosen credible intervals, FF plots, thesis-style PNG figures.
 - [x] The per-dataset table in pages, worst-fitting first on request, so a global fit's 96 datasets fit an assistant's reply.

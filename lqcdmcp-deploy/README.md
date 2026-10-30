@@ -492,6 +492,19 @@ start and stop independently, four at a time.
   writes them, with the image and its real path, Slurm ids, library versions
   and JAMAI hashes, to `replica_<n>/replica_provenance.json` before the fit.
   `fit_summary.json` keeps the `seed` and `bootstrap_seed` that `ai.py` used.
+- **Why a fit stopped, and fits that stopped far from the data.** FitPack
+  writes status 'success' whenever its optimizer returns, wherever that is.
+  The runtime keeps SciPy's result (status, message, nfev, njev, optimality) in
+  `checkpoints/replica_<n>/current_progress.json`; `campaign_logs` gives each
+  finished replica's `stopped_because` in words (ftol, xtol, gtol, the
+  evaluation limit, interrupted), and the summary counts them
+  (`optimizer_stops`). A fitted replica whose central-data chi2/N is 5 or more,
+  the 'critical' band of the panel and jam_guide, is listed in `far_from_data`
+  with its chi2/N and stop reason, and `campaign_summary`, `postprocess_campaign`
+  and `campaign_report` say so in words, with the exclude selection that would
+  leave them out. Nothing is left out automatically. Found on 2026-10-30: two of
+  three finished replicas of a single-stage JAM24.final fit from the cataloged
+  Gaussian starts ended at chi2/N 538 and 3301, reported as fitted.
 - **Automatic recovery, if the submission asked for it.** A card's
   `job.recovery` = `{timeout: 'resume'|'stop', oom: 'more_memory'|'stop',
   max_attempts: 1-3}` (off by default) is part of the confirmed card, so the
