@@ -15,7 +15,7 @@ are theirs to change. Nothing here runs until they sign off.
 
 - **Base**: `JAM24.final` card from the catalog (215 free parameters, 96
   datasets, 5853 points), one replica, `priorSource` = the published replicas.
-- **Tier 1 (20 variants, cheap)**: `maxIterations` 3–5 from the published
+- **Tier 1 (14 runnable variants today, cheap)**: `maxIterations` 3–5 from the published
   solution. This is a *local* stability probe: it answers "if this choice is
   changed, which way and how far does the fit move", not "where does it
   converge". Measured cost: ~24 min per replica at 8 CPUs.
@@ -26,33 +26,45 @@ are theirs to change. Nothing here runs until they sign off.
   χ²/N by reaction; Δ(s−s̄)(x, Q²=4) at x = 0.01, 0.05, 0.1; R_s; and the
   W+charm vs SIDIS residual pattern (the paper's Q1 tension).
 
-## Tier 1 — twenty variants
+## Tier 1 — checked against the card builder (2026-10-30)
 
-| # | Change | What it tests | Field |
-|---|---|---|---|
-| 0 | none (the published card) | control: reproduces χ²/N ≈ 1 | — |
-| 1 | drop W+charm | the dataset that pulls strangeness | `datasets.wc` |
-| 2 | drop SIDIS | the dataset that pulls the FF side | `datasets.sidis` |
-| 3 | SIDIS z upper 0.8 → 0.9 | cut sensitivity of the FF constraint | `cuts.sidis` |
-| 4 | SIDIS Q² lower 1.69 → 2.0 | higher-twist / cut sensitivity | `cuts.sidis` |
-| 5 | drop SIA | FF-only constraint removed | `datasets.sia` |
-| 6 | JAM24.current workbooks instead of final | the 2026-10-23 data update | `source` |
-| 7 | free all 43 normalizations | normalization model dependence | `normalizations` |
-| 8 | S2 independent of S1 (strange shape freedom) | the SU(3) assumption | `parameters` |
-| 9 | impose s+ = s̄ (SU(3) symmetric sea) | the opposite assumption | `parameters` |
-| 10 | one FF shape instead of two (35/40/30/30) | shape flexibility | `objects` |
-| 11 | three FF shapes for the pion | shape flexibility, other direction | `objects` |
-| 12 | fix the kaon FF, fit pion + hadron only | which FF carries the tension | `objects` |
-| 13 | Q0² 1.6129 → 1.6384 | the paper's 1.28² vs the fit-time value | `qcd` |
-| 14 | TMC off | higher-twist treatment | `qcd` |
-| 15 | positivity on (pdf, pion, kaon, hadron) | the author-confirmed flags | `qcd` |
-| 16 | bootstrap off | statistical vs systematic error budget | `job` |
-| 17 | drop the datasets `compare_with_reference` flags at p_BH < 0.05 | the 9 datasets that already differ | `datasets` |
-| 18 | NNLO instead of NLO | the theory order (check FitPack support first) | `qcd` |
-| 19 | add the 2026 SIDIS workbooks (1105–3111) on top of final | mixing the two data generations (expected to be refused: `dis version`) | `datasets` |
+Fourteen variants are expressible today as one declared `overrides` block; each
+was built from the catalog card offline and the "moves" column is what actually
+changed (`python3 -m evaluation.e5.plan`). One replica each.
 
-Variant 19 is deliberately a *must-refuse* case (EasyScan_HEP 2 has one too):
-the gateway should refuse the mix, and the paper should show that it does.
+| # | Variant | Change | Moves | Free params | Readout |
+|---|---|---|---|---|---|
+| 0 | `control` | none | — | 215 | reproduces χ²/N ≈ 1 |
+| 1 | `no_wcharm` | drop W+charm | reactions | 215 | the strangeness pull |
+| 2 | `no_sidis` | drop SIDIS | reactions | 215 | the FF side of the tension |
+| 3 | `sidis_z09` | SIDIS z upper 0.8 → 0.9 | cuts | 215 | cut sensitivity |
+| 4 | `sidis_q2_2` | SIDIS Q² lower 1.69 → 2.0 | cuts | 215 | higher-twist / cut sensitivity |
+| 5 | `no_sia` | drop SIA | reactions | 215 | FF-only constraint removed |
+| 6 | `normals_free` | free every normalization | normalizations | 215 | normalization model |
+| 7 | `q0_paper` | Q0² 1.6129 → 1.6384 | qcd | 215 | the paper's 1.28² |
+| 8 | `tmc_off` | TMC off | qcd | 215 | higher-twist treatment |
+| 9 | `positivity_on` | positivity on for all objects | qcd | 215 | the author-confirmed flags |
+| 10 | `no_bootstrap` | bootstrap off | job | 215 | statistical error budget |
+| 11 | `one_ff_shape` | one FF shape per object | objects | 125 | shape flexibility |
+| 12 | `fixed_kaon` | fix the kaon FF | objects | 155 | which FF carries the tension |
+| 13 | `more_iterations` | maxIterations 500 → 2000 | job | 215 | convergence, not physics |
+
+## Seven variants that need a decision, not a run
+
+These cannot be written as an override today; each is reported by
+`evaluation.e5.plan` instead of being approximated silently. They are the ones
+Nobuo and Trey should rule on first, because two of them (SU(3) and the strange
+shape) are exactly the assumptions the atlas is meant to test.
+
+| Variant | Why it is not an override |
+|---|---|
+| `jam24_current` | needs the other catalog entry (`analysis_id='JAM24.current'`), which is a second card, not a change to this one |
+| `s2_independent` | the strange-shape tie lives in the parameter table; the catalog does not expose it as an override |
+| `su3_sea` | imposing s⁺ = s̄ means new per-flavour ties, not expressible as an override |
+| `three_ff_shapes` | the shape count is library-level (`ff_registry`), not a card field |
+| `nnlo` | the composer's order enum is LO/NLO; NNLO is not runnable here |
+| `drop_flagged` | the datasets `compare_with_reference` flags are chosen after a fit, not before it |
+| `mix_sidis_workbooks` | deliberately a must-refuse case (dis-version mix), so it belongs in E1's table, not the atlas |
 
 ## Cost
 
@@ -70,8 +82,9 @@ numbers); `campaign_pdf_plots` (Δs−s̄ and R_s figures).
 
 ## What we need from Nobuo and Trey
 
-1. Which 20 variants belong in the atlas — the list above is a proposal, and
-   variants 18 (NNLO) and 6 (the workbooks) may not be runnable as written.
+1. Which variants belong in the atlas, and how to reach the seven that are
+   not overrides — above all `su3_sea` and `s2_independent`, the two
+   assumptions the atlas exists to test.
 2. Which single physics statement the atlas should support: "the strangeness
    result is stable against X" or "the W+charm vs SIDIS tension survives Y".
    The readouts follow from that choice.
