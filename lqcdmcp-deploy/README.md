@@ -543,7 +543,9 @@ start and stop independently, four at a time.
   p (+1 corrected), Benjamini-Hochberg and Holm corrected p, the global sums,
   the datasets that differ at p_BH < 0.05, and those not compared with why.
   Pages of 20 datasets, smallest p first; the computation is kept per cohort,
-  so later pages are instant. Checked on 2026-10-29 on a JAM24.final campaign
+  so later pages are instant. Each row carries the dataset's label (`TASSO pion
+  (√s = 44 GeV)`), so a reply names it without a `campaign_datasets` call.
+  Checked on 2026-10-29 on a JAM24.final campaign
   of 3 replicas: all 96 datasets comparable, the archive side equal to the
   archive's own chi2_data, the campaign side equal to campaign_summary's table.
 - **Per-replica numbers.** `campaign_replica_values(collection_id, kind)`:
@@ -1415,7 +1417,16 @@ the cuts the published card keeps exactly the paper's 5853 points. A catalog
 card starts as the authors did: `initialization: random_within_bounds`
 (FitPack's `flat par`) with each free parameter's Gaussian mean and std; linked
 and fixed parameters are not drawn. Card parameter rows accept `gaussian`,
-`mean` and `std` for the PDF too.
+`mean` and `std` for the PDF too. The name reads as uniform starts, and an
+assistant reading it told a user so (2026-10-30); so the card summary
+(`campaign_status`, the report) and `campaign_provenance` give
+`initialization_meaning` beside it: with `random_within_bounds`, a parameter
+with a Gaussian start is drawn from N(mean, std) within its bounds, any other
+uniformly between them, and how many of the free parameters have one. A
+catalog card that starts from prior replicas at another Q20 than they were
+fitted at is flagged by `campaign_card_from_catalog` (`conflict`), before
+`validate_campaign` refuses it (`PRIOR_SOURCE_INVALID`: starting values are
+not converted between scales).
 
 Cancelling or deleting a campaign forgets its replay: the same confirmed
 request may then queue it again.

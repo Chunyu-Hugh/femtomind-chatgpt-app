@@ -2952,9 +2952,41 @@ def _normalize_card(card, library):
     return norm, errors
 
 
+INITIALIZATION_MEANING = {
+    "random_within_bounds": (
+        "FitPack's 'flat par': each replica draws its own starting values from its parameter seed. A free "
+        "parameter with a Gaussian start (gaussian, mean, std on the card) is drawn from N(mean, std), redrawn "
+        "until it lies within its min and max; any other free parameter, and every free normalization, is drawn "
+        "uniformly between its min and max. So the name does not mean uniform starts where the card gives "
+        "Gaussian ones."),
+    "default": ("Every replica starts from the parameter values on the card (the library values unless the card "
+                "changes them); no starting value is drawn."),
+}
+INITIALIZATION_MEANING["default_prior"] = INITIALIZATION_MEANING["default"]   # the run record's name for default
+
+
+def _initialization_meaning(init, gaussian=None, free=None, prior=None):
+    """The starting values in words. Assistants read the bare name
+    'random_within_bounds' as uniform starts and told a user that a JAM24 fit
+    with Gaussian starts had none (2026-10-30). prior: True when the card
+    starts from prior replicas, None when not known (a run record)."""
+    text = INITIALIZATION_MEANING.get(init) or f"initialization {init!r}."
+    if init == "random_within_bounds" and gaussian is not None and free is not None:
+        text += f" On this card {gaussian} of the {free} free parameters have a Gaussian start."
+    if prior:
+        return ("Each replica starts from its assigned prior replica (prior_replicas shows the mapping); a "
+                "parameter the prior does not set is drawn as flat par draws it: from its Gaussian start where it "
+                "has one, otherwise uniformly between its min and max.")
+    if prior is None:
+        text += (" (When the card set priorSource, the replicas start from the prior replicas instead, and only "
+                 "the parameters those do not set are drawn this way.)")
+    return text
+
+
 def _card_summary(norm):
     label = lambda p: (p.get("sector", "pdf") + ": " if len(norm.get("fit_objects", ["pdf"])) > 1 else "") + p["name"]
     free = [label(p) for p in norm["parameters_table"] if not p["fixed"]]
+    gaussian = sum(1 for p in norm["parameters_table"] if not p["fixed"] and p.get("gaussian") is True)
     fixed = [label(p) for p in norm["parameters_table"] if p["fixed"]]
     # Registry entries from before the library table have no parameters_changed.
     changed = [label(p) for p in norm.get("parameters_changed") or []]
@@ -2990,6 +3022,9 @@ def _card_summary(norm):
             "normalizations": {r: entries for r, entries in norm.get("normalizations", {}).items() if entries},
             "cuts": cuts,
             "qcd": norm["qcd"], "initialization": norm["parameters"]["initialization"],
+            "initialization_meaning": _initialization_meaning(
+                norm["parameters"]["initialization"], gaussian, len(free),
+                prior=bool(norm["parameters"].get("priorSource") or norm.get("prior_preview"))),
             "inference": "ensemble (pseudo-data replicas)" if norm["job"]["bootstrap"]
                          else "central values only",
             "replicas": norm["job"]["replicas"], "max_iterations": norm["job"]["maxIterations"],
@@ -3929,6 +3964,10 @@ def _campaign_provenance(u, collection_id, replicas, offset, limit):
                        collection_id=collection_id)
     d.pop("ok")
     subs = d["submissions"]
+    for s in subs:
+        seeds = s.get("seeds")
+        if isinstance(seeds, dict) and seeds.get("initialization"):
+            seeds["initialization_meaning"] = _initialization_meaning(seeds["initialization"])
     first = subs[0] if subs else {}
     fp = first.get("fitpack") or {}
     kinds = ", ".join(f"{n} {k}" for k, n in sorted(d["counts"].items()))
@@ -4943,9 +4982,25 @@ def campaign_card_from_catalog(analysis_id="JAM24.final", replicas=10, overrides
         card, notes, expected = _card_from_conf(conf, refs, overrides, n)
     except ValueError as e:
         return _refuse("CARD_INVALID", str(e))
-    calibration = _calibration_note(refs["analysis_id"], prior=(card.get("parameters") or {}).get("priorSource"))
+    prior = (card.get("parameters") or {}).get("priorSource")
+    calibration = _calibration_note(refs["analysis_id"], prior=prior)
     if calibration:
         notes.append(calibration["warning"])
+    # Prior replicas start a fit only at the Q20 they were fitted at (no scale
+    # conversion). Said here, where the card is made, not first by
+    # validate_campaign's PRIOR_SOURCE_INVALID.
+    conflict = None
+    q20, published_q20 = (card.get("qcd") or {}).get("Q20"), conf.get("Q20")
+    if isinstance(prior, dict) and q20 is not None and published_q20 is not None and not _same_number(q20, published_q20):
+        same = prior.get("kind") == "archive" and str(prior.get("analysis_id") or "") == refs["analysis_id"]
+        conflict = (f"This card starts from prior replicas and sets Q20 = {q20}, but "
+                    + (f"the published {refs['analysis_id']} replicas were fitted at Q20 = {published_q20}"
+                       if same else f"the catalog's Q20 is {published_q20}; prior replicas fitted there cannot be used")
+                    + ". Starting values are not converted between scales, so validate_campaign will refuse the card "
+                    + ("" if same else "unless the prior replicas were fitted at the new Q20 ")
+                    + "(PRIOR_SOURCE_INVALID). Keep one: the prior replicas at the published Q20, or the new Q20 "
+                      "without them.")
+        notes.insert(0, conflict)
     brief = {k: card[k] for k in ("source", "job", "slurm")}
     # source.overrides records only WHICH keys the user changed. A brief card is
     # rebuilt from the catalog by validate_campaign, so it must also carry their
@@ -4965,10 +5020,13 @@ def campaign_card_from_catalog(analysis_id="JAM24.final", replicas=10, overrides
         message = (f"A brief card for {refs['analysis_id']}: {size}. It carries source, job and slurm; "
                    "validate_campaign rebuilds the parameters, datasets and cuts from the catalog, so send it as "
                    "it is. Ask again with detail='full' only if you must show or edit those tables.")
+    if conflict:
+        message = "Warning: " + conflict + " " + message
     return {"status": "ok", "detail": "full" if full else "brief",
             "card": card if full else brief,
             "source": card["source"], "job": card["job"], "slurm": card["slurm"],
-            "expected": expected, "notes": notes, "calibration": calibration, "message": message}
+            "expected": expected, "notes": notes, "calibration": calibration,
+            **({"conflict": conflict} if conflict else {}), "message": message}
 
 
 _CATALOG_CLAIMS = None
@@ -6538,7 +6596,8 @@ def _card_brief(summary):
     and a client waiting for 'fitting' asks for it again and again."""
     brief = {k: summary[k] for k in ("object", "fit_objects", "frozen_objects", "free_parameters",
                                      "fixed_parameters", "reactions", "datasets", "normalization_parameters",
-                                     "qcd", "initialization", "inference", "replicas", "max_iterations",
+                                     "qcd", "initialization", "initialization_meaning", "inference", "replicas",
+                                     "max_iterations",
                                      "tolerance", "optimizer", "recovery", "slurm", "dis_version") if k in summary}
     brief["changed_parameters"] = len(summary.get("changed_parameters") or [])
     cuts = {}
@@ -7175,6 +7234,7 @@ def _report_markdown(rec):
               "- QCD: " + ", ".join(f"{k} {v}" for k, v in sorted(card["qcd"].items())),
               f"- Inference: {card['inference']}; initialization {card['initialization']}; optimizer {card['optimizer']}, "
               f"tolerance {card['tolerance']}, at most {card['max_iterations']} iterations",
+              *([f"- Starting values: {card['initialization_meaning']}"] if card.get("initialization_meaning") else []),
               "- Slurm per replica: " + ", ".join(f"{k} {v}" for k, v in card["slurm"].items()), ""]
     lines.append(_md_table(["Reaction", "Datasets", "Normalization parameters", "Cuts"],
                            [[r, card["datasets"].get(r, 0), card["normalization_parameters"].get(r, 0),
@@ -14488,7 +14548,22 @@ def _results_request(operation, arguments):
         if set(args) - {"cursor", "limit"}:
             raise ValueError("Unsupported results discovery arguments")
         return store.list(**args)
-    analysis_results.validate_request(operation, args)
+    # Every other tool names a dataset 'idis:10026'; the archive takes reaction
+    # and number apart and answered the joined form with a bare 'Invalid
+    # dataset_id' (four retries in a 2026-10-30 test). Accept both.
+    did = args.get("dataset_id")
+    if isinstance(did, str) and ":" in did:
+        reaction, _, number = did.partition(":")
+        if args.get("reaction") not in (None, "", reaction):
+            raise ValueError(f"dataset_id {did!r} belongs to reaction {reaction!r}, not {args['reaction']!r}")
+        args["reaction"], args["dataset_id"] = reaction, number
+    try:
+        analysis_results.validate_request(operation, args)
+    except ValueError as exc:
+        if str(exc) == "Invalid dataset_id":
+            raise ValueError("Invalid dataset_id: give the dataset's number with its reaction (reaction 'idis', "
+                             "dataset_id '10026'), or both joined as 'idis:10026'") from None
+        raise
     manifest = store.resolve(args["analysis_id"])
     if any(_outside_read_roots(path) for path in analysis_results.archive_directories(manifest)):
         raise ValueError("Registered results archive is outside the site's authorized read roots")
@@ -14640,12 +14715,16 @@ def _compare_with_reference(u, e, analysis_id, manifest, dirs, subsamples, seed,
                   if flagged["mean_prediction"] else "No dataset differs at p_BH < 0.05.")
                + " Datasets are ordered by p, the smallest first.")
     more = offset + limit < len(rows)
+    # The dataset's name with its key, so a reply can say 'TASSO pi, 44 GeV'
+    # without a campaign_datasets call per reaction (six in a 2026-10-30 test).
+    page = [dict(r, label=_dataset_label(*str(r["key"]).split(":", 1))) if ":" in str(r.get("key")) else r
+            for r in rows[offset:offset + limit]]
     return _rounded({"status": "ok", "collection_id": e["collection_id"], "analysis_id": analysis_id,
                      "archive_id": full.get("archive_id"), "reference_replicas": full.get("reference_replicas"),
                      "campaign_replicas": full["campaign_replicas"], "subsamples": full["subsamples"],
                      "seed": full["seed"], "global": full["global"], "flagged": flagged,
-                     "datasets": rows[offset:offset + limit], "not_comparable": full["not_comparable"],
-                     "page": {"offset": offset, "limit": limit, "returned": len(rows[offset:offset + limit]),
+                     "datasets": page, "not_comparable": full["not_comparable"],
+                     "page": {"offset": offset, "limit": limit, "returned": len(page),
                               "total": len(rows), **({"next_offset": offset + limit} if more else {})},
                      "definitions": REFERENCE_DEFINITIONS, "message": message})
 
@@ -14692,7 +14771,7 @@ TOOLS = {
         "fn": lambda a: _results_request("list", a)},
     "get_analysis_fit_statistics": {
         "compact": True,
-        "desc": "Read precomputed authoritative numerical fit statistics, without recalculation. Defaults to dataset records; scope=overall or reactions gives aggregates. Filter by reaction and reaction-qualified dataset_id. Reuse results_ref as analysis_id. JLab connection required; follow next_cursor with identical selectors. Missing values remain null with reasons.",
+        "desc": "Read precomputed authoritative numerical fit statistics, without recalculation. Defaults to dataset records; scope=overall or reactions gives aggregates. Filter by reaction and dataset_id (the number with its reaction, or joined as 'idis:10026'). Reuse results_ref as analysis_id. JLab connection required; follow next_cursor with identical selectors. Missing values remain null with reasons.",
         "schema": {"type": "object", "additionalProperties": False, "required": ["analysis_id"], "properties": {
             "analysis_id": {"type": "string"}, "scope": {"type": "string", "enum": ["datasets", "reactions", "overall"], "default": "datasets"},
             "reaction": {"type": "string"}, "dataset_id": {"type": "string"}, "cursor": {"type": "string"},
@@ -14977,7 +15056,7 @@ TOOLS = {
                 "points_after_cuts per dataset), the Slurm array script, the confirmation phrase and "
                 "warnings (a dataset with no points left after the cuts, a data file without a column "
                 "FitPack's status report reads); warnings never block submission, but a card whose "
-                "datasets keep no point at all after the cuts is refused. " + 'card = {"objects": [{"type": "pdf", "parameters": {"g1 a": {"value", "min", "max", "fixed": true|false, "equal_to": "uv1 a"}, ...}}, {"type": "ffpion", "parameters": {"u2 N": {"enabled": true, ...}}}] (legacy "object": {...} is still accepted), "source": {"analysis_id": ...} (set by campaign_card_from_catalog; validation then returns catalog_comparison), "reactions": ["idis", "dy"], "datasets": {"idis": ["10010", ...]}, "normalizations": {"idis": {"10010": {"value", "min", "max", "fixed": true|false|"<id of another selected dataset whose normalization this one equals>"}}} (only for datasets campaign_datasets lists with a normalization), "cuts": {"idis": [{"variable": "Q2", "op": ">", "value": 1.69, "enabled": true}]}, "qcd": {"order", "Q20", "tmc": "off"|"AOT", "higherTwist", "dglapMode", "asMode", "pdfPositivity": true|false, "ffpionPositivity": true|false, "ffkaonPositivity": true|false, "ffhadronPositivity": true|false}, "parameters": {"initialization": "default"|"random_within_bounds", "randomSeed", "perReplicaSeed"}, "job": {"campaignName", "replicas", "maxIterations", "tolerance", "optimizer", "bootstrap", "recovery": {"timeout": "resume"|"stop", "oom": "more_memory"|"stop", "max_attempts": 1-3} (off unless the user asks: the gateway then resubmits replicas Slurm ended at their time limit from their checkpoint, or out of memory with twice the memory, on its own, without asking again; offer it, never choose it for the user)}, "slurm": {"partition" ("" = auto), "time" (per replica, HH:MM:SS), "mem", "cpus"}}. Only parameters the user changed need to be listed; the rest keep the library values, and only changed rows are written into the card. A parameter switched to FREE needs a min and a max.',
+                "datasets keep no point at all after the cuts is refused. " + 'card = {"objects": [{"type": "pdf", "parameters": {"g1 a": {"value", "min", "max", "fixed": true|false, "equal_to": "uv1 a"}, ...}}, {"type": "ffpion", "parameters": {"u2 N": {"enabled": true, ...}}}] (legacy "object": {...} is still accepted), "source": {"analysis_id": ...} (set by campaign_card_from_catalog; validation then returns catalog_comparison), "reactions": ["idis", "dy"], "datasets": {"idis": ["10010", ...]}, "normalizations": {"idis": {"10010": {"value", "min", "max", "fixed": true|false|"<id of another selected dataset whose normalization this one equals>"}}} (only for datasets campaign_datasets lists with a normalization), "cuts": {"idis": [{"variable": "Q2", "op": ">", "value": 1.69, "enabled": true}]}, "qcd": {"order", "Q20", "tmc": "off"|"AOT", "higherTwist", "dglapMode", "asMode", "pdfPositivity": true|false, "ffpionPositivity": true|false, "ffkaonPositivity": true|false, "ffhadronPositivity": true|false}, "parameters": {"initialization": "default"|"random_within_bounds" (the FitPack flat par: Gaussian draws where a parameter has gaussian/mean/std, uniform within its bounds otherwise), "randomSeed", "perReplicaSeed"}, "job": {"campaignName", "replicas", "maxIterations", "tolerance", "optimizer", "bootstrap", "recovery": {"timeout": "resume"|"stop", "oom": "more_memory"|"stop", "max_attempts": 1-3} (off unless the user asks: the gateway then resubmits replicas Slurm ended at their time limit from their checkpoint, or out of memory with twice the memory, on its own, without asking again; offer it, never choose it for the user)}, "slurm": {"partition" ("" = auto), "time" (per replica, HH:MM:SS), "mem", "cpus"}}. Only parameters the user changed need to be listed; the rest keep the library values, and only changed rows are written into the card. A parameter switched to FREE needs a min and a max.',
         "schema": {"type": "object", "properties": {"card": {"type": "object"}}, "required": ["card"]},
         "fn": lambda a: validate_campaign(a.get("card"))},
     "preview_prior_replicas": {
@@ -15447,8 +15526,10 @@ PROCEDURES = {
             "dataset holds or what a cut removes, inspect_datasets answers from the data files.\n"
             "6. QCD settings: order, Q20, TMC, higher twist, DGLAP mode, alphaS mode, positivity (pdf, ffpion, ffkaon, "
             "ffhadron), betaVersion and siaVersion.\n"
-            "7. Job config: campaign name, replicas, parameter initialization (library values or random within "
-            "bounds; priorSource for replica starts, see jam_guide priors_and_checkpoints), inference (ensemble of "
+            "7. Job config: campaign name, replicas, parameter initialization (default: library values; "
+            "random_within_bounds: FitPack's flat par, a draw from each parameter's Gaussian start where it has one, "
+            "uniform within its bounds otherwise; priorSource for replica starts, see jam_guide priors_and_checkpoints), "
+            "inference (ensemble of "
             "pseudo-data replicas or central values), tolerance, max iterations, optimizer, and the Slurm resources "
             "per replica (time, memory, cpus, partition or auto): slurm_partitions explains the choice and "
             "validate_campaign's slurm_recommendation sizes them for the fit (jam_guide slurm_sizing).\n"
@@ -15588,8 +15669,10 @@ GUIDE = {
         "published JAM24 replicas; not available on a gateway that leaves the reference-results tools out), file "
         "(a replicas file on the cluster, path; step when it has several) or campaign (collection_id of a "
         "postprocessed campaign); preview_prior_replicas shows the mapping before validating. Otherwise "
-        "initialization is default (library values) or random_within_bounds; the FF library carries Gaussian "
-        "metadata. Each running replica writes checkpoints/replica_N/current_progress.json (phase, evaluations, "
+        "initialization is default (library values) or random_within_bounds (FitPack's flat par: a parameter "
+        "with a Gaussian start, gaussian/mean/std on the card, is drawn from N(mean, std) within its bounds, any "
+        "other uniformly between its min and max; the FF library and the JAM24 catalog cards carry Gaussian "
+        "starts, and the card summary's initialization_meaning says how many). Each running replica writes checkpoints/replica_N/current_progress.json (phase, evaluations, "
         "objective) and latest.json; rerun_replicas(resume=true) restarts from the checkpoint, mem raises the memory "
         "of the rerun. Checkpoint-resumed replicas do not reproduce from seeds."),
     "answer_templates": (

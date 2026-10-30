@@ -14,7 +14,8 @@ active issues, retrieval requirements, or blockers.
    archive's hashed directory name.
 2. `get_analysis_fit_statistics {"analysis_id":"JAM24.final","reaction":"wc"}`
    returns only the five W+charm records. `scope` can be `overall`, `reactions`,
-   or `datasets` (default). A dataset ID requires its reaction. All statistics
+   or `datasets` (default). A dataset ID requires its reaction; the gateway also
+   takes the two joined, as other tools print them (`"dataset_id":"idis:10026"`). All statistics
    retain their saved precision; normalization records include missing reasons,
    fitted value/uncertainty, chi-square and linked-root information. The saved
    experimental-point total is `chi2_data`, distinct from the explicitly named

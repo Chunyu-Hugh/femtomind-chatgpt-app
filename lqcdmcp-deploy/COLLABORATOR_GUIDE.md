@@ -385,7 +385,7 @@ Settings start at these values; keep or change each one:
 | Higher twist | off | on |
 | DGLAP mode | truncated | iterated |
 | αS mode | backward | forward |
-| Parameter initialization | the table's starting values | random within each FREE parameter's min and max (seed: auto or yours; a different seed per replica unless you untick it) |
+| Parameter initialization | the table's starting values | random: FitPack's `flat par`. A FREE parameter with a Gaussian start (the FF library's, or a published-analysis card's) is drawn from that Gaussian within its min and max, any other uniformly between them (seed: auto or yours; a different seed per replica unless you untick it) |
 | Inference mode | ensemble (pseudo-data replicas) | the original central values of the data |
 | Replicas | 10 | 1 to 2000 |
 | Max iterations | 500 | any positive whole number |

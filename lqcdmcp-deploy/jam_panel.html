@@ -407,7 +407,7 @@
         <label class="radio"><input type="radio" name="pinit" value="default"><span>Use default JAM/FitPack starting values
           <span class="why">Keep the starting values in the parameter table.</span></span></label>
         <label class="radio"><input type="radio" name="pinit" value="random_within_bounds"><span>Randomize starting values within parameter bounds
-          <span class="why">Draw each free starting value uniformly inside its min/max before the fit begins.</span></span></label>
+          <span class="why">FitPack's flat par: a free parameter with a Gaussian start (the FF library's, or a published-analysis card's) is drawn from that Gaussian inside its min/max; any other free parameter uniformly inside its min/max.</span></span></label>
         <div class="grid2" id="seedBox" style="display:none">
           <div class="field"><div class="label sm">Random seed</div><input type="number" id="pSeed" placeholder="auto"></div>
           <div class="field"><label class="inline" style="margin-top:26px"><input type="checkbox" id="pPerRep"> Different seed per replica</label></div>
