@@ -4373,6 +4373,40 @@ def _reproduce_campaign(u, collection_id, replicas, check, confirm, node_constra
 
 # ---- validate / submit / append ------------------------------------------------
 
+def _carried_overrides(card):
+    """The values of a catalog card's declared changes outside job and slurm."""
+    declared = (card.get("source") or {}).get("overrides") or {}
+    carried = {}
+    for section in ("qcd", "parameters"):
+        keys = [k for k in (declared.get(section) or []) if k in (card.get(section) or {})]
+        if keys:
+            carried[section] = {k: card[section][k] for k in keys}
+    if declared.get("datasets"):
+        carried["datasets"] = {r: card["datasets"][r] for r in declared["datasets"] if r in (card.get("datasets") or {})}
+    if declared.get("reactions"):
+        carried["reactions"] = list(card.get("reactions") or [])
+    return carried
+
+
+def _missing_override_values(card):
+    """Declared changes a brief card carries no value for (a card from before
+    brief cards carried them): rebuilding it would silently drop them."""
+    declared = (card.get("source") or {}).get("overrides") or {}
+    given = card.get("overrides") if isinstance(card.get("overrides"), dict) else {}
+    missing = []
+    for section, keys in declared.items():
+        if section in ("job", "slurm"):
+            continue
+        have = {**(card.get(section) if isinstance(card.get(section), dict) else {}),
+                **(given.get(section) if isinstance(given.get(section), dict) else {})}
+        if section == "reactions":
+            if not (card.get("reactions") or given.get("reactions")):
+                missing.append("reactions")
+        elif isinstance(keys, list):
+            missing += [f"{section}.{k}" for k in keys if k not in have]
+    return missing
+
+
 def _expanded_card(card):
     """A card that names its catalog source and carries no objects is rebuilt
     here from the catalog, as campaign_card_from_catalog would build it, with
@@ -4416,6 +4450,15 @@ def _checked_card(u, card):
     the workspace has what it needs: (norm, None), or (None, the result to
     return). validate_campaign and submit_campaign both use it, so the phrase
     and the submitted card come from one reading of the table."""
+    if (isinstance(card, dict) and not card.get("objects") and isinstance(card.get("source"), dict)
+            and isinstance(card["source"].get("analysis_id"), str)):
+        missing = _missing_override_values(card)
+        if missing:
+            return None, _refuse("CARD_INVALID",
+                                 f"This brief card declares changes it carries no value for ({', '.join(missing)}), "
+                                 "so rebuilding it from the catalog would silently drop them. Ask "
+                                 "campaign_card_from_catalog again with the same overrides (its brief card now "
+                                 "carries their values), or send the full card.", missing_overrides=missing)
     card = _expanded_card(card)
     if _configuration_reactions(card):
         return None, _unsupported_configuration_fit(card)
@@ -4810,7 +4853,7 @@ def _card_from_conf(conf, source, overrides=None, replicas=10):
 _CALIBRATION = {}
 
 
-def _calibration_note(analysis_id):
+def _calibration_note(analysis_id, prior=None):
     """What the catalog records about how the published analysis was calibrated.
 
     JAM24 was fitted in six stages (DIS, then DY, then W/Z and jets, then the
@@ -4823,8 +4866,20 @@ def _calibration_note(analysis_id):
     aid = str(analysis_id or "").strip()
     if not aid:
         return None
-    if aid in _CALIBRATION:
-        return _CALIBRATION[aid]
+    note = _CALIBRATION[aid] if aid in _CALIBRATION else _calibration_record(aid)
+    if note and prior:
+        # Starting from an existing ensemble (the published replicas, a campaign,
+        # a file) is how the final stage was entered, not a one-stage fit from
+        # the cataloged starts: the staged-calibration warning does not apply.
+        kind = prior.get("kind") if isinstance(prior, dict) else str(prior)
+        return dict(note, applies=False,
+                    warning=(f"This card starts from prior replicas ({kind}), not from the cataloged starting values, "
+                             f"so the published fit's {len(note['stages'])}-stage calibration is not needed for this "
+                             "start (starting from the published replicas reproduced chi2/N 0.998 on 2026-10-29)."))
+    return dict(note, applies=True) if note else None
+
+
+def _calibration_record(aid):
     out = None
     try:
         entry = _analysis_catalog_store()._entry(aid)
@@ -4888,10 +4943,16 @@ def campaign_card_from_catalog(analysis_id="JAM24.final", replicas=10, overrides
         card, notes, expected = _card_from_conf(conf, refs, overrides, n)
     except ValueError as e:
         return _refuse("CARD_INVALID", str(e))
-    calibration = _calibration_note(refs["analysis_id"])
+    calibration = _calibration_note(refs["analysis_id"], prior=(card.get("parameters") or {}).get("priorSource"))
     if calibration:
         notes.append(calibration["warning"])
     brief = {k: card[k] for k in ("source", "job", "slurm")}
+    # source.overrides records only WHICH keys the user changed. A brief card is
+    # rebuilt from the catalog by validate_campaign, so it must also carry their
+    # values (beyond job and slurm, which it has), or the change would be lost.
+    carried = _carried_overrides(card)
+    if carried:
+        brief["overrides"] = carried
     full = str(detail or "full").strip().lower() == "full"
     size = (f"{expected['free_parameters']} free parameters over {sum(expected['datasets'].values())} datasets")
     if full:
@@ -5704,10 +5765,12 @@ def _validate_campaign(u, card):
     out = {"status": "ok", "valid": True, "warnings": warnings}
     out.update(_validated(u, norm))
     out["summary"]["points_after_cuts"] = points
-    calibration = _calibration_note((norm.get("source") or {}).get("analysis_id") or "")
+    calibration = _calibration_note((norm.get("source") or {}).get("analysis_id") or "",
+                                    prior=(norm.get("parameters") or {}).get("priorSource"))
     if calibration:
         out["calibration"] = calibration
-        out["warnings"] = list(out.get("warnings") or []) + [calibration["warning"]]
+        if calibration.get("applies"):
+            out["warnings"] = list(out.get("warnings") or []) + [calibration["warning"]]
     if out["warnings"]:
         out["next"] = ("Show the user this summary, the warnings (they do not block submission) and the "
                        "Slurm script. Submit with submit_campaign(card, confirm=<the phrase>) only after "

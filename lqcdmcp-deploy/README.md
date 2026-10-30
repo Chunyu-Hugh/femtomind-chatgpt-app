@@ -1370,6 +1370,16 @@ Datasets the current readers keep no point of (JAM24: SIA 1012 and 2006) are
 left out, because FitPack stops on an empty dataset, and the card records that.
 `overrides` updates the sections `job`, `slurm`, `qcd`, `parameters`,
 `datasets` or `reactions`; the changed keys are recorded on `card.source`.
+A brief card carries their values too (`card.overrides`, beyond the job and
+slurm it has), because `card.source.overrides` names only the keys and
+`validate_campaign` rebuilds the rest from the catalog; a brief card that
+declares changes without their values (one made before 2026-10-30) is refused
+(`CARD_INVALID`, `missing_overrides`) instead of being rebuilt without them,
+which had turned a requested Q20 of 1.69 back into the catalog's 1.6129 and
+dropped a published-replica start. The calibration record says whether its
+warning applies: a card that starts from prior replicas (`parameters.priorSource`)
+is not the one-stage fit from the cataloged starts, so validation does not
+warn about the staged calibration for it (`calibration.applies` false).
 
 `calibration` is what the catalog records about how the published fit was made.
 For JAM24 that is six stages (DIS, then DY, then W/Z and jets, then the strange
