@@ -6,7 +6,8 @@ stdlib-only). REQUEST is filled in before it is sent:
 
     REQUEST = {"campaign_cache": "<the campaign's published cohort folder>",
                "archives": ["<archive dir>", "<alternate>"],   # the first one present is read
-               "subsamples": 1000, "seed": 20261026}
+               "subsamples": 1000, "seed": 20261026,
+               "replicas": [2, 3]}                              # optional: only these campaign replicas
 
 The campaign side is the gateway's central-data cache: one document per
 dataset, <campaign_cache>/datasets/<reaction>_<id>.json, with the data
@@ -23,7 +24,9 @@ normalization penalty), which is the per-dataset chi2 campaign_summary shows:
   mean_replica      the mean over replicas of each replica's chi2.
 A dataset is comparable only when the campaign's and the archive's value and
 alpha arrays are exactly equal; otherwise it is listed as not_comparable with
-the reason (a replaced workbook, a different cut).
+the reason (a replaced workbook, a different cut). With "replicas", only those
+campaign replicas count (the cache names the replica of each prediction row),
+and the null draws subsamples of that size.
 
 The null distribution answers "is the campaign's number what a subsample of
 the published ensemble of the same size would give?": N_c replicas are drawn
@@ -43,6 +46,11 @@ REQUEST = None  # filled in before the program is sent: __REQUEST__
 
 def _key_file(cache, key):
     return os.path.join(cache, "datasets", re.sub(r"[^A-Za-z0-9._-]", "_", key.replace(":", "_")) + ".json")
+
+
+def _replica_number(identity):
+    m = re.search(r"(\d+)$", str(identity))
+    return int(m.group(1)) if m else None
 
 
 def _archive_dir(req):
@@ -68,6 +76,9 @@ def main():
            "datasets": [], "not_comparable": [], "global": {}}
     camp, ref, published = {}, {}, {}
     n_c = None
+    keep = set(int(i) for i in req.get("replicas") or [])
+    if keep:
+        out["selected_replicas"] = sorted(keep)
     for row in rows:
         key = row["key"]
         path = _key_file(req["campaign_cache"], key)
@@ -85,6 +96,17 @@ def main():
         if thy_c.ndim != 2 or thy_c.shape[1] != value.size:
             out["not_comparable"].append({"key": key, "reason": "the campaign's predictions do not match its points"})
             continue
+        if keep:
+            names = doc.get("replicas") or []
+            if len(names) != thy_c.shape[0]:
+                print(json.dumps({"error": "the campaign's cache does not name the replica of each prediction (%s), "
+                                           "so a replica selection cannot be applied" % key}))
+                return
+            rows_kept = [i for i, name in enumerate(names) if _replica_number(name) in keep]
+            if not rows_kept:
+                print(json.dumps({"error": "none of the selected replicas %s is in the campaign's cache" % sorted(keep)}))
+                return
+            thy_c = thy_c[rows_kept]
         if n_c is None:
             n_c = thy_c.shape[0]
         elif thy_c.shape[0] != n_c:

@@ -545,6 +545,10 @@ start and stop independently, four at a time.
   Pages of 20 datasets, smallest p first; the computation is kept per cohort,
   so later pages are instant. Each row carries the dataset's label (`TASSO pion
   (√s = 44 GeV)`), so a reply names it without a `campaign_datasets` call.
+  `replicas` takes the selection `campaign_summary` takes (`{'exclude': [1, 4]}`,
+  `chi2_max`, `best`, ...): only the kept replicas are compared, the null is
+  drawn at that size, and `replica_selection` says which were kept and why
+  the others were not, so replicas stuck far from the data need not swamp it.
   Checked on 2026-10-29 on a JAM24.final campaign
   of 3 replicas: all 96 datasets comparable, the archive side equal to the
   archive's own chi2_data, the campaign side equal to campaign_summary's table.
@@ -1426,7 +1430,11 @@ uniformly between them, and how many of the free parameters have one. A
 catalog card that starts from prior replicas at another Q20 than they were
 fitted at is flagged by `campaign_card_from_catalog` (`conflict`), before
 `validate_campaign` refuses it (`PRIOR_SOURCE_INVALID`: starting values are
-not converted between scales).
+not converted between scales). A campaign made from a catalog card that
+started from the cataloged values carries the staged-calibration warning
+when its results are read too: `campaign_status` (`calibration`), the
+far-from-data note of `campaign_summary` and `postprocess_campaign`, and the
+report's Configuration.
 
 Cancelling or deleting a campaign forgets its replay: the same confirmed
 request may then queue it again.

@@ -71,7 +71,7 @@ browser panel                      ─┘
 - [x] A compiler from the catalog to FitPack input, with an exact parity check against the official input.
 - [x] Run or extend JAM24 from its catalog entry (all 215 free parameters), changing only what you declare; a JAM24-named fit built otherwise is refused.
 - [x] The 791 archived JAM24 replicas as read-only reference results: fit statistics and theory predictions per dataset.
-- [x] Compare a new fit with the published one, dataset by dataset: where its χ² falls among same-size subsamples of the published replicas, with multiple-comparison corrected p-values (`compare_with_reference`).
+- [x] Compare a new fit with the published one, dataset by dataset: where its χ² falls among same-size subsamples of the published replicas, with multiple-comparison corrected p-values, over all replicas or a selection (`compare_with_reference`).
 
 ### Guidance for the assistant
 

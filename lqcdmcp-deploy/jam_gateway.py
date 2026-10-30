@@ -6658,6 +6658,9 @@ def campaign_status(collection_id="", username="", wait_for="", timeout=None, de
            "log_pattern": log_patterns["stdout"], "error_log_pattern": log_patterns["stderr"],
            "summary": (_card_summary(e["input_card"]) if str(detail or "").strip().lower() == "card"
                        else _card_brief(_card_summary(e["input_card"])))}
+    calibration = _campaign_calibration(e)
+    if calibration:
+        out["calibration"] = calibration["warning"]
     policy = ((e.get("input_card") or {}).get("job") or {}).get("recovery")
     if policy or e.get("recovery_log"):
         out["recovery"] = {"policy": policy, "meaning": _recovery_meaning(policy) if policy else None,
@@ -6969,7 +6972,19 @@ def _stage_root(u, e):
 FAR_CHI2_PER_POINT = 5.0
 
 
-def _far_note(far):
+def _campaign_calibration(e):
+    """The staged-calibration record for a campaign made from a catalog card
+    that started from the cataloged values (not from prior replicas), else
+    None. Said when its results are read, not only when its card was made: on
+    2026-10-30 an assistant diagnosing a stalled JAM24.final fit never learned
+    that the published fit was a six-stage calibration."""
+    card = (e or {}).get("input_card") or {}
+    aid = (card.get("source") or {}).get("analysis_id")
+    note = _calibration_note(aid, prior=(card.get("parameters") or {}).get("priorSource")) if aid else None
+    return note if note and note.get("applies") else None
+
+
+def _far_note(far, calibration=None):
     """The words for replicas that FitPack calls fitted but that stopped far from the data."""
     if not far:
         return ""
@@ -6980,7 +6995,9 @@ def _far_note(far):
     return (f"{len(far)} replica(s) count as fitted (FitPack's optimizer returned) but stopped far from the data, "
             f"with central-data chi2/N at or above {FAR_CHI2_PER_POINT:g}, the 'critical' band: {each}. They are "
             "still in every statistic above. To leave them out, if you agree, ask for "
-            f"replicas={{'exclude': {numbers[:20]}}} (or a chi2_max); to fit them again, rerun_replicas.")
+            f"replicas={{'exclude': {numbers[:20]}}} (or a chi2_max); to fit them again, rerun_replicas."
+            + (" This campaign ran one stage from the cataloged starting values: " + calibration["warning"]
+               if calibration else ""))
 
 
 def _not_fitted_note(n, total):
@@ -7016,7 +7033,7 @@ def postprocess_campaign(collection_id="", username=""):
         out["note"] = out["not_fitted_note"] = _not_fitted_note(agg["not_fitted_replicas"],
                                                                 agg["total_replicas"])
     if agg.get("far_from_data"):
-        out["far_from_data_note"] = _far_note(agg["far_from_data"])
+        out["far_from_data_note"] = _far_note(agg["far_from_data"], _campaign_calibration(e))
         out["note"] = " ".join(x for x in (out.get("note"), out["far_from_data_note"]) if x)
     return _cohort_reply(out, ready)
 
@@ -7086,7 +7103,7 @@ def campaign_summary(collection_id="", username="", replicas=None):
         out["not_fitted_note"] = _not_fitted_note(n, total)
         notes.append(out["not_fitted_note"])
     if agg.get("far_from_data"):
-        out["far_from_data_note"] = _far_note(agg["far_from_data"])
+        out["far_from_data_note"] = _far_note(agg["far_from_data"], _campaign_calibration(e))
         notes.append(out["far_from_data_note"])
     if notes:
         out["note"] = " ".join(notes)
@@ -7235,6 +7252,7 @@ def _report_markdown(rec):
               f"- Inference: {card['inference']}; initialization {card['initialization']}; optimizer {card['optimizer']}, "
               f"tolerance {card['tolerance']}, at most {card['max_iterations']} iterations",
               *([f"- Starting values: {card['initialization_meaning']}"] if card.get("initialization_meaning") else []),
+              *([f"- Calibration: {card['calibration']}"] if card.get("calibration") else []),
               "- Slurm per replica: " + ", ".join(f"{k} {v}" for k, v in card["slurm"].items()), ""]
     lines.append(_md_table(["Reaction", "Datasets", "Normalization parameters", "Cuts"],
                            [[r, card["datasets"].get(r, 0), card["normalization_parameters"].get(r, 0),
@@ -7349,6 +7367,9 @@ def _campaign_report(u, cid, write):
                                             "campaign_status and campaign_summary still answer for it.")
     if norm.get("source"):
         card["catalog_source"] = norm["source"]
+    calibration = _campaign_calibration(e)
+    if calibration:
+        card["calibration"] = calibration["warning"]
     labels = {f"{r}:{x}": _dataset_label(r, x) for r, ids in norm["datasets"].items() for x in ids}
     try:
         data_warnings, points = _data_warnings(u, norm)
@@ -7372,7 +7393,7 @@ def _campaign_report(u, cid, write):
             warnings.append("The fit summary is older than the replicas: run postprocess_campaign, then make the "
                             "report again.")
         if (summary["summary"] or {}).get("far_from_data"):
-            warnings.append(_far_note(summary["summary"]["far_from_data"]))
+            warnings.append(_far_note(summary["summary"]["far_from_data"], _campaign_calibration(e)))
     elif summary.get("status") == "running":
         results["why"] = (f"The central-data chi2 were still being computed after {REPORT_SUMMARY_WAIT // 60} "
                           f"minutes (analysis_result job {summary.get('job_id')}); make the report again when "
@@ -14637,7 +14658,7 @@ def _rounded(value, digits=8):
 
 
 def compare_with_reference(collection_id="", analysis_id="JAM24.final", subsamples=1000, seed=20261026,
-                           offset=0, limit=20, username=""):
+                           offset=0, limit=20, replicas=None, username=""):
     """A campaign's per-dataset chi2 against the published fit's replicas, with
     a null distribution from same-size subsamples of the published ensemble."""
     u, err = _need_user(username)
@@ -14653,6 +14674,10 @@ def compare_with_reference(collection_id="", analysis_id="JAM24.final", subsampl
         return _refuse("BAD_ARGUMENT", "subsamples, seed, offset and limit must be whole numbers.")
     if not 100 <= subsamples <= 5000:
         return _refuse("BAD_ARGUMENT", "subsamples: from 100 to 5000 (1000 by default).")
+    try:
+        selection = _replica_selection(replicas)
+    except (ValueError, AssertionError) as exc:
+        return _refuse("BAD_ARGUMENT", str(exc) or "replicas: a selection as campaign_summary takes it")
     analysis_id = str(analysis_id or "JAM24.final").strip()
     try:
         manifest = _analysis_results_store().resolve(analysis_id)
@@ -14662,19 +14687,43 @@ def compare_with_reference(collection_id="", analysis_id="JAM24.final", subsampl
     if any(_outside_read_roots(path) for path in dirs):
         return _refuse("OUTSIDE_READ_ROOTS", "The registered results archive is outside the site's authorized read roots.")
     params = {"collection_id": e["collection_id"], "analysis_id": analysis_id, "subsamples": subsamples, "seed": seed,
-              "offset": offset, "limit": limit}
+              "offset": offset, "limit": limit, **({"replicas": selection} if selection else {})}
     return _background(u, "compare_with_reference", params,
-                       lambda: _compare_with_reference(u, e, analysis_id, manifest, dirs, subsamples, seed, offset, limit))
+                       lambda: _compare_with_reference(u, e, analysis_id, manifest, dirs, subsamples, seed, offset, limit,
+                                                       selection))
 
 
-def _compare_with_reference(u, e, analysis_id, manifest, dirs, subsamples, seed, offset, limit):
-    ready = _ensure_central_metrics(u, e)
+def _selected_replicas(u, e, ready, selection):
+    """The replica numbers a selection keeps, by campaign_summary's own rules
+    (only, exclude, chi2_max, sigma, best on the central-data chi2), or a refusal."""
+    r = _run_ifarm_py(u, _analysis_code(_POSTPROCESS, STAGE=_stage_root(u, e), TOTAL=int(e["replicas"]),
+                                        SELECTION=selection, WRITE=False, REPORT_CACHE=ready.get("cache"),
+                                        COHORT_IDS=ready.get("replicas")), timeout=120, cap=4000000)
+    report = (_last_json(r) or {}).get("replica_selection") or {}
+    kept = report.get("kept_replicas")
+    if not isinstance(kept, list):
+        return None, _refuse("READ_FAILED", "The replica selection could not be applied: the campaign's fit summary "
+                             "could not be computed.", detail=(r.get("err") or "")[-400:])
+    if not kept:
+        return None, _refuse("NO_DATA", "The replica selection leaves no fitted replica to compare.",
+                             replica_selection=report)
+    return report, None
+
+
+def _compare_with_reference(u, e, analysis_id, manifest, dirs, subsamples, seed, offset, limit, selection=None):
+    ready = _ensure_central_metrics(u, e, selection)
     if ready.get("status") != "success":
         return {**ready, "status": ready.get("status") or "error",
                 "message": "The campaign's central-data predictions are not ready, so nothing was compared: "
                            + str(ready.get("message") or ready.get("status"))}
+    report = None
+    if selection:
+        report, refused = _selected_replicas(u, e, ready, selection)
+        if refused:
+            return refused
+    kept = tuple(sorted(report["kept_replicas"])) if report else None
     key = (u, e["collection_id"], ready.get("cohort") or ready.get("cache"), manifest.get("archive_id"),
-           subsamples, seed)
+           subsamples, seed, kept)
     with _REFERENCE_GUARD:
         lock = _REFERENCE_LOCKS.setdefault(key, threading.Lock())
     with lock:
@@ -14683,7 +14732,8 @@ def _compare_with_reference(u, e, analysis_id, manifest, dirs, subsamples, seed,
             with open(os.path.join(os.path.dirname(analysis_results.__file__), "reference_comparison.py"),
                       encoding="utf-8") as fh:
                 source = fh.read()
-            request = {"campaign_cache": ready["cache"], "archives": dirs, "subsamples": subsamples, "seed": seed}
+            request = {"campaign_cache": ready["cache"], "archives": dirs, "subsamples": subsamples, "seed": seed,
+                       **({"replicas": list(kept)} if kept else {})}
             code = source.replace("REQUEST = None  # filled in before the program is sent: __REQUEST__",
                                   "REQUEST = json.loads(%s)" % json.dumps(json.dumps(request)))
             r = _run_ifarm_py(u, code, apptainer=True, timeout=900, cap=8000000)
@@ -14714,6 +14764,13 @@ def _compare_with_reference(u, e, analysis_id, manifest, dirs, subsamples, seed,
                   + ", ".join(flagged["mean_prediction"][:12]) + ("…" if len(flagged["mean_prediction"]) > 12 else "") + "."
                   if flagged["mean_prediction"] else "No dataset differs at p_BH < 0.05.")
                + " Datasets are ordered by p, the smallest first.")
+    if report:
+        dropped = report.get("dropped") or []
+        message = (f"Over {len(report['kept_replicas'])} of the campaign's {report.get('of')} fitted replicas "
+                   f"({', '.join(str(i) for i in report['kept_replicas'][:20])}"
+                   + ("…" if len(report["kept_replicas"]) > 20 else "")
+                   + f"; {len(dropped)} left out, replica_selection says why), with the null drawn at that size: "
+                   + message)
     more = offset + limit < len(rows)
     # The dataset's name with its key, so a reply can say 'TASSO pi, 44 GeV'
     # without a campaign_datasets call per reaction (six in a 2026-10-30 test).
@@ -14723,6 +14780,7 @@ def _compare_with_reference(u, e, analysis_id, manifest, dirs, subsamples, seed,
                      "archive_id": full.get("archive_id"), "reference_replicas": full.get("reference_replicas"),
                      "campaign_replicas": full["campaign_replicas"], "subsamples": full["subsamples"],
                      "seed": full["seed"], "global": full["global"], "flagged": flagged,
+                     **({"replica_selection": report} if report else {}),
                      "datasets": page, "not_comparable": full["not_comparable"],
                      "page": {"offset": offset, "limit": limit, "returned": len(page),
                               "total": len(rows), **({"next_offset": offset + limit} if more else {})},
@@ -14822,19 +14880,23 @@ TOOLS = {
                 "point after the cuts). chi2 is the point term only, as in campaign_summary; definitions says it "
                 "all. Datasets come ordered by p, smallest first, in pages of limit (default 20, at most 50) from "
                 "offset. Read-only; the first call for a campaign may compute its central-data predictions, so a "
-                "reply with status running carries a job_id for analysis_result. Use it when the user asks how "
-                "their fit compares with the published one or whether it reproduces it.",
+                "reply with status running carries a job_id for analysis_result. replicas (a selection as "
+                "campaign_summary takes it, e.g. {'exclude': [1, 4]} for replicas that stopped far from the data) "
+                "compares only the kept ones, with the null drawn at that size; replica_selection says which were "
+                "kept and why the others were not. Use it when the user asks how their fit compares with the "
+                "published one or whether it reproduces it.",
         "schema": {"type": "object", "additionalProperties": False, "required": ["collection_id"], "properties": {
             "collection_id": {"type": "string", "description": COLLECTION_ARG},
             "analysis_id": {"type": "string", "default": "JAM24.final"},
             "subsamples": {"type": "integer", "minimum": 100, "maximum": 5000, "default": 1000},
             "seed": {"type": "integer", "default": 20261026},
             "offset": {"type": "integer", "minimum": 0, "default": 0},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20}}},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20},
+            "replicas": REPLICAS_ARG}},
         "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
         "fn": lambda a: compare_with_reference(a.get("collection_id", ""), a.get("analysis_id", "JAM24.final"),
                                                a.get("subsamples", 1000), a.get("seed", 20261026),
-                                               a.get("offset", 0), a.get("limit", 20))},
+                                               a.get("offset", 0), a.get("limit", 20), a.get("replicas"))},
 
     "list_analysis_catalog": {
         "compact": True,
