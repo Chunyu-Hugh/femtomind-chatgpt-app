@@ -576,8 +576,8 @@ start and stop independently, four at a time.
   χ² that `campaign_summary` reports), whether the seeds it used and its
   commit match the record, and each reproduction of it with its node type
   and whether its fitted parameters equal the current ones. A history of more
-  than 20 submissions shows the first and last 10. Use it instead of
-  `fs_read`, which shows only the end of a large record. Checked on
+  than 20 submissions shows the first and last 10. Use it instead of paging
+  through `fs_read` with `offset` for a large record. Checked on
   2026-10-28 against the October test campaigns on ifarm: in the one
   reproduced four times, the three runs on `farm18` nodes have the same
   fitted parameters and the one on `farm19` does not.
@@ -634,6 +634,14 @@ start and stop independently, four at a time.
   Their stdout and stderr go to separate, unique files under `/farm_out/<user>/`.
 - **Partition.** Auto: `priority` when the wall clock per replica is up to
   4 h, `production` beyond.
+- **Reading files.** `fs_read` returns a byte window and always says where it is
+  (`total_bytes`, `offset`, `returned_bytes`, `returned_lines`, `truncated`,
+  `next_offset`): a large log or `reproduce.json` is paged with
+  `offset=next_offset` instead of coming back as an unexplained fragment, and
+  `max_bytes` (at most 20000) asks for more at once. `fs_list` likewise reports
+  `total_entries`, `returned` and `truncated`. Both run a small `python3`
+  snippet on the compute host, so the size and the window are measured there
+  rather than by the ssh helper's 4 KB output cap.
 - **Tools.** `tools/list` is the contract (42 JAM tools): the cluster and
   workspace (ping, get_console, open_panel, connect_hpc, check_hpc_connection,
   check_project, setup_workspace, use_workspace, use_ai_branch, fs_list,
@@ -1345,16 +1353,32 @@ disabled, and normal campaign-card behavior is unchanged.
 
 #### A campaign card from the catalog
 
-`campaign_card_from_catalog(analysis_id="JAM24.final", replicas=10, overrides)`
+`campaign_card_from_catalog(analysis_id="JAM24.final", replicas=10, overrides, detail)`
 returns a validate-ready card built from the compiled configuration, never by
 copying values: every parameter with its bounds and ties, both FF shapes (215
 free parameters for JAM24, where the composer's defaults give 140), the
 datasets with their normalizations and cuts, the QCD settings and the
 author-confirmed positivity flags, and Slurm resources sized for the fit.
+`detail="brief"` (the tool's default) returns only `source`, `job` and `slurm`,
+which is all `validate_campaign` needs; `detail="full"` adds every table, about
+50 KB for JAM24.final (2.5 × 10⁴ tokens), which is more than a client should take
+in one reply and nothing gains by sending back. Both forms carry `notes` and
+`calibration`.
 Datasets the current readers keep no point of (JAM24: SIA 1012 and 2006) are
 left out, because FitPack stops on an empty dataset, and the card records that.
 `overrides` updates the sections `job`, `slurm`, `qcd`, `parameters`,
 `datasets` or `reactions`; the changed keys are recorded on `card.source`.
+
+`calibration` is what the catalog records about how the published fit was made.
+For JAM24 that is six stages (DIS, then DY, then W/Z and jets, then the strange
+sector, then an SIA-only FF calibration, then the final fit from the calibrated
+starts), with the catalog's own limitation: a dependency description, not a
+runnable schedule. A catalog card runs one stage from the cataloged starting
+values, so the note appears in the card's `notes` and in `validate_campaign`'s
+warnings. On 2026-10-30 a single-stage JAM24.final fit from those starts stopped
+at χ²/N 1.8 to 3300 (every replica by `ftol` at 10⁻³, with a gradient still
+about 10⁹), while a fit started from the published replicas reproduced χ²/N
+0.998: users are told before they spend a night of replicas.
 
 `validate_campaign` and `submit_campaign` accept such a card in full, or
 compactly as `{source, job, slurm, overrides}`, which the gateway rebuilds from
