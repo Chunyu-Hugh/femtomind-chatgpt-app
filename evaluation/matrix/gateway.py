@@ -154,11 +154,11 @@ def pidfile(port):
     return os.path.join(paths.EVAL_ROOT, "gw_%d.pid" % port)
 
 
-def start(label, commit, variant, condition, port, results_dir=None):
+def start(label, commit, variant, condition, port, results_dir=None, ablate=""):
     tree, sha = worktree(label, commit)
     caps = capabilities(tree)
     cm = ensure_cm()
-    info = {"label": label, "controlmaster": cm, "commit": commit, "sha": sha, "worktree": tree, "variant": variant, "condition": condition,
+    info = {"label": label, "controlmaster": cm, "commit": commit, "sha": sha, "worktree": tree, "variant": variant, "condition": condition, "ablate": ablate,
             "port": port, "url": url(port), "capabilities": caps, "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     if variant == "B":
         info["catalog_variant"] = overlay_variant_b(tree)
@@ -177,6 +177,8 @@ def start(label, commit, variant, condition, port, results_dir=None):
         env["JAM_GW_TEST_TOKEN"] = tok
     if caps["tools_deny"]:
         env["JAM_GW_TOOLS_DENY"] = deny_lists.env_value(condition)
+    if ablate:
+        env["JAM_GW_ABLATE"] = ablate
     info["server_side_deny"] = caps["tools_deny"]
     results_dir = results_dir or paths.eval_dir("results")
     log = os.path.join(results_dir, "gateway_%d_%s.log" % (port, label))

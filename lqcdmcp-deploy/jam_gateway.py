@@ -217,10 +217,13 @@ ABLATION_FEATURES = ("validate", "catalog", "gate")
 ABLATE = frozenset(x.strip() for x in os.environ.get("JAM_GW_ABLATE", "").split(",") if x.strip())
 if ABLATE:
     _unknown = ABLATE - set(ABLATION_FEATURES)
-    if _unknown or not os.environ.get("JAM_GW_TEST_TOKEN"):
+    # A deployed gateway binds a public interface; the matrix and the pilot run
+    # theirs on loopback (or with a test token). Nothing else may run blind.
+    _loopback = os.environ.get("JAM_GW_BIND", "0.0.0.0") in ("127.0.0.1", "localhost", "::1")
+    if _unknown or not (os.environ.get("JAM_GW_TEST_TOKEN") or _loopback):
         print("JAM_GW_ABLATE ignored (%s)" % (
             "unknown feature(s) " + ", ".join(sorted(_unknown)) if _unknown
-            else "only a test gateway may run with checks disabled"), file=sys.stderr)
+            else "only a loopback or test gateway may run with checks disabled"), file=sys.stderr)
         ABLATE = frozenset()
 if "gate" in ABLATE:
     HUMAN_GATE = False

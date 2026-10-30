@@ -44,9 +44,14 @@ E1 fault table (any gateway with its token; no cluster work of its own, since va
         --token-file ~/.config/jam_gateway/jam-gateway-<you>.token --out ~/bench_eval/e1/e1_$(date +%F).json
     python3 -B -m evaluation.e1.report ~/bench_eval/e1/e1_2026-10-30.json --md e1.md
 
-E2 ablation: a test gateway only (`JAM_GW_TEST_TOKEN` must be set, or the switch is ignored), started with one or more layers removed; every reply carries `"ablation": [...]`:
+E2 ablation: the E1 sweep re-run against four local gateways — full, no validate, no catalog parity, no human gate — and the table says which layer each fault depends on.
 
-    JAM_GW_TEST_TOKEN=... JAM_GW_ABLATE=validate,catalog python3 -B lqcdmcp-deploy/jam_gateway.py
+    python3 -B -m evaluation.e2.runner --commit HEAD --port 8766 [--dry-run]
+    # -> ~/bench_eval/e2/e2.md: fault x layer, plus "caught by"
+
+A gateway only accepts `JAM_GW_ABLATE` on loopback or with `JAM_GW_TEST_TOKEN`; a deployed gateway ignores it and says so in its log. Every reply produced with a layer removed carries `"ablation": [...]`, so a blinded run cannot be mistaken for a normal one:
+
+    JAM_GW_BIND=127.0.0.1 JAM_GW_ABLATE=validate,catalog python3 -B lqcdmcp-deploy/jam_gateway.py
 
 Calibration (needs a ControlMaster to ifarm; `FEMTOMIND_IFARM_SOCK` names its socket):
 
