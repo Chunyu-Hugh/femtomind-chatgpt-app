@@ -43,6 +43,9 @@ MUTANTS = (
     ("extra_replica_setting",
      "raise maxIterations from 500 to 5000 (a job setting, not a scientific one)",
      "job"),
+    ("sia_version",
+     "set siaVersion to 0 instead of the published 1",
+     "qcd"),
 )
 
 
@@ -85,6 +88,8 @@ def mutate(card, mutant_id):
             raise ValueError("no ffkaon object to fix")
     elif mutant_id == "extra_replica_setting":
         out.setdefault("job", {})["maxIterations"] = 5000
+    elif mutant_id == "sia_version":
+        out.setdefault("qcd", {})["siaVersion"] = 0 if out["qcd"].get("siaVersion") != 0 else 1
     else:
         raise ValueError("unknown mutant %r" % (mutant_id,))
     return out
