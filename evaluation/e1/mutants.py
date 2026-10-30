@@ -49,6 +49,23 @@ MUTANTS = (
 )
 
 
+# What a correct gateway should do with each fault, so the table can be scored
+# rather than only described. "downstream" means validation is expected to
+# accept it and the fit-level warning (stop_reason, far_from_data) catches it
+# later; "accepted" is a job setting that does not change what the fit means and
+# is the negative control: a gateway that refused it would be over-refusing.
+EXPECTED = {
+    "zero_point_dataset": "refused",
+    "missing_cut": "refused",
+    "q0_squared": "refused",
+    "flat_par": "refused",
+    "ff_shape_off": "refused",
+    "sia_version": "refused",
+    "loose_tolerance": "downstream",
+    "extra_replica_setting": "accepted",
+}
+
+
 def _find_cut(cuts, reaction, variable, op):
     for i, row in enumerate(cuts.get(reaction) or []):
         if isinstance(row, dict) and row.get("variable") == variable and row.get("op") == op:

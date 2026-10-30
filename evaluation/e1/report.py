@@ -10,7 +10,7 @@ the paper is about. The baseline row (the official card, unchanged) must read
 import argparse
 import json
 
-from evaluation.e1 import pilot
+from evaluation.e1 import pilot, silent
 
 VERDICT = {"refused": "caught", "warned": "flagged", "accepted": "silent",
            "pending": "pending", "not_applicable": "n/a", "mcp_error": "error"}
@@ -56,7 +56,8 @@ def markdown(report):
             pilot.summary(), "", pilot.table(), "",
             "Each row is a fault a real agent committed in the pilot; the mutant named in the first column is "
             "that fault re-run against the gateway. The pilot agents reported both campaigns as submitted and "
-            "fitting; the settings above were found afterwards, by grading the input."]
+            "fitting; the settings above were found afterwards, by grading the input.", "",
+            silent.markdown(report)]
     return "\n".join(out) + "\n"
 
 
