@@ -204,6 +204,27 @@ IDEMPOTENT_HOURS = float(os.environ.get("JAM_GW_IDEMPOTENT_HOURS", "6") or 0)
 HUMAN_GATE = os.environ.get("JAM_GW_HUMAN_GATE", "").strip() == "1" or bool(SITE.get("human_gate"))
 PANEL_NONCE = secrets.token_urlsafe(24)
 
+# Evaluation ablations (E2). A test gateway can be started with one or more
+# checks removed, so the paper can measure what each layer contributes:
+#   validate — do not read the data before a card is submitted (no point counts,
+#              no empty-dataset refusal);
+#   catalog  — do not compare a card with the published analysis it names;
+#   gate     — no human confirmation phrase.
+# A deployed gateway ignores the switch: it needs JAM_GW_TEST_TOKEN, which only
+# a gateway running off the platform has. Every reply that was produced with a
+# check removed carries "ablation": [...], so no run can hide that it ran blind.
+ABLATION_FEATURES = ("validate", "catalog", "gate")
+ABLATE = frozenset(x.strip() for x in os.environ.get("JAM_GW_ABLATE", "").split(",") if x.strip())
+if ABLATE:
+    _unknown = ABLATE - set(ABLATION_FEATURES)
+    if _unknown or not os.environ.get("JAM_GW_TEST_TOKEN"):
+        print("JAM_GW_ABLATE ignored (%s)" % (
+            "unknown feature(s) " + ", ".join(sorted(_unknown)) if _unknown
+            else "only a test gateway may run with checks disabled"), file=sys.stderr)
+        ABLATE = frozenset()
+if "gate" in ABLATE:
+    HUMAN_GATE = False
+
 
 def _area(user):
     return SITE["area"].format(user=user)
@@ -4338,7 +4359,7 @@ def _checked_card(u, card):
         # catalog entry: the library defaults are another model (140 free FF
         # parameters, not 215), and a name is a claim the user will trust.
         claim = _catalog_name_claim((norm.get("job") or {}).get("campaignName", ""))
-        if claim and not CATALOG_DENIED:
+        if claim and not CATALOG_DENIED and "catalog" not in ABLATE:
             return None, _refuse("CATALOG_REQUIRED",
                                  f"The campaign is named after the published analysis {claim}, but the card was not built from "
                                  f"its catalog entry, so its settings are library defaults, not the published ones. Build the card "
@@ -4900,7 +4921,7 @@ def _validated(u, norm):
            "confirmation_phrase": _confirm_phrase("SUBMIT", norm),
            "next": "Show the user this summary and the Slurm script exactly as returned, never shortened. Submit with "
                    "submit_campaign(card, confirm=<the phrase>) only after they confirm."}
-    comparison = _catalog_comparison(norm)
+    comparison = None if "catalog" in ABLATE else _catalog_comparison(norm)
     if comparison:
         out["catalog_comparison"] = comparison
         if comparison.get("verdict") == "differs":
@@ -5529,13 +5550,18 @@ def _validate_campaign(u, card):
     norm, err = _checked_card(u, card)
     if err:
         return err
-    warnings, points = _data_warnings(u, norm)
-    refused = _no_data_refusal(norm, points)
-    if refused:
-        return dict(refused, warnings=warnings)
+    if "validate" in ABLATE:
+        warnings, points = [], None
+    else:
+        warnings, points = _data_warnings(u, norm)
+        refused = _no_data_refusal(norm, points)
+        if refused:
+            return dict(refused, warnings=warnings)
     out = {"status": "ok", "valid": True, "warnings": warnings}
     out.update(_validated(u, norm))
     out["summary"]["points_after_cuts"] = points
+    if ABLATE:
+        out["ablation"] = sorted(ABLATE)
     if warnings:
         out["next"] = ("Show the user this summary, the warnings (they do not block submission) and the "
                        "Slurm script. Submit with submit_campaign(card, confirm=<the phrase>) only after "

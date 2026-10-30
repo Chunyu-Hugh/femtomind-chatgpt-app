@@ -21,6 +21,8 @@ locally, `/w/ceph24/JAM/chunyu/bench_eval` on the farm, gateway ports 8766+).
 | The theory at the archived parameters is recomputed at machine precision: 791 replicas, 96/96 datasets comparable, data chi2 per replica within 1e-14 relative; 49 datasets bit-identical; grid-based observables (jet, DY) differ by up to 6e4 ULP (historical grid versions, U09) | `analyses/JAM24/results/l2_recompute.py`, `l2/submit_l2.py`, `l2/l2_report.py` | `l2/report_2026-10-26_791replicas.md`, `~/bench_eval/l2/20261026_105815/` |
 | Configuration recoverability under knowledge conditions A/B/C, with and without the gateway | `matrix/runner.py` → `l1/grade.py`, `conditions/leak_scan.py`, `matrix/classify.py`, `matrix/probe.py`, `matrix/aggregate.py` | `~/bench_eval/results/<run>/{classify,probe,grade,leak,fetch}.json`, `aggregate.{json,md}` |
 | What a paper-only agent gets right and wrong (pilot run3: 215 free parameters, 20 wrong fixed/free, 11 wrong SIA ids, Q20, ftol, flat par) | `l1/calibrate.py` (checks 5, 6) | `grade.pilot_nomcp.json`, `grade.pilot_mcp.json` |
+| A wrong card does not reach the queue quietly: every injected fault is caught or flagged, and the ones that are not (job settings) are named | `e1/runner.py` (validate_campaign on mutants of the official card), `e1/report.py` | `~/bench_eval/e1/e1_<stamp>.json`, the fault table |
+| What each layer contributes: with validate / catalog parity / human gate removed in turn, the caught-fault rate falls back toward the raw-LLM arm | `JAM_GW_ABLATE` in `jam_gateway.py` (test gateways only) + `matrix/runner.py` | `~/bench_eval/results/<run>/…`, test `test_evaluation_e2` |
 
 ## Layout
 
@@ -28,12 +30,23 @@ locally, `/w/ceph24/JAM/chunyu/bench_eval` on the farm, gateway ports 8766+).
 - `l1/` — the L1 grader. `expected.py` compiles the catalog to the literal and reproduction confs of `JAM24.final` and `JAM24.current`; `remote_dump.py` loads a candidate input exactly as FitPack's `tools.config.load_config` does (chains: the last input; `conf['steps']`: projected as `MAXLIKE.get_conf`), and emits the typed conf; `canonicalize.py` holds the three tiers (0 exact typed parity, 1 scientific equivalence, 2 structural coverage); `grade.py` writes `femtomind.l1_grade.v1` reports; `calibrate.py` runs the six calibration checks; `cli.py` is the command line.
 - `conditions/` — `materials.py` (a run's prompt, paper and reference files; `prompts/` holds the pilot's prompts verbatim and the generated A/B/C variants with hashes), `derive_catalog.py` (the condition-B catalog: author layer removed, leak-checked), `deny_lists.py` (hidden tools per condition), `leak_scan.py` (what a transcript saw that its condition withheld).
 - `matrix/` — `box.sh` (the pilot's bubblewrap/apptainer sandbox with the evaluation's roots), `remote/` and `local/` (farm-side scripts and the agent's three entry commands), `gateway.py` (a local gateway from a pinned commit, catalog variant and deny list), `classify.py` (what happened in a run), `probe.py` (watch the job; cancel it once the fit started or failed), `fetch.py` (artefacts → grade → leak scan), `aggregate.py`, `runner.py`.
+- `e1/` — fault injection. `mutants.py` builds one realistic error per mutant from a card the gateway produced (so the base is parity-checked, not hand-written), `runner.py` asks the gateway's `validate_campaign` about each one and records refused/flagged/silent with the stable code, `report.py` renders the table. Read-only: `validate_campaign` never queues.
 
 ## Running
 
 Tests (stdlib unittest, in the sibling checkout `../femtomind-tests/tests`):
 
     FEMTOMIND_APP_ROOT=$PWD python3 -B -m unittest discover -s ../femtomind-tests/tests -p 'test_evaluation_*.py'
+
+E1 fault table (any gateway with its token; no cluster work of its own, since validate does the reads on the node):
+
+    python3 -B -m evaluation.e1.runner --url https://lqcdmcp.jlab.org:8000/cloud/jam-gateway-<you>/mcp \
+        --token-file ~/.config/jam_gateway/jam-gateway-<you>.token --out ~/bench_eval/e1/e1_$(date +%F).json
+    python3 -B -m evaluation.e1.report ~/bench_eval/e1/e1_2026-10-30.json --md e1.md
+
+E2 ablation: a test gateway only (`JAM_GW_TEST_TOKEN` must be set, or the switch is ignored), started with one or more layers removed; every reply carries `"ablation": [...]`:
+
+    JAM_GW_TEST_TOKEN=... JAM_GW_ABLATE=validate,catalog python3 -B lqcdmcp-deploy/jam_gateway.py
 
 Calibration (needs a ControlMaster to ifarm; `FEMTOMIND_IFARM_SOCK` names its socket):
 
