@@ -1145,7 +1145,86 @@ def _outside_read_roots(p, user=""):
     return _refuse("OUTSIDE_READ_ROOTS", "path must be under " + " or ".join(roots))
 
 
-def fs_list(path="", username=""):
+# fs_list and fs_read run a python3 snippet on the compute host, which reports
+# the true size, the window it returns and whether more remains. The ssh helper
+# keeps only the last `cap` characters of stdout, so a tool that returned the
+# raw command output could show half a file without saying so (a 9 KB log,
+# a 60-line `ls -la`): these replies always say what was left out.
+_FS_LIST_BODY = r'''
+import json
+REQ = json.loads(base64.b64decode(_REQ))
+p, limit = REQ["path"], max(1, min(int(REQ.get("limit") or 60), 200))
+try:
+    entries = list(os.scandir(p))
+except OSError as e:
+    print(json.dumps({"error": "%s: %s" % (type(e).__name__, e)})); raise SystemExit(0)
+entries.sort(key=lambda e: e.name.lower())
+rows = []
+for e in entries[:limit]:
+    row = {"name": e.name}
+    try:
+        st = e.stat(follow_symlinks=False)
+        row.update(kind="dir" if e.is_dir(follow_symlinks=False) else ("link" if e.is_symlink() else "file"),
+                   size=st.st_size, mtime=time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(st.st_mtime)))
+    except OSError as x:
+        row.update(kind="unreadable", error=str(x))
+    rows.append(row)
+print(json.dumps({"total_entries": len(entries), "returned": len(rows),
+                  "truncated": len(entries) > len(rows), "entries": rows}))
+'''
+
+_FS_READ_BODY = r'''
+import json
+REQ = json.loads(base64.b64decode(_REQ))
+p = REQ["path"]
+try:
+    st = os.stat(p)
+except OSError as e:
+    print(json.dumps({"error": "%s: %s" % (type(e).__name__, e)})); raise SystemExit(0)
+if os.path.isdir(p):
+    print(json.dumps({"error": "is a directory: use fs_list to list it"})); raise SystemExit(0)
+total = st.st_size
+offset = min(max(0, int(REQ.get("offset") or 0)), total)
+max_bytes = max(1, min(int(REQ.get("max_bytes") or 4000), 20000))
+with open(p, "rb") as f:
+    f.seek(offset)
+    raw = f.read(max_bytes)
+lines_wanted = int(REQ.get("max_lines") or 0)
+if lines_wanted > 0:
+    parts = raw.splitlines(keepends=True)
+    if len(parts) > lines_wanted:
+        raw = b"".join(parts[:lines_wanted])
+text = raw.decode("utf-8", "replace")
+end = offset + len(raw)
+print(json.dumps({"total_bytes": total, "offset": offset, "returned_bytes": len(raw),
+                  "returned_lines": text.count("\n") + (1 if text and not text.endswith("\n") else 0),
+                  "truncated": end < total, "next_offset": end if end < total else None,
+                  "content": text}))
+'''
+
+
+def _fs_snippet(body, request):
+    payload = base64.b64encode(json.dumps(request).encode()).decode()
+    return "import os, time, base64\n" + f"_REQ = {payload!r}\n" + body
+
+
+def _fs_reply(p, r, what):
+    """The snippet's JSON, or an error that repeats what the host answered."""
+    text = (r.get("out") or "").strip()
+    try:
+        data = json.loads(text.splitlines()[-1]) if text else {}
+    except ValueError:
+        data = {}
+    if r.get("rc") != 0 or not isinstance(data, dict) or not data:
+        tail = (r.get("err") or "").strip()[-400:] or text[-400:] or "no output"
+        return {"status": "error", "code": "READ_FAILED",
+                "message": f"Could not {what} {p} on the compute host: {tail}"}
+    if data.get("error"):
+        return {"status": "error", "code": "READ_FAILED", "message": f"{p}: {data['error']}"}
+    return data
+
+
+def fs_list(path="", limit=60, username=""):
     u, err = _need_user(username)
     if err:
         return err
@@ -1153,21 +1232,48 @@ def fs_list(path="", username=""):
     bad = _outside_read_roots(p, u)
     if bad:
         return bad
-    out = _remote(u, f"ls -la {_shq(p)} 2>&1 | head -60", timeout=60)
-    return {"status": "ok", "username": u, "path": p, **out}
+    try:
+        limit = max(1, min(int(limit or 60), 200))
+    except (TypeError, ValueError):
+        return _refuse("BAD_ARGUMENT", "limit: a whole number from 1 to 200")
+    r = _run_ifarm_py(u, _fs_snippet(_FS_LIST_BODY, {"path": p, "limit": limit}), timeout=90, cap=80000)
+    data = _fs_reply(p, r, "list")
+    if data.get("status") == "error":
+        return data
+    out = {"status": "ok", "username": u, "path": p, **data}
+    if data.get("truncated"):
+        out["hint"] = (f"{data['total_entries']} entries; showing the first {data['returned']} by name. "
+                       "Name a subdirectory or a file instead of raising the limit.")
+    return out
 
 
-def fs_read(path="", max_lines=200, username=""):
+def fs_read(path="", max_lines=0, offset=0, max_bytes=0, username=""):
     u, err = _need_user(username)
     if err:
         return err
     p = os.path.normpath(path.strip())
+    if not p or p == ".":
+        return _refuse("BAD_ARGUMENT", "path: the file to read")
     bad = _outside_read_roots(p, u)
     if bad:
         return bad
-    ml = max(1, min(int(max_lines), 500))
-    out = _remote(u, f"head -n {ml} {_shq(p)} 2>&1", timeout=60)
-    return {"status": "ok", "username": u, "path": p, **out}
+    try:
+        offset = max(0, int(offset or 0))
+        max_bytes = max(1, min(int(max_bytes or 4000), 20000))
+        max_lines = max(0, min(int(max_lines or 0), 500))
+    except (TypeError, ValueError):
+        return _refuse("BAD_ARGUMENT", "offset, max_bytes and max_lines take whole numbers")
+    r = _run_ifarm_py(u, _fs_snippet(_FS_READ_BODY, {"path": p, "offset": offset, "max_bytes": max_bytes,
+                                                     "max_lines": max_lines}), timeout=90, cap=120000)
+    data = _fs_reply(p, r, "read")
+    if data.get("status") == "error":
+        return data
+    out = {"status": "ok", "username": u, "path": p, **data}
+    if data.get("truncated"):
+        out["hint"] = (f"Showing bytes {data['offset']}-{data['offset'] + data['returned_bytes']} of "
+                       f"{data['total_bytes']} ({data['returned_lines']} lines). Call fs_read again with "
+                       f"offset={data['next_offset']} for the rest; max_bytes is at most 20000.")
+    return out
 
 
 # A workspace path goes into shell commands and Slurm scripts on the cluster,
@@ -4701,11 +4807,59 @@ def _card_from_conf(conf, source, overrides=None, replicas=10):
                          "points_after_cuts": points}
 
 
-def campaign_card_from_catalog(analysis_id="JAM24.final", replicas=10, overrides=None, username=""):
+_CALIBRATION = {}
+
+
+def _calibration_note(analysis_id):
+    """What the catalog records about how the published analysis was calibrated.
+
+    JAM24 was fitted in six stages (DIS, then DY, then W/Z and jets, then the
+    strange sector, then an FF calibration, then the final fit from the
+    calibrated starts). The catalog records that chain as a limitation, not as
+    a runnable schedule. A card built from the catalog runs ONE stage from the
+    cataloged starting values, so the user must be told, before spending a
+    night of replicas, that this need not reproduce the paper.
+    """
+    aid = str(analysis_id or "").strip()
+    if not aid:
+        return None
+    if aid in _CALIBRATION:
+        return _CALIBRATION[aid]
+    out = None
+    try:
+        entry = _analysis_catalog_store()._entry(aid)
+        for item in ((entry.get("config") or {}).get("scientific_settings") or []):
+            if str(item.get("id")) != "calibration.stages":
+                continue
+            stages = [str(s["stage"]) for s in (item.get("value") or []) if isinstance(s, dict) and s.get("stage")]
+            if not stages:
+                continue
+            out = {"stages": stages, "runnable": False,
+                   "warning": (f"The published fit was calibrated in {len(stages)} stages "
+                               f"({', then '.join(stages)}). The catalog records this as a dependency "
+                               "description, not a runnable schedule: the substage order, the transfer between "
+                               "stages and the numerical starts are unknown. This card runs ONE stage from the "
+                               "cataloged starting values, which need not reproduce the published result; "
+                               "starting from the published replicas does (see jam_guide 'jam24')."),
+                   "interpretation_or_limit": item.get("interpretation_or_limit")}
+            break
+    except Exception:
+        out = None
+    _CALIBRATION[aid] = out
+    return out
+
+
+def campaign_card_from_catalog(analysis_id="JAM24.final", replicas=10, overrides=None, detail="full", username=""):
     """A complete, validate-ready campaign card for a published analysis in the
     catalog, built from the compiled configuration (no hand copying). Needs no
     cluster: validate_campaign then checks it against the workspace and reports
-    how it compares with the catalog (catalog_comparison)."""
+    how it compares with the catalog (catalog_comparison).
+
+    detail='brief' returns source, job and slurm only (what validate_campaign
+    needs: it rebuilds the rest from the catalog), plus the expected size, the
+    notes and the calibration record; 'full' adds the whole parameter, dataset,
+    normalization and cut tables (50 KB for JAM24.final, more than a client
+    should have to take in one reply). The MCP tool defaults to 'brief'."""
     u, err = _resolve_user(username)
     if err:
         return err
@@ -4734,12 +4888,26 @@ def campaign_card_from_catalog(analysis_id="JAM24.final", replicas=10, overrides
         card, notes, expected = _card_from_conf(conf, refs, overrides, n)
     except ValueError as e:
         return _refuse("CARD_INVALID", str(e))
-    return {"status": "ok", "card": card, "source": card["source"], "expected": expected, "notes": notes,
-            "message": f"A card for {refs['analysis_id']} with {expected['free_parameters']} free parameters over "
-                       f"{sum(expected['datasets'].values())} datasets. Call validate_campaign(card) next (you may send only the card's source, job, slurm and "
-                       f"overrides: the gateway rebuilds the rest from the catalog): it checks the "
-                       "card against the workspace and its catalog_comparison says where it still differs from the "
-                       "published fit. The confirmation phrase comes from that validation."}
+    calibration = _calibration_note(refs["analysis_id"])
+    if calibration:
+        notes.append(calibration["warning"])
+    brief = {k: card[k] for k in ("source", "job", "slurm")}
+    full = str(detail or "full").strip().lower() == "full"
+    size = (f"{expected['free_parameters']} free parameters over {sum(expected['datasets'].values())} datasets")
+    if full:
+        message = (f"The complete card for {refs['analysis_id']}: {size}. Call validate_campaign(card) next "
+                   "(you may send only the card's source, job, slurm and overrides: the gateway rebuilds the rest "
+                   "from the catalog): it checks the card against the workspace and its catalog_comparison says "
+                   "where it still differs from the published fit. The confirmation phrase comes from that "
+                   "validation.")
+    else:
+        message = (f"A brief card for {refs['analysis_id']}: {size}. It carries source, job and slurm; "
+                   "validate_campaign rebuilds the parameters, datasets and cuts from the catalog, so send it as "
+                   "it is. Ask again with detail='full' only if you must show or edit those tables.")
+    return {"status": "ok", "detail": "full" if full else "brief",
+            "card": card if full else brief,
+            "source": card["source"], "job": card["job"], "slurm": card["slurm"],
+            "expected": expected, "notes": notes, "calibration": calibration, "message": message}
 
 
 _CATALOG_CLAIMS = None
@@ -5536,7 +5704,11 @@ def _validate_campaign(u, card):
     out = {"status": "ok", "valid": True, "warnings": warnings}
     out.update(_validated(u, norm))
     out["summary"]["points_after_cuts"] = points
-    if warnings:
+    calibration = _calibration_note((norm.get("source") or {}).get("analysis_id") or "")
+    if calibration:
+        out["calibration"] = calibration
+        out["warnings"] = list(out.get("warnings") or []) + [calibration["warning"]]
+    if out["warnings"]:
         out["next"] = ("Show the user this summary, the warnings (they do not block submission) and the "
                        "Slurm script. Submit with submit_campaign(card, confirm=<the phrase>) only after "
                        "they confirm.")
@@ -14592,18 +14764,30 @@ TOOLS = {
                           "required": ["op"]},
                "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": False},
                "fn": lambda a: deploy(a)},
-    "fs_list": {"desc": "List a directory on the cluster (defaults to the user's own area).",
-                "schema": {"type": "object", "properties": {"path": {"type": "string"}}},
-                "fn": lambda a: fs_list(a.get("path", ""))},
+    "fs_list": {"desc": "List a directory on the cluster (defaults to the user's own area): name, kind, size and "
+                       "mtime of each entry. The reply always gives total_entries, returned and truncated, so a "
+                       "directory with more entries than shown says so instead of looking complete.",
+                "schema": {"type": "object", "properties": {"path": {"type": "string"},
+                                                           "limit": {"type": "integer", "minimum": 1, "maximum": 200,
+                                                                     "default": 60}}},
+                "fn": lambda a: fs_list(a.get("path", ""), a.get("limit", 60))},
     "fs_read": {"desc": "Read a text file on the cluster, e.g. a campaign's artifacts: a replica's "
                        "stdout/error log under " + SITE.get("slurm_log_root", "/farm_out").rstrip("/")
                        + "/<you>/ (campaign_status gives log_pattern and error_log_pattern), or a campaign's "
                        "fit_summary.json and input.py. Reads are limited to your own farm_out folder and "
-                       + " or ".join(SITE["read_roots"]) + ".",
+                       + " or ".join(SITE["read_roots"]) + ". A window of bytes, never a silent cut: the reply "
+                       "gives total_bytes, offset, returned_bytes, returned_lines, truncated and next_offset "
+                       "(with a hint) when more remains; call again with offset=next_offset to read on, or raise "
+                       "max_bytes (at most 20000).",
                 "schema": {"type": "object",
                            "properties": {"path": {"type": "string"},
-                                          "max_lines": {"type": "integer"}}},
-                "fn": lambda a: fs_read(a.get("path", ""), int(a.get("max_lines", 200)))},
+                                          "offset": {"type": "integer", "minimum": 0, "default": 0},
+                                          "max_bytes": {"type": "integer", "minimum": 1, "maximum": 20000,
+                                                        "default": 4000},
+                                          "max_lines": {"type": "integer", "minimum": 0, "maximum": 500,
+                                                        "description": "optional cap on the lines returned"}}},
+                "fn": lambda a: fs_read(a.get("path", ""), a.get("max_lines", 0), a.get("offset", 0),
+                                        a.get("max_bytes", 0))},
     "setup_workspace": {
         "desc": "Create a workspace: clone the FitPack ai branch (repo_url defaults to "
                 + JAM_REPO_URL + ") into a new folder of your own area ("
@@ -15464,22 +15648,29 @@ TOOLS["jam_guide"] = {
     "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
     "fn": lambda a: jam_guide(a.get("topic", ""))}
 TOOLS["campaign_card_from_catalog"] = {
-    "desc": "A complete, validate-ready campaign card for a published analysis in the catalog (default "
+    "desc": "A validate-ready campaign card for a published analysis in the catalog (default "
             "JAM24.final: the published configuration; JAM24.current: the updated workbooks), built from the "
             "compiled configuration instead of copying values by hand: every parameter with its bounds and "
             "ties, both FF shapes (215 free parameters for JAM24), the datasets with their normalizations "
             "and cuts (datasets that keep no point are left out and recorded), the QCD settings and the "
             "author-confirmed positivity flags, Slurm resources sized for the fit. replicas sets the number "
             "of replicas; overrides replaces or updates the sections job, slurm, qcd, parameters, datasets or "
-            "reactions, and is recorded on the card. Needs no cluster. Then call validate_campaign: send the "
-            "card, or only its source, job, slurm and overrides; catalog_comparison says where the card "
+            "reactions, and is recorded on the card. detail='brief' (default) returns source, job and slurm "
+            "only, which is all validate_campaign needs; 'full' adds every table (about 50 KB for JAM24.final, "
+            "too much for one reply unless the user must see or edit them). The reply always carries notes and "
+            "calibration: when the catalog records a staged calibration (JAM24), it says so, because this card "
+            "runs one stage and need not reproduce the paper. Needs no cluster. Then call validate_campaign: "
+            "send the card, or only its source, job, slurm and overrides; catalog_comparison says where the card "
             "differs from the published fit, and its phrase is what submit_campaign needs. Use this whenever "
             "the user wants to run, reproduce or start from a published analysis.",
     "schema": {"type": "object", "properties": {"analysis_id": {"type": "string", "default": "JAM24.final"},
                                                 "replicas": {"type": "integer", "default": 10},
-                                                "overrides": {"type": "object"}}},
+                                                "overrides": {"type": "object"},
+                                                "detail": {"type": "string", "enum": ["brief", "full"],
+                                                           "default": "brief"}}},
     "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
-    "fn": lambda a: campaign_card_from_catalog(a.get("analysis_id", "JAM24.final"), a.get("replicas", 10), a.get("overrides"))}
+    "fn": lambda a: campaign_card_from_catalog(a.get("analysis_id", "JAM24.final"), a.get("replicas", 10),
+                                               a.get("overrides"), a.get("detail", "brief"))}
 TOOLS["pending_confirmations"] = {
     "desc": "Human-gate mode only: the confirmations waiting for a person (kind, phrase, what they would do). "
             "Answered only to the gateway's panel page; an AI client gets a refusal and must ask the user to read "
